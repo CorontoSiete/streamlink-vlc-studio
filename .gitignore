@@ -1,0 +1,11 @@
+bin/
+obj/
+.tmp/
+.dotnet-home/
+.dotnet-sdk/
+.tools/
+.vs/
+artifacts/
+release/
+*.user
+*.suo

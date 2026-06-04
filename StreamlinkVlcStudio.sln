@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{DC05130E-C06B-46DC-9A7D-7C943F3C1A98}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamlinkVlcStudio.Core", "src\StreamlinkVlcStudio.Core\StreamlinkVlcStudio.Core.csproj", "{3112BE02-454A-4ADE-AB82-B2F91CE5EEE5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamlinkVlcStudio.Infrastructure", "src\StreamlinkVlcStudio.Infrastructure\StreamlinkVlcStudio.Infrastructure.csproj", "{04715D6A-CC20-4AC5-8479-91BC43723597}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamlinkVlcStudio.App.Wpf", "src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj", "{7C86B820-66A5-4F1E-8A78-CFEC7C7AA41C}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{8125DA68-637C-4244-BAD5-EE51192F5DF0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamlinkVlcStudio.Tests", "tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj", "{5005C533-756E-4C4B-9FD6-8259566B658B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3112BE02-454A-4ADE-AB82-B2F91CE5EEE5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3112BE02-454A-4ADE-AB82-B2F91CE5EEE5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3112BE02-454A-4ADE-AB82-B2F91CE5EEE5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3112BE02-454A-4ADE-AB82-B2F91CE5EEE5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{04715D6A-CC20-4AC5-8479-91BC43723597}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{04715D6A-CC20-4AC5-8479-91BC43723597}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{04715D6A-CC20-4AC5-8479-91BC43723597}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{04715D6A-CC20-4AC5-8479-91BC43723597}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7C86B820-66A5-4F1E-8A78-CFEC7C7AA41C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7C86B820-66A5-4F1E-8A78-CFEC7C7AA41C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7C86B820-66A5-4F1E-8A78-CFEC7C7AA41C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7C86B820-66A5-4F1E-8A78-CFEC7C7AA41C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5005C533-756E-4C4B-9FD6-8259566B658B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5005C533-756E-4C4B-9FD6-8259566B658B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5005C533-756E-4C4B-9FD6-8259566B658B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5005C533-756E-4C4B-9FD6-8259566B658B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{3112BE02-454A-4ADE-AB82-B2F91CE5EEE5} = {DC05130E-C06B-46DC-9A7D-7C943F3C1A98}
+		{04715D6A-CC20-4AC5-8479-91BC43723597} = {DC05130E-C06B-46DC-9A7D-7C943F3C1A98}
+		{7C86B820-66A5-4F1E-8A78-CFEC7C7AA41C} = {DC05130E-C06B-46DC-9A7D-7C943F3C1A98}
+		{5005C533-756E-4C4B-9FD6-8259566B658B} = {8125DA68-637C-4244-BAD5-EE51192F5DF0}
+	EndGlobalSection
+EndGlobal
