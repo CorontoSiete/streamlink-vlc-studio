@@ -74,6 +74,8 @@ This keeps Streamlink responsible for platform stream resolution and HLS transpo
   - Kick's public API does not expose the authorized user's followed-channel list, so the app stores explicit Kick followed channel slugs under `FollowedChannels.KickChannelSlugs`.
   - Queries configured slugs in batches of 50 and shows only entries whose channel response includes a live stream.
 
+Followed streams load once at startup and refresh every minute while the app is open, regardless of the selected Home page segment, active stream tab, or minimized/tray state.
+
 Clicking a home card opens the same `StreamTarget` flow used by browser capture and manual stream input.
 
 ## Home Recent Streams Flow

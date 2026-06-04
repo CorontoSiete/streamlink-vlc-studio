@@ -156,6 +156,7 @@ The seekbar depends on platform VOD/replay availability. It does not record a lo
 
 - Twitch: the home page uses Twitch Helix `streams/followed`, which requires a Twitch user token with `user:read:follows`. Reconnect Twitch after upgrading if your saved token was created before this feature.
 - Kick: Kick's public API exposes channel and livestream data, but not a user followed-channel list. Add your Kick followed channel slugs in Settings, one per line. The app checks those configured channels through Kick's public channel API and shows the ones that are live.
+- Live followed channels load at startup and refresh every minute while the app is open, even when another page or stream tab is selected.
 - Click a live card to open that channel through the same Streamlink/libVLC playback path as browser-captured streams.
 
 ## Home Page Twitch VODs

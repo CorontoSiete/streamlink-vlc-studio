@@ -14,6 +14,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private bool lowLatency = true;
     private bool keepInactiveTabsRunning = true;
     private bool multiStreamEnabled;
+    private bool keepHomeCardRightGap = true;
     private string customStreamlinkArguments = "";
     private ChatSettings chat = new();
     private ReplaySettings replay = new();
@@ -63,6 +64,12 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => multiStreamEnabled;
         set => SetProperty(ref multiStreamEnabled, value);
+    }
+
+    public bool KeepHomeCardRightGap
+    {
+        get => keepHomeCardRightGap;
+        set => SetProperty(ref keepHomeCardRightGap, value);
     }
 
     public string CustomStreamlinkArguments

@@ -1,0 +1,89 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+
+    env:
+      DOTNET_CLI_HOME: ${{ github.workspace }}\.dotnet-home
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore StreamlinkVlcStudio.sln --ignore-failed-sources
+
+      - name: Build
+        run: dotnet build StreamlinkVlcStudio.sln --configuration Release --no-restore
+
+      - name: Publish app
+        run: >
+          dotnet publish
+          src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained false
+          --no-restore
+          --output artifacts\publish\StreamlinkVlcStudio
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $publishDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\StreamlinkVlcStudio"
+          $stageDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\package\StreamlinkVlcStudio"
+          $zipPath = Join-Path $env:GITHUB_WORKSPACE "artifacts\StreamlinkVlcStudio-windows.zip"
+
+          if (Test-Path -LiteralPath $stageDir) {
+            Remove-Item -LiteralPath $stageDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+          Copy-Item -Path (Join-Path $publishDir "*") -Destination $stageDir -Recurse -Force
+
+          $publishedExe = Join-Path $stageDir "StreamlinkVlcStudio.App.Wpf.exe"
+          $friendlyExe = Join-Path $stageDir "StreamlinkVlcStudio.exe"
+          if ((Test-Path -LiteralPath $publishedExe -PathType Leaf) -and -not (Test-Path -LiteralPath $friendlyExe -PathType Leaf)) {
+            Rename-Item -LiteralPath $publishedExe -NewName "StreamlinkVlcStudio.exe"
+          }
+
+          $browserExtensionStage = Join-Path $stageDir "browser-extension"
+          New-Item -ItemType Directory -Path $browserExtensionStage -Force | Out-Null
+          foreach ($relativePath in @("manifest.json", "background.js", "content-core.js", "content.js", "README.md")) {
+            Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "browser-extension\$relativePath") -Destination (Join-Path $browserExtensionStage $relativePath) -Force
+          }
+
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "install.txt") -Destination (Join-Path $stageDir "install.txt") -Force
+
+          if (Test-Path -LiteralPath $zipPath -PathType Leaf) {
+            Remove-Item -LiteralPath $zipPath -Force
+          }
+          Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StreamlinkVlcStudio-windows
+          path: artifacts\StreamlinkVlcStudio-windows.zip
+          if-no-files-found: error

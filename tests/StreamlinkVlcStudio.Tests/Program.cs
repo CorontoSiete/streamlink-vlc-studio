@@ -7470,6 +7470,7 @@ var tests = new (string Name, Func<Task> Run)[]
             VlcDirectory = @"C:\Program Files\VideoLAN\VLC",
             DefaultPlatform = PlatformKind.Kick,
             MultiStreamEnabled = true,
+            KeepHomeCardRightGap = false,
             CustomStreamlinkArguments = "--retry-streams 10"
         };
         settings.Chat.KickChatroomIds["xqc"] = "123";
@@ -7518,6 +7519,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
         Assert.Equal(PlatformKind.Kick, loaded.DefaultPlatform);
         Assert.True(loaded.MultiStreamEnabled);
+        Assert.Equal(false, loaded.KeepHomeCardRightGap);
         Assert.Equal("--retry-streams 10", loaded.CustomStreamlinkArguments);
         Assert.Equal("123", loaded.Chat.KickChatroomIds["xqc"]);
         Assert.Equal("456", loaded.Chat.KickBroadcasterUserIds["xqc"]);
@@ -10117,6 +10119,24 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(false, isCurrent);
         Assert.Equal(false, engine.OverlayVisible);
         await tab.DisposeAsync();
+    }),
+    ("libVLC options use non-DXGI video output", () =>
+    {
+        var buildOptions = typeof(LibVlcPlaybackEngine).GetMethod(
+            "BuildLibVlcOptions",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(buildOptions);
+
+        var options = (IReadOnlyList<string>)buildOptions!.Invoke(
+            null,
+            [@"C:\Program Files\VideoLAN\VLC", new MemoryLogger()])!;
+
+        Assert.True(options.Any(option => option == "--vout=wingdi"));
+        Assert.Equal(false, options.Any(option =>
+            option.Contains("direct3d", StringComparison.OrdinalIgnoreCase) ||
+            option.Contains("dxgi", StringComparison.OrdinalIgnoreCase)));
+        Assert.True(options.Any(option => option == "--avcodec-hw=none"));
+        return Task.CompletedTask;
     }),
     ("reuses cached Kick overlay channel info for launch keys", async () =>
     {
@@ -14910,6 +14930,161 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Contains("invalid Kick followed channel", viewModel.FollowedChannelsStatus);
         await viewModel.DisposeAsync();
     }),
+    ("home followed refresh loads on initialize and repeats automatically", async () =>
+    {
+        var firstStream = CreateTestFollowedStream(PlatformKind.Twitch, "summit1g", viewerCount: 12000);
+        var secondStream = CreateTestFollowedStream(PlatformKind.Kick, "xqc", viewerCount: 25000);
+        var followedService = new FakeFollowedStreamsService(secondStream);
+        followedService.EnqueueResult(firstStream);
+        var settings = new AppSettings();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            followedStreamsService: followedService,
+            followedChannelsRefreshInterval: TimeSpan.FromMilliseconds(40));
+
+        viewModel.Initialize();
+
+        await TestWait.UntilAsync(
+            () => followedService.CallCount >= 1 &&
+                viewModel.LiveFollowedChannels.Count == 1 &&
+                viewModel.LiveFollowedChannels[0].Channel == "summit1g",
+            TimeSpan.FromMilliseconds(500));
+        await TestWait.UntilAsync(
+            () => followedService.CallCount >= 2 &&
+                viewModel.LiveFollowedChannels.Count == 1 &&
+                viewModel.LiveFollowedChannels[0].Channel == "xqc",
+            TimeSpan.FromSeconds(1));
+
+        Assert.True(followedService.CancellationTokens.All(token => token.CanBeCanceled));
+        await viewModel.DisposeAsync();
+    }),
+    ("home followed automatic refresh continues when a stream tab is selected", async () =>
+    {
+        var firstStream = CreateTestFollowedStream(PlatformKind.Twitch, "summit1g", viewerCount: 12000);
+        var secondStream = CreateTestFollowedStream(PlatformKind.Twitch, "albralelie", viewerCount: 9000);
+        var followedService = new FakeFollowedStreamsService(secondStream);
+        followedService.EnqueueResult(firstStream);
+        var streamlink = new FakeStreamlinkService();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            streamlink,
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            followedStreamsService: followedService,
+            followedChannelsRefreshInterval: TimeSpan.FromMilliseconds(40));
+
+        viewModel.Initialize();
+        await TestWait.UntilAsync(
+            () => followedService.CallCount >= 1 &&
+                viewModel.LiveFollowedChannels.Count == 1 &&
+                viewModel.LiveFollowedChannels[0].Channel == "summit1g",
+            TimeSpan.FromMilliseconds(500));
+
+        await viewModel.OpenDetectedStreamAsync(new StreamTarget(
+            PlatformKind.Twitch,
+            "otherchannel",
+            "https://www.twitch.tv/otherchannel"));
+
+        Assert.Equal(false, viewModel.IsHomeSelected);
+        await TestWait.UntilAsync(
+            () => followedService.CallCount >= 2 &&
+                viewModel.LiveFollowedChannels.Count == 1 &&
+                viewModel.LiveFollowedChannels[0].Channel == "albralelie",
+            TimeSpan.FromSeconds(1));
+        Assert.Equal(false, viewModel.IsHomeSelected);
+        await viewModel.DisposeAsync();
+    }),
+    ("home followed automatic refresh skips overlapping slow ticks", async () =>
+    {
+        var slowRefreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSlowRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var followedService = new FakeFollowedStreamsService(
+            CreateTestFollowedStream(PlatformKind.Twitch, "defaultlive"));
+        followedService.EnqueueResult(CreateTestFollowedStream(PlatformKind.Twitch, "firstlive"));
+        followedService.EnqueueResult(async cancellationToken =>
+        {
+            slowRefreshStarted.SetResult();
+            await releaseSlowRefresh.Task.WaitAsync(cancellationToken);
+            return new FollowedLiveStreamsResult(
+                [CreateTestFollowedStream(PlatformKind.Twitch, "slowlive")],
+                []);
+        });
+        var settings = new AppSettings();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            followedStreamsService: followedService,
+            followedChannelsRefreshInterval: TimeSpan.FromMilliseconds(20));
+
+        viewModel.Initialize();
+        await TestWait.UntilAsync(
+            () => followedService.CallCount >= 1 &&
+                viewModel.LiveFollowedChannels.Count == 1 &&
+                viewModel.LiveFollowedChannels[0].Channel == "firstlive",
+            TimeSpan.FromMilliseconds(500));
+        await slowRefreshStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+
+        await Task.Delay(120);
+
+        Assert.Equal(2, followedService.CallCount);
+        Assert.Equal(1, followedService.MaxConcurrentCalls);
+
+        releaseSlowRefresh.SetResult();
+        await Task.Delay(30);
+
+        Assert.True(
+            followedService.CallCount <= 3,
+            $"Expected no queued automatic followed refreshes, got {followedService.CallCount} calls.");
+        await viewModel.DisposeAsync();
+    }),
+    ("home followed automatic refresh stops after dispose", async () =>
+    {
+        var followedService = new FakeFollowedStreamsService(
+            CreateTestFollowedStream(PlatformKind.Twitch, "summit1g"));
+        var settings = new AppSettings();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            followedStreamsService: followedService,
+            followedChannelsRefreshInterval: TimeSpan.FromMilliseconds(80));
+
+        viewModel.Initialize();
+        await TestWait.UntilAsync(
+            () => followedService.CallCount >= 1 && viewModel.LiveFollowedChannels.Count == 1,
+            TimeSpan.FromMilliseconds(500));
+
+        await viewModel.DisposeAsync();
+        var callCountAfterDispose = followedService.CallCount;
+
+        await Task.Delay(180);
+
+        Assert.Equal(callCountAfterDispose, followedService.CallCount);
+    }),
     ("home Twitch VOD search runs automatically and filter changes reset results", async () =>
     {
         var broadcaster = new TwitchVodBroadcaster("26490481", "summit1g", "summit1g");
@@ -16035,6 +16210,84 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(0, 1000, double.NaN));
         Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(0, 1000, -1));
         return Task.CompletedTask;
+    }),
+    ("home content padding converter removes left and right padding when card gap is disabled", () =>
+    {
+        var converter = new StreamlinkVlcStudio.App.Wpf.Converters.HomeContentPaddingConverter();
+
+        var flushPadding = (System.Windows.Thickness)converter.Convert(
+            false,
+            typeof(System.Windows.Thickness),
+            null!,
+            CultureInfo.InvariantCulture);
+        Assert.Equal(0d, flushPadding.Left);
+        Assert.Equal(0d, flushPadding.Right);
+        Assert.Equal(18d, flushPadding.Top);
+        Assert.Equal(24d, flushPadding.Bottom);
+
+        var gappedPadding = (System.Windows.Thickness)converter.Convert(
+            true,
+            typeof(System.Windows.Thickness),
+            null!,
+            CultureInfo.InvariantCulture);
+        Assert.Equal(24d, gappedPadding.Left);
+        Assert.Equal(24d, gappedPadding.Right);
+        Assert.Equal(18d, gappedPadding.Top);
+        Assert.Equal(24d, gappedPadding.Bottom);
+
+        return Task.CompletedTask;
+    }),
+    ("home card wrap panel preserves fixed right gap mode", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var panel = new HomeCardWrapPanel
+            {
+                ItemWidth = 100,
+                HorizontalGap = 10,
+                VerticalGap = 12,
+                KeepRightGap = true
+            };
+            var cards = AddHomeCardPanelChildren(panel, 4);
+
+            panel.Measure(new System.Windows.Size(350, double.PositiveInfinity));
+            panel.Arrange(new System.Windows.Rect(0, 0, 350, panel.DesiredSize.Height));
+
+            Assert.Equal(350d, panel.DesiredSize.Width);
+            Assert.Equal(124d, panel.DesiredSize.Height);
+            Assert.Equal(100d, cards[0].RenderSize.Width);
+            Assert.Equal(100d, cards[1].RenderSize.Width);
+            Assert.Equal(0d, cards[0].TranslatePoint(new System.Windows.Point(0, 0), panel).X);
+            Assert.Equal(110d, cards[1].TranslatePoint(new System.Windows.Point(0, 0), panel).X);
+            Assert.Equal(220d, cards[2].TranslatePoint(new System.Windows.Point(0, 0), panel).X);
+            Assert.Equal(30d, 350 - cards[2].TranslatePoint(new System.Windows.Point(100, 0), panel).X);
+        });
+    }),
+    ("home card wrap panel fills rows when right gap mode is off", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var panel = new HomeCardWrapPanel
+            {
+                ItemWidth = 100,
+                HorizontalGap = 10,
+                VerticalGap = 12,
+                KeepRightGap = false
+            };
+            var cards = AddHomeCardPanelChildren(panel, 4);
+
+            panel.Measure(new System.Windows.Size(350, double.PositiveInfinity));
+            panel.Arrange(new System.Windows.Rect(0, 0, 350, panel.DesiredSize.Height));
+
+            Assert.Equal(350d, panel.DesiredSize.Width);
+            Assert.Equal(124d, panel.DesiredSize.Height);
+            AssertNear(110, cards[0].RenderSize.Width);
+            AssertNear(110, cards[1].RenderSize.Width);
+            AssertNear(0, cards[0].TranslatePoint(new System.Windows.Point(0, 0), panel).X);
+            AssertNear(120, cards[1].TranslatePoint(new System.Windows.Point(0, 0), panel).X);
+            AssertNear(240, cards[2].TranslatePoint(new System.Windows.Point(0, 0), panel).X);
+            AssertNear(0, 350 - cards[2].TranslatePoint(new System.Windows.Point(cards[2].RenderSize.Width, 0), panel).X);
+        });
     }),
     ("video viewport chrome uses true black behind VLC", () =>
     {
@@ -20262,6 +20515,32 @@ static bool ContainsBrokenSurrogatePair(string value)
     return false;
 }
 
+static FollowedLiveStream CreateTestFollowedStream(
+    PlatformKind platform,
+    string channel,
+    string? displayName = null,
+    int viewerCount = 100)
+{
+    var url = platform == PlatformKind.Twitch
+        ? $"https://www.twitch.tv/{channel}"
+        : $"https://kick.com/{channel}";
+    var thumbnailUrl = platform == PlatformKind.Twitch
+        ? $"https://static-cdn.jtvnw.net/previews-ttv/live_user_{channel}.jpg"
+        : $"https://files.kick.com/{channel}.jpg";
+    return new FollowedLiveStream(
+        platform,
+        channel,
+        displayName ?? channel,
+        "live now",
+        "Just Chatting",
+        viewerCount,
+        thumbnailUrl,
+        DateTimeOffset.UtcNow.AddMinutes(-5),
+        false,
+        "en",
+        url);
+}
+
 static string CreateTempTestDirectory()
 {
     var root = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", Guid.NewGuid().ToString("N"));
@@ -20685,6 +20964,22 @@ static void AssertNear(double expected, double actual, double tolerance = 0.001)
     {
         throw new InvalidOperationException($"Expected {expected:0.###}, got {actual:0.###}.");
     }
+}
+
+static Border[] AddHomeCardPanelChildren(HomeCardWrapPanel panel, int count)
+{
+    var cards = new Border[count];
+    for (var index = 0; index < cards.Length; index++)
+    {
+        var card = new Border
+        {
+            Height = 50
+        };
+        panel.Children.Add(card);
+        cards[index] = card;
+    }
+
+    return cards;
 }
 
 static void AssertVideoGridFullyCovered(IEnumerable<StreamTabViewModel> tabs, int rows, int columns)
@@ -21483,21 +21778,93 @@ internal sealed class FakeStreamMetadataService : IStreamMetadataService
 
 internal sealed class FakeFollowedStreamsService : IFollowedStreamsService
 {
-    private readonly FollowedLiveStreamsResult result;
+    private readonly object gate = new();
+    private readonly Queue<Func<CancellationToken, Task<FollowedLiveStreamsResult>>> results = new();
+    private readonly List<CancellationToken> cancellationTokens = [];
+    private readonly FollowedLiveStreamsResult defaultResult;
+    private int activeCalls;
+    private int callCount;
+    private int maxConcurrentCalls;
 
     public FakeFollowedStreamsService(params FollowedLiveStream[] streams)
     {
-        result = new FollowedLiveStreamsResult(streams, []);
+        defaultResult = new FollowedLiveStreamsResult(streams, []);
     }
 
-    public int CallCount { get; private set; }
+    public int CallCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return callCount;
+            }
+        }
+    }
 
-    public Task<FollowedLiveStreamsResult> GetLiveFollowedStreamsAsync(
+    public int MaxConcurrentCalls
+    {
+        get
+        {
+            lock (gate)
+            {
+                return maxConcurrentCalls;
+            }
+        }
+    }
+
+    public IReadOnlyList<CancellationToken> CancellationTokens
+    {
+        get
+        {
+            lock (gate)
+            {
+                return cancellationTokens.ToArray();
+            }
+        }
+    }
+
+    public void EnqueueResult(params FollowedLiveStream[] streams)
+    {
+        var result = new FollowedLiveStreamsResult(streams, []);
+        EnqueueResult(_ => Task.FromResult(result));
+    }
+
+    public void EnqueueResult(Func<CancellationToken, Task<FollowedLiveStreamsResult>> loadAsync)
+    {
+        lock (gate)
+        {
+            results.Enqueue(loadAsync);
+        }
+    }
+
+    public async Task<FollowedLiveStreamsResult> GetLiveFollowedStreamsAsync(
         AppSettings settings,
         CancellationToken cancellationToken = default)
     {
-        CallCount++;
-        return Task.FromResult(result);
+        Func<CancellationToken, Task<FollowedLiveStreamsResult>> loadAsync;
+        lock (gate)
+        {
+            callCount++;
+            activeCalls++;
+            maxConcurrentCalls = Math.Max(maxConcurrentCalls, activeCalls);
+            cancellationTokens.Add(cancellationToken);
+            loadAsync = results.Count > 0
+                ? results.Dequeue()
+                : _ => Task.FromResult(defaultResult);
+        }
+
+        try
+        {
+            return await loadAsync(cancellationToken);
+        }
+        finally
+        {
+            lock (gate)
+            {
+                activeCalls--;
+            }
+        }
     }
 }
 

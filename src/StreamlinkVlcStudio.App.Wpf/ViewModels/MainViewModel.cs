@@ -16,6 +16,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 {
     private static readonly TimeSpan DetachedDisposalWaitTimeout = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan DefaultRecentThumbnailRefreshInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan DefaultFollowedChannelsRefreshInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan DefaultStreamSearchDebounceInterval = TimeSpan.FromMilliseconds(450);
     private static readonly TimeSpan DefaultTwitchVodSearchDebounceInterval = TimeSpan.FromMilliseconds(450);
     private static readonly TimeSpan DefaultBrowseCategorySearchDebounceInterval = TimeSpan.FromMilliseconds(450);
@@ -37,6 +38,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly ITwitchVodService? twitchVodService;
     private readonly IBrowseService? browseService;
     private readonly TimeSpan recentThumbnailRefreshInterval;
+    private readonly TimeSpan followedChannelsRefreshInterval;
     private readonly TimeSpan streamSearchDebounceInterval;
     private readonly TimeSpan twitchVodSearchDebounceInterval;
     private readonly TimeSpan browseCategorySearchDebounceInterval;
@@ -47,6 +49,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly object tabStartsGate = new();
     private readonly object recentStreamHintsGate = new();
     private readonly object recentThumbnailRefreshTimerGate = new();
+    private readonly object followedChannelsRefreshTimerGate = new();
     private readonly object streamSearchGate = new();
     private readonly object twitchVodSearchGate = new();
     private readonly object browseCategorySearchGate = new();
@@ -57,7 +60,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly SemaphoreSlim vlcPluginMultiViewChatPolicyGate = new(1, 1);
     private readonly SemaphoreSlim recentStreamsGate = new(1, 1);
     private readonly SemaphoreSlim recentThumbnailRefreshGate = new(1, 1);
+    private readonly SemaphoreSlim followedChannelsRefreshGate = new(1, 1);
     private readonly CancellationTokenSource recentThumbnailRefreshCancellation = new();
+    private readonly CancellationTokenSource followedChannelsRefreshCancellation = new();
     private readonly List<Task> detachedDisposals = [];
     private readonly List<List<StreamTabViewModel>> multiViewTabGroups = [];
     private readonly List<List<StreamTabViewModel>> pictureInPictureTabGroups = [];
@@ -107,6 +112,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private bool disposed;
     private int streamSearchGeneration;
     private System.Threading.Timer? recentThumbnailRefreshTimer;
+    private System.Threading.Timer? followedChannelsRefreshTimer;
     private System.Threading.Timer? streamSearchDebounceTimer;
     private System.Threading.Timer? twitchVodSearchDebounceTimer;
     private CancellationTokenSource? streamSearchCancellation;
@@ -146,7 +152,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         TimeSpan? twitchVodSearchDebounceInterval = null,
         IBrowseService? browseService = null,
         TimeSpan? browseCategorySearchDebounceInterval = null,
-        IKickChatHistoryProvider? kickChatHistoryProvider = null)
+        IKickChatHistoryProvider? kickChatHistoryProvider = null,
+        TimeSpan? followedChannelsRefreshInterval = null)
     {
         Settings = settings;
         this.settingsService = settingsService;
@@ -162,6 +169,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.twitchVodService = twitchVodService;
         this.browseService = browseService;
         this.recentThumbnailRefreshInterval = recentThumbnailRefreshInterval ?? DefaultRecentThumbnailRefreshInterval;
+        this.followedChannelsRefreshInterval = followedChannelsRefreshInterval ?? DefaultFollowedChannelsRefreshInterval;
         this.streamSearchDebounceInterval = streamSearchDebounceInterval ?? DefaultStreamSearchDebounceInterval;
         this.twitchVodSearchDebounceInterval = twitchVodSearchDebounceInterval ?? DefaultTwitchVodSearchDebounceInterval;
         this.browseCategorySearchDebounceInterval = browseCategorySearchDebounceInterval ?? DefaultBrowseCategorySearchDebounceInterval;
@@ -1118,6 +1126,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (followedStreamsService is not null)
         {
+            EnsureFollowedChannelsRefreshTimerStarted();
             _ = RefreshFollowedChannelsAsync();
         }
     }
@@ -1247,7 +1256,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             : "Replay seekbar hidden";
     }
 
-    private async Task RefreshFollowedChannelsAsync()
+    private Task RefreshFollowedChannelsAsync()
+    {
+        return RefreshFollowedChannelsAsync(
+            followedChannelsRefreshCancellation.Token,
+            skipIfRefreshRunning: false);
+    }
+
+    private async Task RefreshFollowedChannelsAsync(
+        CancellationToken cancellationToken,
+        bool skipIfRefreshRunning)
     {
         if (followedStreamsService is null)
         {
@@ -1255,8 +1273,24 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        var enteredRefreshGate = false;
         try
         {
+            if (skipIfRefreshRunning)
+            {
+                enteredRefreshGate = followedChannelsRefreshGate.Wait(0);
+                if (!enteredRefreshGate)
+                {
+                    return;
+                }
+            }
+            else
+            {
+                await followedChannelsRefreshGate.WaitAsync(cancellationToken);
+                enteredRefreshGate = true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             Settings.FollowedChannels.KickChannelSlugs = ParseKickFollowedChannelSlugs(
                 KickFollowedChannelsText,
                 skipInvalidEntries: true,
@@ -1264,7 +1298,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             IsFollowedChannelsRefreshing = true;
             FollowedChannelsStatus = "Refreshing live followed channels";
 
-            var result = await followedStreamsService.GetLiveFollowedStreamsAsync(Settings);
+            var result = await followedStreamsService.GetLiveFollowedStreamsAsync(Settings, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (disposed)
+            {
+                return;
+            }
+
             LiveFollowedChannels.Clear();
             foreach (var stream in result.Streams)
             {
@@ -1295,6 +1335,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 ? statusPrefix
                 : $"{statusPrefix} {string.Join(' ', messages)}";
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || disposed)
+        {
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             FollowedChannelsStatus = ex.Message;
@@ -1302,7 +1345,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            IsFollowedChannelsRefreshing = false;
+            if (enteredRefreshGate && !disposed && !cancellationToken.IsCancellationRequested)
+            {
+                IsFollowedChannelsRefreshing = false;
+            }
+
+            if (enteredRefreshGate)
+            {
+                followedChannelsRefreshGate.Release();
+            }
         }
     }
 
@@ -2882,7 +2933,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         CancelActiveBrowseCategorySearch();
         CancelActiveBrowseCategoryViewerCountLoad();
         CancelActiveBrowseStreamSearch();
+        followedChannelsRefreshCancellation.Cancel();
         recentThumbnailRefreshCancellation.Cancel();
+        lock (followedChannelsRefreshTimerGate)
+        {
+            followedChannelsRefreshTimer?.Dispose();
+            followedChannelsRefreshTimer = null;
+        }
+
         lock (recentThumbnailRefreshTimerGate)
         {
             recentThumbnailRefreshTimer?.Dispose();
@@ -3434,6 +3492,59 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             return hint;
+        }
+    }
+
+    private void EnsureFollowedChannelsRefreshTimerStarted()
+    {
+        if (followedStreamsService is null ||
+            followedChannelsRefreshInterval <= TimeSpan.Zero ||
+            disposed)
+        {
+            return;
+        }
+
+        lock (followedChannelsRefreshTimerGate)
+        {
+            if (followedChannelsRefreshTimer is not null || disposed)
+            {
+                return;
+            }
+
+            followedChannelsRefreshTimer = new System.Threading.Timer(
+                _ => RefreshFollowedChannelsOnUi(),
+                null,
+                followedChannelsRefreshInterval,
+                followedChannelsRefreshInterval);
+        }
+    }
+
+    private void RefreshFollowedChannelsOnUi()
+    {
+        if (disposed || followedStreamsService is null || followedChannelsRefreshCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            dispatch(() =>
+            {
+                if (disposed ||
+                    followedStreamsService is null ||
+                    followedChannelsRefreshCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _ = RefreshFollowedChannelsAsync(
+                    followedChannelsRefreshCancellation.Token,
+                    skipIfRefreshRunning: true);
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "Followed", "Failed to schedule live followed channels refresh.", ex);
         }
     }
 

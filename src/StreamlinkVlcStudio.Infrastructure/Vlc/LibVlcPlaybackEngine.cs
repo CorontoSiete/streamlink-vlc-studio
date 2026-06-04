@@ -1087,12 +1087,12 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private static List<string> BuildLibVlcOptions(string vlcDirectory, IAppLogger logger)
     {
-        logger.Write(AppLogLevel.Info, "libVLC", "Using Direct3D9 VLC video output with hardware decoding disabled to avoid DXGI/D3D11 renderer crashes.");
+        logger.Write(AppLogLevel.Info, "libVLC", "Using Windows GDI VLC video output with hardware decoding disabled to avoid DXGI renderer crashes.");
         return
         [
             "--no-video-title-show",
             "--quiet",
-            "--vout=direct3d9",
+            "--vout=wingdi",
             "--avcodec-hw=none",
             "--network-caching=500",
             "--live-caching=300",

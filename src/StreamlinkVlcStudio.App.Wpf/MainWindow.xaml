@@ -26,6 +26,7 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+        <converters:HomeContentPaddingConverter x:Key="HomeContentPadding" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibility" />
 
         <DataTemplate DataType="{x:Type vm:DockedChatMessageFeedItem}">
@@ -657,8 +658,9 @@
             <Setter Property="BorderBrush" Value="#263241" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Margin" Value="0,0,16,16" />
-            <Setter Property="Width" Value="316" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="VerticalAlignment" Value="Stretch" />
             <Setter Property="MinHeight" Value="268" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -693,6 +695,13 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <ItemsPanelTemplate x:Key="HomeCardItemsPanel">
+            <controls:HomeCardWrapPanel ItemWidth="316"
+                                        HorizontalGap="16"
+                                        VerticalGap="16"
+                                        KeepRightGap="{Binding DataContext.Settings.KeepHomeCardRightGap, RelativeSource={RelativeSource AncestorType=Window}}" />
+        </ItemsPanelTemplate>
 
         <Style x:Key="RecentStreamButton" TargetType="Button">
             <Setter Property="Background" Value="#0F151D" />
@@ -1780,7 +1789,7 @@
                                   Grid.Row="1"
                                   VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled"
-                                  Padding="24,18,24,24"
+                                  Padding="{Binding Settings.KeepHomeCardRightGap, Converter={StaticResource HomeContentPadding}}"
                                   PreviewMouseDown="HomeContentScrollViewer_PreviewMouseDown"
                                   PreviewMouseMove="HomeContentScrollViewer_PreviewMouseMove"
                                   PreviewMouseUp="HomeContentScrollViewer_PreviewMouseUp"
@@ -1877,12 +1886,8 @@
                             </StackPanel>
 
                             <ItemsControl ItemsSource="{Binding LiveFollowedChannels}"
+                                          ItemsPanel="{StaticResource HomeCardItemsPanel}"
                                           Visibility="{Binding HasLiveFollowedChannels, Converter={StaticResource BoolToVisibility}}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Button Style="{StaticResource HomeCardButton}"
@@ -2098,12 +2103,8 @@
                                     </StackPanel>
 
                                     <ItemsControl ItemsSource="{Binding TwitchVods}"
+                                                  ItemsPanel="{StaticResource HomeCardItemsPanel}"
                                                   Visibility="{Binding HasTwitchVods, Converter={StaticResource BoolToVisibility}}">
-                                        <ItemsControl.ItemsPanel>
-                                            <ItemsPanelTemplate>
-                                                <WrapPanel />
-                                            </ItemsPanelTemplate>
-                                        </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Button Style="{StaticResource HomeCardButton}"
@@ -2320,12 +2321,8 @@
                                             </StackPanel>
 
                                             <ItemsControl ItemsSource="{Binding BrowseCategories}"
+                                                          ItemsPanel="{StaticResource HomeCardItemsPanel}"
                                                           Visibility="{Binding HasBrowseCategories, Converter={StaticResource BoolToVisibility}}">
-                                                <ItemsControl.ItemsPanel>
-                                                    <ItemsPanelTemplate>
-                                                        <WrapPanel />
-                                                    </ItemsPanelTemplate>
-                                                </ItemsControl.ItemsPanel>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
                                                         <Button Style="{StaticResource HomeCardButton}"
@@ -2561,12 +2558,8 @@
                                     </StackPanel>
 
                                     <ItemsControl ItemsSource="{Binding BrowseStreams}"
+                                                  ItemsPanel="{StaticResource HomeCardItemsPanel}"
                                                   Visibility="{Binding HasBrowseStreams, Converter={StaticResource BoolToVisibility}}">
-                                        <ItemsControl.ItemsPanel>
-                                            <ItemsPanelTemplate>
-                                                <WrapPanel />
-                                            </ItemsPanelTemplate>
-                                        </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Button Style="{StaticResource HomeCardButton}"
@@ -3288,7 +3281,12 @@
                     <CheckBox Content="Multi-stream grid"
                               IsChecked="{Binding IsMultiStreamEnabled}"
                               Foreground="#E8EAED"
-                              Margin="0,0,0,16" />
+                              Margin="0,0,0,10" />
+                    <CheckBox Content="Keep home card right-side gap"
+                              IsChecked="{Binding Settings.KeepHomeCardRightGap}"
+                              Foreground="#E8EAED"
+                              Margin="0,0,0,16"
+                              ToolTip="Leave unused space at the right edge of Live, VOD, and Browse card rows." />
 
                     <TextBlock Text="Replay" FontWeight="SemiBold" Margin="0,0,0,10" />
                     <CheckBox Content="Enable platform replay seekbar"
