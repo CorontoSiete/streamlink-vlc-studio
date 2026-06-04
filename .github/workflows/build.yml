@@ -43,49 +43,36 @@ jobs:
           src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj
           --configuration Release
           --runtime win-x64
-          --self-contained false
+          --self-contained true
           --no-restore
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -p:DebugSymbols=false
           --output artifacts\publish\StreamlinkVlcStudio
 
-      - name: Stage artifact
+      - name: Stage executable
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $publishDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\StreamlinkVlcStudio"
-          $stageDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\package\StreamlinkVlcStudio"
-          $zipPath = Join-Path $env:GITHUB_WORKSPACE "artifacts\StreamlinkVlcStudio-windows.zip"
+          $publishedExe = Join-Path $publishDir "StreamlinkVlcStudio.App.Wpf.exe"
+          $releaseExe = Join-Path $env:GITHUB_WORKSPACE "artifacts\StreamlinkVlcStudio.exe"
 
-          if (Test-Path -LiteralPath $stageDir) {
-            Remove-Item -LiteralPath $stageDir -Recurse -Force
-          }
-          New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
-          Copy-Item -Path (Join-Path $publishDir "*") -Destination $stageDir -Recurse -Force
-
-          $publishedExe = Join-Path $stageDir "StreamlinkVlcStudio.App.Wpf.exe"
-          $friendlyExe = Join-Path $stageDir "StreamlinkVlcStudio.exe"
-          if ((Test-Path -LiteralPath $publishedExe -PathType Leaf) -and -not (Test-Path -LiteralPath $friendlyExe -PathType Leaf)) {
-            Rename-Item -LiteralPath $publishedExe -NewName "StreamlinkVlcStudio.exe"
+          if (-not (Test-Path -LiteralPath $publishedExe -PathType Leaf)) {
+            throw "Published executable missing: $publishedExe"
           }
 
-          $browserExtensionStage = Join-Path $stageDir "browser-extension"
-          New-Item -ItemType Directory -Path $browserExtensionStage -Force | Out-Null
-          foreach ($relativePath in @("manifest.json", "background.js", "content-core.js", "content.js", "README.md")) {
-            Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "browser-extension\$relativePath") -Destination (Join-Path $browserExtensionStage $relativePath) -Force
-          }
-
-          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "install.txt") -Destination (Join-Path $stageDir "install.txt") -Force
-
-          if (Test-Path -LiteralPath $zipPath -PathType Leaf) {
-            Remove-Item -LiteralPath $zipPath -Force
-          }
-          Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
+          New-Item -ItemType Directory -Path (Split-Path -Parent $releaseExe) -Force | Out-Null
+          Copy-Item -LiteralPath $publishedExe -Destination $releaseExe -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StreamlinkVlcStudio-windows
-          path: artifacts\StreamlinkVlcStudio-windows.zip
+          name: StreamlinkVlcStudio-exe
+          path: artifacts\StreamlinkVlcStudio.exe
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -98,8 +85,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           gh release create $env:RELEASE_TAG `
-            "artifacts\StreamlinkVlcStudio-windows.zip" `
+            "artifacts\StreamlinkVlcStudio.exe" `
             --target "${{ github.sha }}" `
             --title "Streamlink VLC Studio $env:RELEASE_TAG" `
-            --notes "Automated Windows build for commit ${{ github.sha }}." `
+            --notes "Automated self-contained Windows executable for commit ${{ github.sha }}." `
             --latest
