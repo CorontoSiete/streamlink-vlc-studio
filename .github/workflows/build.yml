@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -87,3 +87,19 @@ jobs:
           name: StreamlinkVlcStudio-windows
           path: artifacts\StreamlinkVlcStudio-windows.zip
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: build-${{ github.run_number }}-${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          gh release create $env:RELEASE_TAG `
+            "artifacts\StreamlinkVlcStudio-windows.zip" `
+            --target "${{ github.sha }}" `
+            --title "Streamlink VLC Studio $env:RELEASE_TAG" `
+            --notes "Automated Windows build for commit ${{ github.sha }}." `
+            --latest
