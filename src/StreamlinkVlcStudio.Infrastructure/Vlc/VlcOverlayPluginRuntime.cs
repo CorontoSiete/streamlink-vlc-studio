@@ -1,10 +1,18 @@
 using System.Diagnostics;
+using System.Reflection;
+using System.Security.Cryptography;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 
-internal sealed record VlcOverlayPluginRuntime(string PluginRoot);
+internal sealed record VlcOverlayPluginRuntime(
+    string PluginRoot,
+    string OverlayDirectory,
+    string PluginPath,
+    string PluginSha256,
+    string ControllerPath,
+    string ControllerSha256);
 
 public static class VlcOverlayDirectoryResolver
 {
@@ -94,20 +102,198 @@ public static class VlcOverlayDirectoryResolver
         {
             yield return bundled;
         }
+
+        if (string.IsNullOrWhiteSpace(appBaseDirectory) &&
+            VlcOverlayBundledResourceExtractor.IsExtractedOverlayCurrent())
+        {
+            var extracted = NormalizeDirectory(VlcOverlayBundledResourceExtractor.GetExtractedOverlayDirectory());
+            if (seen.Add(extracted))
+            {
+                yield return extracted;
+            }
+        }
     }
+}
+
+public static class VlcOverlayBundledResourceExtractor
+{
+    public const string ExtractedOverlayDirectoryName = "vlc-overlay-bundled";
+
+    private const string ResourcePrefix = "StreamlinkVlcStudio.Infrastructure.Vlc.BundledOverlay";
+    private static readonly object ExtractGate = new();
+    private static readonly BundledOverlayFile[] RequiredFiles =
+    [
+        new(
+            Path.Combine(VlcOverlayDirectoryResolver.BuildDirectoryName, VlcOverlayDirectoryResolver.PluginFileName),
+            $"{ResourcePrefix}.build.{VlcOverlayDirectoryResolver.PluginFileName}"),
+        new(
+            Path.Combine(VlcOverlayDirectoryResolver.BuildDirectoryName, VlcOverlayDirectoryResolver.ControllerFileName),
+            $"{ResourcePrefix}.build.{VlcOverlayDirectoryResolver.ControllerFileName}")
+    ];
+
+    public static string GetExtractedOverlayDirectory(string? appDataDirectory = null)
+    {
+        var root = string.IsNullOrWhiteSpace(appDataDirectory)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "StreamlinkVlcStudio")
+            : appDataDirectory.Trim();
+        return Path.Combine(root, ExtractedOverlayDirectoryName);
+    }
+
+    public static bool HasBundledOverlayResources()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        return RequiredFiles.All(file => assembly.GetManifestResourceInfo(file.ResourceName) is not null);
+    }
+
+    public static bool IsExtractedOverlayCurrent(string? appDataDirectory = null)
+    {
+        if (!HasBundledOverlayResources())
+        {
+            return false;
+        }
+
+        try
+        {
+            var overlayDirectory = GetExtractedOverlayDirectory(appDataDirectory);
+            return RequiredFiles.All(file =>
+            {
+                using var resource = OpenRequiredResource(file);
+                return FileMatchesResource(resource, GetTargetPath(overlayDirectory, file));
+            }) &&
+                VlcOverlayDirectoryResolver.IsValidOverlayDirectory(overlayDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public static string? TryExtract(IAppLogger logger, string? appDataDirectory = null)
+    {
+        if (!HasBundledOverlayResources())
+        {
+            logger.Write(AppLogLevel.Warning, "VlcOverlay", "Embedded VLC overlay plugin/controller resources were not found.");
+            return null;
+        }
+
+        try
+        {
+            lock (ExtractGate)
+            {
+                var overlayDirectory = GetExtractedOverlayDirectory(appDataDirectory);
+                foreach (var file in RequiredFiles)
+                {
+                    ExtractFile(file, overlayDirectory);
+                }
+
+                if (!VlcOverlayDirectoryResolver.IsValidOverlayDirectory(overlayDirectory))
+                {
+                    logger.Write(AppLogLevel.Warning, "VlcOverlay", $"Extracted VLC overlay directory is incomplete: {overlayDirectory}");
+                    return null;
+                }
+
+                return VlcOverlayDirectoryResolver.NormalizeDirectory(overlayDirectory);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            logger.Write(AppLogLevel.Warning, "VlcOverlay", "Could not extract the embedded VLC overlay plugin/controller.", ex);
+            return null;
+        }
+    }
+
+    private static void ExtractFile(BundledOverlayFile file, string overlayDirectory)
+    {
+        using var resource = OpenRequiredResource(file);
+        var targetPath = GetTargetPath(overlayDirectory, file);
+        if (FileMatchesResource(resource, targetPath))
+        {
+            return;
+        }
+
+        resource.Position = 0;
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+        var tempPath = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var target = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                resource.CopyTo(target);
+            }
+
+            File.Move(tempPath, targetPath, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteTempFile(tempPath);
+        }
+    }
+
+    private static Stream OpenRequiredResource(BundledOverlayFile file)
+    {
+        var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(file.ResourceName);
+        return stream ?? throw new FileNotFoundException($"Embedded VLC overlay resource missing: {file.ResourceName}");
+    }
+
+    private static bool FileMatchesResource(Stream resource, string targetPath)
+    {
+        if (!File.Exists(targetPath) || !resource.CanSeek)
+        {
+            return false;
+        }
+
+        var fileInfo = new FileInfo(targetPath);
+        if (fileInfo.Length != resource.Length)
+        {
+            return false;
+        }
+
+        resource.Position = 0;
+        var resourceHash = SHA256.HashData(resource);
+        resource.Position = 0;
+        using var target = File.OpenRead(targetPath);
+        var targetHash = SHA256.HashData(target);
+        return resourceHash.AsSpan().SequenceEqual(targetHash);
+    }
+
+    private static string GetTargetPath(string overlayDirectory, BundledOverlayFile file) =>
+        Path.Combine(overlayDirectory, file.RelativePath);
+
+    private static void TryDeleteTempFile(string tempPath)
+    {
+        try
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private sealed record BundledOverlayFile(string RelativePath, string ResourceName);
 }
 
 internal static class VlcOverlayPluginRuntimeFactory
 {
     private static readonly object PrepareGate = new();
 
-    public static VlcOverlayPluginRuntime? TryPrepare(string vlcDirectory, string? overlayDirectory, IAppLogger logger)
+    public static VlcOverlayPluginRuntime? TryPrepare(
+        string vlcDirectory,
+        string? overlayDirectory,
+        IAppLogger logger,
+        string? appDataDirectory = null)
     {
         try
         {
             lock (PrepareGate)
             {
-                var resolvedOverlayDirectory = VlcOverlayDirectoryResolver.TryResolve(overlayDirectory);
+                var resolvedOverlayDirectory = VlcOverlayDirectoryResolver.TryResolve(overlayDirectory) ??
+                    VlcOverlayBundledResourceExtractor.TryExtract(logger);
                 if (string.IsNullOrWhiteSpace(resolvedOverlayDirectory))
                 {
                     logger.Write(AppLogLevel.Warning, "VlcOverlay", "VLC overlay plugin/controller files were not found; falling back to basic overlay.");
@@ -115,32 +301,46 @@ internal static class VlcOverlayPluginRuntimeFactory
                 }
 
                 var sourcePlugin = VlcOverlayDirectoryResolver.GetPluginPath(resolvedOverlayDirectory);
+                var sourceController = VlcOverlayDirectoryResolver.GetControllerPath(resolvedOverlayDirectory);
                 if (!File.Exists(sourcePlugin))
                 {
                     logger.Write(AppLogLevel.Warning, "VlcOverlay", $"VLC overlay plugin was not found at {sourcePlugin}.");
                     return null;
                 }
 
-                var pluginRoot = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "StreamlinkVlcStudio",
-                    "vlc-overlay-plugins");
+                var pluginRoot = Path.Combine(GetAppDataDirectory(appDataDirectory), "vlc-overlay-plugins");
                 var pluginSpuDirectory = Path.Combine(pluginRoot, "spu");
                 Directory.CreateDirectory(pluginSpuDirectory);
 
                 var targetPlugin = Path.Combine(pluginSpuDirectory, "libmyoverlay_plugin.dll");
+                var cachePath = Path.Combine(pluginRoot, "plugins.dat");
+                var copiedPlugin = false;
                 if (ShouldCopy(sourcePlugin, targetPlugin))
                 {
                     File.Copy(sourcePlugin, targetPlugin, overwrite: true);
+                    TryDeletePluginCache(cachePath, logger);
+                    copiedPlugin = true;
                 }
 
-                var cachePath = Path.Combine(pluginRoot, "plugins.dat");
-                if (ShouldRegenerateCache(targetPlugin, cachePath))
+                if (copiedPlugin || ShouldRegenerateCache(cachePath))
                 {
                     RegeneratePluginCache(vlcDirectory, pluginRoot, logger);
                 }
 
-                return new VlcOverlayPluginRuntime(pluginRoot);
+                var pluginHash = ComputeFileSha256(targetPlugin);
+                var controllerHash = ComputeFileSha256(sourceController);
+                logger.Write(
+                    AppLogLevel.Info,
+                    "VlcOverlay",
+                    $"Prepared VLC overlay plugin cache plugin={targetPlugin} pluginSha256={pluginHash} controller={sourceController} controllerSha256={controllerHash} source={resolvedOverlayDirectory} copied={copiedPlugin.ToString().ToLowerInvariant()}.");
+
+                return new VlcOverlayPluginRuntime(
+                    pluginRoot,
+                    resolvedOverlayDirectory,
+                    targetPlugin,
+                    pluginHash,
+                    sourceController,
+                    controllerHash);
             }
         }
         catch (Exception ex)
@@ -148,6 +348,15 @@ internal static class VlcOverlayPluginRuntimeFactory
             logger.Write(AppLogLevel.Warning, "VlcOverlay", "VLC overlay plugin preparation failed; falling back to basic overlay.", ex);
             return null;
         }
+    }
+
+    private static string GetAppDataDirectory(string? appDataDirectory)
+    {
+        return string.IsNullOrWhiteSpace(appDataDirectory)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "StreamlinkVlcStudio")
+            : appDataDirectory.Trim();
     }
 
     private static bool ShouldCopy(string source, string target)
@@ -159,18 +368,47 @@ internal static class VlcOverlayPluginRuntimeFactory
 
         var sourceInfo = new FileInfo(source);
         var targetInfo = new FileInfo(target);
-        return sourceInfo.Length != targetInfo.Length ||
-            sourceInfo.LastWriteTimeUtc > targetInfo.LastWriteTimeUtc;
-    }
-
-    private static bool ShouldRegenerateCache(string pluginPath, string cachePath)
-    {
-        if (!File.Exists(cachePath))
+        if (sourceInfo.Length != targetInfo.Length)
         {
             return true;
         }
 
-        return File.GetLastWriteTimeUtc(pluginPath) > File.GetLastWriteTimeUtc(cachePath);
+        return !FileHashesMatch(source, target);
+    }
+
+    private static bool ShouldRegenerateCache(string cachePath)
+    {
+        return !File.Exists(cachePath);
+    }
+
+    private static bool FileHashesMatch(string first, string second)
+    {
+        using var firstStream = File.OpenRead(first);
+        using var secondStream = File.OpenRead(second);
+        var firstHash = SHA256.HashData(firstStream);
+        var secondHash = SHA256.HashData(secondStream);
+        return firstHash.AsSpan().SequenceEqual(secondHash);
+    }
+
+    private static string ComputeFileSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static void TryDeletePluginCache(string cachePath, IAppLogger logger)
+    {
+        try
+        {
+            if (File.Exists(cachePath))
+            {
+                File.Delete(cachePath);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.Write(AppLogLevel.Warning, "VlcOverlay", $"Could not delete stale VLC overlay plugin cache {cachePath}.", ex);
+        }
     }
 
     private static void RegeneratePluginCache(string vlcDirectory, string pluginRoot, IAppLogger logger)

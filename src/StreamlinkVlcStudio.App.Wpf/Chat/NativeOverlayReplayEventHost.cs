@@ -10,11 +10,13 @@ namespace StreamlinkVlcStudio.App.Wpf.Chat;
 internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
 {
     private static readonly TimeSpan DefaultResizeDebounceDelay = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan PipeBusyRetryDelay = TimeSpan.FromMilliseconds(50);
 
     private const uint NativeOverlayMagic = 0x564C4F56u;
     private const uint NativeOverlayVersion = 1u;
     private const uint NativeOverlayResizeEventType = 3u;
     private const int NativeOverlayEventMessageSize = 16;
+    private const int ErrorPipeBusy = 231;
 
     private readonly IAppLogger logger;
     private readonly Action<Action> dispatch;
@@ -32,6 +34,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private ResizeFlush lastResizeFlush;
     private bool hasPendingResizeFlush;
     private bool hasLastResizeFlush;
+    private bool resizePersistenceSuspended = true;
+    private long resizePersistenceGeneration;
     private long resizeSessionId;
 
     public NativeOverlayReplayEventHost(
@@ -101,6 +105,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         lock (gate)
         {
             activeResizeSessionId = NextResizeSessionIdLocked();
+            resizePersistenceSuspended = true;
+            resizePersistenceGeneration++;
             cancellation = nextCancellation;
             pipeName = activePipeName;
             positionStatePath = activePositionStatePath;
@@ -113,6 +119,35 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         }
     }
 
+    public void SuspendResizePersistence()
+    {
+        Timer? resizeTimerToDispose;
+        lock (gate)
+        {
+            resizePersistenceSuspended = true;
+            resizePersistenceGeneration++;
+            resizeTimerToDispose = ClearResizeFlushStateLocked();
+        }
+
+        resizeTimerToDispose?.Dispose();
+    }
+
+    public void ResumeResizePersistence()
+    {
+        lock (gate)
+        {
+            if (listeningTask is null ||
+                stopRequested ||
+                string.IsNullOrWhiteSpace(positionStatePath))
+            {
+                return;
+            }
+
+            resizePersistenceSuspended = false;
+            resizePersistenceGeneration++;
+        }
+    }
+
     public void Stop()
     {
         CancellationTokenSource? cancellationToStop;
@@ -122,6 +157,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             cancellationToStop = cancellation;
             resizeTimerToDispose = ClearResizeFlushStateLocked();
             NextResizeSessionIdLocked();
+            resizePersistenceSuspended = true;
+            resizePersistenceGeneration++;
             pipeName = null;
             positionStatePath = null;
             stopRequested = cancellationToStop is not null;
@@ -145,6 +182,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             cancellationToStop = cancellation;
             resizeTimerToDispose = ClearResizeFlushStateLocked();
             NextResizeSessionIdLocked();
+            resizePersistenceSuspended = true;
+            resizePersistenceGeneration++;
             pipeName = null;
             positionStatePath = null;
             stopRequested = cancellationToStop is not null;
@@ -186,18 +225,26 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await using var pipe = new NamedPipeServerStream(
-                    eventPipeName,
-                    PipeDirection.In,
-                    1,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
-                await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-                await ReadMessagesAsync(
-                    pipe,
-                    activePositionStatePath,
-                    activeResizeSessionId,
-                    cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await using var pipe = new NamedPipeServerStream(
+                        eventPipeName,
+                        PipeDirection.In,
+                        1,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.Asynchronous);
+                    await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    await ReadMessagesAsync(
+                        pipe,
+                        activePositionStatePath,
+                        activeResizeSessionId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (IOException ex) when (!cancellationToken.IsCancellationRequested && IsAllPipeInstancesBusy(ex))
+                {
+                    logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native VLC replay overlay event pipe was busy; retrying listener start.", ex);
+                    await Task.Delay(PipeBusyRetryDelay, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -220,6 +267,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
                 {
                     resizeTimerToDispose = ClearResizeFlushStateLocked();
                     NextResizeSessionIdLocked();
+                    resizePersistenceSuspended = true;
+                    resizePersistenceGeneration++;
                     cancellation = null;
                     listeningTask = null;
                     pipeName = null;
@@ -231,6 +280,12 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             resizeTimerToDispose?.Dispose();
             activeCancellation.Dispose();
         }
+    }
+
+    private static bool IsAllPipeInstancesBusy(IOException exception)
+    {
+        return (exception.HResult & 0xFFFF) == ErrorPipeBusy ||
+            exception.Message.Contains("All pipe instances are busy", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ReadMessagesAsync(
@@ -295,10 +350,18 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             return;
         }
 
+        var videoHeight = getVideoHeight();
+        var minimumWidth = NativeOverlaySizing.ScaleReferencePixels(videoHeight, NativeOverlaySizing.MinWidth);
+        var minimumHeight = NativeOverlaySizing.ScaleReferencePixels(videoHeight, NativeOverlaySizing.MinHeight);
+        if (sourceWidth < minimumWidth || sourceHeight < minimumHeight)
+        {
+            return;
+        }
+
         var (referenceWidth, referenceHeight) = NativeOverlaySizing.NormalizeToReferenceSize(
             sourceWidth,
             sourceHeight,
-            getVideoHeight());
+            videoHeight);
 
         QueueResizeFlush(activePositionStatePath, activeResizeSessionId, referenceWidth, referenceHeight);
     }
@@ -309,15 +372,18 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         int referenceWidth,
         int referenceHeight)
     {
+        var persistenceGeneration = 0L;
         lock (gate)
         {
-            if (!IsResizeSessionActiveLocked(activePositionStatePath, activeResizeSessionId))
+            if (!IsResizePersistenceActiveLocked(activePositionStatePath, activeResizeSessionId))
             {
                 return;
             }
 
+            persistenceGeneration = resizePersistenceGeneration;
             pendingResizeFlush = new ResizeFlush(
                 activeResizeSessionId,
+                persistenceGeneration,
                 activePositionStatePath,
                 referenceWidth,
                 referenceHeight);
@@ -340,21 +406,13 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             flush = pendingResizeFlush;
             hasPendingResizeFlush = false;
             pendingResizeFlush = default;
-            if (!IsResizeSessionActiveLocked(flush.PositionStatePath, flush.SessionId) ||
+            if (!IsResizePersistenceActiveLocked(flush.PositionStatePath, flush.SessionId, flush.PersistenceGeneration) ||
                 IsDuplicateResizeFlushLocked(flush))
             {
                 return;
             }
-        }
 
-        if (!TrySaveResizeFlush(flush))
-        {
-            return;
-        }
-
-        lock (gate)
-        {
-            if (!IsResizeSessionActiveLocked(flush.PositionStatePath, flush.SessionId))
+            if (!TrySaveResizeFlush(flush))
             {
                 return;
             }
@@ -407,6 +465,21 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             string.Equals(positionStatePath, activePositionStatePath, StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsResizePersistenceActiveLocked(string activePositionStatePath, long activeResizeSessionId)
+    {
+        return IsResizeSessionActiveLocked(activePositionStatePath, activeResizeSessionId) &&
+            !resizePersistenceSuspended;
+    }
+
+    private bool IsResizePersistenceActiveLocked(
+        string activePositionStatePath,
+        long activeResizeSessionId,
+        long activeResizePersistenceGeneration)
+    {
+        return IsResizePersistenceActiveLocked(activePositionStatePath, activeResizeSessionId) &&
+            activeResizePersistenceGeneration == resizePersistenceGeneration;
+    }
+
     private bool IsDuplicateResizeFlushLocked(ResizeFlush flush)
     {
         return hasLastResizeFlush &&
@@ -438,6 +511,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
 
     private readonly record struct ResizeFlush(
         long SessionId,
+        long PersistenceGeneration,
         string PositionStatePath,
         int ReferenceWidth,
         int ReferenceHeight);

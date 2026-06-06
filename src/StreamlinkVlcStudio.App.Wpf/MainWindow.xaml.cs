@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -128,7 +129,11 @@ public partial class MainWindow : Window
     private readonly Dictionary<StreamTabViewModel, DetachedVideoWindow> detachedWindows = [];
     private MainViewModel? viewModel;
     private ISettingsService? settingsService;
+    private IAppLogger? appLogger;
+    private KickOfficialChatReplayStore? kickOfficialChatReplayStore;
     private BrowserCaptureServer? browserCaptureServer;
+    private KickWebhookChatServer? kickWebhookChatServer;
+    private KickEventSubscriptionService? kickEventSubscriptionService;
     private LowLevelMouseHookPump? mouseHookPump;
     private DispatcherTimer? videoReorderPollTimer;
     private DispatcherTimer? homeAutoScrollTimer;
@@ -177,6 +182,8 @@ public partial class MainWindow : Window
     private bool tabDetachDragStartedWithControlModifier;
     private bool replaySeekPointerCommitPending;
     private volatile bool hasActiveLowLevelMouseMoveRoute;
+    private readonly SemaphoreSlim kickWebhookLifecycleGate = new(1, 1);
+    private int kickWebhookActiveSettingsPort = -1;
     private double dockedChatAnchorTop;
     private long homeAutoScrollLastTickTimestamp;
     private Cursor? homeAutoScrollPreviousCursor;
@@ -240,6 +247,33 @@ public partial class MainWindow : Window
             HandleTrayIconMessage(lParam);
             handled = true;
         }
+        else if (msg == WmMouseMove &&
+            (tabDetachDragTab is not null || videoReorderDragTab is not null))
+        {
+            var screenPoint = GetCursorScreenPoint() ?? ClientMessagePointToNativeScreenPoint(lParam);
+            var handledDrag = TryContinueVideoReorderDrag(screenPoint);
+            if (tabDetachDragTab is not null &&
+                TryContinueTabDetachDrag(screenPoint, continueDrag: true))
+            {
+                handledDrag = true;
+            }
+
+            handled = handledDrag;
+        }
+        else if (msg == WmLeftButtonUp &&
+            (tabDetachDragTab is not null || videoReorderDragTab is not null))
+        {
+            var screenPoint = GetCursorScreenPoint() ?? ClientMessagePointToNativeScreenPoint(lParam);
+            var handledDrag = TryCompleteVideoReorderDrag(screenPoint);
+            if (TryCompleteTabDetachDrag(screenPoint))
+            {
+                handledDrag = true;
+            }
+
+            ClearVideoReorderDrag();
+            ClearTabDetachDrag();
+            handled = handledDrag;
+        }
 
         return IntPtr.Zero;
     }
@@ -266,6 +300,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (ReplaySeekBarShortcutKeyPolicy.ShouldHandle(e.Key, Keyboard.Modifiers))
+        {
+            TryExecuteReplaySeekBarShortcut(viewModel);
+            e.Handled = true;
+            return;
+        }
+
         if (!TabNavigationKeyPolicy.ShouldHandle(
             e.Key,
             Keyboard.Modifiers,
@@ -287,6 +328,18 @@ public partial class MainWindow : Window
 
             e.Handled = true;
         }
+    }
+
+    internal static bool TryExecuteReplaySeekBarShortcut(MainViewModel? viewModel)
+    {
+        var command = viewModel?.ToggleReplaySeekBarCommand;
+        if (command?.CanExecute(null) != true)
+        {
+            return false;
+        }
+
+        command.Execute(null);
+        return true;
     }
 
     private void MainWindowPreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -387,6 +440,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (e.ChangedButton == MouseButton.Middle &&
+            e.OriginalSource is DependencyObject streamSource &&
+            TryHandleHomeStreamOpenAndStayOnHomeCommand(streamSource))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.ChangedButton != MouseButton.Middle ||
             sender is not ScrollViewer scrollViewer ||
             scrollViewer.ScrollableHeight <= 0 ||
@@ -403,6 +464,20 @@ public partial class MainWindow : Window
 
         BeginHomeAutoScroll(scrollViewer, e.GetPosition(scrollViewer));
         e.Handled = homeAutoScrollViewer is not null;
+    }
+
+    private void HomeStreamItemButton_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle)
+        {
+            return;
+        }
+
+        var source = e.OriginalSource as DependencyObject ?? sender as DependencyObject;
+        if (TryHandleHomeStreamOpenAndStayOnHomeCommand(source))
+        {
+            e.Handled = true;
+        }
     }
 
     private void HomeContentScrollViewer_PreviewMouseMove(object sender, MouseEventArgs e)
@@ -610,6 +685,55 @@ public partial class MainWindow : Window
         return Math.Max(0, verticalOffset) >= Math.Max(0, scrollableHeight - bottomThreshold);
     }
 
+    internal static bool TryExecuteHomeStreamOpenAndStayOnHomeCommand(DependencyObject? source)
+    {
+        if (!TryResolveHomeStreamOpenAndStayOnHomeCommand(source, out var command) ||
+            command.CanExecute(null) != true)
+        {
+            return false;
+        }
+
+        command.Execute(null);
+        return true;
+    }
+
+    internal static bool TryHandleHomeStreamOpenAndStayOnHomeCommand(DependencyObject? source)
+    {
+        if (!TryResolveHomeStreamOpenAndStayOnHomeCommand(source, out var command))
+        {
+            return false;
+        }
+
+        if (command.CanExecute(null))
+        {
+            command.Execute(null);
+        }
+
+        return true;
+    }
+
+    internal static bool TryResolveHomeStreamOpenAndStayOnHomeCommand(
+        DependencyObject? source,
+        out AsyncRelayCommand command)
+    {
+        command = null!;
+        var button = source as Button ?? (source is null ? null : FindVisualParent<Button>(source));
+        if (button?.DataContext is not IHomeStreamOpenItemViewModel item ||
+            !IsHomeStreamOpenButton(button))
+        {
+            return false;
+        }
+
+        command = item.OpenAndStayOnHomeCommand;
+        return true;
+    }
+
+    private static bool IsHomeStreamOpenButton(Button button)
+    {
+        var binding = BindingOperations.GetBindingExpression(button, ButtonBase.CommandProperty);
+        return string.Equals(binding?.ParentBinding.Path?.Path, "OpenCommand", StringComparison.Ordinal);
+    }
+
     private async void MainWindowLoaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindowLoaded;
@@ -617,6 +741,7 @@ public partial class MainWindow : Window
         var logger = new FileAppLogger();
         settingsService = new JsonSettingsService();
         var settings = await settingsService.LoadAsync();
+        appLogger = logger;
 
         settings.StreamlinkPath ??= ExecutableResolver.FindStreamlink();
         settings.VlcDirectory ??= ExecutableResolver.FindVlcDirectory();
@@ -626,11 +751,18 @@ public partial class MainWindow : Window
         var chatFactory = new ChatClientFactory(settings, logger);
         var viewerCountService = new ViewerCountService(logger);
         var replayResolver = new ReplayResolver(logger, streamlinkService);
-        var replayChatProvider = new ReplayChatProvider();
+        var kickOfficialChatReplayStore = new KickOfficialChatReplayStore();
+        this.kickOfficialChatReplayStore = kickOfficialChatReplayStore;
+        var replayChatProvider = new ReplayChatProvider(kickOfficialChatReplayStore, logger);
         var kickChatHistoryProvider = new KickChatHistoryProvider(logger);
         var followedStreamsService = new FollowedStreamsService(logger);
         var streamMetadataService = new StreamMetadataService(logger);
+        var streamSearchService = new StreamSearchService(logger, streamlinkService);
         var twitchVodService = new TwitchVodService(logger);
+        var kickVodService = new KickVodService(logger);
+        kickEventSubscriptionService = new KickEventSubscriptionService(
+            logger,
+            settingsPersister: (_, cancellationToken) => settingsService.SaveAsync(settings, cancellationToken));
         var browseService = new BrowseService(logger);
 
         viewModel = new MainViewModel(
@@ -648,10 +780,14 @@ public partial class MainWindow : Window
             replayChatProvider,
             twitchVodService: twitchVodService,
             browseService: browseService,
-            kickChatHistoryProvider: kickChatHistoryProvider);
+            kickChatHistoryProvider: kickChatHistoryProvider,
+            streamSearchService: streamSearchService,
+            kickVodService: kickVodService,
+            kickEventSubscriptionService: kickEventSubscriptionService);
 
         viewModel.Initialize();
         viewModel.Tabs.CollectionChanged += ViewModelTabsCollectionChanged;
+        settings.Chat.PropertyChanged += ChatSettingsOnPropertyChanged;
         DataContext = viewModel;
 
         browserCaptureServer = new BrowserCaptureServer(HandleBrowserCaptureUrlAsync, logger);
@@ -664,6 +800,89 @@ public partial class MainWindow : Window
         {
             browserClickFallbackEnabled = false;
         }
+
+        await ReconcileKickWebhookListenerAsync(settings.Chat);
+    }
+
+    private void ChatSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (viewModel is null ||
+            sender is not ChatSettings settings ||
+            (e.PropertyName != nameof(ChatSettings.KickWebhookListenerEnabled) &&
+                e.PropertyName != nameof(ChatSettings.KickWebhookListenerPort)))
+        {
+            return;
+        }
+
+        _ = ReconcileKickWebhookListenerAsync(settings);
+    }
+
+    private async Task ReconcileKickWebhookListenerAsync(ChatSettings settings)
+    {
+        await kickWebhookLifecycleGate.WaitAsync();
+        try
+        {
+            if (viewModel is null ||
+                appLogger is null ||
+                kickOfficialChatReplayStore is null ||
+                shutdownStarted)
+            {
+                return;
+            }
+
+            var requestedPort = settings.KickWebhookListenerPort;
+            if (!settings.KickWebhookListenerEnabled)
+            {
+                await StopKickWebhookListenerAsync().ConfigureAwait(true);
+                viewModel.SetKickWebhookListenerStatus(
+                    $"Official Kick webhook listener is stopped. Local forwarding target: {viewModel.KickWebhookLocalUrl}");
+                return;
+            }
+
+            if (kickWebhookChatServer is not null &&
+                kickWebhookActiveSettingsPort == requestedPort)
+            {
+                viewModel.SetKickWebhookListenerStatus(
+                    $"Official Kick webhook listener is running at {kickWebhookChatServer.LocalWebhookUrl}");
+                return;
+            }
+
+            await StopKickWebhookListenerAsync().ConfigureAwait(true);
+            var webhookServer = new KickWebhookChatServer(
+                kickOfficialChatReplayStore,
+                appLogger,
+                requestedPort);
+            if (webhookServer.Start())
+            {
+                kickWebhookChatServer = webhookServer;
+                kickWebhookActiveSettingsPort = requestedPort;
+                viewModel.SetKickWebhookListenerStatus(
+                    $"Official Kick webhook listener is running at {webhookServer.LocalWebhookUrl}");
+                return;
+            }
+
+            await webhookServer.DisposeAsync();
+            viewModel.SetKickWebhookListenerStatus(
+                $"Official Kick webhook listener could not start. Check whether port {requestedPort} is already in use.");
+        }
+        finally
+        {
+            kickWebhookLifecycleGate.Release();
+        }
+    }
+
+    private async Task StopKickWebhookListenerAsync()
+    {
+        if (kickWebhookChatServer is null)
+        {
+            kickWebhookActiveSettingsPort = -1;
+            return;
+        }
+
+        var webhookServer = kickWebhookChatServer;
+        kickWebhookChatServer = null;
+        kickWebhookActiveSettingsPort = -1;
+        await webhookServer.DisposeAsync();
     }
 
     private async void MainWindowClosing(object? sender, CancelEventArgs e)
@@ -702,9 +921,19 @@ public partial class MainWindow : Window
                     browserCaptureServer = null;
                 }
 
+                if (kickWebhookChatServer is not null)
+                {
+                    await kickWebhookChatServer.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
+                    kickWebhookChatServer = null;
+                    kickWebhookActiveSettingsPort = -1;
+                }
+
+                viewModel.Settings.Chat.PropertyChanged -= ChatSettingsOnPropertyChanged;
                 viewModel.Tabs.CollectionChanged -= ViewModelTabsCollectionChanged;
 
                 await viewModel.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
+                kickEventSubscriptionService?.Dispose();
+                kickEventSubscriptionService = null;
                 if (settingsService is not null)
                 {
                     await settingsService.SaveAsync(viewModel.Settings).WaitAsync(ShutdownTimeout);
@@ -731,6 +960,7 @@ public partial class MainWindow : Window
     {
         if (viewModel is not null)
         {
+            viewModel.Settings.Chat.PropertyChanged -= ChatSettingsOnPropertyChanged;
             viewModel.Tabs.CollectionChanged -= ViewModelTabsCollectionChanged;
         }
 
@@ -738,6 +968,8 @@ public partial class MainWindow : Window
         ClearHomeAutoScroll();
         UninstallMouseWheelHook();
         StopVideoReorderPolling();
+        kickEventSubscriptionService?.Dispose();
+        kickEventSubscriptionService = null;
         DisposeTrayIcon();
     }
 
@@ -1272,8 +1504,9 @@ public partial class MainWindow : Window
             return true;
         }
 
+        var hasTargetItem = TryGetTabStripItemAtScreenPoint(screenPoint, out var targetItem);
         if (isControlDrag &&
-            TryGetTabStripItemAtScreenPoint(screenPoint, out var targetItem) &&
+            hasTargetItem &&
             targetItem is not null)
         {
             if (TryMergeDraggedTabIntoMultiViewTarget(tab, targetItem))
@@ -1774,6 +2007,24 @@ public partial class MainWindow : Window
     {
         var screenPoint = PointToScreen(windowPoint);
         return new NativePoint((int)Math.Round(screenPoint.X), (int)Math.Round(screenPoint.Y));
+    }
+
+    private NativePoint ClientMessagePointToNativeScreenPoint(IntPtr lParam)
+    {
+        var value = lParam.ToInt32();
+        var clientX = (short)(value & 0xFFFF);
+        var clientY = (short)((value >> 16) & 0xFFFF);
+        var hwnd = windowHandle != IntPtr.Zero
+            ? windowHandle
+            : new WindowInteropHelper(this).Handle;
+        var point = new WindowPoint
+        {
+            X = clientX,
+            Y = clientY
+        };
+        return hwnd != IntPtr.Zero && ClientToScreen(hwnd, ref point)
+            ? new NativePoint(point.X, point.Y)
+            : PointToNativeScreenPoint(new Point(clientX, clientY));
     }
 
     private static bool IsLeftMouseButtonPressed()
@@ -2487,6 +2738,17 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void DockedChatResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        if (viewModel is not null)
+        {
+            var currentWidth = viewModel.Settings.Chat.DockWidth;
+            viewModel.Settings.Chat.DockWidth = ChatSettings.NormalizeDockWidth(currentWidth - e.HorizontalChange);
+        }
+
+        e.Handled = true;
+    }
+
     private void ChatListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         DockedChatPanel_PreviewMouseWheel(sender, e);
@@ -2775,6 +3037,19 @@ public partial class MainWindow : Window
         foreach (var window in detachedWindows.Values.Distinct().ToArray())
         {
             if (window.TryRouteMouseWheel(screenPoint.X, screenPoint.Y, delta))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryBeginDetachedBottomResizeFromScreenClick(NativePoint screenPoint)
+    {
+        foreach (var window in detachedWindows.Values.Distinct().ToArray())
+        {
+            if (window.TryBeginBottomResizeFromScreenClick(screenPoint.X, screenPoint.Y))
             {
                 return true;
             }
@@ -3752,6 +4027,11 @@ public partial class MainWindow : Window
 
         if (hookEvent.Message == LowLevelMouseHookEvent.WmLeftButtonDown)
         {
+            if (TryBeginDetachedBottomResizeFromScreenClick(screenPoint))
+            {
+                return true;
+            }
+
             if (TryToggleDetachedStreamFullscreenFromVideoDoubleClick(screenPoint))
             {
                 return true;
@@ -4210,6 +4490,7 @@ public partial class MainWindow : Window
 
     private void CloseWindowButton_Click(object sender, RoutedEventArgs e)
     {
+        viewModel?.CloseAllTabs();
         Close();
     }
 
@@ -4664,6 +4945,10 @@ public partial class MainWindow : Window
     [LibraryImport("user32")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetCursorPos(out WindowPoint point);
+
+    [LibraryImport("user32")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ClientToScreen(IntPtr hWnd, ref WindowPoint lpPoint);
 
     [LibraryImport("user32")]
     private static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);

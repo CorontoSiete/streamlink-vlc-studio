@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -15,10 +14,15 @@ public sealed class AnimatedEmoteImage : Image
 {
     private const int DefaultMaxImageBytes = 2 * 1024 * 1024;
     private const int AbsoluteMaxImageBytes = 32 * 1024 * 1024;
+    private const int MaxCompletedCacheEntries = 256;
+    private const long MaxCompletedCacheDecodedBytes = 96L * 1024 * 1024;
     private static readonly TimeSpan DefaultFrameDelay = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan MinimumFrameDelay = TimeSpan.FromMilliseconds(20);
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
-    private static readonly ConcurrentDictionary<AnimatedEmoteImageCacheKey, Lazy<Task<DecodedEmoteImage?>>> ImageCache = new();
+    private static readonly object ImageCacheGate = new();
+    private static readonly Dictionary<AnimatedEmoteImageCacheKey, AnimatedEmoteImageCacheEntry> ImageCache = [];
+    private static readonly LinkedList<AnimatedEmoteImageCacheKey> CompletedImageCacheLru = [];
+    private static long completedImageCacheDecodedBytes;
 
     private readonly DispatcherTimer frameTimer;
     private AnimatedEmoteImageCacheKey? currentImageCacheKey;
@@ -84,9 +88,18 @@ public sealed class AnimatedEmoteImage : Image
 
     internal static bool IsCacheEntryCompleted(AnimatedEmoteImageCacheKey key)
     {
-        return ImageCache.TryGetValue(key, out var cached) &&
-            cached.IsValueCreated &&
-            cached.Value.IsCompleted;
+        lock (ImageCacheGate)
+        {
+            if (!ImageCache.TryGetValue(key, out var cached) ||
+                !cached.LoadTask.IsValueCreated ||
+                !cached.LoadTask.Value.IsCompleted)
+            {
+                return false;
+            }
+
+            TouchCompletedCacheEntry(cached);
+            return true;
+        }
     }
 
     internal static void SetCachedSolidColorImageForTest(
@@ -113,9 +126,7 @@ public sealed class AnimatedEmoteImage : Image
             .ToArray();
         var image = new DecodedEmoteImage(frames, NormalizeDelays(frames.Length, delays));
         var key = CreateCacheKey(uri, Math.Clamp(maxImageBytes, 1, AbsoluteMaxImageBytes));
-        ImageCache[key] = new Lazy<Task<DecodedEmoteImage?>>(
-            () => Task.FromResult<DecodedEmoteImage?>(image),
-            LazyThreadSafetyMode.ExecutionAndPublication);
+        SetCompletedCacheEntry(key, image);
     }
 
     internal static void RemoveCachedImageForTest(string imageUrl, int maxImageBytes)
@@ -125,7 +136,65 @@ public sealed class AnimatedEmoteImage : Image
             return;
         }
 
-        ImageCache.TryRemove(CreateCacheKey(uri, Math.Clamp(maxImageBytes, 1, AbsoluteMaxImageBytes)), out _);
+        RemoveCacheEntry(CreateCacheKey(uri, Math.Clamp(maxImageBytes, 1, AbsoluteMaxImageBytes)));
+    }
+
+    internal static void ClearCacheForTest()
+    {
+        lock (ImageCacheGate)
+        {
+            ImageCache.Clear();
+            CompletedImageCacheLru.Clear();
+            completedImageCacheDecodedBytes = 0;
+        }
+    }
+
+    internal static AnimatedEmoteImageCacheStats GetCacheStatsForTest()
+    {
+        lock (ImageCacheGate)
+        {
+            var completedCount = CompletedImageCacheLru.Count;
+            return new AnimatedEmoteImageCacheStats(
+                ImageCache.Count,
+                completedCount,
+                ImageCache.Count - completedCount,
+                completedImageCacheDecodedBytes);
+        }
+    }
+
+    internal static bool ContainsCachedImageForTest(string imageUrl, int maxImageBytes)
+    {
+        if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        lock (ImageCacheGate)
+        {
+            return ImageCache.ContainsKey(CreateCacheKey(uri, Math.Clamp(maxImageBytes, 1, AbsoluteMaxImageBytes)));
+        }
+    }
+
+    internal static TaskCompletionSource<object?> SetPendingImageLoadForTest(string imageUrl, int maxImageBytes)
+    {
+        if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri))
+        {
+            throw new ArgumentException("Image URL must be absolute.", nameof(imageUrl));
+        }
+
+        var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var key = CreateCacheKey(uri, Math.Clamp(maxImageBytes, 1, AbsoluteMaxImageBytes));
+        var entry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
+            () => CompletePendingImageLoadForTestAsync(key, completion),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+        lock (ImageCacheGate)
+        {
+            RemoveCacheEntryCore(key);
+            ImageCache[key] = entry;
+        }
+
+        _ = entry.LoadTask.Value;
+        return completion;
     }
 
     private static void OnImageUrlChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
@@ -218,22 +287,156 @@ public sealed class AnimatedEmoteImage : Image
 
     private static Task<DecodedEmoteImage?> GetOrLoadImageAsync(AnimatedEmoteImageCacheKey key)
     {
-        return ImageCache.GetOrAdd(
-            key,
-            static key => new Lazy<Task<DecodedEmoteImage?>>(
-                () => LoadAndDecodeImageAndNotifyAsync(key),
-                LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        AnimatedEmoteImageCacheEntry? entry;
+        lock (ImageCacheGate)
+        {
+            if (!ImageCache.TryGetValue(key, out entry))
+            {
+                entry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
+                    () => LoadAndDecodeImageAndNotifyAsync(key),
+                    LazyThreadSafetyMode.ExecutionAndPublication));
+                ImageCache.Add(key, entry);
+            }
+            else
+            {
+                TouchCompletedCacheEntry(entry);
+            }
+        }
+
+        return entry.LoadTask.Value;
     }
 
     private static async Task<DecodedEmoteImage?> LoadAndDecodeImageAndNotifyAsync(AnimatedEmoteImageCacheKey key)
     {
+        DecodedEmoteImage? image = null;
         try
         {
-            return await LoadAndDecodeImageAsync(key.Url, key.MaxImageBytes).ConfigureAwait(false);
+            image = await LoadAndDecodeImageAsync(key.Url, key.MaxImageBytes).ConfigureAwait(false);
+            return image;
         }
         finally
         {
+            CompleteCacheEntry(key, image);
             NotifyImageCacheEntryCompleted(key);
+        }
+    }
+
+    private static async Task<DecodedEmoteImage?> CompletePendingImageLoadForTestAsync(
+        AnimatedEmoteImageCacheKey key,
+        TaskCompletionSource<object?> completion)
+    {
+        try
+        {
+            await completion.Task.ConfigureAwait(false);
+            return null;
+        }
+        finally
+        {
+            CompleteCacheEntry(key, null);
+            NotifyImageCacheEntryCompleted(key);
+        }
+    }
+
+    private static void SetCompletedCacheEntry(AnimatedEmoteImageCacheKey key, DecodedEmoteImage? image)
+    {
+        var lazy = new Lazy<Task<DecodedEmoteImage?>>(
+            () => Task.FromResult(image),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        var entry = new AnimatedEmoteImageCacheEntry(lazy);
+        _ = lazy.Value;
+        lock (ImageCacheGate)
+        {
+            RemoveCacheEntryCore(key);
+            ImageCache[key] = entry;
+            MarkCacheEntryCompleted(key, entry, EstimateDecodedImageBytes(image));
+            TrimCompletedCache();
+        }
+    }
+
+    private static void CompleteCacheEntry(AnimatedEmoteImageCacheKey key, DecodedEmoteImage? image)
+    {
+        lock (ImageCacheGate)
+        {
+            if (!ImageCache.TryGetValue(key, out var entry))
+            {
+                return;
+            }
+
+            MarkCacheEntryCompleted(key, entry, EstimateDecodedImageBytes(image));
+            TrimCompletedCache();
+        }
+    }
+
+    private static void MarkCacheEntryCompleted(
+        AnimatedEmoteImageCacheKey key,
+        AnimatedEmoteImageCacheEntry entry,
+        long estimatedDecodedBytes)
+    {
+        if (entry.CompletedLruNode is null)
+        {
+            entry.CompletedLruNode = CompletedImageCacheLru.AddLast(key);
+        }
+        else
+        {
+            CompletedImageCacheLru.Remove(entry.CompletedLruNode);
+            CompletedImageCacheLru.AddLast(entry.CompletedLruNode);
+            completedImageCacheDecodedBytes -= entry.EstimatedDecodedBytes;
+        }
+
+        entry.EstimatedDecodedBytes = estimatedDecodedBytes;
+        completedImageCacheDecodedBytes += estimatedDecodedBytes;
+    }
+
+    private static void TouchCompletedCacheEntry(AnimatedEmoteImageCacheEntry entry)
+    {
+        if (entry.CompletedLruNode is null)
+        {
+            return;
+        }
+
+        CompletedImageCacheLru.Remove(entry.CompletedLruNode);
+        CompletedImageCacheLru.AddLast(entry.CompletedLruNode);
+    }
+
+    private static void TrimCompletedCache()
+    {
+        while (CompletedImageCacheLru.Count > MaxCompletedCacheEntries ||
+            completedImageCacheDecodedBytes > MaxCompletedCacheDecodedBytes)
+        {
+            var node = CompletedImageCacheLru.First;
+            if (node is null)
+            {
+                completedImageCacheDecodedBytes = 0;
+                return;
+            }
+
+            RemoveCacheEntryCore(node.Value);
+        }
+    }
+
+    private static void RemoveCacheEntry(AnimatedEmoteImageCacheKey key)
+    {
+        lock (ImageCacheGate)
+        {
+            RemoveCacheEntryCore(key);
+        }
+    }
+
+    private static void RemoveCacheEntryCore(AnimatedEmoteImageCacheKey key)
+    {
+        if (!ImageCache.Remove(key, out var entry))
+        {
+            return;
+        }
+
+        if (entry.CompletedLruNode is not null)
+        {
+            CompletedImageCacheLru.Remove(entry.CompletedLruNode);
+            completedImageCacheDecodedBytes -= entry.EstimatedDecodedBytes;
+            if (completedImageCacheDecodedBytes < 0)
+            {
+                completedImageCacheDecodedBytes = 0;
+            }
         }
     }
 
@@ -735,6 +938,30 @@ public sealed class AnimatedEmoteImage : Image
         return new AnimationFrameTiming(0, delays[0]);
     }
 
+    private static long EstimateDecodedImageBytes(DecodedEmoteImage? image)
+    {
+        if (image is null)
+        {
+            return 0;
+        }
+
+        var total = 0L;
+        foreach (var frame in image.Frames)
+        {
+            if (frame is BitmapSource bitmap)
+            {
+                total += (long)Math.Max(1, bitmap.PixelWidth) * Math.Max(1, bitmap.PixelHeight) * 4;
+                continue;
+            }
+
+            total += (long)Math.Max(1, (int)Math.Ceiling(frame.Width)) *
+                Math.Max(1, (int)Math.Ceiling(frame.Height)) *
+                4;
+        }
+
+        return total;
+    }
+
     private static HttpClient CreateHttpClient()
     {
         var client = new HttpClient
@@ -759,6 +986,20 @@ public sealed class AnimatedEmoteImage : Image
             (string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) && uri.IsFile);
     }
 
+    private sealed class AnimatedEmoteImageCacheEntry
+    {
+        public AnimatedEmoteImageCacheEntry(Lazy<Task<DecodedEmoteImage?>> loadTask)
+        {
+            LoadTask = loadTask;
+        }
+
+        public Lazy<Task<DecodedEmoteImage?>> LoadTask { get; }
+
+        public LinkedListNode<AnimatedEmoteImageCacheKey>? CompletedLruNode { get; set; }
+
+        public long EstimatedDecodedBytes { get; set; }
+    }
+
     private sealed record DecodedEmoteImage(IReadOnlyList<ImageSource> Frames, IReadOnlyList<TimeSpan> Delays);
     private readonly record struct AnimationFrameTiming(int FrameIndex, TimeSpan NextFrameDelay);
 
@@ -771,6 +1012,12 @@ public sealed class AnimatedEmoteImage : Image
 }
 
 internal readonly record struct AnimatedEmoteImageCacheKey(string Url, int MaxImageBytes);
+
+internal readonly record struct AnimatedEmoteImageCacheStats(
+    int TotalEntries,
+    int CompletedEntries,
+    int InFlightEntries,
+    long EstimatedDecodedBytes);
 
 internal sealed class AnimatedEmoteImageCacheCompletedEventArgs : EventArgs
 {

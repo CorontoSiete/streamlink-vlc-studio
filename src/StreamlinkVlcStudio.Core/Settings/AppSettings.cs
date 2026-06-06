@@ -202,6 +202,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
                 DisplayName = string.IsNullOrWhiteSpace(value.DisplayName)
                     ? target.Channel
                     : value.DisplayName.Trim(),
+                CategoryName = value.CategoryName?.Trim() ?? "",
                 ThumbnailUrl = NormalizeImageUrl(value.ThumbnailUrl),
                 LastQuality = value.LastQuality?.Trim() ?? "",
                 LastWatchedAtUtc = lastWatchedAtUtc
@@ -333,13 +334,16 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     public const double MaximumFontSize = 36;
     public const double DefaultFontSize = 13;
     public const double DefaultVlcOverlayFontSize = 15;
+    public const double DefaultDockWidth = 340;
+    public const double MinimumDockWidth = 220;
+    public const double MaximumDockWidth = 1920;
 
     private ChatLayout layout = ChatLayout.Overlay;
     private bool connectAutomatically = true;
     private double opacity = 0.92;
     private double fontSize = DefaultFontSize;
     private double vlcOverlayFontSize = DefaultVlcOverlayFontSize;
-    private double dockWidth = 340;
+    private double dockWidth = DefaultDockWidth;
     private string vlcOverlayDirectory = "";
     private string twitchUsername = "";
     private string twitchOAuthToken = "";
@@ -353,6 +357,8 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     private string kickClientId = "";
     private string kickClientSecret = "";
     private bool kickSendAsBot;
+    private bool kickWebhookListenerEnabled;
+    private int kickWebhookListenerPort = 39180;
     private Dictionary<string, string> kickChatroomIds = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> kickBroadcasterUserIds = new(StringComparer.OrdinalIgnoreCase);
 
@@ -389,7 +395,7 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     public double DockWidth
     {
         get => dockWidth;
-        set => SetProperty(ref dockWidth, value);
+        set => SetProperty(ref dockWidth, NormalizeDockWidth(value));
     }
 
     public string VlcOverlayDirectory
@@ -470,6 +476,18 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
         set => SetProperty(ref kickSendAsBot, value);
     }
 
+    public bool KickWebhookListenerEnabled
+    {
+        get => kickWebhookListenerEnabled;
+        set => SetProperty(ref kickWebhookListenerEnabled, value);
+    }
+
+    public int KickWebhookListenerPort
+    {
+        get => kickWebhookListenerPort;
+        set => SetProperty(ref kickWebhookListenerPort, value <= 0 ? 39180 : Math.Clamp(value, 1024, 65535));
+    }
+
     public Dictionary<string, string> KickChatroomIds
     {
         get => kickChatroomIds;
@@ -487,6 +505,13 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
         return double.IsFinite(value)
             ? Math.Clamp(value, MinimumFontSize, MaximumFontSize)
             : fallback;
+    }
+
+    public static double NormalizeDockWidth(double value)
+    {
+        return double.IsFinite(value)
+            ? Math.Clamp(value, MinimumDockWidth, MaximumDockWidth)
+            : DefaultDockWidth;
     }
 
     private static List<string> NormalizeTokenScopes(IEnumerable<string>? scopes)
@@ -566,6 +591,8 @@ public sealed class RecentStreamSettings
     public string Url { get; set; } = "";
 
     public string DisplayName { get; set; } = "";
+
+    public string CategoryName { get; set; } = "";
 
     public string ThumbnailUrl { get; set; } = "";
 

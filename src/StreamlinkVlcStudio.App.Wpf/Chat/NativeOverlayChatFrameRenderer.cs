@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
@@ -19,6 +20,7 @@ internal static class NativeOverlayChatFrameRenderer
     private const uint NativeOverlayVersion = 1u;
     private const byte NativeOverlayFrameType = 1;
     private const int NativeOverlayHeaderSize = 36;
+    private const int NativeOverlayBlankFramePayloadSize = 4;
     private const int NativeOverlayDefaultHeight = 292;
     private const int NativeOverlayInputReserveHeight = 36;
     private const int NativeOverlayPadding = 8;
@@ -59,7 +61,9 @@ internal static class NativeOverlayChatFrameRenderer
         out int width,
         out int height)
     {
-        (width, height) = ResolveFrameSize(settings, videoHeight, positionStatePath);
+        var layout = ResolveReplayOverlayLayout(settings, fontSize, videoHeight, positionStatePath);
+        width = layout.FrameWidth;
+        height = layout.FrameHeight;
         if (!CanRenderOnCurrentThread)
         {
             return null;
@@ -78,7 +82,7 @@ internal static class NativeOverlayChatFrameRenderer
             return new NativeOverlayChatFrame(frame, false, false, null, []);
         }
 
-        var rendered = RenderMessages(messages, fontSize, width, height, videoHeight, animationClock);
+        var rendered = RenderMessages(messages, layout, animationClock);
         CopyPbgraToRgba(rendered.Bitmap, frame.AsSpan(NativeOverlayHeaderSize));
         return new NativeOverlayChatFrame(
             frame,
@@ -90,17 +94,15 @@ internal static class NativeOverlayChatFrameRenderer
 
     private static RenderedChatMessages RenderMessages(
         IReadOnlyList<ChatMessage> messages,
-        double fontSize,
-        int width,
-        int height,
-        int videoHeight,
+        NativeReplayOverlayLayout layout,
         TimeSpan animationClock)
     {
-        var scale = GetVideoScale(videoHeight);
-        var padding = ScaleReferencePixels(scale, NativeOverlayPadding);
-        var bottomReserve = ScaleReferencePixels(scale, NativeOverlayInputReserveHeight);
-        var messageGap = ScaleReferencePixels(scale, NativeOverlayMessageGap);
-        var scaledFontSize = ScaleReferencePixels(scale, fontSize);
+        var width = layout.FrameWidth;
+        var height = layout.FrameHeight;
+        var padding = ScaleContentPixels(layout, NativeOverlayPadding);
+        var bottomReserve = ScaleContentPixels(layout, NativeOverlayInputReserveHeight);
+        var messageGap = ScaleContentPixels(layout, NativeOverlayMessageGap);
+        var scaledFontSize = ScaleReferencePixels(layout.VideoScale, layout.EffectiveReferenceFontSize);
         var messageBlocks = new List<DockedChatMessageTextBlock>();
 
         var stack = new StackPanel
@@ -118,8 +120,8 @@ internal static class NativeOverlayChatFrameRenderer
                 Margin = new Thickness(0, 0, 0, messageGap),
                 Effect = new DropShadowEffect
                 {
-                    BlurRadius = Math.Max(1, ScaleReferencePixels(scale, 2)),
-                    ShadowDepth = Math.Max(1, ScaleReferencePixels(scale, 1)),
+                    BlurRadius = Math.Max(1, ScaleReferencePixels(layout.VideoScale, 2)),
+                    ShadowDepth = Math.Max(1, ScaleReferencePixels(layout.VideoScale, 1)),
                     Opacity = 0.9,
                     Color = Colors.Black
                 }
@@ -180,16 +182,16 @@ internal static class NativeOverlayChatFrameRenderer
             pendingImageLoads.ToArray());
     }
 
-    private static (int Width, int Height) ResolveFrameSize(
+    internal static NativeReplayOverlayLayout ResolveReplayOverlayLayout(
         ChatSettings settings,
+        double fontSize,
         int videoHeight,
         string? positionStatePath)
     {
-        var referenceWidth = NativeOverlaySizing.ClampReferenceWidth((int)Math.Round(settings.DockWidth));
+        var defaultReferenceWidth = NativeOverlaySizing.ClampReferenceWidth((int)Math.Round(settings.DockWidth));
+        var referenceWidth = defaultReferenceWidth;
         var referenceHeight = NativeOverlayDefaultHeight;
         var scale = GetVideoScale(videoHeight);
-        var width = ScaleReferencePixels(scale, referenceWidth);
-        var height = ScaleReferencePixels(scale, referenceHeight);
 
         if (!string.IsNullOrWhiteSpace(positionStatePath) &&
             TryReadNativeOverlaySizeFile(
@@ -200,27 +202,66 @@ internal static class NativeOverlayChatFrameRenderer
         {
             if (referenceSize)
             {
-                width = ScaleReferencePixels(
-                    scale,
-                    NativeOverlaySizing.ClampReferenceWidth(savedWidth));
-                height = ScaleReferencePixels(
-                    scale,
-                    NativeOverlaySizing.ClampReferenceHeight(savedHeight));
+                referenceWidth = NativeOverlaySizing.ClampReferenceWidth(savedWidth);
+                referenceHeight = NativeOverlaySizing.ClampReferenceHeight(savedHeight);
             }
             else
             {
-                width = Math.Clamp(
+                var width = Math.Clamp(
                     savedWidth,
                     ScaleReferencePixels(scale, NativeOverlaySizing.MinWidth),
                     ScaleReferencePixels(scale, NativeOverlaySizing.MaxWidth));
-                height = Math.Clamp(
+                var height = Math.Clamp(
                     savedHeight,
                     ScaleReferencePixels(scale, NativeOverlaySizing.MinHeight),
                     ScaleReferencePixels(scale, NativeOverlaySizing.MaxHeight));
+                (referenceWidth, referenceHeight) = NativeOverlaySizing.NormalizeToReferenceSize(
+                    width,
+                    height,
+                    videoHeight);
+                return CreateReplayOverlayLayout(
+                    width,
+                    height,
+                    referenceWidth,
+                    referenceHeight,
+                    defaultReferenceWidth,
+                    scale,
+                    fontSize);
             }
         }
 
-        return (width, height);
+        return CreateReplayOverlayLayout(
+            ScaleReferencePixels(scale, referenceWidth),
+            ScaleReferencePixels(scale, referenceHeight),
+            referenceWidth,
+            referenceHeight,
+            defaultReferenceWidth,
+            scale,
+            fontSize);
+    }
+
+    private static NativeReplayOverlayLayout CreateReplayOverlayLayout(
+        int frameWidth,
+        int frameHeight,
+        int referenceWidth,
+        int referenceHeight,
+        int defaultReferenceWidth,
+        double videoScale,
+        double fontSize)
+    {
+        var widthScale = referenceWidth / (double)defaultReferenceWidth;
+        var heightScale = referenceHeight / (double)NativeOverlayDefaultHeight;
+        var contentScale = Math.Max(1.0, Math.Max(widthScale, heightScale));
+        var baseReferenceFontSize = ChatSettings.NormalizeFontSize(fontSize, ChatSettings.DefaultVlcOverlayFontSize);
+
+        return new NativeReplayOverlayLayout(
+            frameWidth,
+            frameHeight,
+            referenceWidth,
+            referenceHeight,
+            videoScale,
+            contentScale,
+            baseReferenceFontSize);
     }
 
     private static bool TryReadNativeOverlaySizeFile(
@@ -279,6 +320,11 @@ internal static class NativeOverlayChatFrameRenderer
         return NativeOverlaySizing.ScaleReferencePixels(scale, value);
     }
 
+    private static int ScaleContentPixels(NativeReplayOverlayLayout layout, double value)
+    {
+        return ScaleReferencePixels(layout.VideoScale, value * layout.ContentScale);
+    }
+
     private static void WriteFrameHeader(byte[] frame, int width, int height, uint payloadSize)
     {
         BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(0, 4), NativeOverlayMagic);
@@ -290,32 +336,68 @@ internal static class NativeOverlayChatFrameRenderer
         frame[32] = 255;
     }
 
+    internal static byte[] BuildTransparentBlankFrameMessage()
+    {
+        var message = new byte[NativeOverlayHeaderSize + NativeOverlayBlankFramePayloadSize];
+        WriteFrameHeader(message, 1, 1, NativeOverlayBlankFramePayloadSize);
+        message[32] = 0;
+        return message;
+    }
+
+    internal static byte[] BuildTransparentFrameMessage(
+        ChatSettings settings,
+        int videoHeight,
+        string? positionStatePath,
+        out int width,
+        out int height)
+    {
+        var layout = ResolveReplayOverlayLayout(
+            settings,
+            ChatSettings.DefaultVlcOverlayFontSize,
+            videoHeight,
+            positionStatePath);
+        width = layout.FrameWidth;
+        height = layout.FrameHeight;
+        var payloadSize = checked(width * height * 4);
+        var message = new byte[NativeOverlayHeaderSize + payloadSize];
+        WriteFrameHeader(message, width, height, (uint)payloadSize);
+        return message;
+    }
+
     private static void CopyPbgraToRgba(BitmapSource bitmap, Span<byte> destination)
     {
         var width = bitmap.PixelWidth;
         var height = bitmap.PixelHeight;
         var stride = width * 4;
-        var pixels = new byte[stride * height];
-        bitmap.CopyPixels(pixels, stride, 0);
-
-        var outputIndex = 0;
-        for (var index = 0; index < pixels.Length; index += 4)
+        var pixelBytes = stride * height;
+        var pixels = ArrayPool<byte>.Shared.Rent(pixelBytes);
+        try
         {
-            var b = pixels[index];
-            var g = pixels[index + 1];
-            var r = pixels[index + 2];
-            var a = pixels[index + 3];
-            if (a is > 0 and < 255)
-            {
-                r = Unpremultiply(r, a);
-                g = Unpremultiply(g, a);
-                b = Unpremultiply(b, a);
-            }
+            bitmap.CopyPixels(pixels, stride, 0);
 
-            destination[outputIndex++] = r;
-            destination[outputIndex++] = g;
-            destination[outputIndex++] = b;
-            destination[outputIndex++] = a;
+            var outputIndex = 0;
+            for (var index = 0; index < pixelBytes; index += 4)
+            {
+                var b = pixels[index];
+                var g = pixels[index + 1];
+                var r = pixels[index + 2];
+                var a = pixels[index + 3];
+                if (a is > 0 and < 255)
+                {
+                    r = Unpremultiply(r, a);
+                    g = Unpremultiply(g, a);
+                    b = Unpremultiply(b, a);
+                }
+
+                destination[outputIndex++] = r;
+                destination[outputIndex++] = g;
+                destination[outputIndex++] = b;
+                destination[outputIndex++] = a;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pixels);
         }
     }
 
@@ -337,3 +419,12 @@ internal sealed record NativeOverlayChatFrame(
     bool HasPendingImageLoads,
     TimeSpan? NextAnimationFrameDelay,
     IReadOnlyCollection<AnimatedEmoteImageCacheKey> PendingImageLoads);
+
+internal readonly record struct NativeReplayOverlayLayout(
+    int FrameWidth,
+    int FrameHeight,
+    int ReferenceWidth,
+    int ReferenceHeight,
+    double VideoScale,
+    double ContentScale,
+    double EffectiveReferenceFontSize);

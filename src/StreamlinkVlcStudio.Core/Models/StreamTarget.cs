@@ -8,9 +8,12 @@ public sealed record StreamTarget(
     string MediaId = "",
     string DisplayTitle = "",
     string BroadcasterId = "",
-    TimeSpan MediaDuration = default)
+    TimeSpan MediaDuration = default,
+    DateTimeOffset? MediaStartedAtUtc = null,
+    string ChatRoomId = "",
+    string CategoryName = "")
 {
-    public string DisplayName => Kind == StreamTargetKind.TwitchVod && !string.IsNullOrWhiteSpace(DisplayTitle)
+    public string DisplayName => IsExplicitVod && !string.IsNullOrWhiteSpace(DisplayTitle)
         ? $"{Platform}: {DisplayTitle.Trim()}"
         : $"{Platform}: {Channel}";
 
@@ -35,10 +38,15 @@ public sealed record StreamTarget(
     }
 
     public bool IsExplicitTwitchVod => Kind == StreamTargetKind.TwitchVod && Platform == PlatformKind.Twitch;
+
+    public bool IsExplicitKickVod => Kind == StreamTargetKind.KickVod && Platform == PlatformKind.Kick;
+
+    public bool IsExplicitVod => IsExplicitTwitchVod || IsExplicitKickVod;
 }
 
 public enum StreamTargetKind
 {
     Live,
-    TwitchVod
+    TwitchVod,
+    KickVod
 }

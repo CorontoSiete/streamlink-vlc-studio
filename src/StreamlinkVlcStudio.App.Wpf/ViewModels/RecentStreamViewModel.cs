@@ -4,7 +4,7 @@ using StreamlinkVlcStudio.Core.Settings;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
-public sealed class RecentStreamViewModel : ObservableObject
+public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenItemViewModel
 {
     private readonly RecentStreamSettings stream;
     private readonly RecentStreamLiveStatus liveStatus;
@@ -28,7 +28,7 @@ public sealed class RecentStreamViewModel : ObservableObject
 
     public AsyncRelayCommand DeleteCommand { get; }
 
-    public StreamTarget Target => new(stream.Platform, stream.Channel, stream.Url);
+    public StreamTarget Target => new(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName);
 
     public PlatformKind Platform => stream.Platform;
 
@@ -39,6 +39,8 @@ public sealed class RecentStreamViewModel : ObservableObject
     public string DisplayName => string.IsNullOrWhiteSpace(stream.DisplayName)
         ? stream.Channel
         : stream.DisplayName;
+
+    public string CategoryName => stream.CategoryName;
 
     public string Url => stream.Url;
 
@@ -86,6 +88,11 @@ public sealed class RecentStreamViewModel : ObservableObject
         get
         {
             var parts = new List<string> { LastWatchedText };
+            if (!string.IsNullOrWhiteSpace(stream.CategoryName))
+            {
+                parts.Add(stream.CategoryName);
+            }
+
             if (!string.IsNullOrWhiteSpace(stream.LastQuality))
             {
                 parts.Add(stream.LastQuality);

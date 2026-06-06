@@ -256,6 +256,8 @@ public sealed partial class StreamlinkService : IStreamlinkService
         yield return "3";
         yield return "--stream-types";
         yield return "hls";
+        yield return "--ringbuffer-size";
+        yield return "32M";
 
         if (request.LowLatency)
         {
@@ -269,7 +271,7 @@ public sealed partial class StreamlinkService : IStreamlinkService
             {
                 yield return "--twitch-low-latency";
                 yield return "--twitch-supported-codecs";
-                yield return "h264,h265,av1";
+                yield return "h264";
             }
         }
 

@@ -1,11 +1,13 @@
+using StreamlinkVlcStudio.Core.Settings;
+
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
 internal static class NativeOverlaySizing
 {
     internal const int ReferenceVideoHeight = 1080;
-    internal const int MinWidth = 220;
+    internal const int MinWidth = (int)ChatSettings.MinimumDockWidth;
     internal const int MinHeight = 120;
-    internal const int MaxWidth = 1920;
+    internal const int MaxWidth = (int)ChatSettings.MaximumDockWidth;
     internal const int MaxHeight = 1080;
     internal const int MaxFramePayloadBytes = 32 * 1024 * 1024;
 

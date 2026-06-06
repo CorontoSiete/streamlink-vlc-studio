@@ -4,9 +4,11 @@ namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 internal sealed class ReplayChatWindowSelector
 {
+    private const int CompactionHeadThreshold = 1024;
     private readonly object gate = new();
     private readonly List<ReplayChatMessage> messages = [];
     private readonly HashSet<string> messageKeys = new(StringComparer.Ordinal);
+    private int headIndex;
 
     public int Count
     {
@@ -14,7 +16,7 @@ internal sealed class ReplayChatWindowSelector
         {
             lock (gate)
             {
-                return messages.Count;
+                return LogicalCount;
             }
         }
     }
@@ -25,7 +27,7 @@ internal sealed class ReplayChatWindowSelector
         {
             lock (gate)
             {
-                return messages.Count == 0 ? null : messages[0].Offset;
+                return LogicalCount == 0 ? null : messages[headIndex].Offset;
             }
         }
     }
@@ -36,10 +38,12 @@ internal sealed class ReplayChatWindowSelector
         {
             lock (gate)
             {
-                return messages.Count == 0 ? null : messages[^1].Offset;
+                return LogicalCount == 0 ? null : messages[^1].Offset;
             }
         }
     }
+
+    private int LogicalCount => messages.Count - headIndex;
 
     public void Clear()
     {
@@ -47,6 +51,7 @@ internal sealed class ReplayChatWindowSelector
         {
             messages.Clear();
             messageKeys.Clear();
+            headIndex = 0;
         }
     }
 
@@ -56,6 +61,7 @@ internal sealed class ReplayChatWindowSelector
         {
             messages.Clear();
             messageKeys.Clear();
+            headIndex = 0;
             AddRangeCore(source);
         }
     }
@@ -78,13 +84,13 @@ internal sealed class ReplayChatWindowSelector
                 return false;
             }
 
-            while (messages.Count > maxCount)
+            while (LogicalCount > maxCount)
             {
-                messageKeys.Remove(GetReplayChatMessageKey(messages[0]));
-                messages.RemoveAt(0);
+                RemoveHeadCore();
                 evicted = true;
             }
 
+            CompactIfNeeded();
             return true;
         }
     }
@@ -93,7 +99,22 @@ internal sealed class ReplayChatWindowSelector
     {
         lock (gate)
         {
-            return messages.ToArray();
+            return LogicalCount == 0
+                ? []
+                : messages.Skip(headIndex).ToArray();
+        }
+    }
+
+    public int CopyTo(ReplayChatWindowSelector target, bool replaceExisting)
+    {
+        if (ReferenceEquals(this, target))
+        {
+            return 0;
+        }
+
+        lock (gate)
+        {
+            return target.ReplaceOrAddOrderedCore(messages, headIndex, LogicalCount, replaceExisting);
         }
     }
 
@@ -101,7 +122,26 @@ internal sealed class ReplayChatWindowSelector
     {
         lock (gate)
         {
-            return SelectWindowCore(offset, window, maxMessages);
+            var start = offset - window;
+            if (start < TimeSpan.Zero)
+            {
+                start = TimeSpan.Zero;
+            }
+
+            return SelectRangeCore(start, offset, maxMessages);
+        }
+    }
+
+    public ReplayChatWindowSelection SelectRange(TimeSpan startOffset, TimeSpan endOffset, int maxMessages)
+    {
+        lock (gate)
+        {
+            if (startOffset < TimeSpan.Zero)
+            {
+                startOffset = TimeSpan.Zero;
+            }
+
+            return SelectRangeCore(startOffset, endOffset, maxMessages);
         }
     }
 
@@ -124,16 +164,15 @@ internal sealed class ReplayChatWindowSelector
         return added;
     }
 
-    private ReplayChatWindowSelection SelectWindowCore(TimeSpan offset, TimeSpan window, int maxMessages)
+    private ReplayChatWindowSelection SelectRangeCore(TimeSpan startOffset, TimeSpan endOffset, int maxMessages)
     {
-        var start = offset - window;
-        if (start < TimeSpan.Zero)
+        if (LogicalCount == 0 || endOffset < startOffset)
         {
-            start = TimeSpan.Zero;
+            return new ReplayChatWindowSelection([], ReplayChatWindowKey.Empty);
         }
 
-        var firstIndex = LowerBound(start);
-        var endIndex = UpperBound(offset);
+        var firstIndex = LowerBound(startOffset);
+        var endIndex = UpperBound(endOffset);
         if (endIndex <= firstIndex)
         {
             return new ReplayChatWindowSelection([], ReplayChatWindowKey.Empty);
@@ -165,16 +204,69 @@ internal sealed class ReplayChatWindowSelector
             return false;
         }
 
-        var index = messages.Count == 0 || message.Offset >= messages[^1].Offset
+        var index = LogicalCount == 0 || message.Offset >= messages[^1].Offset
             ? messages.Count
             : UpperBound(message.Offset);
         messages.Insert(index, message);
         return true;
     }
 
+    private int ReplaceOrAddOrderedCore(
+        List<ReplayChatMessage> source,
+        int sourceHeadIndex,
+        int sourceCount,
+        bool replaceExisting)
+    {
+        lock (gate)
+        {
+            if (replaceExisting)
+            {
+                messages.Clear();
+                messageKeys.Clear();
+                headIndex = 0;
+            }
+
+            var added = 0;
+            var endIndex = sourceHeadIndex + sourceCount;
+            for (var index = sourceHeadIndex; index < endIndex; index++)
+            {
+                if (AddCore(source[index]))
+                {
+                    added++;
+                }
+            }
+
+            CompactIfNeeded();
+            return added;
+        }
+    }
+
+    private void RemoveHeadCore()
+    {
+        if (LogicalCount == 0)
+        {
+            return;
+        }
+
+        messageKeys.Remove(GetReplayChatMessageKey(messages[headIndex]));
+        headIndex++;
+    }
+
+    private void CompactIfNeeded()
+    {
+        if (headIndex < CompactionHeadThreshold ||
+            headIndex < messages.Count / 2)
+        {
+            return;
+        }
+
+        messages.RemoveRange(0, headIndex);
+        headIndex = 0;
+    }
+
     private int LowerBound(TimeSpan value)
     {
-        var low = 0;
+        var low = headIndex;
         var high = messages.Count;
         while (low < high)
         {
@@ -194,7 +286,7 @@ internal sealed class ReplayChatWindowSelector
 
     private int UpperBound(TimeSpan value)
     {
-        var low = 0;
+        var low = headIndex;
         var high = messages.Count;
         while (low < high)
         {

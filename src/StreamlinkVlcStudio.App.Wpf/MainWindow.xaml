@@ -4,6 +4,7 @@
         xmlns:controls="clr-namespace:StreamlinkVlcStudio.App.Wpf.Controls"
         xmlns:converters="clr-namespace:StreamlinkVlcStudio.App.Wpf.Converters"
         xmlns:models="clr-namespace:StreamlinkVlcStudio.Core.Models;assembly=StreamlinkVlcStudio.Core"
+        xmlns:settings="clr-namespace:StreamlinkVlcStudio.Core.Settings;assembly=StreamlinkVlcStudio.Core"
         xmlns:vm="clr-namespace:StreamlinkVlcStudio.App.Wpf.ViewModels"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Twitch &amp; Kick player"
@@ -632,6 +633,26 @@
             <Setter Property="MinWidth" Value="92" />
         </Style>
 
+        <Style x:Key="TwitchVodPlatformButton" TargetType="Button" BasedOn="{StaticResource BrowsePlatformButton}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsTwitchVodPlatformSelected}" Value="True">
+                    <Setter Property="Background" Value="#2B1744" />
+                    <Setter Property="BorderBrush" Value="#9146FF" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="KickVodPlatformButton" TargetType="Button" BasedOn="{StaticResource BrowsePlatformButton}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsKickVodPlatformSelected}" Value="True">
+                    <Setter Property="Background" Value="#132A0B" />
+                    <Setter Property="BorderBrush" Value="#53FC18" />
+                    <Setter Property="Foreground" Value="#FFFFFF" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <Style x:Key="TwitchBrowsePlatformButton" TargetType="Button" BasedOn="{StaticResource BrowsePlatformButton}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsTwitchBrowsePlatformSelected}" Value="True">
@@ -1054,7 +1075,7 @@
         <Style x:Key="HomeSearchTextBoxStyle" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="Height" Value="36" />
             <Setter Property="MinHeight" Value="36" />
-            <Setter Property="Padding" Value="38,0,12,0" />
+            <Setter Property="Padding" Value="30,0,12,0" />
             <Setter Property="Background" Value="#0A1017" />
             <Setter Property="Foreground" Value="#EEF3F8" />
             <Setter Property="BorderBrush" Value="#283747" />
@@ -1072,7 +1093,7 @@
                                 CornerRadius="8"
                                 SnapsToDevicePixels="True">
                             <ScrollViewer x:Name="PART_ContentHost"
-                                          Margin="{TemplateBinding Padding}"
+                                          Margin="0"
                                           Focusable="False"
                                           HorizontalScrollBarVisibility="Hidden"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
@@ -1294,7 +1315,7 @@
                             Content="&#xE8BB;"
                             Click="CloseWindowButton_Click"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                            ToolTip="Close to tray" />
+                            ToolTip="Close tabs to tray" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -1305,6 +1326,8 @@
             <Border x:Name="DockedChatPanel"
                     DockPanel.Dock="Right"
                     Width="{Binding Settings.Chat.DockWidth}"
+                    MinWidth="{x:Static settings:ChatSettings.MinimumDockWidth}"
+                    MaxWidth="{x:Static settings:ChatSettings.MaximumDockWidth}"
                     Background="#11161E"
                     BorderBrush="{StaticResource LineBrush}"
                     BorderThickness="1,0,0,0"
@@ -1317,6 +1340,35 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="46" />
                     </Grid.RowDefinitions>
+                    <Thumb x:Name="DockedChatResizeThumb"
+                           Grid.RowSpan="3"
+                           Width="8"
+                           HorizontalAlignment="Left"
+                           Cursor="SizeWE"
+                           DragDelta="DockedChatResizeThumb_DragDelta"
+                           Panel.ZIndex="10"
+                           AutomationProperties.Name="Resize docked chat">
+                        <Thumb.Template>
+                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                <Grid Background="Transparent">
+                                    <Border x:Name="ResizeCue"
+                                            Width="2"
+                                            HorizontalAlignment="Left"
+                                            Background="#6F8294"
+                                            Opacity="0" />
+                                </Grid>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="ResizeCue" Property="Opacity" Value="0.55" />
+                                    </Trigger>
+                                    <Trigger Property="IsDragging" Value="True">
+                                        <Setter TargetName="ResizeCue" Property="Opacity" Value="0.9" />
+                                        <Setter TargetName="ResizeCue" Property="Background" Value="{StaticResource AccentBrush}" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Thumb.Template>
+                    </Thumb>
                     <TextBlock Grid.Row="0"
                                Margin="10,0"
                                Text="{Binding SelectedTab.DockedChatHeaderText}"
@@ -1517,7 +1569,7 @@
                                 <TextBlock Text="Search Twitch or Kick streamer"
                                            Foreground="#677384"
                                            IsHitTestVisible="False"
-                                           Margin="38,0,12,0"
+                                           Margin="30,0,12,0"
                                            VerticalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"
                                            Visibility="{Binding IsNewStreamSearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
@@ -1597,7 +1649,7 @@
                                                                  Fill="#43E486"
                                                                  Margin="0,0,6,0"
                                                                  VerticalAlignment="Center" />
-                                                        <TextBlock Text="Verified"
+                                                        <TextBlock Text="Results"
                                                                    FontSize="11"
                                                                    FontWeight="SemiBold"
                                                                    Foreground="#CFFFE2" />
@@ -1671,6 +1723,7 @@
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
                                                             <Button Command="{Binding OpenCommand}"
+                                                                    PreviewMouseDown="HomeStreamItemButton_PreviewMouseDown"
                                                                     Margin="0,0,0,6"
                                                                     Padding="0"
                                                                     HorizontalContentAlignment="Stretch"
@@ -1767,12 +1820,26 @@
                                                                                    Margin="0,2,0,0" />
                                                                     </StackPanel>
 
-                                                                    <TextBlock Grid.Column="2"
-                                                                               Text="&#xE768;"
-                                                                               FontFamily="Segoe MDL2 Assets"
-                                                                               Foreground="{StaticResource AccentBrush}"
-                                                                               FontSize="12"
-                                                                               VerticalAlignment="Center" />
+                                                                    <StackPanel Grid.Column="2"
+                                                                                Orientation="Horizontal"
+                                                                                VerticalAlignment="Center">
+                                                                        <Border Background="#182630"
+                                                                                BorderBrush="#3A4A5D"
+                                                                                BorderThickness="1"
+                                                                                CornerRadius="6"
+                                                                                Padding="8,4"
+                                                                                Margin="0,0,10,0">
+                                                                            <TextBlock Text="{Binding StateText}"
+                                                                                       FontSize="11"
+                                                                                       FontWeight="SemiBold"
+                                                                                       Foreground="#DDE3EA" />
+                                                                        </Border>
+                                                                        <TextBlock Text="&#xE768;"
+                                                                                   FontFamily="Segoe MDL2 Assets"
+                                                                                   Foreground="{StaticResource AccentBrush}"
+                                                                                   FontSize="12"
+                                                                                   VerticalAlignment="Center" />
+                                                                    </StackPanel>
                                                                 </Grid>
                                                             </Button>
                                                         </DataTemplate>
@@ -2016,7 +2083,7 @@
                                                        TextTrimming="CharacterEllipsis" />
                                         </Border>
                                         <StackPanel>
-                                            <TextBlock Text="Twitch VODs"
+                                            <TextBlock Text="VODs"
                                                        FontSize="20"
                                                        FontWeight="SemiBold" />
                                             <TextBlock Text="{Binding TwitchVodResultsTitle}"
@@ -2027,12 +2094,23 @@
 
                                     <DockPanel LastChildFill="True"
                                                Margin="0,0,0,12">
+                                        <StackPanel DockPanel.Dock="Right"
+                                                    Orientation="Horizontal"
+                                                    Margin="14,0,0,0"
+                                                    VerticalAlignment="Center">
+                                            <Button Style="{StaticResource TwitchVodPlatformButton}"
+                                                    Content="Twitch"
+                                                    Command="{Binding SelectTwitchVodPlatformCommand}" />
+                                            <Button Style="{StaticResource KickVodPlatformButton}"
+                                                    Content="Kick"
+                                                    Command="{Binding SelectKickVodPlatformCommand}" />
+                                        </StackPanel>
                                         <Grid MaxWidth="460"
                                               HorizontalAlignment="Left">
                                             <TextBox Text="{Binding TwitchVodSearchText, UpdateSourceTrigger=PropertyChanged}"
                                                      Style="{StaticResource HomeSearchTextBoxStyle}"
-                                                     AutomationProperties.Name="Twitch VOD streamer search"
-                                                     ToolTip="Twitch streamer login or channel URL" />
+                                                     AutomationProperties.Name="VOD streamer search"
+                                                     ToolTip="Streamer login, slug, or channel URL" />
                                             <TextBlock Text="&#xE721;"
                                                        FontFamily="Segoe MDL2 Assets"
                                                        FontSize="12"
@@ -2041,10 +2119,10 @@
                                                        Margin="13,0,0,0"
                                                        VerticalAlignment="Center"
                                                        HorizontalAlignment="Left" />
-                                            <TextBlock Text="Search Twitch streamer"
+                                            <TextBlock Text="Search streamer"
                                                        Foreground="#677384"
                                                        IsHitTestVisible="False"
-                                                       Margin="38,0,12,0"
+                                                       Margin="30,0,12,0"
                                                        VerticalAlignment="Center"
                                                        TextTrimming="CharacterEllipsis"
                                                        Visibility="{Binding IsTwitchVodSearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
@@ -2052,7 +2130,8 @@
                                     </DockPanel>
 
                                     <StackPanel Orientation="Horizontal"
-                                                Margin="0,0,0,16">
+                                                Margin="0,0,0,16"
+                                                Visibility="{Binding IsTwitchVodFilterVisible, Converter={StaticResource BoolToVisibility}}">
                                         <Button Style="{StaticResource PastBroadcastsVodFilterButton}"
                                                 Content="Past broadcasts"
                                                 Command="{Binding ShowPastBroadcastsVodFilterCommand}" />
@@ -2278,7 +2357,7 @@
                                                     <TextBlock Text="Search categories"
                                                                Foreground="#677384"
                                                                IsHitTestVisible="False"
-                                                               Margin="38,0,12,0"
+                                                               Margin="30,0,12,0"
                                                                VerticalAlignment="Center"
                                                                TextTrimming="CharacterEllipsis"
                                                                Visibility="{Binding IsBrowseCategorySearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
@@ -3151,7 +3230,7 @@
                                                 </DockPanel>
                                             </Border>
                                             <TextBlock x:Name="TabStatusTextBlock"
-                                                       Text="{Binding StatusText}"
+                                                       Text="{Binding SubtitleText}"
                                                        Foreground="{StaticResource TextMutedBrush}"
                                                        FontSize="9"
                                                        TextTrimming="CharacterEllipsis"
@@ -3375,7 +3454,28 @@
                     <CheckBox Content="Send Kick messages as bot"
                               IsChecked="{Binding Settings.Chat.KickSendAsBot}"
                               Foreground="#E8EAED"
-                              Margin="0,0,0,16" />
+                              Margin="0,0,0,10" />
+
+                    <CheckBox Content="Listen for official Kick chat webhooks"
+                              IsChecked="{Binding Settings.Chat.KickWebhookListenerEnabled}"
+                              Foreground="#E8EAED"
+                              Margin="0,0,0,10"
+                              ToolTip="Receives verified chat.message.sent webhooks at /kick-webhook for Kick VOD replay chat cache. Kick Client ID/Secret are used to create subscriptions; Kick Dev still needs a public webhook URL or tunnel that forwards to this port." />
+
+                    <TextBlock Text="Kick webhook local port" Foreground="{StaticResource TextMutedBrush}" />
+                    <TextBox Text="{Binding Settings.Chat.KickWebhookListenerPort, UpdateSourceTrigger=LostFocus}"
+                             Margin="0,5,0,16"
+                             ToolTip="Default: 39180. Configure your tunnel to forward to http://127.0.0.1:port/kick-webhook." />
+
+                    <TextBlock Text="Kick webhook local forwarding target" Foreground="{StaticResource TextMutedBrush}" />
+                    <TextBox Text="{Binding KickWebhookLocalUrl, Mode=OneWay}"
+                             IsReadOnly="True"
+                             Margin="0,5,0,8"
+                             ToolTip="Set your public tunnel or Kick Developer webhook URL to forward to this local target." />
+                    <TextBlock Text="{Binding KickWebhookListenerStatus}"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,16" />
 
                     <TextBlock Text="Chat appearance" FontWeight="SemiBold" Margin="0,0,0,10" />
 
@@ -3387,7 +3487,7 @@
                     <TextBlock Text="VLC overlay plugin directory" Foreground="{StaticResource TextMutedBrush}" />
                     <TextBox Text="{Binding Settings.Chat.VlcOverlayDirectory, UpdateSourceTrigger=PropertyChanged}"
                              Margin="0,5,0,14"
-                             ToolTip="Optional custom overlay folder. Leave blank to use the bundled vlc-overlay beside the app." />
+                             ToolTip="Optional custom overlay folder. Leave blank to use the bundled overlay." />
 
                     <DockPanel Margin="0,0,0,5">
                         <TextBlock Text="Selected stream VLC overlay text size"

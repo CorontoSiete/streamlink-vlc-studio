@@ -2,9 +2,11 @@ param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
     [switch]$FrameworkDependent,
-    [string]$OverlaySource = "C:\Users\ComputerGuy\Downloads\vlc-overlay",
+    [string]$OverlaySource,
     [string]$OutputRoot,
     [string]$PublishedAppDirectory,
+    [switch]$SkipUninstaller,
+    [switch]$KeepStaging,
     [switch]$Quiet
 )
 
@@ -12,6 +14,12 @@ $ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
+$overlaySourcePath = if ([string]::IsNullOrWhiteSpace($OverlaySource)) {
+    Join-Path $repoRoot "src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay"
+} else {
+    $OverlaySource
+}
+$overlaySourcePath = [System.IO.Path]::GetFullPath($overlaySourcePath)
 $outputRootPath = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     Join-Path $repoRoot "release"
 } else {
@@ -80,7 +88,7 @@ function Copy-DirectoryFiltered([string]$Source, [string]$Destination) {
     }
 }
 
-$overlayBuildSource = Join-Path $OverlaySource "build"
+$overlayBuildSource = Join-Path $overlaySourcePath "build"
 $requiredOverlayFiles = @(
     (Join-Path $overlayBuildSource "libmyoverlay_plugin.dll"),
     (Join-Path $overlayBuildSource "vlc_chat_overlay.exe")
@@ -96,8 +104,7 @@ $requiredBrowserExtensionFiles = @(
     "manifest.json",
     "background.js",
     "content-core.js",
-    "content.js",
-    "README.md"
+    "content.js"
 )
 foreach ($relativePath in $requiredBrowserExtensionFiles) {
     $required = Join-Path $browserExtensionSource $relativePath
@@ -133,6 +140,13 @@ if ([string]::IsNullOrWhiteSpace($PublishedAppDirectory)) {
         --self-contained $selfContained `
         -p:PublishSingleFile=$publishSingleFile `
         -p:IncludeNativeLibrariesForSelfExtract=true `
+        -p:IncludeAllContentForSelfExtract=true `
+        -p:EnableCompressionInSingleFile=true `
+        -p:PublishTrimmed=false `
+        -p:DebugType=none `
+        -p:DebugSymbols=false `
+        -p:BundledVlcOverlayRoot=$overlaySourcePath `
+        -p:RequireBundledVlcOverlay=true `
         -o $publishDir
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet publish failed with exit code $LASTEXITCODE."
@@ -159,6 +173,24 @@ if (-not (Test-Path -LiteralPath $friendlyExe -PathType Leaf)) {
     throw "Staged app executable missing: $friendlyExe"
 }
 
+if (-not $SkipUninstaller) {
+    $uninstallerScript = Join-Path $scriptRoot "build-uninstaller.ps1"
+    $uninstallerTarget = Join-Path $stageDir "Uninstall.exe"
+    if (-not (Test-Path -LiteralPath $uninstallerScript -PathType Leaf)) {
+        throw "Uninstaller builder missing: $uninstallerScript"
+    }
+
+    Write-Info "Building uninstaller..."
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $uninstallerScript -OutputPath $uninstallerTarget -Quiet | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Uninstaller build failed with exit code $LASTEXITCODE."
+    }
+
+    if (-not (Test-Path -LiteralPath $uninstallerTarget -PathType Leaf)) {
+        throw "Staged uninstaller missing: $uninstallerTarget"
+    }
+}
+
 Write-Info "Staging VLC overlay..."
 $overlayBuildStage = Join-Path $stageDir "vlc-overlay\build"
 Copy-DirectoryFiltered $overlayBuildSource $overlayBuildStage
@@ -169,7 +201,7 @@ foreach ($name in @("libmyoverlay_plugin.dll", "vlc_chat_overlay.exe")) {
     }
 }
 
-Write-Info "Staging Brave browser extension..."
+Write-Info "Staging Brave browser extension runtime files..."
 $browserExtensionStage = Join-Path $stageDir "browser-extension"
 New-Item -ItemType Directory -Path $browserExtensionStage -Force | Out-Null
 foreach ($relativePath in $requiredBrowserExtensionFiles) {
@@ -178,9 +210,9 @@ foreach ($relativePath in $requiredBrowserExtensionFiles) {
     Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
 }
 
-$installSource = Join-Path $repoRoot "install.txt"
-if (Test-Path -LiteralPath $installSource -PathType Leaf) {
-    Copy-Item -LiteralPath $installSource -Destination (Join-Path $stageDir "install.txt") -Force
+$installerSource = Join-Path $repoRoot "scripts\install.ps1"
+if (Test-Path -LiteralPath $installerSource -PathType Leaf) {
+    Copy-Item -LiteralPath $installerSource -Destination (Join-Path $stageDir "install.ps1") -Force
 }
 
 if (Test-Path -LiteralPath $zipPath -PathType Leaf) {
@@ -189,6 +221,10 @@ if (Test-Path -LiteralPath $zipPath -PathType Leaf) {
 
 Write-Info "Creating zip..."
 Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
+
+if (-not $KeepStaging) {
+    Remove-DirectoryIfExists $stageDir $outputRootPath
+}
 
 Write-Info "Release zip: $zipPath"
 Write-Output $zipPath

@@ -13,5 +13,5 @@ public sealed record FollowedLiveStream(
     string Language,
     string Url)
 {
-    public StreamTarget Target => new(Platform, Channel, Url);
+    public StreamTarget Target => new(Platform, Channel, Url, CategoryName: CategoryName);
 }

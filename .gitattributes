@@ -1,0 +1,20 @@
+* text=auto eol=lf
+
+*.7z binary
+*.br binary
+*.bz2 binary
+*.dll binary
+*.exe binary
+*.gif binary
+*.gz binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.msi binary
+*.nupkg binary
+*.pdf binary
+*.png binary
+*.tar binary
+*.tgz binary
+*.webp binary
+*.zip binary

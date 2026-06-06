@@ -9,6 +9,7 @@ public interface IPlaybackEngine : IDisposable
     bool UsesNativeOverlay { get; }
     string? NativeOverlayPipeName { get; }
     string? NativeOverlayPositionStatePath { get; }
+    string? NativeOverlayDirectory { get; }
     void SetVideoHandle(IntPtr handle);
     Task PlayAsync(Uri mediaUri, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default);
     Task PauseAsync(CancellationToken cancellationToken = default);

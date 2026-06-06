@@ -1,14 +1,17 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Replay.TwitchDownloader;
 
 namespace StreamlinkVlcStudio.Infrastructure.Replay;
 
-public sealed class ReplayChatProvider : IReplayChatProvider
+public sealed class ReplayChatProvider : IReplayChatProvider, IDisposable
 {
     private const string TwitchGraphQlEndpoint = "https://gql.twitch.tv/gql";
     // Public Twitch web Client-ID used by the installed Twitch VOD Downloader extension as its fallback.
@@ -20,19 +23,60 @@ public sealed class ReplayChatProvider : IReplayChatProvider
     private const int TwitchReplayChatMaxMessages = 5000;
     private static readonly TimeSpan TwitchReplayChatBackfill = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan TwitchReplayChatPrefetch = TimeSpan.FromMinutes(4);
+    private static readonly TimeSpan KickTimestampReplayChatBackfill = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan KickOfficialReplayChatBackfill = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan KickOfficialReplayChatPrefetch = TimeSpan.FromMinutes(4);
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
     private static readonly string TwitchGraphQlDeviceId = CreateDeviceId();
 
     private readonly HttpClient httpClient;
+    private readonly KickOfficialChatReplayStore kickOfficialChatReplayStore;
+    private readonly KickChatHistoryBackfillService kickChatHistoryBackfillService;
 
     public ReplayChatProvider()
-        : this(SharedHttpClient)
+        : this(SharedHttpClient, new KickOfficialChatReplayStore(), NoOpAppLogger.Instance)
+    {
+    }
+
+    public ReplayChatProvider(IAppLogger logger)
+        : this(SharedHttpClient, new KickOfficialChatReplayStore(), logger)
+    {
+    }
+
+    public ReplayChatProvider(KickOfficialChatReplayStore kickOfficialChatReplayStore)
+        : this(SharedHttpClient, kickOfficialChatReplayStore, NoOpAppLogger.Instance)
+    {
+    }
+
+    public ReplayChatProvider(KickOfficialChatReplayStore kickOfficialChatReplayStore, IAppLogger logger)
+        : this(SharedHttpClient, kickOfficialChatReplayStore, logger)
     {
     }
 
     public ReplayChatProvider(HttpClient httpClient)
+        : this(httpClient, new KickOfficialChatReplayStore(), NoOpAppLogger.Instance)
     {
-        this.httpClient = httpClient;
+    }
+
+    public ReplayChatProvider(HttpClient httpClient, IAppLogger logger)
+        : this(httpClient, new KickOfficialChatReplayStore(), logger)
+    {
+    }
+
+    public ReplayChatProvider(HttpClient httpClient, KickOfficialChatReplayStore kickOfficialChatReplayStore)
+        : this(httpClient, kickOfficialChatReplayStore, NoOpAppLogger.Instance)
+    {
+    }
+
+    public ReplayChatProvider(
+        HttpClient httpClient,
+        KickOfficialChatReplayStore kickOfficialChatReplayStore,
+        IAppLogger logger)
+    {
+        this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        this.kickOfficialChatReplayStore = kickOfficialChatReplayStore ?? throw new ArgumentNullException(nameof(kickOfficialChatReplayStore));
+        ConfigureKickHttpHeaders(this.httpClient);
+        kickChatHistoryBackfillService = new KickChatHistoryBackfillService(this.httpClient, logger ?? NoOpAppLogger.Instance);
     }
 
     public async Task<ReplayChatLoadResult> LoadChatAsync(
@@ -44,20 +88,194 @@ public sealed class ReplayChatProvider : IReplayChatProvider
         return replay.Platform switch
         {
             PlatformKind.Twitch => await LoadTwitchChatAsync(replay, settings, offset, cancellationToken).ConfigureAwait(false),
-            PlatformKind.Kick => ReplayChatLoadResult.Unavailable(
-                "Kick replay chat is unavailable because Kick does not expose a stable public replay-chat API."),
+            PlatformKind.Kick => await LoadKickChatAsync(replay, settings, offset, cancellationToken).ConfigureAwait(false),
             _ => ReplayChatLoadResult.Unavailable($"Replay chat is not supported for {replay.Platform}.")
         };
     }
 
+    public void Dispose()
+    {
+        kickChatHistoryBackfillService.Dispose();
+    }
+
     public static string GetDefaultReplayChatCacheDirectory(PlatformKind platform)
     {
-        var platformDirectory = platform == PlatformKind.Kick ? "kick" : "twitch";
+        var platformDirectory = platform == PlatformKind.Kick ? "kick-official" : "twitch";
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "StreamlinkVlcStudio",
             "replay-chat",
             platformDirectory);
+    }
+
+    private async Task<ReplayChatLoadResult> LoadKickChatAsync(
+        ReplaySessionInfo replay,
+        AppSettings settings,
+        TimeSpan offset,
+        CancellationToken cancellationToken)
+    {
+        var directResult = await LoadKickTimestampChatAsync(replay, settings, offset, cancellationToken).ConfigureAwait(false);
+        if (directResult is { IsAvailable: true, Messages.Count: > 0 })
+        {
+            return directResult;
+        }
+
+        var webhookResult = await LoadKickOfficialWebhookChatAsync(replay, offset, cancellationToken).ConfigureAwait(false);
+        if (webhookResult.IsAvailable)
+        {
+            if (!directResult.IsAvailable ||
+                webhookResult.Messages.Count > 0)
+            {
+                return webhookResult;
+            }
+        }
+
+        if (directResult.IsAvailable)
+        {
+            return directResult;
+        }
+
+        return ReplayChatLoadResult.Unavailable(CombineUnavailableReasons(
+            directResult.UnavailableReason,
+            $"Official Kick webhook cache fallback was also unavailable: {webhookResult.UnavailableReason}"));
+    }
+
+    private async Task<ReplayChatLoadResult> LoadKickTimestampChatAsync(
+        ReplaySessionInfo replay,
+        AppSettings settings,
+        TimeSpan offset,
+        CancellationToken cancellationToken)
+    {
+        if (replay.StreamStartedAtUtc is not { } startedAt)
+        {
+            return ReplayChatLoadResult.Unavailable(
+                "Direct Kick VOD chat needs the VOD start time so messages can be aligned to playback.");
+        }
+
+        var replayMessagesChannelId = FirstNonEmpty(replay.ChatRoomId);
+        var configuredChatroomId = GetConfiguredKickChatroomId(settings.Chat, replay.Channel);
+        if (string.IsNullOrWhiteSpace(replayMessagesChannelId) &&
+            string.IsNullOrWhiteSpace(configuredChatroomId))
+        {
+            return ReplayChatLoadResult.Unavailable(
+                $"Direct Kick VOD chat needs Kick channel_id or chatroom_id metadata for {replay.Channel}.");
+        }
+
+        var requestedFrom = ClampOffset(offset - KickTimestampReplayChatBackfill, replay.Duration);
+        var requestedThrough = ClampOffset(offset + KickOfficialReplayChatPrefetch, replay.Duration);
+        if (requestedThrough < requestedFrom)
+        {
+            requestedThrough = requestedFrom;
+        }
+
+        try
+        {
+            var startedAtUtc = startedAt.ToUniversalTime();
+            var requestedFromTimestampUtc = startedAtUtc + requestedFrom;
+            var requestedThroughTimestampUtc = startedAtUtc + requestedThrough;
+            var channelInfo = await kickChatHistoryBackfillService
+                .ResolveChannelInfoAsync(replay.Channel, settings.Chat, cancellationToken)
+                .ConfigureAwait(false);
+            var channelId = FirstNonEmpty(channelInfo.ChannelId, replayMessagesChannelId);
+            var chatroomId = FirstNonEmpty(channelInfo.ChatroomId, configuredChatroomId, replayMessagesChannelId);
+            if (string.IsNullOrWhiteSpace(chatroomId))
+            {
+                return ReplayChatLoadResult.Unavailable(
+                    $"Direct Kick VOD chat could not resolve Kick chatroom metadata for {replay.Channel}.");
+            }
+
+            var backfillResult = await kickChatHistoryBackfillService
+                .BackfillRecentChatFromStartTimeAsync(
+                    replay.Channel,
+                    channelId,
+                    chatroomId,
+                    requestedFromTimestampUtc,
+                    requestedThroughTimestampUtc,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (backfillResult.Messages.Count == 0 && !backfillResult.CoveredRequestedRange)
+            {
+                return ReplayChatLoadResult.Unavailable(
+                    backfillResult.Attempted
+                        ? "Direct Kick VOD chat could not be loaded from Kick timestamp messages."
+                        : $"Direct Kick VOD chat needs Kick channel_id or chatroom_id metadata for {replay.Channel}.");
+            }
+
+            var messages = new List<ReplayChatMessage>(backfillResult.Messages.Count);
+            var seenMessages = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var chatMessage in backfillResult.Messages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var messageOffset = chatMessage.Timestamp.ToUniversalTime() - startedAtUtc;
+                if (messageOffset < requestedFrom ||
+                    messageOffset > requestedThrough)
+                {
+                    continue;
+                }
+
+                var normalizedMessage = string.IsNullOrWhiteSpace(chatMessage.RoomId)
+                    ? chatMessage with { RoomId = chatroomId }
+                    : chatMessage;
+                if (!seenMessages.Add(GetReplayMessageDeduplicationKey(normalizedMessage, messageOffset)))
+                {
+                    continue;
+                }
+
+                messages.Add(new ReplayChatMessage(messageOffset, normalizedMessage));
+            }
+
+            return ReplayChatLoadResult.Available(
+                messages
+                    .OrderBy(message => message.Offset)
+                    .ThenBy(message => message.Message.MessageId, StringComparer.Ordinal)
+                    .ToArray(),
+                GetReplayOffsetFromTimestamp(backfillResult.CoveredFromTimestampUtc, startedAtUtc, replay.Duration) ?? requestedFrom,
+                GetReplayOffsetFromTimestamp(backfillResult.CoveredThroughTimestampUtc, startedAtUtc, replay.Duration));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ReplayChatLoadResult.Unavailable($"Direct Kick VOD chat could not be loaded: {ex.Message}");
+        }
+    }
+
+    public async Task<ReplayChatLoadResult> LoadKickOfficialWebhookChatAsync(
+        ReplaySessionInfo replay,
+        TimeSpan offset,
+        CancellationToken cancellationToken = default)
+    {
+        if (replay.StreamStartedAtUtc is not { } startedAt)
+        {
+            return ReplayChatLoadResult.Unavailable(
+                "Official Kick VOD chat needs the VOD start time so webhook messages can be aligned to playback.");
+        }
+
+        var requestedFrom = ClampOffset(offset - KickOfficialReplayChatBackfill, replay.Duration);
+        var requestedThrough = ClampOffset(offset + KickOfficialReplayChatPrefetch, replay.Duration);
+        if (requestedThrough < requestedFrom)
+        {
+            requestedThrough = requestedFrom;
+        }
+
+        var fromTimestampUtc = startedAt.ToUniversalTime() + requestedFrom;
+        var throughTimestampUtc = startedAt.ToUniversalTime() + requestedThrough;
+        var result = await kickOfficialChatReplayStore
+            .ReadMessagesAsync(replay.Channel, fromTimestampUtc, throughTimestampUtc, cancellationToken)
+            .ConfigureAwait(false);
+        if (result.CacheFileCount == 0)
+        {
+            return ReplayChatLoadResult.Unavailable(
+                $"No official Kick webhook chat cache was found for {replay.Channel}. Enable the Kick webhook listener, subscribe to chat.message.sent, and capture chat before opening the VOD.");
+        }
+
+        return ReplayChatLoadResult.Available(
+            result.Messages
+                .Select(message => new ReplayChatMessage(message.Timestamp.ToUniversalTime() - startedAt.ToUniversalTime(), message))
+                .Where(message => message.Offset >= TimeSpan.Zero)
+                .OrderBy(message => message.Offset)
+                .ToArray(),
+            requestedFrom,
+            requestedThrough);
     }
 
     public async Task<ReplayChatLoadResult> LoadTwitchChatAsync(
@@ -676,6 +894,23 @@ public sealed class ReplayChatProvider : IReplayChatProvider
         return responseBody.Length <= 240 ? responseBody : responseBody[..240];
     }
 
+    private static string GetReplayMessageDeduplicationKey(ChatMessage message, TimeSpan offset)
+    {
+        if (!string.IsNullOrWhiteSpace(message.MessageId))
+        {
+            return message.MessageId.Trim();
+        }
+
+        return string.Concat(
+            offset.Ticks.ToString(CultureInfo.InvariantCulture),
+            ":",
+            message.Timestamp.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),
+            ":",
+            message.Username,
+            ":",
+            message.Message);
+    }
+
     private static string CombineUnavailableReasons(string first, string second)
     {
         if (string.IsNullOrWhiteSpace(first))
@@ -691,6 +926,26 @@ public sealed class ReplayChatProvider : IReplayChatProvider
         return $"{first} {second}";
     }
 
+    private static string GetConfiguredKickChatroomId(ChatSettings settings, string channel)
+    {
+        return settings.KickChatroomIds.TryGetValue(channel, out var configured)
+            ? FirstNonEmpty(configured)
+            : "";
+    }
+
+    private static void ConfigureKickHttpHeaders(HttpClient httpClient)
+    {
+        if (!httpClient.DefaultRequestHeaders.UserAgent.Any())
+        {
+            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
+        }
+
+        if (!httpClient.DefaultRequestHeaders.Accept.Any())
+        {
+            httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
+        }
+    }
+
     private static TimeSpan ClampOffset(TimeSpan offset, TimeSpan duration)
     {
         if (offset < TimeSpan.Zero)
@@ -699,6 +954,16 @@ public sealed class ReplayChatProvider : IReplayChatProvider
         }
 
         return duration > TimeSpan.Zero && offset > duration ? duration : offset;
+    }
+
+    private static TimeSpan? GetReplayOffsetFromTimestamp(
+        DateTimeOffset? timestampUtc,
+        DateTimeOffset startedAtUtc,
+        TimeSpan duration)
+    {
+        return timestampUtc is { } timestamp
+            ? ClampOffset(timestamp.ToUniversalTime() - startedAtUtc, duration)
+            : null;
     }
 
     private static TimeSpan Max(TimeSpan left, TimeSpan right) => left >= right ? left : right;
@@ -790,6 +1055,21 @@ public sealed class ReplayChatProvider : IReplayChatProvider
         }
 
         return "";
+    }
+
+    private sealed class NoOpAppLogger : IAppLogger
+    {
+        public static readonly NoOpAppLogger Instance = new();
+
+        public event EventHandler<LogEntry>? EntryWritten
+        {
+            add { }
+            remove { }
+        }
+
+        public void Write(AppLogLevel level, string source, string message, Exception? exception = null)
+        {
+        }
     }
 
     private static string ResolveTwitchBadgeTitle(string? id)

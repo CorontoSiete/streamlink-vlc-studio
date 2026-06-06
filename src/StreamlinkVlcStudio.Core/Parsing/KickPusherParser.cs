@@ -69,7 +69,9 @@ public static class KickPusherParser
         if (data.TryGetProperty("sender", out var sender))
         {
             username = GetString(sender, "username") ?? GetString(sender, "slug") ?? username;
-            color = GetString(sender, "identity", "color") ?? GetString(sender, "color");
+            color = GetString(sender, "identity", "color") ??
+                GetString(sender, "identity", "username_color") ??
+                GetString(sender, "color");
             badges = ParseBadges(sender);
         }
         else if (data.TryGetProperty("user", out var user))

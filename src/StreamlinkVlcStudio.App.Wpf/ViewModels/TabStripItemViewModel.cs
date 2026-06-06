@@ -53,6 +53,10 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string SubtitleText => !IsGroup && PrimaryTab.HasCategory
+        ? PrimaryTab.CategoryName
+        : StatusText;
+
     public string ViewerCountText => IsGroup
         ? tabs.Length.ToString(CultureInfo.InvariantCulture)
         : PrimaryTab.ViewerCountText;
@@ -66,8 +70,8 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
     public string ToolTip => IsGroup
         ? string.Join(
             Environment.NewLine,
-            tabs.Select(tab => $"{tab.Target.DisplayName} - {tab.StatusText}"))
-        : PrimaryTab.Target.DisplayName;
+            tabs.Select(tab => $"{tab.Target.DisplayName} - {FormatTabDetails(tab)}"))
+        : FormatSingleTabToolTip(PrimaryTab);
 
     public PlatformKind Platform => PrimaryTab.Target.Platform;
 
@@ -94,10 +98,29 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
         {
             OnPropertyChanged(nameof(Title));
             OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(SubtitleText));
             OnPropertyChanged(nameof(ViewerCountText));
             OnPropertyChanged(nameof(ViewerCountToolTip));
             OnPropertyChanged(nameof(ToolTip));
             OnPropertyChanged(nameof(IsDetached));
         }
+    }
+
+    private static string FormatSingleTabToolTip(StreamTabViewModel tab)
+    {
+        return tab.HasCategory
+            ? string.Join(
+                Environment.NewLine,
+                tab.Target.DisplayName,
+                $"Category: {tab.CategoryName}",
+                $"Status: {tab.StatusText}")
+            : tab.Target.DisplayName;
+    }
+
+    private static string FormatTabDetails(StreamTabViewModel tab)
+    {
+        return tab.HasCategory
+            ? $"{tab.CategoryName}, {tab.StatusText}"
+            : tab.StatusText;
     }
 }

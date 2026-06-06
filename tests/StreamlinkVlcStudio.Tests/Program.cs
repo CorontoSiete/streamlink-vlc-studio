@@ -7,9 +7,12 @@ using System.IO.Pipes;
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -230,6 +233,29 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal("Chat in summit1g's channel", tab.DockedChatHeaderText);
         return Task.CompletedTask;
     }),
+    ("tab strip shows stream category when available", () =>
+    {
+        var tab = new StreamTabViewModel(
+            new StreamTarget(
+                PlatformKind.Twitch,
+                "summit1g",
+                "https://www.twitch.tv/summit1g",
+                CategoryName: "Just Chatting"),
+            "best",
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action());
+        var item = new TabStripItemViewModel([tab], tab);
+
+        Assert.Equal("summit1g", item.Title);
+        Assert.Equal("Just Chatting", item.SubtitleText);
+        Assert.Contains("Category: Just Chatting", item.ToolTip);
+        Assert.Contains("Status: Ready", item.ToolTip);
+        item.Dispose();
+        return tab.DisposeAsync().AsTask();
+    }),
     ("creates Twitch and Kick candidates for bare channel", () =>
     {
         var candidates = StreamInputParser.ParseCandidates("summit1g");
@@ -317,6 +343,28 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.True(arguments.Contains("--retry-open"));
         return Task.CompletedTask;
     }),
+    ("stream playback startup uses bounded buffering and H264 for Twitch low latency", () =>
+    {
+        var method = typeof(StreamlinkService).GetMethod(
+            "BuildArguments",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var request = new StreamTransportRequest(
+            StreamInputParser.Parse("https://www.twitch.tv/albralelie", PlatformKind.Kick),
+            "best",
+            "streamlink.exe",
+            LowLatency: true,
+            CustomArguments: []);
+        var arguments = ((IEnumerable<string>)method!.Invoke(null, [request])!).ToArray();
+
+        AssertOptionValue(arguments, "--ringbuffer-size", "32M");
+        AssertOptionValue(arguments, "--twitch-supported-codecs", "h264");
+        Assert.True(arguments.Contains("--twitch-low-latency"));
+        Assert.Equal(false, arguments.Contains("h265"));
+        Assert.Equal(false, arguments.Contains("av1"));
+        return Task.CompletedTask;
+    }),
     ("streamlink direct URL arguments place URL and quality last", () =>
     {
         var method = typeof(StreamlinkService).GetMethod(
@@ -338,6 +386,144 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal("https://www.twitch.tv/videos/123456", arguments[^2]);
         Assert.Equal("720p60", arguments[^1]);
         Assert.True(Array.IndexOf(arguments, "--http-header") < arguments.Length - 2);
+        return Task.CompletedTask;
+    }),
+    ("stable live playback startup disables low latency flags for a tab", async () =>
+    {
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var logger = new MemoryLogger();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC",
+            LowLatency = true
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("https://www.twitch.tv/albralelie", PlatformKind.Kick),
+            "best",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            logger,
+            action => action());
+
+        tab.SetVideoHandle(new IntPtr(1234));
+        await tab.StartAsync(settings, preferStableLivePlayback: true);
+
+        Assert.Equal(1, streamlink.StartExternalHttpRequests.Count);
+        Assert.Equal(false, streamlink.StartExternalHttpRequests[0].LowLatency);
+        Assert.Equal(true, playbackFactory.Engine!.Played);
+        await tab.DisposeAsync();
+    }),
+    ("live chat burst batches UI drain and overlay refresh", async () =>
+    {
+        var dispatched = new Queue<Action>();
+        void QueueDispatch(Action action) => dispatched.Enqueue(action);
+        void PumpDispatchedActions()
+        {
+            while (dispatched.Count > 0)
+            {
+                dispatched.Dequeue()();
+            }
+        }
+
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var chatFactory = new FakeChatClientFactory();
+        var logger = new MemoryLogger();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Docked;
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("albralelie", PlatformKind.Twitch),
+            "best",
+            streamlink,
+            playbackFactory,
+            chatFactory,
+            logger,
+            QueueDispatch);
+
+        tab.SetVideoHandle(new IntPtr(1234));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(() => chatFactory.Client.Connected, TimeSpan.FromMilliseconds(500));
+        PumpDispatchedActions();
+        var overlaySetCountBeforeBurst = playbackFactory.Engine!.OverlayTextSetCount;
+
+        for (var index = 0; index < 105; index++)
+        {
+            chatFactory.Client.Receive(new ChatMessage(
+                PlatformKind.Twitch,
+                "albralelie",
+                $"viewer-{index}",
+                $"message {index}",
+                DateTimeOffset.UtcNow.AddSeconds(index),
+                MessageId: $"burst-message-{index}"));
+        }
+
+        chatFactory.Client.Receive(new ChatMessage(
+            PlatformKind.Twitch,
+            "albralelie",
+            "duplicate-viewer",
+            "duplicate should be skipped",
+            DateTimeOffset.UtcNow.AddSeconds(106),
+            MessageId: "burst-message-104"));
+
+        Assert.Equal(0, tab.ChatMessages.Count);
+        Assert.Equal(1, dispatched.Count);
+        PumpDispatchedActions();
+
+        Assert.Equal(100, tab.ChatMessages.Count);
+        Assert.Equal(100, tab.DockedChatMessages.Count);
+        Assert.Equal("message 5", tab.ChatMessages[0].Message);
+        Assert.Equal("message 104", tab.ChatMessages[^1].Message);
+        Assert.Equal(overlaySetCountBeforeBurst + 1, playbackFactory.Engine.OverlayTextSetCount);
+        await tab.DisposeAsync();
+    }),
+    ("video aspect polling backs off after stable samples and resets on change", () =>
+    {
+        var retry = TimeSpan.FromMilliseconds(250);
+        var changing = TimeSpan.FromSeconds(2);
+        var stable = TimeSpan.FromSeconds(15);
+        var backoff = new VideoAspectRatioPollingBackoff(retry, changing, stable, stableSampleThreshold: 3);
+
+        Assert.Equal(retry, backoff.RecordInvalidSample());
+        Assert.Equal(changing, backoff.RecordValidSample(16.0 / 9.0));
+        Assert.Equal(changing, backoff.RecordValidSample(16.0 / 9.0));
+        Assert.Equal(changing, backoff.RecordValidSample(16.0 / 9.0));
+        Assert.Equal(stable, backoff.RecordValidSample(16.0 / 9.0));
+        Assert.Equal(changing, backoff.RecordValidSample(4.0 / 3.0));
+        Assert.Equal(changing, backoff.RecordValidSample(4.0 / 3.0));
+        Assert.Equal(changing, backoff.RecordValidSample(4.0 / 3.0));
+        Assert.Equal(stable, backoff.RecordValidSample(4.0 / 3.0));
+
+        backoff.Reset();
+        Assert.Equal(changing, backoff.RecordValidSample(16.0 / 9.0));
+        return Task.CompletedTask;
+    }),
+    ("libVLC options keep native overlay settings scoped to sub-source", () =>
+    {
+        var buildOptions = typeof(LibVlcPlaybackEngine).GetMethod(
+            "BuildLibVlcOptions",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(buildOptions);
+
+        var options = ((IEnumerable<string>)buildOptions!.Invoke(null, [@"C:\VLC", new MemoryLogger()])!).ToArray();
+        Assert.Equal(false, options.Any(option => option.StartsWith("--myoverlay-", StringComparison.Ordinal)));
+
+        var buildSubSourceOption = typeof(LibVlcPlaybackEngine).GetMethod(
+            "BuildOverlaySubSourceOption",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(buildSubSourceOption);
+
+        var subSourceOption = (string)buildSubSourceOption!.Invoke(null, ["svs_test", @"C:\State\overlay.txt"])!;
+        Assert.Contains("--sub-source=myoverlay{", subSourceOption);
+        Assert.Contains("show-placeholder=0", subSourceOption);
         return Task.CompletedTask;
     }),
     ("browse service loads Twitch top categories quickly and exact viewer totals separately", async () =>
@@ -413,6 +599,7 @@ var tests = new (string Name, Func<Task> Run)[]
         var settings = new AppSettings();
         settings.Chat.TwitchClientId = "twitch-client-id";
         settings.Chat.TwitchOAuthToken = "oauth:twitch-token";
+        settings.StreamlinkPath = "streamlink.exe";
         var service = new BrowseService(new MemoryLogger(), httpClient);
 
         var result = await service.GetCategoriesAsync(
@@ -2398,6 +2585,8 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(true, viewModel.IsHomeSelected);
         Assert.Equal("streamer", viewModel.Tabs[0].Target.Channel);
         Assert.Equal(PlatformKind.Twitch, viewModel.Tabs[0].Target.Platform);
+        Assert.Equal("Rust", viewModel.Tabs[0].Target.CategoryName);
+        Assert.Equal("Rust", viewModel.TabStripItems.Single().SubtitleText);
     }),
     ("parses Twitch VOD durations", () =>
     {
@@ -3287,6 +3476,39 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(selection.Key, repeatedSelection.Key);
         return Task.CompletedTask;
     }),
+    ("replay chat window selector evicts capped head without losing 100k slicing", () =>
+    {
+        var selector = new ReplayChatWindowSelector();
+        var timestamp = DateTimeOffset.UtcNow;
+        for (var index = 0; index < 100_500; index++)
+        {
+            selector.Add(
+                new ReplayChatMessage(
+                    TimeSpan.FromSeconds(index),
+                    new ChatMessage(
+                        PlatformKind.Twitch,
+                        "streamer",
+                        $"viewer-{index}",
+                        $"message {index}",
+                        timestamp.AddSeconds(index),
+                        MessageId: $"message-{index}")),
+                100_000,
+                out _);
+        }
+
+        var selection = selector.SelectWindow(
+            TimeSpan.FromSeconds(100_000),
+            TimeSpan.FromSeconds(45),
+            100);
+
+        Assert.Equal(100_000, selector.Count);
+        Assert.Equal(TimeSpan.FromSeconds(500), selector.FirstOffset);
+        Assert.Equal(TimeSpan.FromSeconds(100_499), selector.LastOffset);
+        Assert.Equal(46, selection.Messages.Count);
+        Assert.Equal("message-99955", selection.Messages[0].MessageId);
+        Assert.Equal("message-100000", selection.Messages[^1].MessageId);
+        return Task.CompletedTask;
+    }),
     ("replay chat window selector moves backward without retaining future messages", () =>
     {
         var selector = new ReplayChatWindowSelector();
@@ -3312,6 +3534,85 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.SequenceEqual(new[] { "late replay chat" }, lateSelection.Messages.Select(message => message.Message).ToArray());
         Assert.SequenceEqual(new[] { "early replay chat" }, earlySelection.Messages.Select(message => message.Message).ToArray());
         return Task.CompletedTask;
+    }),
+    ("replay chat window selector selects explicit range with capped tail", () =>
+    {
+        var selector = new ReplayChatWindowSelector();
+        var timestamp = DateTimeOffset.UtcNow;
+        selector.Replace(Enumerable.Range(0, 150)
+            .Select(index => new ReplayChatMessage(
+                TimeSpan.FromSeconds(index),
+                new ChatMessage(
+                    PlatformKind.Kick,
+                    "streamer",
+                    $"viewer-{index}",
+                    $"range message {index}",
+                    timestamp.AddSeconds(index),
+                    MessageId: $"range-message-{index}")))
+            .ToArray());
+
+        var selection = selector.SelectRange(
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(120),
+            100);
+        var repeatedSelection = selector.SelectRange(
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(120),
+            100);
+
+        Assert.Equal(100, selection.Messages.Count);
+        Assert.Equal("range-message-21", selection.Messages[0].MessageId);
+        Assert.Equal("range-message-120", selection.Messages[^1].MessageId);
+        Assert.Equal(selection.Key, repeatedSelection.Key);
+        return Task.CompletedTask;
+    }),
+    ("animated emote image cache evicts by count and decoded memory", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            const int maxImageBytes = 2 * 1024 * 1024;
+            AnimatedEmoteImage.ClearCacheForTest();
+            var pendingUrl = $"https://example.invalid/pending-cache-{Guid.NewGuid():N}.png";
+            var pending = AnimatedEmoteImage.SetPendingImageLoadForTest(pendingUrl, maxImageBytes);
+
+            for (var index = 0; index < 257; index++)
+            {
+                AnimatedEmoteImage.SetCachedSolidColorImageForTest(
+                    $"https://example.invalid/count-cache-{index}.png",
+                    maxImageBytes,
+                    [Colors.Red],
+                    [TimeSpan.FromMilliseconds(100)]);
+            }
+
+            var countStats = AnimatedEmoteImage.GetCacheStatsForTest();
+            Assert.Equal(257, countStats.TotalEntries);
+            Assert.Equal(256, countStats.CompletedEntries);
+            Assert.Equal(1, countStats.InFlightEntries);
+            Assert.True(AnimatedEmoteImage.ContainsCachedImageForTest(pendingUrl, maxImageBytes));
+            Assert.Equal(false, AnimatedEmoteImage.ContainsCachedImageForTest("https://example.invalid/count-cache-0.png", maxImageBytes));
+            Assert.True(AnimatedEmoteImage.ContainsCachedImageForTest("https://example.invalid/count-cache-256.png", maxImageBytes));
+
+            AnimatedEmoteImage.ClearCacheForTest();
+            for (var index = 0; index < 25; index++)
+            {
+                AnimatedEmoteImage.SetCachedSolidColorImageForTest(
+                    $"https://example.invalid/memory-cache-{index}.png",
+                    maxImageBytes,
+                    [Colors.Lime],
+                    [TimeSpan.FromMilliseconds(100)],
+                    1024,
+                    1024);
+            }
+
+            var memoryStats = AnimatedEmoteImage.GetCacheStatsForTest();
+            Assert.True(memoryStats.CompletedEntries <= 24);
+            Assert.True(memoryStats.EstimatedDecodedBytes <= 96L * 1024 * 1024);
+            Assert.Equal(false, AnimatedEmoteImage.ContainsCachedImageForTest("https://example.invalid/memory-cache-0.png", maxImageBytes));
+            Assert.True(AnimatedEmoteImage.ContainsCachedImageForTest("https://example.invalid/memory-cache-24.png", maxImageBytes));
+
+            pending.SetResult(null);
+            AnimatedEmoteImage.ClearCacheForTest();
+        });
     }),
     ("seeking replay switches tab to VOD playback and disables chat sending", async () =>
     {
@@ -3355,6 +3656,9 @@ var tests = new (string Name, Func<Task> Run)[]
         await tab.StartAsync(settings);
         Assert.True(tab.IsReplaySeekEnabled);
         Assert.Equal(1, replayResolver.CallCount);
+        await TestWait.UntilAsync(
+            () => streamlink.ResolveStreamUrlCount == 1,
+            TimeSpan.FromSeconds(1));
 
         tab.ReplaySeekValue = TimeSpan.FromMinutes(10).TotalSeconds;
         await tab.SeekReplayToCurrentSliderAsync();
@@ -3375,6 +3679,549 @@ var tests = new (string Name, Func<Task> Run)[]
         tab.OutgoingChatText = "should not send";
         await tab.SendChatMessageAsync();
         Assert.Equal(0, chatFactory.Client.SentMessages.Count);
+    }),
+    ("replay seekbar waits for required pre-resolved playback URL", async () =>
+    {
+        var releaseResolve = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var streamlink = new FakeStreamlinkService();
+        streamlink.ResolveStreamUrlOverride = async (_, cancellationToken) =>
+        {
+            await releaseResolve.Task.WaitAsync(cancellationToken);
+            return new StreamlinkResolvedUrl(new Uri("https://example.com/pre-resolved-replay.m3u8"), "Resolved.");
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/123",
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => streamlink.ResolveStreamUrlCount == 1,
+            TimeSpan.FromSeconds(1));
+
+        Assert.Equal(false, tab.CanSeekReplay);
+        Assert.Equal(true, tab.IsReplaySeekEnabled);
+        Assert.Contains("Preparing replay stream URL", tab.ReplaySeekToolTip);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+
+        releaseResolve.SetResult();
+        await TestWait.UntilAsync(
+            () => tab.CanSeekReplay,
+            TimeSpan.FromSeconds(1));
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(new Uri("https://example.com/pre-resolved-replay.m3u8"), playbackFactory.Engine!.LastPlayedUri);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.DisposeAsync();
+    }),
+    ("Twitch direct HLS replay URL skips Streamlink URL resolution", async () =>
+    {
+        var directReplayUri = new Uri("https://cdn.example.com/replays/123/index.m3u8?token=abc");
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (_, _) => throw new InvalidOperationException("Direct replay HLS should not call Streamlink URL resolution.")
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            directReplayUri.ToString(),
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+
+        Assert.True(tab.CanSeekReplay);
+        Assert.Equal(0, streamlink.ResolveStreamUrlCount);
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(0, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(directReplayUri, playbackFactory.Engine!.LastPlayedUri);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.DisposeAsync();
+    }),
+    ("Kick direct HLS replay URL resolves through Streamlink for seek playback", async () =>
+    {
+        var directReplayUri = new Uri("https://stream.kick.com/replay/abc-123/index.m3u8");
+        var resolvedReplayUri = new Uri("https://stream.kick.com/replay/abc-123/720p/index.m3u8");
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (_, _) => Task.FromResult(new StreamlinkResolvedUrl(resolvedReplayUri, "Resolved Kick replay."))
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            directReplayUri.ToString(),
+            "abc-123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "720p");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
+            "best",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => tab.CanSeekReplay,
+            TimeSpan.FromSeconds(1));
+
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(PlatformKind.Kick, streamlink.ResolveStreamUrlRequests.Single().Target.Platform);
+        Assert.Equal(directReplayUri.ToString(), streamlink.ResolveStreamUrlRequests.Single().Target.Url);
+        Assert.Equal("720p", streamlink.ResolveStreamUrlRequests.Single().Quality);
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(resolvedReplayUri, playbackFactory.Engine!.LastPlayedUri);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.DisposeAsync();
+    }),
+    ("failed replay URL prefetch allows on-demand retry during first seek", async () =>
+    {
+        var streamlink = new FakeStreamlinkService();
+        var resolveAttempts = 0;
+        streamlink.ResolveStreamUrlOverride = (_, _) =>
+        {
+            resolveAttempts++;
+            if (resolveAttempts == 1)
+            {
+                throw new InvalidOperationException("Simulated prefetch failure.");
+            }
+
+            return Task.FromResult(new StreamlinkResolvedUrl(new Uri("https://example.com/retry-replay.m3u8"), "Resolved on retry."));
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var logger = new MemoryLogger();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/123",
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            logger,
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => logger.Entries.Any(entry => entry.Message.Contains("Replay stream URL prefetch failed", StringComparison.Ordinal)),
+            TimeSpan.FromSeconds(1));
+
+        Assert.True(tab.CanSeekReplay);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(2, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(new Uri("https://example.com/retry-replay.m3u8"), playbackFactory.Engine!.LastPlayedUri);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.DisposeAsync();
+    }),
+    ("stale replay URL prefetch cannot enable current replay seek", async () =>
+    {
+        var releaseOldResolve = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldResolveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseNewResolve = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newResolveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var streamlink = new FakeStreamlinkService();
+        streamlink.ResolveStreamUrlOverride = async (request, cancellationToken) =>
+        {
+            if (request.Target.Url.Contains("/old", StringComparison.Ordinal))
+            {
+                oldResolveStarted.TrySetResult();
+                await releaseOldResolve.Task.WaitAsync(cancellationToken);
+                return new StreamlinkResolvedUrl(new Uri("https://example.com/old-replay.m3u8"), "Old resolved.");
+            }
+
+            if (request.Target.Url.Contains("/new", StringComparison.Ordinal))
+            {
+                newResolveStarted.TrySetResult();
+                await releaseNewResolve.Task.WaitAsync(cancellationToken);
+                return new StreamlinkResolvedUrl(new Uri("https://example.com/new-replay.m3u8"), "New resolved.");
+            }
+
+            throw new InvalidOperationException($"Unexpected replay URL {request.Target.Url}.");
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var oldReplay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/old",
+            "old",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var newReplay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/new",
+            "new",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(oldReplay, newReplay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await oldResolveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(false, tab.CanSeekReplay);
+
+        var refreshReplayAvailability = typeof(StreamTabViewModel).GetMethod(
+            "RefreshReplayAvailabilityAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(refreshReplayAvailability);
+        await ((Task)refreshReplayAvailability!.Invoke(tab, [settings, CancellationToken.None, 0L])!)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        await newResolveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(false, tab.CanSeekReplay);
+        releaseOldResolve.SetResult();
+        await Task.Delay(50);
+        Assert.Equal(false, tab.CanSeekReplay);
+
+        releaseNewResolve.SetResult();
+        await TestWait.UntilAsync(
+            () => tab.CanSeekReplay,
+            TimeSpan.FromSeconds(1));
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(2, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(new Uri("https://example.com/new-replay.m3u8"), playbackFactory.Engine!.LastPlayedUri);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+
+        await tab.DisposeAsync();
+    }),
+    ("stopping playback cancels pending replay URL prefetch", async () =>
+    {
+        var resolveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resolveCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var streamlink = new FakeStreamlinkService();
+        streamlink.ResolveStreamUrlOverride = async (_, cancellationToken) =>
+        {
+            resolveStarted.TrySetResult();
+            using var registration = cancellationToken.Register(() => resolveCancelled.TrySetResult());
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new StreamlinkResolvedUrl(new Uri("https://example.com/unreachable-replay.m3u8"), "Unexpected.");
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/123",
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await resolveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(false, tab.CanSeekReplay);
+
+        await tab.StopAsync();
+
+        await resolveCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(false, tab.CanSeekReplay);
+        Assert.Equal(false, tab.IsReplaySeekEnabled);
+        Assert.Equal("Replay is stopped.", tab.ReplaySeekToolTip);
+
+        await tab.DisposeAsync();
+    }),
+    ("subsequent live replay seek reuses already-playing replay media", async () =>
+    {
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/123",
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => streamlink.ResolveStreamUrlCount == 1,
+            TimeSpan.FromSeconds(1));
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(2, playbackFactory.Engine!.PlayCount);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(20));
+
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(2, playbackFactory.Engine.PlayCount);
+        Assert.Equal(TimeSpan.FromMinutes(20), playbackFactory.Engine.Position);
+        Assert.Equal(new Uri("https://example.com/replay.m3u8"), playbackFactory.Engine.LastPlayedUri);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.DisposeAsync();
+    }),
+    ("first live replay seek does not wait for old Streamlink transport disposal", async () =>
+    {
+        var releaseDispose = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var streamlink = new FakeStreamlinkService
+        {
+            StartExternalHttpOverride = (_, _) => Task.FromResult<IStreamTransportSession>(
+                new BlockingTransportSession(releaseDispose.Task, disposeStarted))
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/123",
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => streamlink.ResolveStreamUrlCount == 1,
+            TimeSpan.FromSeconds(1));
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10)).WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(2, playbackFactory.Engine!.PlayCount);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        await TestWait.UntilAsync(
+            () => disposeStarted.Task.IsCompleted,
+            TimeSpan.FromSeconds(1));
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        releaseDispose.SetResult();
+        await tab.DisposeAsync();
+    }),
+    ("live replay in-place seek failure reloads replay media", async () =>
+    {
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/123",
+            "123",
+            DateTimeOffset.UtcNow.AddHours(-1),
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            "best");
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => streamlink.ResolveStreamUrlCount == 1,
+            TimeSpan.FromSeconds(1));
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+        playbackFactory.Engine!.FailingSeekCount = 1;
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(20));
+
+        Assert.Equal(2, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(3, playbackFactory.Engine.PlayCount);
+        Assert.Equal(TimeSpan.FromMinutes(20), playbackFactory.Engine.Position);
+        Assert.Equal(new Uri("https://example.com/replay.m3u8"), playbackFactory.Engine.LastPlayedUri);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+
+        await tab.DisposeAsync();
     }),
     ("stale Twitch replay chat load cannot overwrite later seek chat", async () =>
     {
@@ -3797,7 +4644,7 @@ var tests = new (string Name, Func<Task> Run)[]
         forcedClockPosition = null;
         await tab.DisposeAsync();
     }),
-    ("native replay overlay renderer emits transparent full-size frame for empty messages", () =>
+    ("native replay overlay renderer emits transparent blank frame for empty messages", () =>
     {
         return TestSta.RunAsync(() =>
         {
@@ -3811,10 +4658,9 @@ var tests = new (string Name, Func<Task> Run)[]
                 out var height);
 
             Assert.NotNull(frame);
-            var transparentFrame = frame ?? throw new InvalidOperationException("Expected an empty replay overlay frame.");
-            Assert.Equal(width, (int)BinaryPrimitives.ReadUInt32LittleEndian(transparentFrame.AsSpan(24, 4)));
-            Assert.Equal(height, (int)BinaryPrimitives.ReadUInt32LittleEndian(transparentFrame.AsSpan(28, 4)));
-            AssertNativeOverlayTransparentFrame(transparentFrame);
+            Assert.True(width >= NativeOverlaySizing.MinWidth);
+            Assert.True(height >= NativeOverlaySizing.MinHeight);
+            AssertNativeOverlayTransparentFrame(frame!);
         });
     }),
     ("native replay overlay renderer honors saved reference size above old cap", () =>
@@ -3825,8 +4671,15 @@ var tests = new (string Name, Func<Task> Run)[]
             File.WriteAllText($"{positionStatePath}.size", "reference 1440 900");
             try
             {
+                var message = new ChatMessage(
+                    PlatformKind.Twitch,
+                    "streamer",
+                    "viewer",
+                    "sized native replay frame",
+                    DateTimeOffset.UtcNow,
+                    "#8AB4F8");
                 var frame = NativeOverlayChatFrameRenderer.TryBuildFrame(
-                    Array.Empty<ChatMessage>(),
+                    [message],
                     new ChatSettings { DockWidth = 340 },
                     18,
                     1080,
@@ -3835,12 +4688,12 @@ var tests = new (string Name, Func<Task> Run)[]
                     out var height);
 
                 Assert.NotNull(frame);
-                var transparentFrame = frame ?? throw new InvalidOperationException("Expected an empty replay overlay frame.");
                 Assert.Equal(1440, width);
                 Assert.Equal(900, height);
-                Assert.Equal(1440, (int)BinaryPrimitives.ReadUInt32LittleEndian(transparentFrame.AsSpan(24, 4)));
-                Assert.Equal(900, (int)BinaryPrimitives.ReadUInt32LittleEndian(transparentFrame.AsSpan(28, 4)));
-                AssertNativeOverlayTransparentFrame(transparentFrame);
+                var renderedFrame = frame!;
+                Assert.Equal(1440, (int)BinaryPrimitives.ReadUInt32LittleEndian(renderedFrame.AsSpan(24, 4)));
+                Assert.Equal(900, (int)BinaryPrimitives.ReadUInt32LittleEndian(renderedFrame.AsSpan(28, 4)));
+                AssertNativeOverlayChatFrame(renderedFrame);
             }
             finally
             {
@@ -3856,6 +4709,90 @@ var tests = new (string Name, Func<Task> Run)[]
                 }
             }
         });
+    }),
+    ("native replay overlay renderer scales saved reference layout content from width-only resize", () =>
+    {
+        var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-renderer-width-layout-{Guid.NewGuid():N}.txt");
+        File.WriteAllText($"{positionStatePath}.size", "reference 680 292");
+        try
+        {
+            var settings = new ChatSettings { DockWidth = 340 };
+            var defaultLayout = NativeOverlayChatFrameRenderer.ResolveReplayOverlayLayout(
+                settings,
+                18,
+                1080,
+                null);
+            var resizedLayout = NativeOverlayChatFrameRenderer.ResolveReplayOverlayLayout(
+                settings,
+                18,
+                1080,
+                positionStatePath);
+
+            Assert.Equal(340, defaultLayout.FrameWidth);
+            Assert.Equal(292, defaultLayout.FrameHeight);
+            Assert.Equal(18d, defaultLayout.EffectiveReferenceFontSize);
+            Assert.Equal(680, resizedLayout.FrameWidth);
+            Assert.Equal(292, resizedLayout.FrameHeight);
+            AssertNear(2d, resizedLayout.ContentScale);
+            Assert.Equal(18d, resizedLayout.EffectiveReferenceFontSize);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete($"{positionStatePath}.size");
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return Task.CompletedTask;
+    }),
+    ("native replay overlay renderer scales saved reference layout content", () =>
+    {
+        var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-renderer-layout-{Guid.NewGuid():N}.txt");
+        File.WriteAllText($"{positionStatePath}.size", "reference 680 584");
+        try
+        {
+            var settings = new ChatSettings { DockWidth = 340 };
+            var defaultLayout = NativeOverlayChatFrameRenderer.ResolveReplayOverlayLayout(
+                settings,
+                18,
+                1080,
+                null);
+            var resizedLayout = NativeOverlayChatFrameRenderer.ResolveReplayOverlayLayout(
+                settings,
+                18,
+                1080,
+                positionStatePath);
+
+            Assert.Equal(340, defaultLayout.FrameWidth);
+            Assert.Equal(292, defaultLayout.FrameHeight);
+            Assert.Equal(18d, defaultLayout.EffectiveReferenceFontSize);
+            Assert.Equal(680, resizedLayout.FrameWidth);
+            Assert.Equal(584, resizedLayout.FrameHeight);
+            AssertNear(2d, resizedLayout.ContentScale);
+            Assert.Equal(18d, resizedLayout.EffectiveReferenceFontSize);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete($"{positionStatePath}.size");
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return Task.CompletedTask;
     }),
     ("native replay overlay renderer advances cached animated emote frames by animation clock", () =>
     {
@@ -4173,6 +5110,295 @@ var tests = new (string Name, Func<Task> Run)[]
 
         Assert.SequenceEqual(new[] { 1L }, observedWrites);
     }),
+    ("native replay overlay write gate keeps critical clear through normal invalidation", async () =>
+    {
+        var currentVersion = 1L;
+        var currentPipeName = "critical-pipe";
+        var writes = new List<byte>();
+        var writesGate = new object();
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var normalAfterCriticalWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var writeGate = new NativeReplayOverlayFrameWriteGate(
+            new MemoryLogger(),
+            async (request, _) =>
+            {
+                lock (writesGate)
+                {
+                    writes.Add(request.Frame[0]);
+                }
+
+                if (request.Frame[0] == 1)
+                {
+                    firstStarted.TrySetResult();
+                    await releaseFirst.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+
+                if (request.Frame[0] == 3)
+                {
+                    normalAfterCriticalWritten.TrySetResult();
+                }
+
+                return new NativeReplayOverlayFrameWriteResult(true, null);
+            },
+            () => Volatile.Read(ref currentVersion),
+            _ => { },
+            TimeSpan.FromMilliseconds(50),
+            getCurrentPipeName: () => currentPipeName);
+
+        writeGate.QueueWrite(currentPipeName, [1], 1);
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        writeGate.QueueWrite(
+            currentPipeName,
+            [2],
+            1,
+            isCritical: true,
+            writeKind: "critical-clear");
+        Volatile.Write(ref currentVersion, 2);
+        writeGate.Invalidate();
+        writeGate.QueueWrite(currentPipeName, [3], 2);
+
+        releaseFirst.TrySetResult();
+        await normalAfterCriticalWritten.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        byte[] observedWrites;
+        lock (writesGate)
+        {
+            observedWrites = writes.ToArray();
+        }
+
+        Assert.SequenceEqual(new byte[] { 1, 2, 3 }, observedWrites);
+    }),
+    ("native replay overlay write gate drops stale critical blank retry after newer frame", async () =>
+    {
+        var currentVersion = 1L;
+        var currentPipeName = "seek-blank-race-pipe";
+        var writes = new List<byte>();
+        var writesGate = new object();
+        var blankAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var chatWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var writeGate = new NativeReplayOverlayFrameWriteGate(
+            new MemoryLogger(),
+            (request, _) =>
+            {
+                lock (writesGate)
+                {
+                    writes.Add(request.Frame[0]);
+                }
+
+                if (request.Frame[0] == 1)
+                {
+                    blankAttempted.TrySetResult();
+                    return Task.FromResult(new NativeReplayOverlayFrameWriteResult(
+                        false,
+                        new IOException("All pipe instances are busy.")));
+                }
+
+                chatWritten.TrySetResult();
+                return Task.FromResult(new NativeReplayOverlayFrameWriteResult(true, null));
+            },
+            () => Volatile.Read(ref currentVersion),
+            _ => { },
+            TimeSpan.FromMilliseconds(50),
+            getCurrentPipeName: () => currentPipeName,
+            retryDelay: TimeSpan.FromMilliseconds(100));
+
+        writeGate.QueueWrite(
+            currentPipeName,
+            [1],
+            1,
+            isCritical: true,
+            writeKind: "blank-frame");
+        await blankAttempted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Volatile.Write(ref currentVersion, 2);
+        writeGate.Invalidate();
+        writeGate.QueueWrite(
+            currentPipeName,
+            [2],
+            2,
+            writeKind: "chat-frame");
+
+        await chatWritten.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(250);
+
+        byte[] observedWrites;
+        lock (writesGate)
+        {
+            observedWrites = writes.ToArray();
+        }
+
+        Assert.SequenceEqual(new byte[] { 1, 2 }, observedWrites);
+    }),
+    ("native replay overlay write gate retries critical frame after pipe failure", async () =>
+    {
+        var attempts = 0;
+        var failures = 0;
+        var criticalWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var writeGate = new NativeReplayOverlayFrameWriteGate(
+            new MemoryLogger(),
+            (request, _) =>
+            {
+                var attempt = Interlocked.Increment(ref attempts);
+                if (attempt == 1)
+                {
+                    return Task.FromResult(new NativeReplayOverlayFrameWriteResult(
+                        false,
+                        new IOException("All pipe instances are busy.")));
+                }
+
+                criticalWritten.TrySetResult();
+                return Task.FromResult(new NativeReplayOverlayFrameWriteResult(true, null));
+            },
+            () => 1,
+            _ => Interlocked.Increment(ref failures),
+            TimeSpan.FromMilliseconds(50),
+            getCurrentPipeName: () => "critical-retry-pipe");
+
+        writeGate.QueueWrite("critical-retry-pipe", [1], 1, isCritical: true);
+
+        await criticalWritten.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(2, Volatile.Read(ref attempts));
+        Assert.Equal(0, Volatile.Read(ref failures));
+    }),
+    ("native replay overlay write gate retries latest current frame after timeout", async () =>
+    {
+        var attempts = 0;
+        var failures = 0;
+        var successes = 0;
+        var latestWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logger = new MemoryLogger();
+        using var writeGate = new NativeReplayOverlayFrameWriteGate(
+            logger,
+            (request, _) =>
+            {
+                var attempt = Interlocked.Increment(ref attempts);
+                if (attempt == 1)
+                {
+                    return Task.FromResult(new NativeReplayOverlayFrameWriteResult(
+                        false,
+                        new TimeoutException("connect timed out")));
+                }
+
+                return Task.FromResult(new NativeReplayOverlayFrameWriteResult(true, null));
+            },
+            () => 1,
+            _ => Interlocked.Increment(ref failures),
+            TimeSpan.FromMilliseconds(50),
+            currentWriteSucceeded: _ =>
+            {
+                Interlocked.Increment(ref successes);
+                latestWritten.TrySetResult();
+            },
+            getCurrentPipeName: () => "latest-retry-pipe",
+            writeTimeout: TimeSpan.FromSeconds(2),
+            maxCurrentFrameRetries: 3,
+            retryDelay: TimeSpan.Zero);
+
+        writeGate.QueueWrite(
+            "latest-retry-pipe",
+            [1],
+            1,
+            writeKind: "chat-frame",
+            replaySessionKey: "Twitch:streamer:123:replay");
+
+        await latestWritten.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(2, Volatile.Read(ref attempts));
+        Assert.Equal(0, Volatile.Read(ref failures));
+        Assert.Equal(1, Volatile.Read(ref successes));
+        Assert.True(
+            logger.Entries.Any(entry =>
+                entry.Message.Contains("kind=chat-frame", StringComparison.Ordinal) &&
+                entry.Message.Contains("session=Twitch:streamer:123:replay", StringComparison.Ordinal) &&
+                entry.Message.Contains("timeoutMs=2000", StringComparison.Ordinal) &&
+                entry.Message.Contains("retry=0/3", StringComparison.Ordinal)),
+            "Expected retry diagnostics to include write kind, replay session, timeout, and retry count.");
+    }),
+    ("native replay overlay write gate cancels obsolete latest-frame retry after session change", async () =>
+    {
+        var currentVersion = 1L;
+        var writes = new List<byte>();
+        var writesGate = new object();
+        var firstAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var replacementWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var writeGate = new NativeReplayOverlayFrameWriteGate(
+            new MemoryLogger(),
+            (request, _) =>
+            {
+                lock (writesGate)
+                {
+                    writes.Add(request.Frame[0]);
+                }
+
+                if (request.Frame[0] == 1)
+                {
+                    firstAttempted.TrySetResult();
+                    return Task.FromResult(new NativeReplayOverlayFrameWriteResult(
+                        false,
+                        new TimeoutException("connect timed out")));
+                }
+
+                replacementWritten.TrySetResult();
+                return Task.FromResult(new NativeReplayOverlayFrameWriteResult(true, null));
+            },
+            () => Volatile.Read(ref currentVersion),
+            _ => { },
+            TimeSpan.FromMilliseconds(50),
+            getCurrentPipeName: () => "session-change-pipe",
+            writeTimeout: TimeSpan.FromSeconds(2),
+            maxCurrentFrameRetries: 3,
+            retryDelay: TimeSpan.FromMilliseconds(200));
+
+        writeGate.QueueWrite("session-change-pipe", [1], 1);
+        await firstAttempted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Volatile.Write(ref currentVersion, 2);
+        writeGate.QueueWrite("session-change-pipe", [2], 2);
+
+        await replacementWritten.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(300);
+
+        byte[] observedWrites;
+        lock (writesGate)
+        {
+            observedWrites = writes.ToArray();
+        }
+
+        Assert.SequenceEqual(new byte[] { 1, 2 }, observedWrites);
+    }),
+    ("native replay overlay write gate reports latest frame after bounded retries", async () =>
+    {
+        var attempts = 0;
+        var failures = 0;
+        var failureReported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var writeGate = new NativeReplayOverlayFrameWriteGate(
+            new MemoryLogger(),
+            (request, _) =>
+            {
+                Interlocked.Increment(ref attempts);
+                return Task.FromResult(new NativeReplayOverlayFrameWriteResult(
+                    false,
+                    new TimeoutException("connect timed out")));
+            },
+            () => 1,
+            _ =>
+            {
+                Interlocked.Increment(ref failures);
+                failureReported.TrySetResult();
+            },
+            TimeSpan.FromMilliseconds(50),
+            getCurrentPipeName: () => "bounded-retry-pipe",
+            writeTimeout: TimeSpan.FromSeconds(2),
+            maxCurrentFrameRetries: 2,
+            retryDelay: TimeSpan.Zero);
+
+        writeGate.QueueWrite("bounded-retry-pipe", [1], 1);
+
+        await failureReported.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(3, Volatile.Read(ref attempts));
+        Assert.Equal(1, Volatile.Read(ref failures));
+    }),
     ("native VLC replay overlay sends app-rendered frame instead of legacy marquee", async () =>
     {
         await TestSta.RunAsync(async () =>
@@ -4239,6 +5465,1035 @@ var tests = new (string Name, Func<Task> Run)[]
             Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
             Assert.Equal("", playbackFactory.Engine.OverlayText);
             Assert.True(tab.DockedChatMessages.Any(message => message.Message == "native replay hello"));
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Twitch VOD native overlay blanks when replay chat is unavailable", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_vod_no_chat_{Guid.NewGuid():N}";
+            var streamlink = new FakeStreamlinkService();
+            streamlink.ResolveStreamUrlOverride = (_, _) => Task.FromResult(
+                new StreamlinkResolvedUrl(new Uri("https://example.com/vod/no-chat.m3u8"), "Resolved VOD."));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            const string unavailableReason = "Twitch replay chat is unavailable for this VOD.";
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(unavailableReason));
+            var target = new StreamTarget(
+                PlatformKind.Twitch,
+                "streamer",
+                "https://www.twitch.tv/videos/123",
+                StreamTargetKind.TwitchVod,
+                "123",
+                "VOD without replay chat",
+                "456",
+                TimeSpan.FromHours(1));
+            var queuedDispatchCount = 0;
+            var queuedDispatches = new Queue<Action>();
+            void DeferredDispatch(Action action)
+            {
+                lock (queuedDispatches)
+                {
+                    queuedDispatches.Enqueue(action);
+                }
+
+                Interlocked.Increment(ref queuedDispatchCount);
+            }
+
+            void DrainDispatches()
+            {
+                while (true)
+                {
+                    Action action;
+                    lock (queuedDispatches)
+                    {
+                        if (queuedDispatches.Count == 0)
+                        {
+                            return;
+                        }
+
+                        action = queuedDispatches.Dequeue();
+                    }
+
+                    action();
+                }
+            }
+
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                streamlink,
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                DeferredDispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            var messagesTask = ReadNativeOverlayPipeMessagesUntilAsync(
+                pipeName,
+                messages => messages.Any(IsNativeOverlayTransparentFrame),
+                TimeSpan.FromSeconds(4));
+            await tab.StartAsync(settings);
+
+            var messages = await messagesTask;
+            await TestWait.UntilAsync(() => replayChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
+            DrainDispatches();
+
+            Assert.True(messages.Any(IsNativeOverlayTransparentFrame));
+            Assert.Equal(false, messages.Any(IsNativeOverlayRenderedChatFrame));
+            Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+            Assert.Equal("", playbackFactory.Engine.OverlayText);
+            Assert.Equal("123", replayChatProvider.Requests[0].ReplayId);
+            Assert.True(Volatile.Read(ref queuedDispatchCount) > 0);
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Kick VOD native overlay renders replay chat unavailable status", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_no_cache_{Guid.NewGuid():N}";
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            const string unavailableReason = "No official Kick webhook chat cache was found for xqc. Enable the Kick webhook listener, subscribe to chat.message.sent, and capture chat before opening the VOD.";
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var chatFactory = new FakeChatClientFactory();
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(unavailableReason));
+            var queuedDispatchCount = 0;
+            var queuedDispatches = new Queue<Action>();
+            void DeferredDispatch(Action action)
+            {
+                lock (queuedDispatches)
+                {
+                    queuedDispatches.Enqueue(action);
+                }
+
+                Interlocked.Increment(ref queuedDispatchCount);
+            }
+
+            void DrainDispatches()
+            {
+                while (true)
+                {
+                    Action action;
+                    lock (queuedDispatches)
+                    {
+                        if (queuedDispatches.Count == 0)
+                        {
+                            return;
+                        }
+
+                        action = queuedDispatches.Dequeue();
+                    }
+
+                    action();
+                }
+            }
+
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD without cached chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt);
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                chatFactory,
+                new MemoryLogger(),
+                DeferredDispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            await tab.StartAsync(settings);
+            await TestWait.UntilAsync(
+                () =>
+                {
+                    DrainDispatches();
+                    return replayChatProvider.CallCount >= 1 &&
+                        DockedChatMessagesContainText(tab, "webhook chat cache");
+                },
+                TimeSpan.FromSeconds(2));
+
+            var renderedFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayRenderedChatFrame,
+                TimeSpan.FromSeconds(4));
+            var invalidateFrame = typeof(StreamTabViewModel).GetMethod(
+                "InvalidateNativeReplayOverlayFrame",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(invalidateFrame);
+            invalidateFrame!.Invoke(tab, []);
+
+            AssertNativeOverlayChatFrame(await renderedFrameTask);
+            Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+            Assert.Equal("", playbackFactory.Engine.OverlayText);
+            Assert.Equal(0, chatFactory.Client.ConnectCount);
+            Assert.Equal(false, tab.CanSendChatMessages);
+            Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
+            Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Kick VOD native overlay renders loaded replay chat without manual invalidation", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_chat_{Guid.NewGuid():N}";
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            [
+                new ReplayChatMessage(
+                    TimeSpan.Zero,
+                    new ChatMessage(
+                        PlatformKind.Kick,
+                        "xqc",
+                        "viewer",
+                        "native Kick VOD replay chat",
+                        startedAt,
+                        MessageId: "native-kick-vod-replay-chat"))
+            ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                action => action(),
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            var messagesTask = ReadNativeOverlayPipeMessagesUntilAsync(
+                pipeName,
+                messages => messages.Any(IsNativeOverlayRenderedChatFrame),
+                TimeSpan.FromSeconds(4));
+
+            await tab.StartAsync(settings);
+            var messages = await messagesTask;
+
+            Assert.True(messages.Any(IsNativeOverlayRenderedChatFrame));
+            Assert.True(DockedChatMessagesContain(tab, "native Kick VOD replay chat"));
+            Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+            Assert.Equal("", playbackFactory.Engine.OverlayText);
+            Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
+            Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
+            Assert.Equal("668", replayChatProvider.Requests[0].ChatRoomId);
+            Assert.Equal(TimeSpan.Zero, replayChatProvider.Offsets[0]);
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Kick VOD native overlay resize event keeps replay chat text stable for width-only resize", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_width_resize_{Guid.NewGuid():N}";
+            var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-kick-width-resize-{Guid.NewGuid():N}.txt");
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            [
+                new ReplayChatMessage(
+                    TimeSpan.Zero,
+                    new ChatMessage(
+                        PlatformKind.Kick,
+                        "xqc",
+                        "viewer",
+                        "width resized Kick VOD replay chat",
+                        startedAt,
+                        MessageId: "width-resized-kick-vod-replay-chat"))
+            ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName,
+                NativeOverlayPositionStatePathOverride = positionStatePath
+            });
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            void Dispatch(Action action)
+            {
+                if (dispatcher.CheckAccess())
+                {
+                    action();
+                }
+                else
+                {
+                    dispatcher.Invoke(action);
+                }
+            }
+
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                Dispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+            settings.Chat.VlcOverlayFontSize = 18;
+
+            try
+            {
+                tab.SetVideoHandle(new IntPtr(42));
+                var initialFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                    pipeName,
+                    message =>
+                        IsNativeOverlayRenderedChatFrame(message) &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(24, 4)) == 340 &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4)) == 292,
+                    TimeSpan.FromSeconds(4));
+
+                await tab.StartAsync(settings);
+                var initialFrame = await initialFrameTask;
+                AssertNativeOverlayChatFrame(initialFrame);
+                var initialBounds = GetNativeOverlayAlphaBounds(initialFrame);
+                Assert.True(initialBounds.Height > 0);
+                await TestWait.UntilAsync(
+                    () => tab.IsNativeReplayOverlayEventHostRunning &&
+                        string.Equals(tab.NativeReplayOverlayEventHostPipeName, pipeName, StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(2));
+
+                var resizedFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                    pipeName,
+                    message =>
+                        IsNativeOverlayRenderedChatFrame(message) &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(24, 4)) == 680 &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4)) == 292,
+                    TimeSpan.FromSeconds(4));
+                await WriteNativeOverlayEventPipeMessageAsync(
+                    $"{pipeName}_events",
+                    BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(680, 292)),
+                    TimeSpan.FromSeconds(2));
+
+                var resizedFrame = await resizedFrameTask;
+                AssertNativeOverlayChatFrame(resizedFrame);
+                var resizedBounds = GetNativeOverlayAlphaBounds(resizedFrame);
+                Assert.True(
+                    resizedBounds.Height <= initialBounds.Height + 3,
+                    $"Expected width-resized replay overlay text to stay within 3px of {initialBounds.Height}px, got {resizedBounds.Height}px.");
+                Assert.Equal("reference 680 292", File.ReadAllText($"{positionStatePath}.size"));
+                Assert.True(DockedChatMessagesContain(tab, "width resized Kick VOD replay chat"));
+            }
+            finally
+            {
+                await tab.DisposeAsync();
+                File.Delete(positionStatePath);
+                File.Delete($"{positionStatePath}.size");
+            }
+        });
+    }),
+    ("explicit Kick VOD native overlay ignores stale seekbar handoff resize before lower-height replay frame", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_seekbar_resize_{Guid.NewGuid():N}";
+            var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-kick-seekbar-resize-{Guid.NewGuid():N}.txt");
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var engine = new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName,
+                NativeOverlayPositionStatePathOverride = positionStatePath,
+                VideoWidth = 1280,
+                VideoHeight = 720
+            };
+            var playbackFactory = new FakePlaybackEngineFactory(() => engine);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            [
+                new ReplayChatMessage(
+                    TimeSpan.Zero,
+                    new ChatMessage(
+                        PlatformKind.Kick,
+                        "xqc",
+                        "viewer",
+                        "seekbar handoff Kick VOD replay chat",
+                        startedAt,
+                        MessageId: "seekbar-handoff-kick-vod-replay-chat"))
+            ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            void Dispatch(Action action)
+            {
+                if (dispatcher.CheckAccess())
+                {
+                    action();
+                }
+                else
+                {
+                    dispatcher.Invoke(action);
+                }
+            }
+
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                Dispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            try
+            {
+                tab.SetVideoHandle(new IntPtr(42));
+                await tab.StartAsync(settings);
+                await TestWait.UntilAsync(
+                    () => tab.IsNativeReplayOverlayEventHostRunning &&
+                        string.Equals(tab.NativeReplayOverlayEventHostPipeName, pipeName, StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(2));
+
+                await WriteNativeOverlayEventPipeMessageAsync(
+                    $"{pipeName}_events",
+                    BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(340, 292)),
+                    TimeSpan.FromSeconds(2));
+
+                var replayFrame = await ReadNativeOverlayPipeMatchingMessageAsync(
+                    pipeName,
+                    message =>
+                        IsNativeOverlayRenderedChatFrame(message) &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(24, 4)) == 227 &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4)) == 195,
+                    TimeSpan.FromSeconds(5));
+                AssertNativeOverlayChatFrame(replayFrame);
+                await Task.Delay(150);
+
+                Assert.Equal(false, File.Exists($"{positionStatePath}.size"));
+                Assert.True(DockedChatMessagesContain(tab, "seekbar handoff Kick VOD replay chat"));
+            }
+            finally
+            {
+                await tab.DisposeAsync();
+                File.Delete(positionStatePath);
+                File.Delete($"{positionStatePath}.size");
+            }
+        });
+    }),
+    ("explicit Kick VOD native overlay resends loaded replay chat during startup warmup", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_warmup_{Guid.NewGuid():N}";
+            var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-kick-warmup-{Guid.NewGuid():N}.txt");
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            [
+                new ReplayChatMessage(
+                    TimeSpan.Zero,
+                    new ChatMessage(
+                        PlatformKind.Kick,
+                        "xqc",
+                        "viewer",
+                        "warmup Kick VOD replay chat",
+                        startedAt,
+                        MessageId: "warmup-kick-vod-replay-chat"))
+            ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName,
+                NativeOverlayPositionStatePathOverride = positionStatePath
+            });
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            void Dispatch(Action action)
+            {
+                if (dispatcher.CheckAccess())
+                {
+                    action();
+                }
+                else
+                {
+                    dispatcher.Invoke(action);
+                }
+            }
+
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                Dispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            try
+            {
+                tab.SetVideoHandle(new IntPtr(42));
+                var messagesTask = ReadNativeOverlayPipeMessagesUntilAsync(
+                    pipeName,
+                    messages => messages.Count(IsNativeOverlayRenderedChatFrame) >= 2,
+                    TimeSpan.FromSeconds(5));
+
+                await tab.StartAsync(settings);
+                var messages = await messagesTask;
+
+                Assert.True(messages.Count(IsNativeOverlayRenderedChatFrame) >= 2);
+                Assert.True(DockedChatMessagesContain(tab, "warmup Kick VOD replay chat"));
+                Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+                Assert.Equal("", playbackFactory.Engine.OverlayText);
+            }
+            finally
+            {
+                await tab.DisposeAsync();
+                File.Delete(positionStatePath);
+                File.Delete($"{positionStatePath}.size");
+            }
+        });
+    }),
+    ("explicit Kick VOD native overlay refreshes replay frame when video size becomes available", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_video_size_{Guid.NewGuid():N}";
+            var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-kick-video-size-{Guid.NewGuid():N}.txt");
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var engine = new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName,
+                NativeOverlayPositionStatePathOverride = positionStatePath,
+                VideoWidth = 0,
+                VideoHeight = 0
+            };
+            var playbackFactory = new FakePlaybackEngineFactory(() => engine);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            [
+                new ReplayChatMessage(
+                    TimeSpan.Zero,
+                    new ChatMessage(
+                        PlatformKind.Kick,
+                        "xqc",
+                        "viewer",
+                        "video size Kick VOD replay chat",
+                        startedAt,
+                        MessageId: "video-size-kick-vod-replay-chat"))
+            ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            void Dispatch(Action action)
+            {
+                if (dispatcher.CheckAccess())
+                {
+                    action();
+                }
+                else
+                {
+                    dispatcher.Invoke(action);
+                }
+            }
+
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                Dispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            try
+            {
+                tab.SetVideoHandle(new IntPtr(42));
+                var initialFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                    pipeName,
+                    IsNativeOverlayRenderedChatFrame,
+                    TimeSpan.FromSeconds(4));
+
+                await tab.StartAsync(settings);
+                var initialFrame = await initialFrameTask;
+                AssertNativeOverlayChatFrame(initialFrame);
+
+                engine.VideoWidth = 1280;
+                engine.VideoHeight = 720;
+                var refreshVideoAspect = typeof(StreamTabViewModel).GetMethod(
+                    "RefreshVideoAspectRatioPollingSample",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(refreshVideoAspect);
+                refreshVideoAspect!.Invoke(tab, []);
+
+                await WriteNativeOverlayEventPipeMessageAsync(
+                    $"{pipeName}_events",
+                    BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(340, 292)),
+                    TimeSpan.FromSeconds(2));
+
+                var resizedFrame = await ReadNativeOverlayPipeMatchingMessageAsync(
+                    pipeName,
+                    message =>
+                        IsNativeOverlayRenderedChatFrame(message) &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(24, 4)) == 227 &&
+                        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4)) == 195,
+                    TimeSpan.FromSeconds(5));
+                AssertNativeOverlayChatFrame(resizedFrame);
+                await Task.Delay(150);
+
+                Assert.Equal(false, File.Exists($"{positionStatePath}.size"));
+                Assert.True(DockedChatMessagesContain(tab, "video size Kick VOD replay chat"));
+            }
+            finally
+            {
+                await tab.DisposeAsync();
+                File.Delete(positionStatePath);
+                File.Delete($"{positionStatePath}.size");
+            }
+        });
+    }),
+    ("explicit Kick VOD native overlay retries loaded replay chat until pipe is ready", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_retry_{Guid.NewGuid():N}";
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            [
+                new ReplayChatMessage(
+                    TimeSpan.Zero,
+                    new ChatMessage(
+                        PlatformKind.Kick,
+                        "xqc",
+                        "viewer",
+                        "retry Kick VOD replay chat",
+                        startedAt,
+                        MessageId: "retry-kick-vod-replay-chat"))
+            ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                action => action(),
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            await tab.StartAsync(settings);
+            await TestWait.UntilAsync(
+                () => replayChatProvider.CallCount >= 1 &&
+                    DockedChatMessagesContain(tab, "retry Kick VOD replay chat"),
+                TimeSpan.FromSeconds(1));
+            await Task.Delay(TimeSpan.FromMilliseconds(900));
+
+            var renderedFrame = await ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayRenderedChatFrame,
+                TimeSpan.FromSeconds(4));
+
+            AssertNativeOverlayChatFrame(renderedFrame);
+            Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+            Assert.Equal("", playbackFactory.Engine.OverlayText);
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Kick VOD seek writes native blank frame while replay chat load is delayed", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_kick_vod_seek_blank_{Guid.NewGuid():N}";
+            var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var replayChatProvider = new BlockingReplayChatProvider();
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var target = new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD with delayed seek chat",
+                "",
+                TimeSpan.FromMinutes(30),
+                startedAt,
+                ChatRoomId: "668");
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                action => action(),
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            await tab.StartAsync(settings);
+            await replayChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            var initialFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayRenderedChatFrame,
+                TimeSpan.FromSeconds(4));
+            replayChatProvider.ReleaseFirstLoad();
+            AssertNativeOverlayChatFrame(await initialFrameTask);
+            await replayChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            var blankFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayTransparentFrame,
+                TimeSpan.FromSeconds(4));
+            await tab.SeekReplayAsync(TimeSpan.FromMinutes(5));
+            await replayChatProvider.SecondLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            AssertNativeOverlayTransparentFrame(await blankFrameTask);
+
+            var renderedFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayRenderedChatFrame,
+                TimeSpan.FromSeconds(4));
+            replayChatProvider.ReleaseSecondLoad();
+            await TestWait.UntilAsync(
+                () => DockedChatMessagesContain(tab, "seek B chat"),
+                TimeSpan.FromSeconds(2));
+            AssertNativeOverlayChatFrame(await renderedFrameTask);
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Twitch VOD native overlay blanks while replay chat load is pending", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_vod_pending_chat_{Guid.NewGuid():N}";
+            var streamlink = new FakeStreamlinkService();
+            streamlink.ResolveStreamUrlOverride = (_, _) => Task.FromResult(
+                new StreamlinkResolvedUrl(new Uri("https://example.com/vod/pending-chat.m3u8"), "Resolved VOD."));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var replayChatProvider = new BlockingReplayChatProvider();
+            var target = new StreamTarget(
+                PlatformKind.Twitch,
+                "streamer",
+                "https://www.twitch.tv/videos/125",
+                StreamTargetKind.TwitchVod,
+                "125",
+                "VOD with pending replay chat",
+                "456",
+                TimeSpan.FromHours(1));
+            var queuedDispatches = new Queue<Action>();
+            void DeferredDispatch(Action action)
+            {
+                lock (queuedDispatches)
+                {
+                    queuedDispatches.Enqueue(action);
+                }
+            }
+
+            void DrainDispatches()
+            {
+                while (true)
+                {
+                    Action action;
+                    lock (queuedDispatches)
+                    {
+                        if (queuedDispatches.Count == 0)
+                        {
+                            return;
+                        }
+
+                        action = queuedDispatches.Dequeue();
+                    }
+
+                    action();
+                }
+            }
+
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                streamlink,
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                DeferredDispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            var blankFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayTransparentFrame,
+                TimeSpan.FromSeconds(4));
+
+            await tab.StartAsync(settings);
+            await replayChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            AssertNativeOverlayTransparentFrame(await blankFrameTask);
+            Assert.Equal(false, replayChatProvider.FirstLoadReturned.Task.IsCompleted);
+            Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+            Assert.Equal("", playbackFactory.Engine.OverlayText);
+
+            replayChatProvider.ReleaseFirstLoad();
+            await replayChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            DrainDispatches();
+            await tab.DisposeAsync();
+        });
+    }),
+    ("explicit Twitch VOD native overlay blanks when replay chat loads empty", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_replay_vod_empty_chat_{Guid.NewGuid():N}";
+            var streamlink = new FakeStreamlinkService();
+            streamlink.ResolveStreamUrlOverride = (_, _) => Task.FromResult(
+                new StreamlinkResolvedUrl(new Uri("https://example.com/vod/empty-chat.m3u8"), "Resolved VOD."));
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var replayChatProvider = new FakeReplayChatProvider(
+                ReplayChatLoadResult.Available([], TimeSpan.Zero, TimeSpan.FromHours(1)));
+            var target = new StreamTarget(
+                PlatformKind.Twitch,
+                "streamer",
+                "https://www.twitch.tv/videos/124",
+                StreamTargetKind.TwitchVod,
+                "124",
+                "VOD with empty replay chat",
+                "456",
+                TimeSpan.FromHours(1));
+            var queuedDispatchCount = 0;
+            var queuedDispatches = new Queue<Action>();
+            void DeferredDispatch(Action action)
+            {
+                lock (queuedDispatches)
+                {
+                    queuedDispatches.Enqueue(action);
+                }
+
+                Interlocked.Increment(ref queuedDispatchCount);
+            }
+
+            void DrainDispatches()
+            {
+                while (true)
+                {
+                    Action action;
+                    lock (queuedDispatches)
+                    {
+                        if (queuedDispatches.Count == 0)
+                        {
+                            return;
+                        }
+
+                        action = queuedDispatches.Dequeue();
+                    }
+
+                    action();
+                }
+            }
+
+            var tab = new StreamTabViewModel(
+                target,
+                "best",
+                streamlink,
+                playbackFactory,
+                new FakeChatClientFactory(),
+                new MemoryLogger(),
+                DeferredDispatch,
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+
+            tab.SetVideoHandle(new IntPtr(42));
+            var messagesTask = ReadNativeOverlayPipeMessagesUntilAsync(
+                pipeName,
+                messages => messages.Any(IsNativeOverlayTransparentFrame),
+                TimeSpan.FromSeconds(4));
+            await tab.StartAsync(settings);
+
+            var messages = await messagesTask;
+            await TestWait.UntilAsync(() => replayChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
+            DrainDispatches();
+
+            Assert.True(messages.Any(IsNativeOverlayTransparentFrame));
+            Assert.Equal(false, messages.Any(IsNativeOverlayRenderedChatFrame));
+            Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+            Assert.Equal("", playbackFactory.Engine.OverlayText);
+            Assert.Equal("124", replayChatProvider.Requests[0].ReplayId);
+            Assert.True(Volatile.Read(ref queuedDispatchCount) > 0);
 
             await tab.DisposeAsync();
         });
@@ -4345,12 +6600,11 @@ var tests = new (string Name, Func<Task> Run)[]
                 {
                     var secondFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
                         pipeName,
-                        IsNativeOverlayRenderedChatFrame,
+                        message => IsNativeOverlayRenderedChatFrame(message) && !firstFrame.SequenceEqual(message),
                         TimeSpan.FromSeconds(4));
                     var secondFrame = await secondFrameTask;
 
                     AssertNativeOverlayChatFrame(secondFrame);
-                    Assert.Equal(false, firstFrame.SequenceEqual(secondFrame));
                     Assert.SequenceEqual(
                         visibleMessages,
                         tab.DockedChatMessages.Select(message => message.MessageId ?? message.Message).ToArray());
@@ -4371,16 +6625,19 @@ var tests = new (string Name, Func<Task> Run)[]
             }
         });
     }),
-    ("native VLC replay overlay coalesces seek clear when captured chat is immediately visible", async () =>
+    ("native VLC replay overlay coalesces seek blank when captured chat is immediately visible", async () =>
     {
         await TestSta.RunAsync(async () =>
         {
             var pipeName = $"svs_replay_coalesce_{Guid.NewGuid():N}";
             var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            TimeSpan? forcedClockPosition = null;
             var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
             {
                 UsesNativeOverlayOverride = true,
-                NativeOverlayPipeNameOverride = pipeName
+                NativeOverlayPipeNameOverride = pipeName,
+                PlaybackClockOverride = engine =>
+                    (true, new PlaybackClock(forcedClockPosition ?? engine.Position, engine.Duration, engine.Seekable))
             });
             var chatFactory = new FakeChatClientFactory();
             var replay = new ReplaySessionInfo(
@@ -4431,16 +6688,34 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var messages = await messagesTask;
             Assert.True(messages.Any(IsNativeOverlayRenderedChatFrame));
-            Assert.Equal(false, messages.Any(IsNativeOverlayTransparentFrame));
+            Assert.Equal(false, messages.Any(IsNativeOverlayBlankFrame));
             await TestWait.UntilAsync(
                 () => tab.ChatMessages.Any(message => message.Message == "captured chat ready for native overlay"),
                 TimeSpan.FromSeconds(1));
             Assert.True(tab.ChatMessages.Any(message => message.Message == "captured chat ready for native overlay"));
 
+            MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(50));
+            forcedClockPosition = TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(50));
+            InvokeReplayClockUpdate(tab);
+            Assert.True(tab.ChatMessages.Any(message => message.Message == "captured chat ready for native overlay"));
+
+            var invalidateFrame = typeof(StreamTabViewModel).GetMethod(
+                "InvalidateNativeReplayOverlayFrame",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(invalidateFrame);
+            var retainedFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayRenderedChatFrame,
+                TimeSpan.FromSeconds(4));
+            invalidateFrame!.Invoke(tab, []);
+            AssertNativeOverlayChatFrame(await retainedFrameTask);
+            Assert.Equal(false, tab.ChatMessages.Any(message =>
+                message.Message.Contains("Kick replay chat should not be requested", StringComparison.Ordinal)));
+
             await tab.DisposeAsync();
         });
     }),
-    ("native VLC replay overlay retries transparent empty frame after empty Kick seekback write failure", async () =>
+    ("native VLC replay overlay retries blank frame after empty Kick seekback write failure", async () =>
     {
         await TestSta.RunAsync(async () =>
         {
@@ -4485,20 +6760,7 @@ var tests = new (string Name, Func<Task> Run)[]
             tab.SetVideoHandle(new IntPtr(42));
             await tab.StartAsync(settings);
 
-            await using (var clearServer = CreateNativeOverlayPipeServer(pipeName))
-            {
-                var clearFrameTask = ReadNativeOverlayPipeFullMessageAsync(clearServer);
-                await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-                var clearFrame = await clearFrameTask.WaitAsync(TimeSpan.FromSeconds(2));
-                if (IsNativeOverlayTransparentFrame(clearFrame))
-                {
-                    AssertNativeOverlayTransparentFrame(clearFrame);
-                }
-                else
-                {
-                    AssertNativeOverlayBlankFrame(clearFrame);
-                }
-            }
+            await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
 
             var invalidateFrame = typeof(StreamTabViewModel).GetMethod(
                 "InvalidateNativeReplayOverlayFrame",
@@ -4520,10 +6782,10 @@ var tests = new (string Name, Func<Task> Run)[]
                 pipeName,
                 IsNativeOverlayTransparentFrame,
                 TimeSpan.FromSeconds(4));
-            writeFailed!.Invoke(tab, [new IOException("simulated transparent frame write failure")]);
+            writeFailed!.Invoke(tab, [new IOException("simulated blank frame write failure")]);
 
-            var transparentFrame = await secondFrameTask;
-            AssertNativeOverlayTransparentFrame(transparentFrame);
+            var blankFrame = await secondFrameTask;
+            AssertNativeOverlayTransparentFrame(blankFrame);
             Assert.Equal(false, tab.ChatMessages.Any(message =>
                 message.Message.Contains("Kick seekback chat", StringComparison.Ordinal)));
 
@@ -4645,6 +6907,7 @@ var tests = new (string Name, Func<Task> Run)[]
             () => 720);
 
         host.Start(pipeName, positionStatePath);
+        host.ResumeResizePersistence();
 
         await WriteNativeOverlayEventPipeMessageAsync(
             $"{pipeName}_events",
@@ -4652,6 +6915,44 @@ var tests = new (string Name, Func<Task> Run)[]
             TimeSpan.FromSeconds(2));
         await invalidated.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
+        Assert.Equal("reference 1200 480", File.ReadAllText($"{positionStatePath}.size"));
+    }),
+    ("native VLC replay overlay resize event waits until replay frame is established", async () =>
+    {
+        var pipeName = $"svs_replay_resize_suspended_{Guid.NewGuid():N}";
+        var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-position-{Guid.NewGuid():N}.txt");
+        var invalidated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invalidationCount = 0;
+        await using var host = new NativeOverlayReplayEventHost(
+            new MemoryLogger(),
+            action => action(),
+            () =>
+            {
+                Interlocked.Increment(ref invalidationCount);
+                invalidated.TrySetResult();
+            },
+            () => 720,
+            TimeSpan.FromMilliseconds(50));
+
+        host.Start(pipeName, positionStatePath);
+
+        await WriteNativeOverlayEventPipeMessageAsync(
+            $"{pipeName}_events",
+            BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(800, 320)),
+            TimeSpan.FromSeconds(2));
+        await Task.Delay(150);
+
+        Assert.Equal(0, Volatile.Read(ref invalidationCount));
+        Assert.Equal(false, File.Exists($"{positionStatePath}.size"));
+
+        host.ResumeResizePersistence();
+        await WriteNativeOverlayEventPipeMessageAsync(
+            $"{pipeName}_events",
+            BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(800, 320)),
+            TimeSpan.FromSeconds(2));
+        await invalidated.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, Volatile.Read(ref invalidationCount));
         Assert.Equal("reference 1200 480", File.ReadAllText($"{positionStatePath}.size"));
     }),
     ("native VLC replay overlay resize event clamps to live-equivalent reference size", async () =>
@@ -4666,6 +6967,7 @@ var tests = new (string Name, Func<Task> Run)[]
             () => 720);
 
         host.Start(pipeName, positionStatePath);
+        host.ResumeResizePersistence();
 
         await WriteNativeOverlayEventPipeMessageAsync(
             $"{pipeName}_events",
@@ -4674,6 +6976,45 @@ var tests = new (string Name, Func<Task> Run)[]
         await invalidated.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.Equal("reference 1920 1080", File.ReadAllText($"{positionStatePath}.size"));
+    }),
+    ("native VLC replay overlay ignores undersized resize event without overwriting saved size", async () =>
+    {
+        var pipeName = $"svs_replay_resize_ignore_small_{Guid.NewGuid():N}";
+        var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-position-{Guid.NewGuid():N}.txt");
+        File.WriteAllText($"{positionStatePath}.size", "reference 900 500");
+        var invalidated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invalidationCount = 0;
+        await using var host = new NativeOverlayReplayEventHost(
+            new MemoryLogger(),
+            action => action(),
+            () =>
+            {
+                Interlocked.Increment(ref invalidationCount);
+                invalidated.TrySetResult();
+            },
+            () => 720,
+            TimeSpan.FromMilliseconds(50));
+
+        host.Start(pipeName, positionStatePath);
+        host.ResumeResizePersistence();
+
+        await WriteNativeOverlayEventPipeMessageAsync(
+            $"{pipeName}_events",
+            BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(1, 1)),
+            TimeSpan.FromSeconds(2));
+        await Task.Delay(150);
+
+        Assert.Equal(0, Volatile.Read(ref invalidationCount));
+        Assert.Equal("reference 900 500", File.ReadAllText($"{positionStatePath}.size"));
+
+        await WriteNativeOverlayEventPipeMessageAsync(
+            $"{pipeName}_events",
+            BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(800, 320)),
+            TimeSpan.FromSeconds(2));
+        await invalidated.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, Volatile.Read(ref invalidationCount));
+        Assert.Equal("reference 1200 480", File.ReadAllText($"{positionStatePath}.size"));
     }),
     ("native VLC replay overlay resize events coalesce burst to final size", async () =>
     {
@@ -4695,6 +7036,7 @@ var tests = new (string Name, Func<Task> Run)[]
             TimeSpan.FromMilliseconds(50));
 
         host.Start(pipeName, positionStatePath);
+        host.ResumeResizePersistence();
 
         await WriteNativeOverlayEventPipeMessagesAsync(
             $"{pipeName}_events",
@@ -4718,6 +7060,39 @@ var tests = new (string Name, Func<Task> Run)[]
 
         Assert.Equal(1, Volatile.Read(ref invalidationCount));
         Assert.Equal("reference 1440 810", File.ReadAllText($"{positionStatePath}.size"));
+    }),
+    ("native VLC replay overlay event host retries when event pipe instance is busy", async () =>
+    {
+        var pipeName = $"svs_replay_resize_busy_{Guid.NewGuid():N}";
+        var eventPipeName = $"{pipeName}_events";
+        var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-position-{Guid.NewGuid():N}.txt");
+        var invalidated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var busyPipe = new NamedPipeServerStream(
+            eventPipeName,
+            PipeDirection.In,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        await using var host = new NativeOverlayReplayEventHost(
+            new MemoryLogger(),
+            action => action(),
+            () => invalidated.TrySetResult(),
+            () => 720);
+
+        host.Start(pipeName, positionStatePath);
+        host.ResumeResizePersistence();
+        await Task.Delay(150);
+        Assert.True(host.IsRunning);
+
+        await busyPipe.DisposeAsync();
+        await WriteNativeOverlayEventPipeMessageAsync(
+            eventPipeName,
+            BuildNativeOverlayEventMessage(3, PackNativeOverlaySize(800, 320)),
+            TimeSpan.FromSeconds(2));
+        await invalidated.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(host.IsRunning);
+        Assert.Equal("reference 1200 480", File.ReadAllText($"{positionStatePath}.size"));
     }),
     ("native VLC replay overlay resize burst after seekback writes latest frame and keeps host alive", async () =>
     {
@@ -4794,7 +7169,10 @@ var tests = new (string Name, Func<Task> Run)[]
                 message => BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(8, 4)) > 4,
                 TimeSpan.FromSeconds(3));
             await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-            AssertNativeOverlayChatFrame(await initialFrameTask);
+            var initialFrame = await initialFrameTask;
+            AssertNativeOverlayChatFrame(initialFrame);
+            var initialBounds = GetNativeOverlayAlphaBounds(initialFrame);
+            Assert.True(initialBounds.Height > 0);
             await TestWait.UntilAsync(
                 () => tab.IsNativeReplayOverlayEventHostRunning &&
                     string.Equals(tab.NativeReplayOverlayEventHostPipeName, pipeName, StringComparison.Ordinal),
@@ -4817,6 +7195,10 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var resizedFrame = await resizedFrameTask;
             AssertNativeOverlayChatFrame(resizedFrame);
+            var resizedBounds = GetNativeOverlayAlphaBounds(resizedFrame);
+            Assert.True(
+                resizedBounds.Height <= initialBounds.Height + 3,
+                $"Expected resized replay overlay text to stay within 3px of {initialBounds.Height}px, got {resizedBounds.Height}px.");
             Assert.Equal("reference 960 540", File.ReadAllText($"{positionStatePath}.size"));
             Assert.True(tab.IsNativeReplayOverlayEventHostRunning);
             Assert.Equal(pipeName, tab.NativeReplayOverlayEventHostPipeName);
@@ -5077,6 +7459,217 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(0, chatFactory.Client.SentMessages.Count);
 
         await tab.DisposeAsync();
+    }),
+    ("current-live DVR seek before first captured Twitch chat stays quiet", async () =>
+    {
+        var startedAt = new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero);
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var chatFactory = new FakeChatClientFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://d1g1f25tn8m2e6.cloudfront.net/live/index-dvr.m3u8",
+            "live-dvr-123456789",
+            startedAt,
+            TimeSpan.FromHours(8),
+            true,
+            "",
+            "best",
+            ReplayMediaKind.CurrentLiveDvr);
+        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+        var tab = new StreamTabViewModel(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+            "source",
+            streamlink,
+            playbackFactory,
+            chatFactory,
+            new MemoryLogger(),
+            action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            replayChatProvider: replayChatProvider);
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\VLC"
+        };
+        settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Docked;
+        tab.SetVideoHandle(new IntPtr(42));
+
+        await tab.StartAsync(settings);
+        chatFactory.Client.Receive(new ChatMessage(
+            PlatformKind.Twitch,
+            "streamer",
+            "viewer",
+            "first captured Twitch DVR chat",
+            startedAt.Add(new TimeSpan(7, 17, 18)),
+            MessageId: "first-live-dvr-captured-chat"));
+
+        await tab.SeekReplayAsync(new TimeSpan(7, 16, 0));
+
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+        Assert.Equal(0, replayChatProvider.CallCount);
+        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
+        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("Current-live DVR chat", StringComparison.Ordinal)));
+        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("was not captured by this tab", StringComparison.Ordinal)));
+        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("VOD comments ID", StringComparison.Ordinal)));
+
+        await tab.DisposeAsync();
+    }),
+    ("current-live DVR native overlay blanks when seeking before first captured Twitch chat", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_live_dvr_empty_{Guid.NewGuid():N}";
+            var startedAt = new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero);
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName
+            });
+            var chatFactory = new FakeChatClientFactory();
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Twitch,
+                "streamer",
+                "https://d1g1f25tn8m2e6.cloudfront.net/live/index-dvr.m3u8",
+                "live-dvr-123456789",
+                startedAt,
+                TimeSpan.FromHours(8),
+                true,
+                "",
+                "best",
+                ReplayMediaKind.CurrentLiveDvr);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+            var tab = new StreamTabViewModel(
+                StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+                "source",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                chatFactory,
+                new MemoryLogger(),
+                action => action(),
+                replayResolver: new FakeReplayResolver(replay),
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+            tab.SetVideoHandle(new IntPtr(42));
+
+            await tab.StartAsync(settings);
+            await TestWait.UntilAsync(() => tab.IsReplaySeekEnabled, TimeSpan.FromSeconds(1));
+            await TestWait.UntilAsync(() => chatFactory.Client.Connected, TimeSpan.FromSeconds(1));
+            chatFactory.Client.Receive(new ChatMessage(
+                PlatformKind.Twitch,
+                "streamer",
+                "viewer",
+                "first captured Twitch DVR chat",
+                startedAt.Add(new TimeSpan(7, 17, 18)),
+                MessageId: "first-live-dvr-native-overlay-captured-chat"));
+
+            var renderedFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayRenderedChatFrame,
+                TimeSpan.FromSeconds(4));
+            await tab.SeekReplayAsync(new TimeSpan(7, 17, 30));
+
+            AssertNativeOverlayChatFrame(await renderedFrameTask);
+            Assert.True(tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
+
+            var blankFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayTransparentFrame,
+                TimeSpan.FromSeconds(4));
+            await tab.SeekReplayAsync(new TimeSpan(7, 16, 0));
+
+            AssertNativeOverlayTransparentFrame(await blankFrameTask);
+            Assert.Equal(0, replayChatProvider.CallCount);
+            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
+            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("Current-live DVR chat", StringComparison.Ordinal)));
+            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("was not captured by this tab", StringComparison.Ordinal)));
+
+            await tab.DisposeAsync();
+        });
+    }),
+    ("current-live DVR native overlay blanks first empty seek before replay seek completes", async () =>
+    {
+        await TestSta.RunAsync(async () =>
+        {
+            var pipeName = $"svs_live_dvr_first_empty_{Guid.NewGuid():N}";
+            var seekRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var startedAt = new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero);
+            var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
+            {
+                UsesNativeOverlayOverride = true,
+                NativeOverlayPipeNameOverride = pipeName,
+                SeekCompletion = seekRelease.Task
+            });
+            var chatFactory = new FakeChatClientFactory();
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Twitch,
+                "streamer",
+                "https://d1g1f25tn8m2e6.cloudfront.net/live/index-dvr.m3u8",
+                "live-dvr-123456789",
+                startedAt,
+                TimeSpan.FromHours(8),
+                true,
+                "",
+                "best",
+                ReplayMediaKind.CurrentLiveDvr);
+            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+            var tab = new StreamTabViewModel(
+                StreamInputParser.Parse("streamer", PlatformKind.Twitch),
+                "source",
+                new FakeStreamlinkService(),
+                playbackFactory,
+                chatFactory,
+                new MemoryLogger(),
+                action => action(),
+                replayResolver: new FakeReplayResolver(replay),
+                replayChatProvider: replayChatProvider);
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Overlay;
+            tab.SetVideoHandle(new IntPtr(42));
+
+            await tab.StartAsync(settings);
+            await TestWait.UntilAsync(() => tab.IsReplaySeekEnabled, TimeSpan.FromSeconds(1));
+            await TestWait.UntilAsync(() => chatFactory.Client.Connected, TimeSpan.FromSeconds(1));
+            chatFactory.Client.Receive(new ChatMessage(
+                PlatformKind.Twitch,
+                "streamer",
+                "viewer",
+                "first captured Twitch DVR chat",
+                startedAt.Add(new TimeSpan(7, 17, 18)),
+                MessageId: "first-live-dvr-native-overlay-captured-chat"));
+
+            var blankFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
+                pipeName,
+                IsNativeOverlayTransparentFrame,
+                TimeSpan.FromSeconds(4));
+            var seekTask = tab.SeekReplayAsync(new TimeSpan(7, 16, 0));
+
+            AssertNativeOverlayTransparentFrame(await blankFrameTask);
+            Assert.Equal(false, seekTask.IsCompleted);
+            seekRelease.SetResult();
+            await seekTask;
+
+            Assert.Equal(0, replayChatProvider.CallCount);
+            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
+            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("Current-live DVR chat", StringComparison.Ordinal)));
+            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("was not captured by this tab", StringComparison.Ordinal)));
+
+            await tab.DisposeAsync();
+        });
     }),
     ("current-live DVR captures behind-live messages without appending outside replay window", async () =>
     {
@@ -5783,7 +8376,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
         await tab.DisposeAsync();
     }),
-    ("Kick seekback clock advance loads timestamp chat after initial captured window expires", async () =>
+    ("Kick seekback clock advance retains reached chat and loads timestamp chat", async () =>
     {
         TimeSpan? forcedClockPosition = null;
         var startedAt = DateTimeOffset.UtcNow.AddHours(-1);
@@ -5855,12 +8448,13 @@ var tests = new (string Name, Func<Task> Run)[]
             () => DockedChatMessagesContain(tab, "later kick timestamp chat"),
             TimeSpan.FromSeconds(1));
 
+        Assert.True(DockedChatMessagesContain(tab, "initial kick captured chat"));
         Assert.True(DockedChatMessagesContain(tab, "later kick timestamp chat"));
         Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
 
         await tab.DisposeAsync();
     }),
-    ("Kick seekback rechecks after partial timestamp backfill ages out before prefetch edge", async () =>
+    ("Kick seekback rechecks after partial timestamp backfill and retains reached chat", async () =>
     {
         TimeSpan? forcedClockPosition = null;
         var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
@@ -5935,7 +8529,7 @@ var tests = new (string Name, Func<Task> Run)[]
             TimeSpan.FromSeconds(1));
 
         Assert.True(DockedChatMessagesContain(tab, "later cursor kick timestamp chat"));
-        Assert.Equal(false, DockedChatMessagesContain(tab, "early partial kick timestamp chat"));
+        Assert.True(DockedChatMessagesContain(tab, "early partial kick timestamp chat"));
         Assert.Equal(0, replayChatProvider.CallCount);
         Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
 
@@ -6360,6 +8954,9 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.True(tab.RewindReplay30SecondsCommand.CanExecute(null));
         Assert.True(tab.FastForwardReplay30SecondsCommand.CanExecute(null));
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
+        await TestWait.UntilAsync(
+            () => streamlink.ResolveStreamUrlCount == 1,
+            TimeSpan.FromSeconds(1));
 
         await tab.RewindReplay30SecondsCommand.ExecuteAsync();
 
@@ -6373,7 +8970,6 @@ var tests = new (string Name, Func<Task> Run)[]
 
         await tab.FastForwardReplay30SecondsCommand.ExecuteAsync();
 
-        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
         Assert.Equal(liveStartCountBeforeFastForward + 1, streamlink.StartCount);
         Assert.Equal(false, tab.IsReplayMode);
         Assert.Equal(false, tab.IsBehindLive);
@@ -6413,6 +9009,9 @@ var tests = new (string Name, Func<Task> Run)[]
         tab.SetVideoHandle(new IntPtr(42));
 
         await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => tab.CanSeekReplay,
+            TimeSpan.FromSeconds(1));
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
 
         tab.BeginReplaySeekPreview(tab.ReplaySeekSliderValue);
@@ -6510,6 +9109,9 @@ var tests = new (string Name, Func<Task> Run)[]
         tab.SetVideoHandle(new IntPtr(42));
 
         await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => tab.CanSeekReplay,
+            TimeSpan.FromSeconds(1));
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
 
         tab.BeginReplaySeekPreview();
@@ -6701,6 +9303,848 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.NotNull(unixMessage);
         Assert.Equal(unixTimestamp, unixMessage!.Timestamp);
         return Task.CompletedTask;
+    }),
+    ("parses official Kick chat webhook payload", () =>
+    {
+        var body = """
+        {
+          "message_id": "official-kick-message-1",
+          "broadcaster": {
+            "user_id": 123456789,
+            "username": "Broadcaster",
+            "channel_slug": "streamer"
+          },
+          "sender": {
+            "user_id": 987654321,
+            "username": "viewer",
+            "channel_slug": "viewer",
+            "identity": {
+              "username_color": "#FF5733",
+              "badges": [
+                { "text": "Moderator", "type": "moderator" },
+                { "text": "Subscriber", "type": "subscriber", "count": 3 }
+              ]
+            }
+          },
+          "content": "official hello [emote:4148074:HYPERCLAP]",
+          "created_at": "2026-06-01T20:04:05Z"
+        }
+        """;
+
+        var parsed = KickOfficialChatWebhookParser.TryParseChatMessage(body, out var message, out var error);
+
+        Assert.True(parsed, error);
+        Assert.Equal(PlatformKind.Kick, message.Platform);
+        Assert.Equal("streamer", message.Channel);
+        Assert.Equal("viewer", message.Username);
+        Assert.Equal("official hello [emote:4148074:HYPERCLAP]", message.Message);
+        Assert.Equal("official-kick-message-1", message.MessageId);
+        Assert.Equal("#FF5733", message.Color);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 20, 4, 5, TimeSpan.Zero), message.Timestamp);
+        Assert.Equal("moderator", message.Badges![0].Id);
+        Assert.Equal("subscriber", message.Badges[1].Id);
+        Assert.Equal("3", message.Badges[1].Version);
+        Assert.Equal("HYPERCLAP", message.Emotes![0].Code);
+        return Task.CompletedTask;
+    }),
+    ("loads Kick replay chat from official webhook cache", async () =>
+    {
+        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-official-chat-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var store = new KickOfficialChatReplayStore(cacheDirectory);
+            await store.AppendAsync(new ChatMessage(
+                PlatformKind.Kick,
+                "streamer",
+                "viewer",
+                "official cached replay chat",
+                startedAt.AddMinutes(2),
+                MessageId: "official-cached-replay-chat"));
+            await store.AppendAsync(new ChatMessage(
+                PlatformKind.Kick,
+                "streamer",
+                "viewer",
+                "outside requested window",
+                startedAt.AddMinutes(20),
+                MessageId: "outside-requested-window"));
+
+            var provider = new ReplayChatProvider(
+                new HttpClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Kick official cache should not call HTTP."))),
+                store);
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Kick,
+                "streamer",
+                "https://vod.kick.example/index.m3u8",
+                "kick-vod-1",
+                startedAt,
+                TimeSpan.FromHours(1),
+                true,
+                "");
+
+            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromMinutes(2));
+
+            Assert.True(result.IsAvailable, result.UnavailableReason);
+            Assert.Equal(TimeSpan.FromMinutes(1), result.LoadedFromOffset);
+            Assert.Equal(TimeSpan.FromMinutes(6), result.LoadedThroughOffset);
+            var message = result.Messages.Single();
+            Assert.Equal(TimeSpan.FromMinutes(2), message.Offset);
+            Assert.Equal("official cached replay chat", message.Message.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+            {
+                Directory.Delete(cacheDirectory, recursive: true);
+            }
+        }
+    }),
+    ("loads Kick replay chat from timestamp messages endpoint", async () =>
+    {
+        var requests = new List<Uri>();
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            requests.Add(request.RequestUri!);
+            Assert.Equal("kick.com", request.RequestUri!.Host);
+            Assert.Equal(new Uri("https://kick.com/streamer"), request.Headers.Referrer);
+
+            if (request.RequestUri.AbsolutePath == "/api/v2/channels/streamer")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"id":668,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
+                };
+            }
+
+            Assert.Equal("/api/v2/channels/668/messages", request.RequestUri.AbsolutePath);
+
+            var query = Uri.UnescapeDataString(request.RequestUri.Query);
+            var body = query.Contains("2026-06-01T20:00:00.000Z", StringComparison.Ordinal)
+                ? """
+                {
+                  "status": {"error": false, "code": 200, "message": "SUCCESS"},
+                  "data": {
+                    "messages": [
+                      {
+                        "id": "kick-replay-5",
+                        "content": "timestamp replay chat [emote:4148074:HYPERCLAP]",
+                        "created_at": "2026-06-01T20:00:05Z",
+                        "sender": {
+                          "username": "ViewerOne",
+                          "identity": {
+                            "color": "#55AAFF",
+                            "badges": [{"type": "subscriber", "text": "Subscriber", "count": 3}]
+                          }
+                        }
+                      },
+                      {
+                        "id": "kick-replay-10",
+                        "content": "second replay chat",
+                        "created_at": "2026-06-01T20:00:10Z",
+                        "sender": {"username": "ViewerTwo"}
+                      }
+                    ],
+                    "pinned_message": null
+                  }
+                }
+                """
+                : """{"data":{"messages":[],"pinned_message":null}}""";
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+        }));
+        var provider = new ReplayChatProvider(httpClient);
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            "https://vod.kick.example/index.m3u8",
+            "kick-vod-1",
+            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(20),
+            true,
+            "",
+            ChatRoomId: "668");
+
+        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
+
+        Assert.True(result.IsAvailable, result.UnavailableReason);
+        Assert.Equal(TimeSpan.Zero, result.LoadedFromOffset);
+        Assert.Equal(TimeSpan.FromSeconds(10), result.LoadedThroughOffset);
+        Assert.Equal(2, result.Messages.Count);
+        Assert.Equal(TimeSpan.FromSeconds(5), result.Messages[0].Offset);
+        Assert.Equal("ViewerOne", result.Messages[0].Message.Username);
+        Assert.Equal("timestamp replay chat [emote:4148074:HYPERCLAP]", result.Messages[0].Message.Message);
+        Assert.Equal("668", result.Messages[0].Message.RoomId);
+        Assert.Equal("kick-replay-5", result.Messages[0].Message.MessageId);
+        Assert.Equal("subscriber", result.Messages[0].Message.Badges![0].Id);
+        Assert.Equal("HYPERCLAP", result.Messages[0].Message.Emotes![0].Code);
+        Assert.Equal(TimeSpan.FromSeconds(10), result.Messages[1].Offset);
+        Assert.Equal("second replay chat", result.Messages[1].Message.Message);
+        Assert.Equal(2, requests.Count);
+        Assert.True(requests.Any(uri => Uri.UnescapeDataString(uri.Query).Contains("2026-06-01T20:00:00.000Z", StringComparison.Ordinal)));
+    }),
+    ("Kick VOD timestamp replay chat starts at visible window and preserves partial coverage", async () =>
+    {
+        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-visible-partial-chat-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var requests = new List<Uri>();
+            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+            {
+                requests.Add(request.RequestUri!);
+                if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
+                    };
+                }
+
+                Assert.Equal("/api/v2/channels/123/messages", request.RequestUri.AbsolutePath);
+                var query = Uri.UnescapeDataString(request.RequestUri.Query);
+                var body = query.Contains("2026-06-01T20:00:15.000Z", StringComparison.Ordinal)
+                    ? """
+                    {
+                      "data": {
+                        "messages": [
+                          {
+                            "id": "kick-visible-partial",
+                            "content": "visible partial replay chat",
+                            "created_at": "2026-06-01T20:00:25Z",
+                            "sender": { "username": "VisibleViewer" }
+                          }
+                        ]
+                      }
+                    }
+                    """
+                    : """{"data":{"messages":[]}}""";
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+            }));
+            var provider = new ReplayChatProvider(httpClient, new KickOfficialChatReplayStore(cacheDirectory));
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Kick,
+                "streamer",
+                "https://vod.kick.example/index.m3u8",
+                "kick-vod-1",
+                startedAt,
+                TimeSpan.FromMinutes(10),
+                true,
+                "",
+                ChatRoomId: "123");
+
+            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(60));
+
+            Assert.True(result.IsAvailable, result.UnavailableReason);
+            Assert.Equal(TimeSpan.FromSeconds(15), result.LoadedFromOffset);
+            Assert.Equal(TimeSpan.FromSeconds(25), result.LoadedThroughOffset);
+            var message = result.Messages.Single();
+            Assert.Equal(TimeSpan.FromSeconds(25), message.Offset);
+            Assert.Equal("visible partial replay chat", message.Message.Message);
+            Assert.SequenceEqual(
+                new[] { "https://kick.com/api/v2/channels/123/messages?start_time=2026-06-01T20%3A00%3A15.000Z" },
+                requests
+                    .Where(uri => uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                    .Select(uri => uri.AbsoluteUri)
+                    .ToArray());
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+            {
+                Directory.Delete(cacheDirectory, recursive: true);
+            }
+        }
+    }),
+    ("loads Kick replay chat through curl fallback when timestamp HttpClient is forbidden", async () =>
+    {
+        var previousCurl = Environment.GetEnvironmentVariable("STREAMLINK_KICK_CURL");
+        var curlDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-replay-curl-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(curlDirectory);
+            var curlPath = Path.Combine(curlDirectory, "curl.cmd");
+            await File.WriteAllTextAsync(
+                curlPath,
+                """
+                @echo off
+                echo {"data":{"messages":[{"id":"kick-curl-replay","content":"curl fallback replay chat","created_at":"2026-06-01T20:00:05Z","sender":{"username":"CurlViewer"}}]}}
+                """);
+            Environment.SetEnvironmentVariable("STREAMLINK_KICK_CURL", curlPath);
+
+            var requests = new List<Uri>();
+            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+            {
+                requests.Add(request.RequestUri!);
+                if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.Forbidden)
+                {
+                    Content = new StringContent("""{"message":"blocked"}""", Encoding.UTF8, "application/json")
+                };
+            }));
+            var provider = new ReplayChatProvider(httpClient, new MemoryLogger());
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Kick,
+                "streamer",
+                "https://vod.kick.example/index.m3u8",
+                "kick-vod-1",
+                new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+                TimeSpan.FromSeconds(20),
+                true,
+                "",
+                ChatRoomId: "123");
+
+            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
+
+            Assert.True(result.IsAvailable, result.UnavailableReason);
+            var message = result.Messages.Single();
+            Assert.Equal(TimeSpan.FromSeconds(5), message.Offset);
+            Assert.Equal("CurlViewer", message.Message.Username);
+            Assert.Equal("curl fallback replay chat", message.Message.Message);
+            Assert.Equal("kick-curl-replay", message.Message.MessageId);
+            Assert.Equal("668", message.Message.RoomId);
+            Assert.True(requests.Any(uri =>
+                uri.AbsolutePath == "/api/v2/channels/123/messages" &&
+                Uri.UnescapeDataString(uri.Query).Contains("2026-06-01T20:00:00.000Z", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STREAMLINK_KICK_CURL", previousCurl);
+            if (Directory.Exists(curlDirectory))
+            {
+                Directory.Delete(curlDirectory, recursive: true);
+            }
+        }
+    }),
+    ("loads Kick replay chat from chatroom id after empty channel id page", async () =>
+    {
+        var requests = new List<Uri>();
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            requests.Add(request.RequestUri!);
+            if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
+                };
+            }
+
+            if (request.RequestUri.AbsolutePath == "/api/v2/channels/123/messages")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":{"messages":[]}}""", Encoding.UTF8, "application/json")
+                };
+            }
+
+            Assert.Equal("/api/v2/channels/668/messages", request.RequestUri.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""
+                {
+                  "data": {
+                    "messages": [
+                      {
+                        "id": "kick-chatroom-replay",
+                        "content": "chatroom id replay chat",
+                        "created_at": "2026-06-01T20:00:10Z",
+                        "sender": { "username": "ChatroomViewer" }
+                      }
+                    ]
+                  }
+                }
+                """, Encoding.UTF8, "application/json")
+            };
+        }));
+        var provider = new ReplayChatProvider(httpClient);
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            "https://vod.kick.example/index.m3u8",
+            "kick-vod-1",
+            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(20),
+            true,
+            "",
+            ChatRoomId: "123");
+
+        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
+
+        Assert.True(result.IsAvailable, result.UnavailableReason);
+        var message = result.Messages.Single();
+        Assert.Equal(TimeSpan.FromSeconds(10), message.Offset);
+        Assert.Equal("ChatroomViewer", message.Message.Username);
+        Assert.Equal("chatroom id replay chat", message.Message.Message);
+        Assert.Equal("668", message.Message.RoomId);
+        Assert.SequenceEqual(
+            new[]
+            {
+                "https://kick.com/api/v2/channels/123/messages?start_time=2026-06-01T20%3A00%3A00.000Z",
+                "https://kick.com/api/v2/channels/668/messages?start_time=2026-06-01T20%3A00%3A00.000Z"
+            },
+            requests
+                .Where(uri => uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(uri => uri.AbsoluteUri)
+                .ToArray());
+    }),
+    ("pages explicit Kick VOD replay chat through timestamp cursors", async () =>
+    {
+        var requests = new List<Uri>();
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            requests.Add(request.RequestUri!);
+            if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
+                };
+            }
+
+            if (request.RequestUri.Query.Contains("cursor=cursor-1", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {
+                      "data": {
+                        "messages": [
+                          {
+                            "id": "kick-replay-cursor-2",
+                            "content": "cursor replay page two",
+                            "created_at": "2026-06-01T20:00:20Z",
+                            "sender": { "username": "CursorTwo" }
+                          }
+                        ]
+                      }
+                    }
+                    """, Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""
+                {
+                  "data": {
+                    "messages": [
+                      {
+                        "id": "kick-replay-cursor-1",
+                        "content": "cursor replay page one",
+                        "created_at": "2026-06-01T20:00:05Z",
+                        "sender": { "username": "CursorOne" }
+                      }
+                    ],
+                    "cursor": "cursor-1"
+                  }
+                }
+                """, Encoding.UTF8, "application/json")
+            };
+        }));
+        var provider = new ReplayChatProvider(httpClient);
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            "https://vod.kick.example/index.m3u8",
+            "kick-vod-1",
+            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(20),
+            true,
+            "",
+            ChatRoomId: "123");
+
+        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
+
+        Assert.True(result.IsAvailable, result.UnavailableReason);
+        Assert.SequenceEqual(
+            new[] { "cursor replay page one", "cursor replay page two" },
+            result.Messages.Select(message => message.Message.Message).ToArray());
+        Assert.SequenceEqual(
+            new[]
+            {
+                "https://kick.com/api/v2/channels/123/messages?start_time=2026-06-01T20%3A00%3A00.000Z",
+                "https://kick.com/api/v2/channels/123/messages?cursor=cursor-1"
+            },
+            requests
+                .Where(uri => uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(uri => uri.AbsoluteUri)
+                .ToArray());
+    }),
+    ("uses Kick webhook cache when timestamp messages endpoint is empty", async () =>
+    {
+        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-empty-direct-chat-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var store = new KickOfficialChatReplayStore(cacheDirectory);
+            await store.AppendAsync(new ChatMessage(
+                PlatformKind.Kick,
+                "streamer",
+                "cached",
+                "webhook fallback replay chat",
+                startedAt.AddSeconds(5),
+                MessageId: "webhook-fallback-replay-chat"));
+            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+            {
+                var body = request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer"
+                    ? """{"id":668,"chatroom":{"id":668}}"""
+                    : """{"data":{"messages":[]}}""";
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+            }));
+            var provider = new ReplayChatProvider(httpClient, store);
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Kick,
+                "streamer",
+                "https://vod.kick.example/index.m3u8",
+                "kick-vod-1",
+                startedAt,
+                TimeSpan.FromSeconds(20),
+                true,
+                "",
+                ChatRoomId: "668");
+
+            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
+
+            Assert.True(result.IsAvailable, result.UnavailableReason);
+            Assert.Equal("webhook fallback replay chat", result.Messages.Single().Message.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+            {
+                Directory.Delete(cacheDirectory, recursive: true);
+            }
+        }
+    }),
+    ("reports missing Kick official webhook cache", async () =>
+    {
+        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-empty-kick-official-chat-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var provider = new ReplayChatProvider(
+                new HttpClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Kick official cache should not call HTTP."))),
+                new KickOfficialChatReplayStore(cacheDirectory));
+            var replay = new ReplaySessionInfo(
+                PlatformKind.Kick,
+                "streamer",
+                "https://vod.kick.example/index.m3u8",
+                "kick-vod-1",
+                new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+                TimeSpan.FromHours(1),
+                true,
+                "");
+
+            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.Zero);
+
+            Assert.Equal(false, result.IsAvailable);
+            Assert.Contains("No official Kick webhook chat cache", result.UnavailableReason);
+            Assert.Contains("streamer", result.UnavailableReason);
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+            {
+                Directory.Delete(cacheDirectory, recursive: true);
+            }
+        }
+    }),
+    ("reports missing Kick VOD start time for official replay chat", async () =>
+    {
+        var provider = new ReplayChatProvider(
+            new HttpClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Kick official cache should not call HTTP."))),
+            new KickOfficialChatReplayStore(Path.Combine(Path.GetTempPath(), "svs-unused-kick-official-chat-" + Guid.NewGuid().ToString("N"))));
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            "https://vod.kick.example/index.m3u8",
+            "kick-vod-1",
+            null,
+            TimeSpan.FromHours(1),
+            true,
+            "");
+
+        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.Zero);
+
+        Assert.Equal(false, result.IsAvailable);
+        Assert.Contains("VOD start time", result.UnavailableReason);
+    }),
+    ("official Kick webhook server stores only signed chat messages", async () =>
+    {
+        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-webhook-server-" + Guid.NewGuid().ToString("N"));
+        using var rsa = RSA.Create(2048);
+        try
+        {
+            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+            var publicKey = rsa.ExportSubjectPublicKeyInfoPem();
+            using var publicKeyHttpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { data = new { public_key = publicKey } }),
+                        Encoding.UTF8,
+                        "application/json")
+                }));
+            var store = new KickOfficialChatReplayStore(cacheDirectory);
+            await using var server = new KickWebhookChatServer(
+                store,
+                new MemoryLogger(),
+                port: 0,
+                httpClient: publicKeyHttpClient);
+            Assert.True(server.Start());
+
+            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var body = """
+            {
+              "message_id": "signed-webhook-message",
+              "broadcaster": { "channel_slug": "streamer" },
+              "sender": { "username": "viewer" },
+              "content": "signed webhook chat",
+              "created_at": "2026-06-01T20:02:00Z"
+            }
+            """;
+            using var request = new HttpRequestMessage(HttpMethod.Post, server.LocalWebhookUrl);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            KickWebhookTestSignature.AddKickHeaders(
+                request,
+                rsa,
+                "chat.message.sent",
+                "message-id-1",
+                "2026-06-01T20:02:01Z",
+                Encoding.UTF8.GetBytes(body));
+
+            using var response = await httpClient.SendAsync(request);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var result = await store.ReadMessagesAsync(
+                "streamer",
+                startedAt,
+                startedAt.AddMinutes(5));
+            Assert.Equal(1, result.Messages.Count);
+            Assert.Equal("signed webhook chat", result.Messages[0].Message);
+            Assert.Equal("signed-webhook-message", result.Messages[0].MessageId);
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+            {
+                Directory.Delete(cacheDirectory, recursive: true);
+            }
+        }
+    }),
+    ("official Kick webhook server rejects invalid signatures and ignores non-chat events", async () =>
+    {
+        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-webhook-reject-" + Guid.NewGuid().ToString("N"));
+        using var rsa = RSA.Create(2048);
+        try
+        {
+            var publicKey = rsa.ExportSubjectPublicKeyInfoPem();
+            using var publicKeyHttpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(new { data = new { public_key = publicKey } }),
+                        Encoding.UTF8,
+                        "application/json")
+                }));
+            var store = new KickOfficialChatReplayStore(cacheDirectory);
+            await using var server = new KickWebhookChatServer(
+                store,
+                new MemoryLogger(),
+                port: 0,
+                httpClient: publicKeyHttpClient);
+            Assert.True(server.Start());
+            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+
+            var chatBody = """
+            {
+              "message_id": "invalid-signature-message",
+              "broadcaster": { "channel_slug": "streamer" },
+              "sender": { "username": "viewer" },
+              "content": "should not store",
+              "created_at": "2026-06-01T20:02:00Z"
+            }
+            """;
+            using (var invalidRequest = new HttpRequestMessage(HttpMethod.Post, server.LocalWebhookUrl))
+            {
+                invalidRequest.Content = new StringContent(chatBody, Encoding.UTF8, "application/json");
+                KickWebhookTestSignature.AddKickHeaders(
+                    invalidRequest,
+                    rsa,
+                    "chat.message.sent",
+                    "message-id-2",
+                    "2026-06-01T20:02:02Z",
+                    Encoding.UTF8.GetBytes(chatBody + "tampered"));
+                using var invalidResponse = await httpClient.SendAsync(invalidRequest);
+                Assert.Equal(HttpStatusCode.Unauthorized, invalidResponse.StatusCode);
+            }
+
+            var nonChatBody = """{"broadcaster":{"channel_slug":"streamer"},"created_at":"2026-06-01T20:03:00Z"}""";
+            using (var nonChatRequest = new HttpRequestMessage(HttpMethod.Post, server.LocalWebhookUrl))
+            {
+                nonChatRequest.Content = new StringContent(nonChatBody, Encoding.UTF8, "application/json");
+                KickWebhookTestSignature.AddKickHeaders(
+                    nonChatRequest,
+                    rsa,
+                    "livestream.status.updated",
+                    "message-id-3",
+                    "2026-06-01T20:03:01Z",
+                    Encoding.UTF8.GetBytes(nonChatBody));
+                using var nonChatResponse = await httpClient.SendAsync(nonChatRequest);
+                Assert.Equal(HttpStatusCode.Accepted, nonChatResponse.StatusCode);
+            }
+
+            var result = await store.ReadMessagesAsync(
+                "streamer",
+                new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 6, 1, 20, 5, 0, TimeSpan.Zero));
+            Assert.Equal(0, result.Messages.Count);
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+            {
+                Directory.Delete(cacheDirectory, recursive: true);
+            }
+        }
+    }),
+    ("creates official Kick chat message event subscription", async () =>
+    {
+        var requests = new List<(HttpMethod Method, Uri Uri, string Body, string? Authorization)>();
+        var persistCount = 0;
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            var body = request.Content is null
+                ? ""
+                : request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            requests.Add((request.Method, request.RequestUri!, body, request.Headers.Authorization?.ToString()));
+
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":[]}""", Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""
+                {
+                  "data": [
+                    {
+                      "name": "chat.message.sent",
+                      "version": 1,
+                      "subscription_id": "sub-123"
+                    }
+                  ]
+                }
+                """, Encoding.UTF8, "application/json")
+            };
+        }));
+        using var service = new KickEventSubscriptionService(
+            new MemoryLogger(),
+            httpClient,
+            (_, _, _) => Task.FromResult<string?>("app-token"),
+            (channel, _, _, _) =>
+            {
+                Assert.Equal("streamer", channel);
+                return Task.FromResult<long?>(456);
+            },
+            (_, _) =>
+            {
+                persistCount++;
+                return Task.CompletedTask;
+            });
+        var settings = new AppSettings();
+        var target = new StreamTarget(PlatformKind.Kick, "streamer", "https://kick.com/streamer");
+
+        var result = await service.EnsureChatMessageSentSubscriptionAsync(target, settings.Chat);
+
+        Assert.Equal(KickEventSubscriptionEnsureStatus.Subscribed, result.Status);
+        Assert.Equal("sub-123", result.SubscriptionId);
+        Assert.Equal(456L, result.BroadcasterUserId);
+        Assert.Equal("456", settings.Chat.KickBroadcasterUserIds["streamer"]);
+        Assert.Equal(1, persistCount);
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(HttpMethod.Get, requests[0].Method);
+        Assert.Equal("Bearer app-token", requests[0].Authorization);
+        Assert.Contains("broadcaster_user_id=456", requests[0].Uri.Query);
+        Assert.Equal(HttpMethod.Post, requests[1].Method);
+        Assert.Equal("Bearer app-token", requests[1].Authorization);
+
+        using var postBody = JsonDocument.Parse(requests[1].Body);
+        var root = postBody.RootElement;
+        Assert.Equal(456, root.GetProperty("broadcaster_user_id").GetInt32());
+        Assert.Equal("webhook", root.GetProperty("method").GetString());
+        var evt = root.GetProperty("events").EnumerateArray().Single();
+        Assert.Equal("chat.message.sent", evt.GetProperty("name").GetString());
+        Assert.Equal(1, evt.GetProperty("version").GetInt32());
+    }),
+    ("skips official Kick chat subscription create when it already exists", async () =>
+    {
+        var requestCount = 0;
+        var persistCount = 0;
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            requestCount++;
+            Assert.Equal(HttpMethod.Get, request.Method);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""
+                {
+                  "data": [
+                    {
+                      "id": "existing-sub",
+                      "event": "chat.message.sent",
+                      "version": 1,
+                      "method": "webhook"
+                    }
+                  ]
+                }
+                """, Encoding.UTF8, "application/json")
+            };
+        }));
+        using var service = new KickEventSubscriptionService(
+            new MemoryLogger(),
+            httpClient,
+            (_, _, _) => Task.FromResult<string?>("app-token"),
+            (_, _, _, _) => throw new InvalidOperationException("Broadcaster resolver should not be called."),
+            (_, _) =>
+            {
+                persistCount++;
+                return Task.CompletedTask;
+            });
+        var settings = new AppSettings();
+        var target = new StreamTarget(
+            PlatformKind.Kick,
+            "streamer",
+            "https://kick.com/streamer",
+            BroadcasterId: "456");
+
+        var result = await service.EnsureChatMessageSentSubscriptionAsync(target, settings.Chat);
+
+        Assert.Equal(KickEventSubscriptionEnsureStatus.AlreadySubscribed, result.Status);
+        Assert.Equal("existing-sub", result.SubscriptionId);
+        Assert.Equal(456L, result.BroadcasterUserId);
+        Assert.Equal("456", settings.Chat.KickBroadcasterUserIds["streamer"]);
+        Assert.Equal(1, persistCount);
+        Assert.Equal(1, requestCount);
     }),
     ("maps Kick recent chat backfill messages", () =>
     {
@@ -7586,6 +11030,26 @@ var tests = new (string Name, Func<Task> Run)[]
 
         chat.VlcOverlayFontSize = 0;
         Assert.Equal(ChatSettings.MinimumFontSize, chat.VlcOverlayFontSize);
+        return Task.CompletedTask;
+    }),
+    ("dock width settings clamp invalid values", () =>
+    {
+        var chat = new ChatSettings
+        {
+            DockWidth = ChatSettings.MinimumDockWidth - 1
+        };
+        Assert.Equal(ChatSettings.MinimumDockWidth, chat.DockWidth);
+
+        chat.DockWidth = ChatSettings.MaximumDockWidth + 1;
+        Assert.Equal(ChatSettings.MaximumDockWidth, chat.DockWidth);
+
+        chat.DockWidth = double.NaN;
+        Assert.Equal(ChatSettings.DefaultDockWidth, chat.DockWidth);
+
+        chat.DockWidth = double.PositiveInfinity;
+        Assert.Equal(ChatSettings.DefaultDockWidth, chat.DockWidth);
+
+        Assert.Equal(ChatSettings.DefaultDockWidth, ChatSettings.NormalizeDockWidth(double.NegativeInfinity));
         return Task.CompletedTask;
     }),
     ("canceled JSON settings save leaves previous settings file intact", async () =>
@@ -8679,6 +12143,244 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(TwitchVodSearchStatus.NotFound, notFound.Status);
         Assert.Equal(1, requestCount);
     }),
+    ("searches Twitch channels with Helix live and offline mapping", async () =>
+    {
+        var settings = new AppSettings();
+        settings.Chat.TwitchClientId = "twitch-client-id";
+        settings.Chat.TwitchOAuthToken = "oauth:twitch-token";
+        settings.StreamlinkPath = "streamlink.exe";
+        var requestPaths = new List<string>();
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            requestPaths.Add(request.RequestUri!.PathAndQuery);
+            if (request.RequestUri.Host == "kick.com")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"channels":[]}""")
+                };
+            }
+
+            Assert.Equal("api.twitch.tv", request.RequestUri.Host);
+            Assert.Equal("/helix/search/channels", request.RequestUri.AbsolutePath);
+            Assert.Contains("query=xqc", request.RequestUri.Query);
+            Assert.Contains("first=5", request.RequestUri.Query);
+            Assert.Contains("live_only=false", request.RequestUri.Query);
+            Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            Assert.Equal("twitch-token", request.Headers.Authorization?.Parameter);
+            Assert.SequenceEqual(["twitch-client-id"], request.Headers.GetValues("Client-Id"));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""
+                {
+                  "data": [
+                    {
+                      "broadcaster_login": "xqc",
+                      "display_name": "xQc",
+                      "thumbnail_url": "https://static-cdn.jtvnw.net/xqc.jpg",
+                      "title": "live title",
+                      "game_name": "Just Chatting",
+                      "is_live": true
+                    },
+                    {
+                      "broadcaster_login": "xqcclips",
+                      "display_name": "xQcClips",
+                      "thumbnail_url": "https://static-cdn.jtvnw.net/xqcclips.jpg",
+                      "title": "",
+                      "game_name": "",
+                      "is_live": false
+                    }
+                  ]
+                }
+                """)
+            };
+        }));
+        var streamlink = new FakeStreamlinkService
+        {
+            ProbeStreamsOverride = (request, _) => Task.FromResult(
+                request.Target.Platform == PlatformKind.Twitch && request.Target.Channel == "xqc"
+                    ? new StreamlinkProbeResult(true, "Playable stream found.")
+                    : new StreamlinkProbeResult(false, "No streams found."))
+        };
+        var service = new StreamSearchService(new MemoryLogger(), streamlink, httpClient);
+
+        var result = await service.SearchAsync(new StreamSearchRequest("xqc", "best", 5), settings);
+
+        Assert.Equal(StreamSearchResultStatus.Available, result.Status);
+        Assert.Contains("/helix/search/channels", requestPaths[0]);
+        var live = result.Channels.Single(channel => channel.Platform == PlatformKind.Twitch && channel.Channel == "xqc");
+        Assert.Equal("xQc", live.DisplayName);
+        Assert.Equal("https://static-cdn.jtvnw.net/xqc.jpg", live.ThumbnailUrl);
+        Assert.Equal("live title", live.Title);
+        Assert.Equal("Just Chatting", live.CategoryName);
+        Assert.Equal(StreamSearchChannelState.Live, live.State);
+        Assert.True(live.CanPlay);
+        var offline = result.Channels.Single(channel => channel.Platform == PlatformKind.Twitch && channel.Channel == "xqcclips");
+        Assert.Equal(StreamSearchChannelState.Offline, offline.State);
+        Assert.Equal(false, offline.CanPlay);
+        Assert.True(streamlink.ProbeRequests.Any(request => request.Target.Platform == PlatformKind.Twitch && request.Target.Channel == "xqc"));
+        Assert.Equal(false, streamlink.ProbeRequests.Any(request => request.Target.Channel == "xqcclips"));
+    }),
+    ("searches Kick channels with curl fallback ranking and dedupe", async () =>
+    {
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("kick.com", request.RequestUri!.Host);
+            Assert.Equal("/api/search", request.RequestUri.AbsolutePath);
+            Assert.Contains("searched_word=xqc", request.RequestUri.Query);
+            return new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = new StringContent("""{"message":"blocked"}""")
+            };
+        }));
+        var curlRequests = new List<(string Url, string Referrer)>();
+        var streamlink = new FakeStreamlinkService
+        {
+            ProbeStreamsOverride = (request, _) => Task.FromResult(
+                request.Target.Platform == PlatformKind.Kick && request.Target.Channel == "xqc"
+                    ? new StreamlinkProbeResult(true, "Playable stream found.")
+                    : new StreamlinkProbeResult(false, "No streams found."))
+        };
+        var service = new StreamSearchService(
+            new MemoryLogger(),
+            streamlink,
+            httpClient,
+            (url, referrer, _) =>
+            {
+                curlRequests.Add((url, referrer));
+                return Task.FromResult<string?>("""
+                {
+                  "channels": [
+                    {
+                      "slug": "xqc",
+                      "isLive": false,
+                      "user": { "username": "xQc offline", "profilePic": "https://files.kick.com/xqc-offline.jpg" }
+                    },
+                    {
+                      "slug": "xqc",
+                      "isLive": true,
+                      "user": { "username": "xQc", "profilePic": "https://files.kick.com/xqc.jpg" },
+                      "livestream": {
+                        "session_title": "kick live title",
+                        "category": { "name": "IRL" }
+                      }
+                    },
+                    {
+                      "slug": "xqcclips",
+                      "isLive": false,
+                      "user": { "username": "xQcClips", "profilePic": "https://files.kick.com/xqcclips.jpg" },
+                      "recentCategories": [{ "name": "Just Chatting" }]
+                    }
+                  ]
+                }
+                """);
+            });
+
+        var result = await service.SearchAsync(new StreamSearchRequest("xqc", "best", 10), new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe"
+        });
+
+        Assert.Equal(1, curlRequests.Count);
+        Assert.Contains("searched_word=xqc", curlRequests[0].Url);
+        Assert.Equal("https://kick.com/", curlRequests[0].Referrer);
+        var kickChannels = result.Channels.Where(channel => channel.Platform == PlatformKind.Kick).ToArray();
+        Assert.Equal(2, kickChannels.Length);
+        var live = kickChannels.Single(channel => channel.Channel == "xqc");
+        Assert.Equal("xQc", live.DisplayName);
+        Assert.Equal("https://files.kick.com/xqc.jpg", live.ThumbnailUrl);
+        Assert.Equal("kick live title", live.Title);
+        Assert.Equal("IRL", live.CategoryName);
+        Assert.Equal(StreamSearchChannelState.Live, live.State);
+        Assert.True(live.CanPlay);
+        var offline = kickChannels.Single(channel => channel.Channel == "xqcclips");
+        Assert.Equal(StreamSearchChannelState.Offline, offline.State);
+        Assert.Equal("Just Chatting", offline.CategoryName);
+        Assert.Equal(false, offline.CanPlay);
+    }),
+    ("short stream search skips channel discovery and probes exact candidates", async () =>
+    {
+        var httpRequests = 0;
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
+        {
+            httpRequests++;
+            throw new InvalidOperationException("Short queries should not call website search.");
+        }));
+        var streamlink = new FakeStreamlinkService
+        {
+            ProbeStreamsOverride = (_, _) => Task.FromResult(new StreamlinkProbeResult(false, "No streams found."))
+        };
+        var service = new StreamSearchService(new MemoryLogger(), streamlink, httpClient);
+
+        var result = await service.SearchAsync(new StreamSearchRequest("xy"), new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe"
+        });
+
+        Assert.Equal(0, httpRequests);
+        Assert.Equal(1, streamlink.ProbeRequests.Count);
+        Assert.Equal(PlatformKind.Kick, streamlink.ProbeRequests[0].Target.Platform);
+        Assert.True(result.Channels.All(channel => channel.State == StreamSearchChannelState.Unavailable));
+    }),
+    ("parses Kick VODs with curl fallback metadata and duration", async () =>
+    {
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("kick.com", request.RequestUri!.Host);
+            Assert.Equal("/api/v2/channels/xqc/videos", request.RequestUri.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = new StringContent("""{"message":"blocked"}""")
+            };
+        }));
+        var curlRequests = new List<(string Url, string Referrer)>();
+        var service = new KickVodService(
+            new MemoryLogger(),
+            httpClient,
+            (url, referrer, _) =>
+            {
+                curlRequests.Add((url, referrer));
+                return Task.FromResult<string?>("""
+                [
+                  {
+                    "id": 12345,
+                    "live_stream_id": 67890,
+                    "channel_id": 668,
+                    "created_at": "2026-06-01T12:01:02Z",
+                    "session_title": "Kick VOD title",
+                    "start_time": "2026-06-01T11:00:00Z",
+                    "source": "https://vod.kick.com/xqc/index.m3u8",
+                    "duration": 2345000,
+                    "thumbnail": { "src": "https://files.kick.com/vod.jpg" },
+                    "views": 1234,
+                    "video": { "uuid": "uuid-123" },
+                    "categories": [{ "name": "Just Chatting" }]
+                  }
+                ]
+                """);
+            });
+
+        var result = await service.SearchAsync(new KickVodSearchRequest("https://kick.com/xqc"), new AppSettings());
+
+        Assert.Equal(KickVodSearchStatus.Available, result.Status);
+        Assert.Equal(1, curlRequests.Count);
+        Assert.Contains("/api/v2/channels/xqc/videos", curlRequests[0].Url);
+        Assert.Equal("https://kick.com/xqc", curlRequests[0].Referrer);
+        var vod = result.Videos.Single();
+        Assert.Equal("12345", vod.Id);
+        Assert.Equal("67890", vod.LiveStreamId);
+        Assert.Equal("uuid-123", vod.Uuid);
+        Assert.Equal("668", vod.ChannelId);
+        Assert.Equal("xqc", vod.ChannelSlug);
+        Assert.Equal("Kick VOD title", vod.Title);
+        Assert.Equal("https://vod.kick.com/xqc/index.m3u8", vod.Source);
+        Assert.Equal("https://files.kick.com/vod.jpg", vod.ThumbnailUrl);
+        Assert.Equal("Just Chatting", vod.CategoryName);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 12, 1, 2, TimeSpan.Zero), vod.CreatedAtUtc);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 11, 0, 0, TimeSpan.Zero), vod.StartedAtUtc);
+        Assert.Equal(TimeSpan.FromMilliseconds(2345000), vod.Duration);
+        Assert.Equal(1234, vod.ViewCount);
+    }),
     ("gets configured Kick followed live streams", async () =>
     {
         var settings = new AppSettings();
@@ -8869,8 +12571,8 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal("", tab.OutgoingChatText);
         Assert.Equal("tester", tab.ChatMessages.Last().Username);
         Assert.Equal("hello chat", tab.ChatMessages.Last().Message);
-        Assert.True(playbackFactory.Engine!.OverlayVisible);
-        Assert.Contains("tester: hello chat", playbackFactory.Engine.OverlayText);
+        Assert.Equal(false, playbackFactory.Engine!.OverlayVisible);
+        Assert.Equal("", playbackFactory.Engine.OverlayText);
         await tab.DisposeAsync();
     }),
     ("sends multilingual chat without splitting Unicode text elements", async () =>
@@ -8894,6 +12596,7 @@ var tests = new (string Name, Func<Task> Run)[]
             VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
         };
         settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Docked;
 
         var emoji = char.ConvertFromUtf32(0x1F602);
         tab.SetVideoHandle(new IntPtr(1234));
@@ -8905,7 +12608,7 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(500, new StringInfo(sent).LengthInTextElements);
         Assert.Equal(string.Concat(Enumerable.Repeat(emoji, 500)), sent);
         Assert.Equal(false, ContainsUnpairedSurrogate(sent));
-        Assert.Equal(false, ContainsUnpairedSurrogate(playbackFactory.Engine!.OverlayText));
+        Assert.Equal("", playbackFactory.Engine!.OverlayText);
         await tab.DisposeAsync();
     }),
     ("docked chat suppresses a matching server echo after local send", async () =>
@@ -9011,7 +12714,7 @@ var tests = new (string Name, Func<Task> Run)[]
             tab.DockedChatMessages.Select(message => message.MessageId));
         await tab.DisposeAsync();
     }),
-    ("does not render text badges in basic overlay chat text", async () =>
+    ("basic overlay text formatter does not render text badges", async () =>
     {
         var streamlink = new FakeStreamlinkService();
         var playbackFactory = new FakePlaybackEngineFactory();
@@ -9033,6 +12736,7 @@ var tests = new (string Name, Func<Task> Run)[]
             VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
         };
         settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Docked;
 
         tab.SetVideoHandle(new IntPtr(1234));
         await tab.StartAsync(settings);
@@ -9048,13 +12752,14 @@ var tests = new (string Name, Func<Task> Run)[]
                 new ChatBadge("premium", "1", "Prime Gaming")
             ]));
 
-        Assert.Contains("modprime: badged message", playbackFactory.Engine!.OverlayText);
-        Assert.DoesNotContain("[MOD]", playbackFactory.Engine.OverlayText);
-        Assert.DoesNotContain("[PRIME]", playbackFactory.Engine.OverlayText);
-        Assert.DoesNotContain("[SUB]", playbackFactory.Engine.OverlayText);
+        var overlayText = InvokeBuildOverlayText(tab);
+        Assert.Contains("modprime: badged message", overlayText);
+        Assert.DoesNotContain("[MOD]", overlayText);
+        Assert.DoesNotContain("[PRIME]", overlayText);
+        Assert.DoesNotContain("[SUB]", overlayText);
         await tab.DisposeAsync();
     }),
-    ("basic overlay wraps multilingual chat without broken Unicode", async () =>
+    ("basic overlay text formatter wraps multilingual chat without broken Unicode", async () =>
     {
         var streamlink = new FakeStreamlinkService();
         var playbackFactory = new FakePlaybackEngineFactory();
@@ -9076,6 +12781,7 @@ var tests = new (string Name, Func<Task> Run)[]
             VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
         };
         settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Docked;
 
         var emoji = char.ConvertFromUtf32(0x1F602);
         var body = "\u65E5\u672C\u8A9E \u0645\u0631\u062D\u0628\u0627 " +
@@ -9091,7 +12797,7 @@ var tests = new (string Name, Func<Task> Run)[]
             DateTimeOffset.Now,
             "#8AB4F8"));
 
-        var overlayText = playbackFactory.Engine!.OverlayText;
+        var overlayText = InvokeBuildOverlayText(tab);
         var overlayLines = overlayText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.Contains("\u8996\u8074\u8005: ", overlayText);
         Assert.True(overlayLines.Length > 1);
@@ -9843,16 +13549,68 @@ var tests = new (string Name, Func<Task> Run)[]
     }),
     ("VLC plugin overlay starts without diagnostic placeholder", () =>
     {
-        var method = typeof(StreamlinkVlcStudio.Infrastructure.Vlc.LibVlcPlaybackEngine).GetMethod(
+        var engineType = typeof(StreamlinkVlcStudio.Infrastructure.Vlc.LibVlcPlaybackEngine);
+        var subSourceMethod = engineType.GetMethod(
             "BuildOverlaySubSourceOption",
             BindingFlags.Static | BindingFlags.NonPublic);
-        Assert.NotNull(method);
+        var optionsMethod = engineType.GetMethod(
+            "BuildLibVlcOptions",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(subSourceMethod);
+        Assert.NotNull(optionsMethod);
 
-        var option = (string)method!.Invoke(null, ["svs_test", @"C:\state\overlay.txt"])!;
+        var option = (string)subSourceMethod!.Invoke(null, ["svs_test", @"C:\state\overlay.txt"])!;
+        var options = (IReadOnlyList<string>)optionsMethod!.Invoke(
+            null,
+            [@"C:\Program Files\VideoLAN\VLC", new MemoryLogger()])!;
 
         Assert.Contains("show-placeholder=0", option);
         Assert.DoesNotContain("show-placeholder=1", option);
+        Assert.Equal(false, options.Any(item => item.StartsWith("--myoverlay-", StringComparison.Ordinal)));
+        Assert.Equal(false, options.Any(item => item == "--myoverlay-show-placeholder=1"));
         return Task.CompletedTask;
+    }),
+    ("overlay mode does not fall back to VLC marquee text when native overlay is unavailable", async () =>
+    {
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var logger = new MemoryLogger();
+        var chatFactory = new FakeChatClientFactory();
+        var target = StreamInputParser.Parse("albralelie", PlatformKind.Twitch);
+        var tab = new StreamTabViewModel(
+            target,
+            "best",
+            streamlink,
+            playbackFactory,
+            chatFactory,
+            logger,
+            action => action());
+
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Overlay;
+
+        tab.SetVideoHandle(new IntPtr(1234));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(() => chatFactory.Client.Connected, TimeSpan.FromMilliseconds(500));
+
+        chatFactory.Client.Receive(new ChatMessage(
+            target.Platform,
+            target.Channel,
+            "viewer",
+            "this must not be sent to VLC marquee",
+            DateTimeOffset.Now,
+            "#8AB4F8"));
+
+        Assert.Equal(true, playbackFactory.LastEnableNativeOverlay);
+        Assert.Equal(false, playbackFactory.Engine!.UsesNativeOverlay);
+        Assert.Equal(false, playbackFactory.Engine.OverlayVisible);
+        Assert.Equal("", playbackFactory.Engine.OverlayText);
+        await tab.DisposeAsync();
     }),
     ("audible VLC audio convergence keeps retrying after accepted calls", () =>
     {
@@ -9961,6 +13719,91 @@ var tests = new (string Name, Func<Task> Run)[]
 
         return Task.CompletedTask;
     }),
+    ("embedded VLC overlay bundle extracts to a valid overlay directory", () =>
+    {
+        var root = CreateTempTestDirectory();
+        try
+        {
+            Assert.True(VlcOverlayBundledResourceExtractor.HasBundledOverlayResources());
+
+            var extracted = VlcOverlayBundledResourceExtractor.TryExtract(new MemoryLogger(), root);
+
+            Assert.NotNull(extracted);
+            Assert.Equal(
+                VlcOverlayDirectoryResolver.NormalizeDirectory(
+                    Path.Combine(root, VlcOverlayBundledResourceExtractor.ExtractedOverlayDirectoryName)),
+                extracted);
+            Assert.True(VlcOverlayDirectoryResolver.IsValidOverlayDirectory(extracted));
+            Assert.True(File.Exists(VlcOverlayDirectoryResolver.GetPluginPath(extracted!)));
+            Assert.True(File.Exists(VlcOverlayDirectoryResolver.GetControllerPath(extracted!)));
+            Assert.True(VlcOverlayBundledResourceExtractor.IsExtractedOverlayCurrent(root));
+        }
+        finally
+        {
+            DeleteTempTestDirectory(root);
+        }
+
+        return Task.CompletedTask;
+    }),
+    ("VLC overlay plugin runtime recopies same-length DLL by hash and invalidates stale cache", () =>
+    {
+        var root = CreateTempTestDirectory();
+        try
+        {
+            var vlcDirectory = Path.Combine(root, "vlc");
+            var appDataDirectory = Path.Combine(root, "appdata");
+            Directory.CreateDirectory(vlcDirectory);
+            Directory.CreateDirectory(appDataDirectory);
+            var overlayDirectory = CreateValidOverlayDirectory(Path.Combine(root, "overlay"));
+            var sourcePlugin = VlcOverlayDirectoryResolver.GetPluginPath(overlayDirectory);
+            var pluginRoot = Path.Combine(appDataDirectory, "vlc-overlay-plugins");
+            var targetPlugin = Path.Combine(pluginRoot, "spu", "libmyoverlay_plugin.dll");
+            var cachePath = Path.Combine(pluginRoot, "plugins.dat");
+            var logger = new MemoryLogger();
+
+            var factoryType = typeof(VlcOverlayDirectoryResolver).Assembly.GetType(
+                "StreamlinkVlcStudio.Infrastructure.Vlc.VlcOverlayPluginRuntimeFactory");
+            Assert.NotNull(factoryType);
+            var prepare = factoryType!
+                .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .Single(method => method.Name == "TryPrepare" && method.GetParameters().Length == 4);
+            object? Prepare() => prepare.Invoke(
+                null,
+                [vlcDirectory, overlayDirectory, logger, appDataDirectory]);
+
+            Assert.NotNull(Prepare());
+            Assert.SequenceEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(targetPlugin));
+
+            Directory.CreateDirectory(pluginRoot);
+            File.WriteAllText(cachePath, "stale plugin cache");
+            File.WriteAllBytes(sourcePlugin, [9, 8, 7]);
+            File.SetLastWriteTimeUtc(sourcePlugin, new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            File.SetLastWriteTimeUtc(targetPlugin, new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+            var runtime = Prepare();
+            Assert.NotNull(runtime);
+
+            Assert.SequenceEqual(new byte[] { 9, 8, 7 }, File.ReadAllBytes(targetPlugin));
+            Assert.Equal(false, File.Exists(cachePath));
+            var expectedHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(targetPlugin)));
+            var runtimeHash = runtime!
+                .GetType()
+                .GetProperty("PluginSha256")!
+                .GetValue(runtime) as string;
+            Assert.Equal(expectedHash, runtimeHash);
+            Assert.True(
+                logger.Entries.Any(entry =>
+                    entry.Message.Contains("pluginSha256=" + expectedHash, StringComparison.Ordinal) &&
+                    entry.Message.Contains(targetPlugin, StringComparison.Ordinal)),
+                "Expected plugin runtime preparation to log the active cached plugin hash.");
+        }
+        finally
+        {
+            DeleteTempTestDirectory(root);
+        }
+
+        return Task.CompletedTask;
+    }),
     ("playback restart compares resolved VLC overlay directory", async () =>
     {
         var root = CreateTempTestDirectory();
@@ -10051,10 +13894,117 @@ var tests = new (string Name, Func<Task> Run)[]
             Assert.True(entries.Contains("browser-extension/background.js", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("browser-extension/content-core.js", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("browser-extension/content.js", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("browser-extension/README.md", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("StreamlinkVlcStudio.exe", StringComparer.OrdinalIgnoreCase));
+            Assert.True(entries.Contains("Uninstall.exe", StringComparer.OrdinalIgnoreCase));
+            Assert.True(entries.Contains("install.ps1", StringComparer.OrdinalIgnoreCase));
+            Assert.Equal(false, entries.Contains("browser-extension/README.md", StringComparer.OrdinalIgnoreCase));
+            Assert.Equal(false, entries.Contains("install.txt", StringComparer.OrdinalIgnoreCase));
             Assert.Equal(false, entries.Contains("debug.log", StringComparer.OrdinalIgnoreCase));
             Assert.Equal(false, entries.Contains("settings.json", StringComparer.OrdinalIgnoreCase));
+            Assert.Equal(false, Directory.Exists(Path.Combine(outputRoot, "StreamlinkVlcStudio")));
+        }
+        finally
+        {
+            DeleteTempTestDirectory(root);
+        }
+    }),
+    ("uninstaller script creates IExpress uninstall executable", async () =>
+    {
+        var root = CreateTempTestDirectory();
+        try
+        {
+            var repoRoot = FindRepoRoot();
+            var scriptPath = Path.Combine(repoRoot, "scripts", "build-uninstaller.ps1");
+            var outputPath = Path.Combine(root, "Uninstall.exe");
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(scriptPath);
+            startInfo.ArgumentList.Add("-OutputPath");
+            startInfo.ArgumentList.Add(outputPath);
+            startInfo.ArgumentList.Add("-Quiet");
+
+            using var process = Process.Start(startInfo);
+            Assert.NotNull(process);
+            var outputTask = process!.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var output = await outputTask;
+            var error = await errorTask;
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"Uninstaller script failed: {output} {error}".Trim());
+            }
+
+            Assert.True(File.Exists(outputPath), $"Expected uninstall executable at '{outputPath}'.");
+            Assert.True(new FileInfo(outputPath).Length > 0);
+        }
+        finally
+        {
+            DeleteTempTestDirectory(root);
+        }
+    }),
+    ("setup installer script creates IExpress installer from release zip", async () =>
+    {
+        var root = CreateTempTestDirectory();
+        try
+        {
+            var repoRoot = FindRepoRoot();
+            var scriptPath = Path.Combine(repoRoot, "scripts", "build-installer.ps1");
+            var payloadDir = Path.Combine(root, "payload");
+            Directory.CreateDirectory(payloadDir);
+            File.WriteAllText(Path.Combine(payloadDir, "StreamlinkVlcStudio.exe"), "fake exe");
+            File.WriteAllText(Path.Combine(payloadDir, "install.ps1"), "param()");
+            var releaseZip = Path.Combine(root, "StreamlinkVlcStudio-release.zip");
+            ZipFile.CreateFromDirectory(payloadDir, releaseZip);
+            var outputRoot = Path.Combine(root, "installer");
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(scriptPath);
+            startInfo.ArgumentList.Add("-ReleaseZip");
+            startInfo.ArgumentList.Add(releaseZip);
+            startInfo.ArgumentList.Add("-OutputRoot");
+            startInfo.ArgumentList.Add(outputRoot);
+            startInfo.ArgumentList.Add("-SetupFileName");
+            startInfo.ArgumentList.Add("TestSetup.exe");
+            startInfo.ArgumentList.Add("-Quiet");
+
+            using var process = Process.Start(startInfo);
+            Assert.NotNull(process);
+            var outputTask = process!.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var output = await outputTask;
+            var error = await errorTask;
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"Installer script failed: {output} {error}".Trim());
+            }
+
+            var setupPath = Path.Combine(outputRoot, "TestSetup.exe");
+            Assert.True(File.Exists(setupPath), $"Expected setup installer at '{setupPath}'.");
+            Assert.True(new FileInfo(setupPath).Length > 0);
         }
         finally
         {
@@ -10120,7 +14070,7 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(false, engine.OverlayVisible);
         await tab.DisposeAsync();
     }),
-    ("libVLC options use non-DXGI video output", () =>
+    ("libVLC options use non-DXGI video output with hardware decode", () =>
     {
         var buildOptions = typeof(LibVlcPlaybackEngine).GetMethod(
             "BuildLibVlcOptions",
@@ -10135,7 +14085,8 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(false, options.Any(option =>
             option.Contains("direct3d", StringComparison.OrdinalIgnoreCase) ||
             option.Contains("dxgi", StringComparison.OrdinalIgnoreCase)));
-        Assert.True(options.Any(option => option == "--avcodec-hw=none"));
+        Assert.True(options.Any(option => option == "--avcodec-hw=any"));
+        Assert.Equal(false, options.Any(option => option == "--avcodec-hw=none"));
         return Task.CompletedTask;
     }),
     ("reuses cached Kick overlay channel info for launch keys", async () =>
@@ -10497,6 +14448,88 @@ var tests = new (string Name, Func<Task> Run)[]
 
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
+    }),
+    ("inactive playback policy coalesces rapid requests to latest visibility", async () =>
+    {
+        var dispatched = new Queue<Action>();
+        void QueueDispatch(Action action) => dispatched.Enqueue(action);
+        void PumpOneDispatchedAction()
+        {
+            if (dispatched.Count > 0)
+            {
+                dispatched.Dequeue()();
+            }
+        }
+
+        var streamlink = new FakeStreamlinkService();
+        var engines = new Queue<FakePlaybackEngine>();
+        var firstEngine = new FakePlaybackEngine();
+        var secondEngine = new FakePlaybackEngine();
+        engines.Enqueue(firstEngine);
+        engines.Enqueue(secondEngine);
+        var playbackFactory = new FakePlaybackEngineFactory(() => engines.Dequeue());
+        var logger = new MemoryLogger();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC",
+            KeepInactiveTabsRunning = false,
+            MultiStreamEnabled = false
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            logger,
+            QueueDispatch);
+        var firstTab = new StreamTabViewModel(
+            StreamInputParser.Parse("albralelie", PlatformKind.Twitch),
+            "best",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            logger,
+            action => action());
+        var secondTab = new StreamTabViewModel(
+            StreamInputParser.Parse("summit1g", PlatformKind.Twitch),
+            "best",
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            logger,
+            action => action());
+
+        firstTab.SetVideoHandle(new IntPtr(1234));
+        secondTab.SetVideoHandle(new IntPtr(5678));
+        viewModel.Tabs.Add(firstTab);
+        viewModel.Tabs.Add(secondTab);
+
+        viewModel.SelectedTab = firstTab;
+        await firstTab.StartAsync(settings);
+        viewModel.SelectedTab = secondTab;
+        await secondTab.StartAsync(settings);
+        viewModel.SelectedTab = firstTab;
+        viewModel.SelectedTab = secondTab;
+
+        Assert.Equal(0, viewModel.InactivePlaybackPolicyApplyPassCount);
+        Assert.True(dispatched.Count > 0);
+        PumpOneDispatchedAction();
+        await TestWait.UntilAsync(
+            () => viewModel.InactivePlaybackPolicyApplyPassCount == 1,
+            TimeSpan.FromMilliseconds(500));
+        await Task.Delay(50);
+
+        Assert.Equal(1, viewModel.InactivePlaybackPolicyApplyPassCount);
+        Assert.Equal(PlaybackStatus.Paused, firstTab.Status);
+        Assert.Equal(true, firstTab.PausedByTabSwitch);
+        Assert.Equal(PlaybackStatus.Playing, secondTab.Status);
+        Assert.Equal(false, secondTab.PausedByTabSwitch);
+        await firstTab.DisposeAsync();
+        await secondTab.DisposeAsync();
+        await viewModel.DisposeAsync();
     }),
     ("tab switching soft mutes previous selected stream before new selected audio", async () =>
     {
@@ -11274,7 +15307,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -11547,7 +15580,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12106,7 +16139,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12251,7 +16284,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12382,7 +16415,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12535,7 +16568,7 @@ var tests = new (string Name, Func<Task> Run)[]
             var controlPressed = true;
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12666,7 +16699,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 1100,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12803,7 +16836,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 1100,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -12945,7 +16978,7 @@ var tests = new (string Name, Func<Task> Run)[]
             var leftButtonPressed = true;
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -13003,12 +17036,8 @@ var tests = new (string Name, Func<Task> Run)[]
                     secondChrome.ActualHeight / 2));
                 var windowHandle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
                 Assert.True(windowHandle != IntPtr.Zero);
-                var secondWindowPoint = window.PointFromScreen(secondPoint);
-                var transformToDevice = System.Windows.PresentationSource.FromVisual(window)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
-                var secondClientPoint = transformToDevice.Transform(secondWindowPoint);
-                var secondMouseLParam = NativeWindowTest.MakeMouseLParam(
-                    (int)Math.Round(secondClientPoint.X),
-                    (int)Math.Round(secondClientPoint.Y));
+                AttachMainWindowMessageHook(window);
+                var secondMouseLParam = NativeWindowTest.MakeMouseLParamFromScreenPoint(windowHandle, secondPoint);
                 var secondNativePoint = Activator.CreateInstance(
                     nativePointType!,
                     [(int)Math.Round(secondPoint.X), (int)Math.Round(secondPoint.Y)]);
@@ -13047,6 +17076,12 @@ var tests = new (string Name, Func<Task> Run)[]
                     true,
                     (bool)tabDetachDragStartedWithControlModifierField!.GetValue(window)!);
 
+                window.UpdateLayout();
+                secondChrome = FindTabStripChrome(window, second);
+                secondPoint = secondChrome.PointToScreen(new System.Windows.Point(
+                    secondChrome.ActualWidth / 2,
+                    secondChrome.ActualHeight / 2));
+                secondMouseLParam = NativeWindowTest.MakeMouseLParamFromScreenPoint(windowHandle, secondPoint);
                 NativeWindowTest.SetCursorPosition((int)Math.Round(secondPoint.X), (int)Math.Round(secondPoint.Y));
                 Mouse.Synchronize();
                 controlPressed = false;
@@ -13114,7 +17149,7 @@ var tests = new (string Name, Func<Task> Run)[]
             var leftButtonPressed = true;
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -13161,12 +17196,8 @@ var tests = new (string Name, Func<Task> Run)[]
                     secondChrome.ActualHeight / 2));
                 var windowHandle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
                 Assert.True(windowHandle != IntPtr.Zero);
-                var secondWindowPoint = window.PointFromScreen(secondPoint);
-                var transformToDevice = System.Windows.PresentationSource.FromVisual(window)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
-                var secondClientPoint = transformToDevice.Transform(secondWindowPoint);
-                var secondMouseLParam = NativeWindowTest.MakeMouseLParam(
-                    (int)Math.Round(secondClientPoint.X),
-                    (int)Math.Round(secondClientPoint.Y));
+                AttachMainWindowMessageHook(window);
+                var secondMouseLParam = NativeWindowTest.MakeMouseLParamFromScreenPoint(windowHandle, secondPoint);
                 var secondNativePoint = Activator.CreateInstance(
                     nativePointType!,
                     [(int)Math.Round(secondPoint.X), (int)Math.Round(secondPoint.Y)]);
@@ -13193,6 +17224,12 @@ var tests = new (string Name, Func<Task> Run)[]
                     ReferenceEquals(first, tabDetachDragTabField!.GetValue(window)),
                     "Expected routed mouse-down to initialize drag state for the first tab.");
 
+                window.UpdateLayout();
+                secondChrome = FindTabStripChrome(window, second);
+                secondPoint = secondChrome.PointToScreen(new System.Windows.Point(
+                    secondChrome.ActualWidth / 2,
+                    secondChrome.ActualHeight / 2));
+                secondMouseLParam = NativeWindowTest.MakeMouseLParamFromScreenPoint(windowHandle, secondPoint);
                 NativeWindowTest.SetCursorPosition((int)Math.Round(secondPoint.X), (int)Math.Round(secondPoint.Y));
                 Mouse.Synchronize();
                 controlPressed = false;
@@ -13265,7 +17302,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 900,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -13438,7 +17475,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 1100,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -13609,7 +17646,7 @@ var tests = new (string Name, Func<Task> Run)[]
 
             var window = new MainWindow
             {
-                Width = 1100,
+                Width = 1400,
                 Height = 560,
                 Topmost = true,
                 DataContext = viewModel
@@ -14599,7 +18636,8 @@ var tests = new (string Name, Func<Task> Run)[]
             StreamMetadataState.Available,
             "https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie-440x248.jpg",
             "Albralelie",
-            "metadata updated"));
+            "metadata updated",
+            "Apex Legends"));
         var viewModel = new MainViewModel(
             settings,
             settingsService,
@@ -14627,10 +18665,12 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal("albralelie", settings.RecentStreams[0].Channel);
         Assert.Equal("https://www.twitch.tv/albralelie", settings.RecentStreams[0].Url);
         Assert.Equal("Albralelie", settings.RecentStreams[0].DisplayName);
+        Assert.Equal("Apex Legends", settings.RecentStreams[0].CategoryName);
         Assert.Equal("https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie-440x248.jpg", settings.RecentStreams[0].ThumbnailUrl);
         Assert.Equal("best", settings.RecentStreams[0].LastQuality);
         Assert.True(settings.RecentStreams[0].LastWatchedAtUtc > DateTimeOffset.UtcNow.AddMinutes(-1));
         Assert.Equal("Albralelie", viewModel.RecentStreams[0].DisplayName);
+        Assert.Equal("Apex Legends", viewModel.RecentStreams[0].CategoryName);
         Assert.Equal("https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie-440x248.jpg", viewModel.RecentStreams[0].ThumbnailUrl);
         Assert.Equal("Live", viewModel.RecentStreams[0].LiveStatusText);
         Assert.Equal(1, metadataService.CallCount);
@@ -14656,12 +18696,14 @@ var tests = new (string Name, Func<Task> Run)[]
                 StreamMetadataState.Available,
                 "https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie-first.jpg",
                 "Albralelie",
-                "metadata updated"),
+                "metadata updated",
+                "Apex Legends"),
             new StreamMetadataResult(
                 StreamMetadataState.Available,
                 "https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie-second.jpg",
                 "Albralelie",
-                "metadata updated"));
+                "metadata updated",
+                "Apex Legends"));
         var viewModel = new MainViewModel(
             settings,
             settingsService,
@@ -14684,6 +18726,7 @@ var tests = new (string Name, Func<Task> Run)[]
             TimeSpan.FromSeconds(1));
 
         Assert.Equal("Albralelie", settings.RecentStreams[0].DisplayName);
+        Assert.Equal("Apex Legends", settings.RecentStreams[0].CategoryName);
         Assert.True(settingsService.SaveCount >= 2);
         await viewModel.DisposeAsync();
     }),
@@ -14755,6 +18798,7 @@ var tests = new (string Name, Func<Task> Run)[]
                 Platform = PlatformKind.Twitch,
                 Channel = "albralelie",
                 DisplayName = "Albralelie",
+                CategoryName = "Apex Legends",
                 ThumbnailUrl = "https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie.jpg",
                 LastQuality = "best",
                 LastWatchedAtUtc = new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero)
@@ -14819,6 +18863,7 @@ var tests = new (string Name, Func<Task> Run)[]
                 Platform = PlatformKind.Twitch,
                 Channel = "albralelie",
                 DisplayName = "Albralelie",
+                CategoryName = "Apex Legends",
                 ThumbnailUrl = "https://static-cdn.jtvnw.net/previews-ttv/live_user_albralelie.jpg",
                 LastQuality = "best",
                 LastWatchedAtUtc = new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero)
@@ -14841,6 +18886,8 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(1, viewModel.Tabs.Count);
         var tab = viewModel.Tabs[0];
         Assert.Equal("albralelie", tab.Target.Channel);
+        Assert.Equal("Apex Legends", tab.Target.CategoryName);
+        Assert.Equal("Apex Legends", viewModel.TabStripItems.Single().SubtitleText);
         Assert.Equal(false, tab.IsSelected);
         Assert.Equal(false, tab.IsVideoVisible);
         Assert.SequenceEqual(new[] { tab }, viewModel.VideoTabs.ToArray());
@@ -14888,6 +18935,8 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(1, viewModel.Tabs.Count);
         var tab = viewModel.Tabs[0];
         Assert.Equal("summit1g", tab.Target.Channel);
+        Assert.Equal("Just Chatting", tab.Target.CategoryName);
+        Assert.Equal("Just Chatting", viewModel.TabStripItems.Single().SubtitleText);
         Assert.Equal(false, tab.IsSelected);
         Assert.Equal(false, tab.IsVideoVisible);
         Assert.SequenceEqual(new[] { tab }, viewModel.VideoTabs.ToArray());
@@ -15376,6 +19425,9 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
         Assert.Equal(false, tab.IsBehindLive);
         Assert.Equal("VOD", tab.ReplayLiveStateText);
+        await TestWait.UntilAsync(
+            () => replayChatProvider.Offsets.LastOrDefault() == TimeSpan.FromMinutes(10),
+            TimeSpan.FromMilliseconds(500));
         Assert.Equal(TimeSpan.FromMinutes(10), replayChatProvider.Offsets.Last());
 
         tab.OutgoingChatText = "should not send";
@@ -15383,6 +19435,615 @@ var tests = new (string Name, Func<Task> Run)[]
 
         Assert.Equal(0, chatFactory.Client.SentMessages.Count);
         await tab.DisposeAsync();
+    }),
+    ("explicit Kick VOD tab without webhook cache reports replay chat unavailable after startup", async () =>
+    {
+        var sourceVodUri = new Uri("https://vod.kick.com/xqc/master.m3u8");
+        var resolvedVodUri = new Uri("https://vod.kick.com/xqc/720p/index.m3u8");
+        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+        const string unavailableReason = "No official Kick webhook chat cache was found for xqc. Enable the Kick webhook listener, subscribe to chat.message.sent, and capture chat before opening the VOD.";
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (request, _) =>
+                Task.FromResult(new StreamlinkResolvedUrl(resolvedVodUri, $"Resolved {request.Target.MediaId}.")),
+            StartExternalHttpOverride = (_, _) => throw new InvalidOperationException("Kick VOD should not start an external Streamlink transport.")
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var chatFactory = new FakeChatClientFactory();
+        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(unavailableReason));
+        var target = new StreamTarget(
+            PlatformKind.Kick,
+            "xqc",
+            sourceVodUri.ToString(),
+            StreamTargetKind.KickVod,
+            "uuid-123",
+            "Kick VOD without cached chat",
+            "",
+            TimeSpan.FromMinutes(30),
+            startedAt,
+            ChatRoomId: "668");
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = true;
+        settings.Chat.Layout = ChatLayout.Docked;
+        var tab = new StreamTabViewModel(
+            target,
+            "best",
+            streamlink,
+            playbackFactory,
+            chatFactory,
+            new MemoryLogger(),
+            action => action(),
+            replayChatProvider: replayChatProvider);
+
+        tab.SetVideoHandle(new IntPtr(1234));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => replayChatProvider.CallCount >= 1 &&
+                DockedChatMessagesContainText(tab, "webhook chat cache"),
+            TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(PlaybackStatus.Playing, tab.Status);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(StreamTargetKind.KickVod, streamlink.ResolveStreamUrlRequests[0].Target.Kind);
+        Assert.Equal(sourceVodUri.ToString(), streamlink.ResolveStreamUrlRequests[0].Target.Url);
+        Assert.Equal("best", streamlink.ResolveStreamUrlRequests[0].Quality);
+        Assert.Equal(false, streamlink.ResolveStreamUrlRequests[0].LowLatency);
+        Assert.Equal(0, streamlink.StartCount);
+        Assert.Equal(1, playbackFactory.Engine!.PlayCount);
+        Assert.Equal(resolvedVodUri, playbackFactory.Engine.LastPlayedUri);
+        Assert.Equal(0, chatFactory.Client.ConnectCount);
+        Assert.Equal(false, tab.CanSendChatMessages);
+        Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
+        Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
+        Assert.Equal("668", replayChatProvider.Requests[0].ChatRoomId);
+        Assert.Equal(TimeSpan.Zero, replayChatProvider.Offsets[0]);
+        Assert.True(DockedChatMessagesContainText(tab, unavailableReason));
+
+        await tab.DisposeAsync();
+    }),
+    ("explicit Kick VOD tab without start time reports replay chat unavailable", async () =>
+    {
+        var sourceVodUri = new Uri("https://vod.kick.com/xqc/master.m3u8");
+        var resolvedVodUri = new Uri("https://vod.kick.com/xqc/720p/index.m3u8");
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (request, _) =>
+                Task.FromResult(new StreamlinkResolvedUrl(resolvedVodUri, $"Resolved {request.Target.MediaId}.")),
+            StartExternalHttpOverride = (_, _) => throw new InvalidOperationException("Kick VOD should not start an external Streamlink transport.")
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var chatFactory = new FakeChatClientFactory();
+        var viewerCountService = new FakeViewerCountService();
+        var replayResolver = new FakeReplayResolver(ReplaySessionInfo.Unavailable(
+            PlatformKind.Kick,
+            "xqc",
+            "not used"));
+        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(
+            "Official Kick VOD chat needs the VOD start time so webhook messages can be aligned to playback."));
+        var target = new StreamTarget(
+            PlatformKind.Kick,
+            "xqc",
+            sourceVodUri.ToString(),
+            StreamTargetKind.KickVod,
+            "uuid-123",
+            "Kick VOD",
+            "",
+            TimeSpan.FromMinutes(30));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = true;
+        var tab = new StreamTabViewModel(
+            target,
+            "best",
+            streamlink,
+            playbackFactory,
+            chatFactory,
+            new MemoryLogger(),
+            action => action(),
+            viewerCountService: viewerCountService,
+            replayResolver: replayResolver,
+            replayChatProvider: replayChatProvider);
+
+        tab.SetVideoHandle(new IntPtr(1234));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(
+            () => replayChatProvider.CallCount >= 1 &&
+                DockedChatMessagesContainText(tab, "VOD start time"),
+            TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(PlaybackStatus.Playing, tab.Status);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(StreamTargetKind.KickVod, streamlink.ResolveStreamUrlRequests[0].Target.Kind);
+        Assert.Equal(sourceVodUri.ToString(), streamlink.ResolveStreamUrlRequests[0].Target.Url);
+        Assert.Equal("best", streamlink.ResolveStreamUrlRequests[0].Quality);
+        Assert.Equal(false, streamlink.ResolveStreamUrlRequests[0].LowLatency);
+        Assert.Equal(0, streamlink.StartCount);
+        Assert.Equal(0, streamlink.StartExternalHttpRequests.Count);
+        Assert.Equal(1, playbackFactory.Engine!.PlayCount);
+        Assert.Equal(resolvedVodUri, playbackFactory.Engine.LastPlayedUri);
+        Assert.Equal(0, viewerCountService.CallCount);
+        Assert.Equal(0, replayResolver.CallCount);
+        Assert.Equal(0, chatFactory.Client.ConnectCount);
+        Assert.True(replayChatProvider.CallCount >= 1);
+        Assert.True(tab.IsReplaySeekEnabled);
+        Assert.True(tab.CanSeekReplay);
+        Assert.Equal(TimeSpan.FromMinutes(30).TotalSeconds, tab.ReplaySeekMaximum);
+        Assert.Equal("VOD", tab.ReplayLiveStateText);
+        Assert.Equal("Kick VOD replay available: uuid-123", tab.ReplaySeekToolTip);
+        Assert.Equal(false, tab.CanSendChatMessages);
+        Assert.Equal(false, tab.CanReturnToLive);
+        Assert.True(DockedChatMessagesContainText(tab, "VOD start time"));
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(0, streamlink.StartCount);
+        Assert.Equal(1, playbackFactory.Engine.PlayCount);
+        Assert.Equal(resolvedVodUri, playbackFactory.Engine.LastPlayedUri);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.Equal(false, tab.IsBehindLive);
+        Assert.Equal("VOD", tab.ReplayLiveStateText);
+        await TestWait.UntilAsync(
+            () => replayChatProvider.CallCount >= 2 &&
+                DockedChatMessagesContainText(tab, "VOD start time"),
+            TimeSpan.FromMilliseconds(500));
+
+        await tab.SeekReplayAsync(TimeSpan.FromSeconds(-30));
+        Assert.Equal(TimeSpan.Zero, playbackFactory.Engine.Position);
+
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(45));
+        Assert.Equal(TimeSpan.FromMinutes(30), playbackFactory.Engine.Position);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.True(replayChatProvider.CallCount >= 2);
+
+        await tab.DisposeAsync();
+    }),
+    ("explicit Kick VOD tab loads replay chat when start time is available", async () =>
+    {
+        var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+        [
+            new ReplayChatMessage(
+                TimeSpan.Zero,
+                new ChatMessage(
+                    PlatformKind.Kick,
+                    "xqc",
+                    "viewer",
+                    "official Kick VOD replay chat",
+                    startedAt,
+                    MessageId: "official-kick-vod-replay-chat"))
+        ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
+        var eventSubscriptionService = new FakeKickEventSubscriptionService(
+            new KickEventSubscriptionEnsureResult(
+                KickEventSubscriptionEnsureStatus.Subscribed,
+                "Official Kick chat webhook subscription created for xqc.",
+                "sub-123",
+                456));
+        var chatFactory = new FakeChatClientFactory();
+        var target = new StreamTarget(
+            PlatformKind.Kick,
+            "xqc",
+            directVodUri.ToString(),
+            StreamTargetKind.KickVod,
+            "uuid-123",
+            "Kick VOD with chat",
+            "",
+            TimeSpan.FromMinutes(30),
+            startedAt,
+            ChatRoomId: "668");
+        var tab = new StreamTabViewModel(
+            target,
+            "best",
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            chatFactory,
+            new MemoryLogger(),
+            action => action(),
+            replayChatProvider: replayChatProvider,
+            kickEventSubscriptionService: eventSubscriptionService);
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.KickWebhookListenerEnabled = true;
+
+        tab.SetVideoHandle(new IntPtr(1234));
+        await tab.StartAsync(settings);
+
+        await TestWait.UntilAsync(
+            () => replayChatProvider.CallCount >= 1 &&
+                eventSubscriptionService.CallCount >= 1 &&
+                DockedChatMessagesContain(tab, "official Kick VOD replay chat"),
+            TimeSpan.FromSeconds(2));
+
+        Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
+        Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
+        Assert.Equal("668", replayChatProvider.Requests[0].ChatRoomId);
+        Assert.Equal(TimeSpan.Zero, replayChatProvider.Offsets[0]);
+        Assert.Equal("xqc", eventSubscriptionService.Requests[0].Channel);
+        Assert.Equal(0, chatFactory.Client.ConnectCount);
+        Assert.Equal(false, tab.CanSendChatMessages);
+        Assert.Equal(0, tab.DockedChatMessages.Count(message =>
+            message.Message.Contains("Kick seekback chat", StringComparison.Ordinal)));
+
+        tab.OutgoingChatText = "should not send";
+        await tab.SendChatMessageAsync();
+
+        Assert.Equal(0, chatFactory.Client.ConnectCount);
+        Assert.Equal(0, chatFactory.Client.SentMessages.Count);
+
+        await tab.DisposeAsync();
+    }),
+    ("Kick VOD with missing duration leaves replay seekbar disabled", async () =>
+    {
+        var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
+        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat is unsupported."));
+        var tab = new StreamTabViewModel(
+            new StreamTarget(
+                PlatformKind.Kick,
+                "xqc",
+                directVodUri.ToString(),
+                StreamTargetKind.KickVod,
+                "uuid-123",
+                "Kick VOD",
+                "",
+                TimeSpan.Zero),
+            "best",
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            replayChatProvider: replayChatProvider);
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(1234));
+
+        await tab.StartAsync(settings);
+
+        Assert.Equal(PlaybackStatus.Playing, tab.Status);
+        Assert.Equal(false, tab.IsReplaySeekEnabled);
+        Assert.Equal(false, tab.CanSeekReplay);
+        Assert.Contains("usable duration", tab.ReplaySeekToolTip);
+        Assert.Equal(0, replayChatProvider.CallCount);
+
+        await tab.DisposeAsync();
+    }),
+    ("home search service partial query shows live and offline channel matches", async () =>
+    {
+        var searchService = new FakeStreamSearchService(new StreamSearchResult(
+            StreamSearchResultStatus.Available,
+            [
+                new StreamSearchChannel(
+                    PlatformKind.Twitch,
+                    "summit1g",
+                    "summit1g",
+                    "https://www.twitch.tv/summit1g",
+                    "https://static-cdn.jtvnw.net/summit1g.jpg",
+                    "live title",
+                    "Just Chatting",
+                    StreamSearchChannelState.Live,
+                    StreamSearchSourceStatus.Available,
+                    "Playable stream found.",
+                    true),
+                new StreamSearchChannel(
+                    PlatformKind.Kick,
+                    "summit",
+                    "Summit",
+                    "https://kick.com/summit",
+                    "https://files.kick.com/summit.jpg",
+                    "",
+                    "",
+                    StreamSearchChannelState.Offline,
+                    StreamSearchSourceStatus.Available,
+                    "Offline. Open VODs.",
+                    false)
+            ],
+            "2 channel results."));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            streamSearchService: searchService,
+            streamSearchDebounceInterval: TimeSpan.Zero);
+
+        viewModel.NewStreamText = "sum";
+
+        await TestWait.UntilAsync(
+            () => searchService.CallCount == 1 && viewModel.StreamSearchResults.Count == 2,
+            TimeSpan.FromMilliseconds(500));
+        Assert.Equal("sum", searchService.Requests[0].Query);
+        Assert.Equal("summit1g", viewModel.StreamSearchResults[0].Channel);
+        Assert.Equal("Live", viewModel.StreamSearchResults[0].StateText);
+        Assert.True(viewModel.StreamSearchResults[0].OpenAndStayOnHomeCommand.CanExecute(null));
+        Assert.Equal("summit", viewModel.StreamSearchResults[1].Channel);
+        Assert.Equal("Offline", viewModel.StreamSearchResults[1].StateText);
+        Assert.True(viewModel.StreamSearchResults[1].OpenAndStayOnHomeCommand.CanExecute(null));
+        await viewModel.DisposeAsync();
+    }),
+    ("home search service live result opens playback", async () =>
+    {
+        var searchService = new FakeStreamSearchService(new StreamSearchResult(
+            StreamSearchResultStatus.Available,
+            [
+                new StreamSearchChannel(
+                    PlatformKind.Kick,
+                    "xqc",
+                    "xQc",
+                    "https://kick.com/xqc",
+                    "https://files.kick.com/xqc.jpg",
+                    "live title",
+                    "IRL",
+                    StreamSearchChannelState.Live,
+                    StreamSearchSourceStatus.Available,
+                    "Playable stream found.",
+                    true)
+            ],
+            "1 live channel result."));
+        var streamlink = new FakeStreamlinkService();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            streamlink,
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            streamSearchService: searchService);
+
+        viewModel.NewStreamText = "xq";
+        await viewModel.AddAndPlayCommand.ExecuteAsync();
+
+        Assert.Equal(1, viewModel.StreamSearchResults.Count);
+        await viewModel.StreamSearchResults[0].OpenAndStayOnHomeCommand.ExecuteAsync();
+
+        await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
+        viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
+        await TestWait.UntilAsync(() => streamlink.Started, TimeSpan.FromMilliseconds(500));
+        Assert.Equal(PlatformKind.Kick, viewModel.Tabs[0].Target.Platform);
+        Assert.Equal("xqc", viewModel.Tabs[0].Target.Channel);
+        Assert.Equal("IRL", viewModel.Tabs[0].Target.CategoryName);
+        Assert.Equal("IRL", viewModel.TabStripItems.Single().SubtitleText);
+        Assert.True(viewModel.IsHomeSelected);
+        await viewModel.DisposeAsync();
+    }),
+    ("offline Twitch search result opens Twitch VOD search", async () =>
+    {
+        var broadcaster = new TwitchVodBroadcaster("26490481", "summit1g", "summit1g");
+        var vod = new TwitchVodItem(
+            "vod-1",
+            "stream-1",
+            broadcaster.Id,
+            broadcaster.Login,
+            broadcaster.DisplayName,
+            "first VOD",
+            "",
+            "https://www.twitch.tv/videos/vod-1",
+            "",
+            null,
+            null,
+            TimeSpan.FromMinutes(45),
+            100,
+            TwitchVodTypeFilter.Archive);
+        var twitchVodService = new FakeTwitchVodService(
+            new TwitchVodSearchResult(TwitchVodSearchStatus.Available, broadcaster, [vod], "", "1 VOD"));
+        var searchService = new FakeStreamSearchService(new StreamSearchResult(
+            StreamSearchResultStatus.Available,
+            [
+                new StreamSearchChannel(
+                    PlatformKind.Twitch,
+                    "summit1g",
+                    "summit1g",
+                    "https://www.twitch.tv/summit1g",
+                    "",
+                    "",
+                    "",
+                    StreamSearchChannelState.Offline,
+                    StreamSearchSourceStatus.Available,
+                    "Offline. Open VODs.",
+                    false)
+            ],
+            "1 offline channel result."));
+        var settings = new AppSettings();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            twitchVodService: twitchVodService,
+            streamSearchService: searchService);
+
+        viewModel.NewStreamText = "summ";
+        await viewModel.AddAndPlayCommand.ExecuteAsync();
+        await viewModel.StreamSearchResults[0].OpenAndStayOnHomeCommand.ExecuteAsync();
+
+        Assert.True(viewModel.IsTwitchVodsHomePageSelected);
+        Assert.True(viewModel.IsTwitchVodPlatformSelected);
+        Assert.Equal("summit1g", viewModel.TwitchVodSearchText);
+        Assert.Equal(1, twitchVodService.CallCount);
+        Assert.Equal("summit1g", twitchVodService.Requests[0].Streamer);
+        Assert.Equal(1, viewModel.TwitchVods.Count);
+        Assert.Equal("vod-1", viewModel.TwitchVods[0].Id);
+        await viewModel.DisposeAsync();
+    }),
+    ("offline Kick search result opens Kick VOD search", async () =>
+    {
+        var kickVod = new KickVodItem(
+            "123",
+            "456",
+            "uuid-123",
+            "xqc",
+            "xQc",
+            "Kick VOD",
+            "https://kick.com/xqc/videos/uuid-123",
+            "https://vod.kick.com/xqc/index.m3u8",
+            "",
+            "Just Chatting",
+            null,
+            null,
+            TimeSpan.FromMinutes(30),
+            1234);
+        var kickVodService = new FakeKickVodService(
+            new KickVodSearchResult(KickVodSearchStatus.Available, [kickVod], "", "1 VOD"));
+        var searchService = new FakeStreamSearchService(new StreamSearchResult(
+            StreamSearchResultStatus.Available,
+            [
+                new StreamSearchChannel(
+                    PlatformKind.Kick,
+                    "xqc",
+                    "xQc",
+                    "https://kick.com/xqc",
+                    "",
+                    "",
+                    "",
+                    StreamSearchChannelState.Offline,
+                    StreamSearchSourceStatus.Available,
+                    "Offline. Open VODs.",
+                    false)
+            ],
+            "1 offline channel result."));
+        var settings = new AppSettings();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            streamSearchService: searchService,
+            kickVodService: kickVodService);
+
+        viewModel.NewStreamText = "xqc";
+        await viewModel.AddAndPlayCommand.ExecuteAsync();
+        await viewModel.StreamSearchResults[0].OpenAndStayOnHomeCommand.ExecuteAsync();
+
+        Assert.True(viewModel.IsTwitchVodsHomePageSelected);
+        Assert.True(viewModel.IsKickVodPlatformSelected);
+        Assert.Equal("xqc", viewModel.TwitchVodSearchText);
+        Assert.Equal(1, kickVodService.CallCount);
+        Assert.Equal("xqc", kickVodService.Requests[0].Channel);
+        Assert.Equal(1, viewModel.TwitchVods.Count);
+        Assert.Equal("uuid-123", viewModel.TwitchVods[0].Id);
+        await viewModel.DisposeAsync();
+    }),
+    ("opening Kick VOD resolves HLS tab without recents", async () =>
+    {
+        var sourceVodUri = new Uri("https://vod.kick.com/xqc/master.m3u8");
+        var resolvedVodUri = new Uri("https://vod.kick.com/xqc/720p/index.m3u8");
+        var kickVod = new KickVodItem(
+            "123",
+            "456",
+            "uuid-123",
+            "xqc",
+            "xQc",
+            "Kick VOD",
+            "https://kick.com/xqc/videos/uuid-123",
+            sourceVodUri.ToString(),
+            "https://files.kick.com/vod.jpg",
+            "Just Chatting",
+            new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 6, 1, 11, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromMinutes(30),
+            1234,
+            "668");
+        var kickVodService = new FakeKickVodService(
+            new KickVodSearchResult(KickVodSearchStatus.Available, [kickVod], "", "1 VOD"));
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (request, _) =>
+                Task.FromResult(new StreamlinkResolvedUrl(resolvedVodUri, $"Resolved {request.Target.MediaId}."))
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = true;
+        var chatFactory = new FakeChatClientFactory();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            streamlink,
+            playbackFactory,
+            chatFactory,
+            new MemoryLogger(),
+            action => action(),
+            kickVodService: kickVodService,
+            twitchVodSearchDebounceInterval: TimeSpan.Zero);
+
+        viewModel.ShowTwitchVodsHomePageCommand.Execute(null);
+        viewModel.SelectKickVodPlatformCommand.Execute(null);
+        viewModel.TwitchVodSearchText = "xqc";
+        await TestWait.UntilAsync(
+            () => kickVodService.CallCount == 1 && viewModel.TwitchVods.Count == 1,
+            TimeSpan.FromMilliseconds(500));
+
+        await viewModel.TwitchVods[0].OpenAndStayOnHomeCommand.ExecuteAsync();
+
+        await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
+        viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
+        await TestWait.UntilAsync(() => playbackFactory.Engine?.Played == true, TimeSpan.FromMilliseconds(500));
+        Assert.Equal(StreamTargetKind.KickVod, viewModel.Tabs[0].Target.Kind);
+        Assert.Equal("uuid-123", viewModel.Tabs[0].Target.MediaId);
+        Assert.Equal("", viewModel.Tabs[0].Target.BroadcasterId);
+        Assert.Equal("668", viewModel.Tabs[0].Target.ChatRoomId);
+        Assert.Equal("Just Chatting", viewModel.Tabs[0].Target.CategoryName);
+        Assert.Equal("Just Chatting", viewModel.TabStripItems.Single().SubtitleText);
+        Assert.Equal(resolvedVodUri, playbackFactory.Engine!.LastPlayedUri);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(StreamTargetKind.KickVod, streamlink.ResolveStreamUrlRequests[0].Target.Kind);
+        Assert.Equal(sourceVodUri.ToString(), streamlink.ResolveStreamUrlRequests[0].Target.Url);
+        Assert.Equal("best", streamlink.ResolveStreamUrlRequests[0].Quality);
+        Assert.Equal(false, streamlink.ResolveStreamUrlRequests[0].LowLatency);
+        Assert.True(viewModel.Tabs[0].IsReplaySeekEnabled);
+        Assert.True(viewModel.Tabs[0].CanSeekReplay);
+        Assert.Equal(TimeSpan.FromMinutes(30).TotalSeconds, viewModel.Tabs[0].ReplaySeekMaximum);
+        Assert.Equal("VOD", viewModel.Tabs[0].ReplayLiveStateText);
+        Assert.Equal("Kick VOD replay available: uuid-123", viewModel.Tabs[0].ReplaySeekToolTip);
+
+        await viewModel.Tabs[0].SeekReplayAsync(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1, playbackFactory.Engine.PlayCount);
+        Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine.Position);
+        Assert.Equal(0, streamlink.StartCount);
+        Assert.Equal(1, streamlink.ResolveStreamUrlCount);
+        Assert.Equal(0, settings.RecentStreams.Count);
+        Assert.Equal(0, chatFactory.Client.ConnectCount);
+        await viewModel.DisposeAsync();
     }),
     ("home search command requires a nonblank streamer query", async () =>
     {
@@ -15443,10 +20104,14 @@ var tests = new (string Name, Func<Task> Run)[]
         viewModel.NewStreamText = "xqc";
 
         await TestWait.UntilAsync(
-            () => streamlink.ProbeRequests.Count == 2 && viewModel.StreamSearchResults.Count == 1,
+            () => streamlink.ProbeRequests.Count == 2 && viewModel.StreamSearchResults.Count == 2,
             TimeSpan.FromMilliseconds(500));
         Assert.Equal(0, streamlink.StartCount);
         Assert.Equal(PlatformKind.Kick, viewModel.StreamSearchResults[0].Target.Platform);
+        Assert.Equal("Live", viewModel.StreamSearchResults[0].StateText);
+        Assert.Equal(PlatformKind.Twitch, viewModel.StreamSearchResults[1].Target.Platform);
+        Assert.Equal("Unavailable", viewModel.StreamSearchResults[1].StateText);
+        Assert.Equal(false, viewModel.StreamSearchResults[1].OpenAndStayOnHomeCommand.CanExecute(null));
         Assert.True(viewModel.IsStreamSearchPanelVisible);
         await viewModel.DisposeAsync();
     }),
@@ -15484,9 +20149,10 @@ var tests = new (string Name, Func<Task> Run)[]
         viewModel.NewStreamText = "xqc";
         await viewModel.AddAndPlayCommand.ExecuteAsync();
 
-        Assert.Equal(1, viewModel.StreamSearchResults.Count);
-        Assert.Equal(1, metadataService.CallCount);
-        Assert.Equal(PlatformKind.Kick, metadataService.Requests[0].Platform);
+        Assert.Equal(2, viewModel.StreamSearchResults.Count);
+        Assert.Equal(2, metadataService.CallCount);
+        Assert.True(metadataService.Requests.Any(request => request.Platform == PlatformKind.Kick));
+        Assert.True(metadataService.Requests.Any(request => request.Platform == PlatformKind.Twitch));
         Assert.Equal("https://files.kick.com/xqc.jpg", viewModel.StreamSearchResults[0].ThumbnailUrl);
         Assert.True(viewModel.StreamSearchResults[0].HasThumbnail);
         Assert.Equal("xQc", viewModel.StreamSearchResults[0].DisplayName);
@@ -15599,7 +20265,7 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(false, viewModel.IsStreamSearchEmptyVisible);
         Assert.Equal(PlatformKind.Twitch, viewModel.StreamSearchResults[0].Target.Platform);
         Assert.Equal(PlatformKind.Kick, viewModel.StreamSearchResults[1].Target.Platform);
-        Assert.Contains("2 playable streams", viewModel.StatusMessage);
+        Assert.Contains("2 live channel results", viewModel.StatusMessage);
     }),
     ("home search probes Twitch and Kick before showing a bare streamer result", async () =>
     {
@@ -15644,10 +20310,14 @@ var tests = new (string Name, Func<Task> Run)[]
             "Expected home search to probe Kick for the bare streamer name.");
         Assert.Equal(0, viewModel.Tabs.Count);
         Assert.Equal(0, streamlink.StartCount);
-        Assert.Equal(1, viewModel.StreamSearchResults.Count);
+        Assert.Equal(2, viewModel.StreamSearchResults.Count);
         Assert.Equal(PlatformKind.Kick, viewModel.StreamSearchResults[0].Target.Platform);
         Assert.Equal("xqc", viewModel.StreamSearchResults[0].Target.Channel);
-        Assert.Contains("1 playable stream", viewModel.StreamSearchStatus);
+        Assert.Equal("Live", viewModel.StreamSearchResults[0].StateText);
+        Assert.Equal(PlatformKind.Twitch, viewModel.StreamSearchResults[1].Target.Platform);
+        Assert.Equal("Unavailable", viewModel.StreamSearchResults[1].StateText);
+        Assert.Contains("1 live", viewModel.StreamSearchStatus);
+        Assert.Contains("1 unavailable", viewModel.StreamSearchStatus);
 
         await viewModel.StreamSearchResults[0].OpenAndStayOnHomeCommand.ExecuteAsync();
 
@@ -15690,10 +20360,12 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(1, streamlink.ProbeRequests.Count);
         Assert.Equal(PlatformKind.Kick, streamlink.ProbeRequests[0].Target.Platform);
         Assert.Equal("xqc", streamlink.ProbeRequests[0].Target.Channel);
-        Assert.Equal(0, viewModel.StreamSearchResults.Count);
-        Assert.Equal(false, viewModel.HasStreamSearchResults);
-        Assert.True(viewModel.IsStreamSearchEmptyVisible);
-        Assert.Contains("No playable Kick stream", viewModel.StreamSearchStatus);
+        Assert.Equal(1, viewModel.StreamSearchResults.Count);
+        Assert.True(viewModel.HasStreamSearchResults);
+        Assert.Equal(false, viewModel.IsStreamSearchEmptyVisible);
+        Assert.Equal("Unavailable", viewModel.StreamSearchResults[0].StateText);
+        Assert.Equal(false, viewModel.StreamSearchResults[0].OpenAndStayOnHomeCommand.CanExecute(null));
+        Assert.Contains("1 unavailable", viewModel.StreamSearchStatus);
         await viewModel.DisposeAsync();
     }),
     ("late-starting inactive tab stays muted without muting selected stream", async () =>
@@ -15778,6 +20450,38 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(80, sharedAudio.Volume);
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
+    }),
+    ("detected stream open loads live category metadata before creating tab", async () =>
+    {
+        var metadataService = new FakeStreamMetadataService(new StreamMetadataResult(
+            StreamMetadataState.Available,
+            "",
+            "Albralelie",
+            "metadata updated",
+            "Apex Legends"));
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action(),
+            streamMetadataService: metadataService);
+
+        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+
+        Assert.Equal(1, metadataService.CallCount);
+        Assert.Equal(1, viewModel.Tabs.Count);
+        Assert.Equal("Apex Legends", viewModel.Tabs[0].Target.CategoryName);
+        Assert.Equal("Apex Legends", viewModel.TabStripItems.Single().SubtitleText);
+        await viewModel.DisposeAsync();
     }),
     ("detected streams open another tab while first playback is still starting", async () =>
     {
@@ -15895,6 +20599,58 @@ var tests = new (string Name, Func<Task> Run)[]
                 return createdEngines.Any(engine => engine.VideoHandle == handle && engine.Played);
             }
         }
+    }),
+    ("detected stream starts are throttled after two concurrent startups", async () =>
+    {
+        var streamlink = new FakeStreamlinkService();
+        var playbackRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstEngine = new FakePlaybackEngine { PlayCompletion = playbackRelease.Task };
+        var secondEngine = new FakePlaybackEngine { PlayCompletion = playbackRelease.Task };
+        var thirdEngine = new FakePlaybackEngine { PlayCompletion = playbackRelease.Task };
+        var engines = new Queue<FakePlaybackEngine>();
+        engines.Enqueue(firstEngine);
+        engines.Enqueue(secondEngine);
+        engines.Enqueue(thirdEngine);
+        var playbackFactory = new FakePlaybackEngineFactory(() => engines.Dequeue());
+        var logger = new MemoryLogger();
+        var settings = new AppSettings
+        {
+            StreamlinkPath = "streamlink.exe",
+            VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+        };
+        settings.Chat.ConnectAutomatically = false;
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            streamlink,
+            playbackFactory,
+            new FakeChatClientFactory(),
+            logger,
+            action => action());
+
+        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
+        viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
+        await firstEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+
+        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
+        await TestWait.UntilAsync(() => viewModel.Tabs.Count == 2, TimeSpan.FromMilliseconds(500));
+        viewModel.Tabs[1].SetVideoHandle(new IntPtr(5678));
+        await secondEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+
+        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("xqc", PlatformKind.Twitch));
+        await TestWait.UntilAsync(() => viewModel.Tabs.Count == 3, TimeSpan.FromMilliseconds(500));
+        viewModel.Tabs[2].SetVideoHandle(new IntPtr(9012));
+
+        await Task.Delay(75);
+
+        Assert.Equal(2, streamlink.StartCount);
+        Assert.Equal(false, thirdEngine.PlayStarted.Task.IsCompleted);
+
+        playbackRelease.SetResult();
+        await thirdEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+        await TestWait.UntilAsync(() => streamlink.StartCount == 3, TimeSpan.FromMilliseconds(500));
+        await viewModel.DisposeAsync();
     }),
     ("duplicate detected stream reuses tab while first playback is still starting", async () =>
     {
@@ -16021,6 +20777,111 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal(true, viewModel.IsSelectedChatShowing);
         Assert.Equal(true, chatFactory.Client.Connected);
         await viewModel.DisposeAsync();
+    }),
+    ("dock width drag updates docked chat setting without chat or playback restart", () =>
+    {
+        return TestSta.RunAsync(async () =>
+        {
+            var settings = new AppSettings
+            {
+                StreamlinkPath = "streamlink.exe",
+                VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+            };
+            settings.Chat.ConnectAutomatically = true;
+            settings.Chat.Layout = ChatLayout.Docked;
+            settings.Chat.DockWidth = ChatSettings.DefaultDockWidth;
+
+            var streamlink = new FakeStreamlinkService();
+            var playbackFactory = new FakePlaybackEngineFactory();
+            var chatFactory = new FakeChatClientFactory();
+            var logger = new MemoryLogger();
+            var viewModel = new MainViewModel(
+                settings,
+                new FakeSettingsService(settings),
+                streamlink,
+                playbackFactory,
+                chatFactory,
+                logger,
+                action => action());
+            var tab = new StreamTabViewModel(
+                StreamInputParser.Parse("albralelie", PlatformKind.Twitch),
+                "best",
+                streamlink,
+                playbackFactory,
+                chatFactory,
+                logger,
+                action => action());
+
+            viewModel.Tabs.Add(tab);
+            viewModel.VideoTabs.Add(tab);
+            viewModel.SelectedTab = tab;
+            tab.SetVideoHandle(new IntPtr(1234));
+            await tab.StartAsync(settings);
+            await TestWait.UntilAsync(() => chatFactory.Client.Connected, TimeSpan.FromMilliseconds(500));
+
+            var playbackCreateCount = playbackFactory.CreateCount;
+            var streamStartCount = streamlink.StartCount;
+            var chatConnectCount = chatFactory.Client.ConnectCount;
+
+            var window = new MainWindow
+            {
+                DataContext = viewModel
+            };
+            RemoveMainWindowAutomaticStartup(window);
+            SetMainWindowViewModel(window, viewModel);
+
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+
+                Assert.Equal(true, viewModel.IsDockedChatVisible);
+                var panel = (Border)window.FindName("DockedChatPanel");
+                var thumb = (Thumb)window.FindName("DockedChatResizeThumb");
+                Assert.NotNull(panel);
+                Assert.NotNull(thumb);
+                Assert.Equal(true, panel.IsVisible);
+                Assert.Equal(ChatSettings.MinimumDockWidth, panel.MinWidth);
+                Assert.Equal(ChatSettings.MaximumDockWidth, panel.MaxWidth);
+
+                var resize = typeof(MainWindow).GetMethod(
+                    "DockedChatResizeThumb_DragDelta",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(resize);
+
+                void InvokeDrag(double horizontalChange)
+                {
+                    var args = new DragDeltaEventArgs(horizontalChange, 0);
+                    resize!.Invoke(window, [thumb, args]);
+                    Assert.Equal(true, args.Handled);
+                    window.Dispatcher.Invoke(
+                        () => { },
+                        System.Windows.Threading.DispatcherPriority.DataBind);
+                }
+
+                InvokeDrag(-50);
+                Assert.Equal(ChatSettings.DefaultDockWidth + 50, settings.Chat.DockWidth);
+
+                InvokeDrag(30);
+                Assert.Equal(ChatSettings.DefaultDockWidth + 20, settings.Chat.DockWidth);
+
+                InvokeDrag(-10000);
+                Assert.Equal(ChatSettings.MaximumDockWidth, settings.Chat.DockWidth);
+
+                InvokeDrag(10000);
+                Assert.Equal(ChatSettings.MinimumDockWidth, settings.Chat.DockWidth);
+
+                await Task.Delay(100);
+                Assert.Equal(playbackCreateCount, playbackFactory.CreateCount);
+                Assert.Equal(streamStartCount, streamlink.StartCount);
+                Assert.Equal(chatConnectCount, chatFactory.Client.ConnectCount);
+            }
+            finally
+            {
+                window.Close();
+                await viewModel.DisposeAsync();
+            }
+        });
     }),
     ("multi-stream docked chat toggle only affects selected docked panel", async () =>
     {
@@ -16177,6 +21038,110 @@ var tests = new (string Name, Func<Task> Run)[]
         AssertNear(500, MainWindow.GetHomeAutoScrollVerticalOffset(480, 40, 160, 500, 1));
         AssertNear(0, MainWindow.GetHomeAutoScrollVerticalOffset(double.NaN, 40, 160, 500, 1));
         return Task.CompletedTask;
+    }),
+    ("middle-click home stream item button resolves and executes stay-on-home command", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var openCalls = 0;
+            bool? stayOnHome = null;
+            var item = new StreamSearchResultViewModel(
+                new StreamTarget(PlatformKind.Twitch, "xqc", "https://www.twitch.tv/xqc"),
+                new StreamlinkProbeResult(true, "Playable stream found."),
+                null,
+                (_, shouldStayOnHome) =>
+                {
+                    openCalls++;
+                    stayOnHome = shouldStayOnHome;
+                    return Task.CompletedTask;
+                });
+            var button = new Button
+            {
+                DataContext = item
+            };
+            button.SetBinding(Button.CommandProperty, new Binding("OpenCommand"));
+
+            Assert.Equal(
+                true,
+                MainWindow.TryResolveHomeStreamOpenAndStayOnHomeCommand(button, out var command));
+            Assert.True(ReferenceEquals(item.OpenAndStayOnHomeCommand, command));
+
+            Assert.Equal(true, MainWindow.TryExecuteHomeStreamOpenAndStayOnHomeCommand(button));
+
+            Assert.Equal(1, openCalls);
+            Assert.Equal(true, stayOnHome);
+            return Task.CompletedTask;
+        });
+    }),
+    ("middle-click home stream resolver ignores non-stream and non-open buttons", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var category = new BrowseCategoryViewModel(
+                new BrowseCategory(PlatformKind.Twitch, "509658", "Just Chatting", "", []),
+                _ => Task.CompletedTask);
+            var categoryButton = new Button
+            {
+                DataContext = category
+            };
+            categoryButton.SetBinding(Button.CommandProperty, new Binding("SelectCommand"));
+
+            Assert.Equal(
+                false,
+                MainWindow.TryResolveHomeStreamOpenAndStayOnHomeCommand(categoryButton, out _));
+
+            var recent = new RecentStreamViewModel(
+                new RecentStreamSettings
+                {
+                    Platform = PlatformKind.Twitch,
+                    Channel = "summit1g",
+                    Url = "https://www.twitch.tv/summit1g"
+                },
+                (_, _) => throw new InvalidOperationException("Recent stream open should not be resolved from delete button."),
+                _ => Task.CompletedTask);
+            var deleteButton = new Button
+            {
+                DataContext = recent
+            };
+            deleteButton.SetBinding(Button.CommandProperty, new Binding("DeleteCommand"));
+
+            Assert.Equal(
+                false,
+                MainWindow.TryResolveHomeStreamOpenAndStayOnHomeCommand(deleteButton, out _));
+            return Task.CompletedTask;
+        });
+    }),
+    ("middle-click home stream resolver does not execute running command", () =>
+    {
+        return TestSta.RunAsync(async () =>
+        {
+            var releaseOpen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var openCalls = 0;
+            var item = new StreamSearchResultViewModel(
+                new StreamTarget(PlatformKind.Kick, "some-channel", "https://kick.com/some-channel"),
+                new StreamlinkProbeResult(true, "Playable stream found."),
+                null,
+                async (_, _) =>
+                {
+                    openCalls++;
+                    await releaseOpen.Task;
+                });
+            var button = new Button
+            {
+                DataContext = item
+            };
+            button.SetBinding(Button.CommandProperty, new Binding("OpenCommand"));
+
+            var runningOpen = item.OpenAndStayOnHomeCommand.ExecuteAsync();
+            Assert.Equal(1, openCalls);
+            Assert.Equal(false, item.OpenAndStayOnHomeCommand.CanExecute(null));
+
+            Assert.Equal(true, MainWindow.TryHandleHomeStreamOpenAndStayOnHomeCommand(button));
+            Assert.Equal(1, openCalls);
+
+            releaseOpen.SetResult();
+            await runningOpen.WaitAsync(TimeSpan.FromSeconds(1));
+        });
     }),
     ("mouse button four is browse back and other mouse buttons are not", () =>
     {
@@ -16571,7 +21536,7 @@ var tests = new (string Name, Func<Task> Run)[]
             }
         });
     }),
-    ("video surface native host raises captured drag mouse events", () =>
+    ("video surface native host raises parent drag mouse events without child subclassing", () =>
     {
         return TestSta.RunAsync(() =>
         {
@@ -16628,14 +21593,7 @@ var tests = new (string Name, Func<Task> Run)[]
                     NativeWindowTest.SendMessage(childHandle, wmMouseMove, IntPtr.Zero, NativeWindowTest.MakeMouseLParam(31, 41));
                     NativeWindowTest.SendMessage(childHandle, wmLeftButtonUp, IntPtr.Zero, NativeWindowTest.MakeMouseLParam(51, 61));
 
-                    Assert.SequenceEqual(
-                        new[]
-                        {
-                            $"down:{(int)Math.Round(topLeft.X) + 11},{(int)Math.Round(topLeft.Y) + 21}",
-                            $"move:{(int)Math.Round(topLeft.X) + 31},{(int)Math.Round(topLeft.Y) + 41}",
-                            $"up:{(int)Math.Round(topLeft.X) + 51},{(int)Math.Round(topLeft.Y) + 61}"
-                        },
-                        nativeEvents);
+                    Assert.Equal(0, nativeEvents.Count);
                 }
                 finally
                 {
@@ -20013,7 +24971,8 @@ var tests = new (string Name, Func<Task> Run)[]
         var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
         {
             UsesNativeOverlayOverride = true,
-            NativeOverlayPipeNameOverride = "svs_test"
+            NativeOverlayPipeNameOverride = "svs_test",
+            NativeOverlayDirectoryOverride = @"C:\Missing\vlc-overlay"
         });
         var logger = new MemoryLogger();
         var chatFactory = new FakeChatClientFactory();
@@ -20060,7 +25019,8 @@ var tests = new (string Name, Func<Task> Run)[]
         var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
         {
             UsesNativeOverlayOverride = true,
-            NativeOverlayPipeNameOverride = "svs_test"
+            NativeOverlayPipeNameOverride = "svs_test",
+            NativeOverlayDirectoryOverride = Path.Combine(Path.GetTempPath(), $"missing-vlc-overlay-{Guid.NewGuid():N}")
         });
         var logger = new MemoryLogger();
         var tab = new StreamTabViewModel(
@@ -20300,6 +25260,48 @@ var tests = new (string Name, Func<Task> Run)[]
                 focusedElement: new TextBox()));
         });
     }),
+    ("main window shortcuts policy accepts only exact ctrl s for replay seekbar", () =>
+    {
+        Assert.True(ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+            Key.S,
+            ModifierKeys.Control));
+        Assert.Equal(false, ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+            Key.S,
+            ModifierKeys.None));
+        Assert.Equal(false, ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+            Key.S,
+            ModifierKeys.Control | ModifierKeys.Shift));
+        Assert.Equal(false, ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+            Key.D,
+            ModifierKeys.Control));
+        return Task.CompletedTask;
+    }),
+    ("main window shortcuts replay seekbar toggle uses command path", () =>
+    {
+        var settings = new AppSettings();
+        var viewModel = new MainViewModel(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            new MemoryLogger(),
+            action => action());
+
+        var initialVisibility = viewModel.IsReplaySeekBarUiVisible;
+        Assert.True(MainWindow.TryExecuteReplaySeekBarShortcut(viewModel));
+        Assert.Equal(!initialVisibility, viewModel.IsReplaySeekBarUiVisible);
+        Assert.Equal(
+            viewModel.IsReplaySeekBarUiVisible ? "Replay seekbar shown" : "Replay seekbar hidden",
+            viewModel.StatusMessage);
+        Assert.True(MainWindow.TryExecuteReplaySeekBarShortcut(viewModel));
+        Assert.Equal(initialVisibility, viewModel.IsReplaySeekBarUiVisible);
+        Assert.Equal(
+            viewModel.IsReplaySeekBarUiVisible ? "Replay seekbar shown" : "Replay seekbar hidden",
+            viewModel.StatusMessage);
+        Assert.Equal(false, MainWindow.TryExecuteReplaySeekBarShortcut(null));
+        return Task.CompletedTask;
+    }),
     ("closing inactive tab does not select it first", () =>
     {
         var streamlink = new FakeStreamlinkService();
@@ -20378,8 +25380,102 @@ var tests = new (string Name, Func<Task> Run)[]
         Assert.Equal<StreamTabViewModel?>(null, viewModel.SelectedTab);
         Assert.Equal(false, tab.IsSelected);
         return Task.CompletedTask;
+    }),
+    ("title-bar exit button closes tabs and hides to tray", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var streamlink = new FakeStreamlinkService();
+            var playbackFactory = new FakePlaybackEngineFactory();
+            var logger = new MemoryLogger();
+            var settings = new AppSettings();
+            var viewModel = new MainViewModel(
+                settings,
+                new FakeSettingsService(settings),
+                streamlink,
+                playbackFactory,
+                new FakeChatClientFactory(),
+                logger,
+                action => action());
+            var first = new StreamTabViewModel(
+                StreamInputParser.Parse("albralelie", PlatformKind.Twitch),
+                "best",
+                streamlink,
+                playbackFactory,
+                new FakeChatClientFactory(),
+                logger,
+                action => action());
+            var second = new StreamTabViewModel(
+                StreamInputParser.Parse("summit1g", PlatformKind.Twitch),
+                "best",
+                streamlink,
+                playbackFactory,
+                new FakeChatClientFactory(),
+                logger,
+                action => action());
+
+            viewModel.Tabs.Add(first);
+            viewModel.VideoTabs.Add(first);
+            viewModel.Tabs.Add(second);
+            viewModel.VideoTabs.Add(second);
+            viewModel.SelectedTab = first;
+
+            var window = new MainWindow
+            {
+                Width = 900,
+                Height = 560,
+                DataContext = viewModel
+            };
+            RemoveMainWindowHandler<System.Windows.RoutedEventHandler>(window, nameof(System.Windows.Window.Loaded), "MainWindowLoaded");
+            RemoveMainWindowHandler<EventHandler>(window, nameof(System.Windows.Window.SourceInitialized), "MainWindowSourceInitialized");
+            RemoveMainWindowHandler<EventHandler>(window, nameof(System.Windows.Window.Closed), "MainWindowClosed");
+            SetMainWindowViewModel(window, viewModel);
+
+            var closeButtonClick = typeof(MainWindow).GetMethod(
+                "CloseWindowButton_Click",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var exitRequestedField = typeof(MainWindow).GetField(
+                "exitRequested",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(closeButtonClick);
+            Assert.NotNull(exitRequestedField);
+            Assert.Equal(false, (bool)exitRequestedField!.GetValue(window)!);
+
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+
+                closeButtonClick!.Invoke(window, [window, new System.Windows.RoutedEventArgs()]);
+
+                Assert.Equal(false, (bool)exitRequestedField.GetValue(window)!);
+                Assert.Equal(0, viewModel.Tabs.Count);
+                Assert.Equal(0, viewModel.VideoTabs.Count);
+                Assert.Equal<StreamTabViewModel?>(null, viewModel.SelectedTab);
+                Assert.Equal(false, window.IsVisible);
+                Assert.Equal(false, window.ShowInTaskbar);
+            }
+            finally
+            {
+                RemoveMainWindowHandler<System.ComponentModel.CancelEventHandler>(
+                    window,
+                    nameof(System.Windows.Window.Closing),
+                    "MainWindowClosing");
+                window.Close();
+            }
+
+            return Task.CompletedTask;
+        });
     })
 };
+
+static void AssertOptionValue(IReadOnlyList<string> arguments, string option, string expectedValue)
+{
+    var optionIndex = Array.IndexOf(arguments.ToArray(), option);
+    Assert.True(optionIndex >= 0, $"Expected argument '{option}'.");
+    Assert.True(optionIndex + 1 < arguments.Count, $"Expected value after '{option}'.");
+    Assert.Equal(expectedValue, arguments[optionIndex + 1]);
+}
 
 static void SetKickClientBackfillState(
     KickChatClient client,
@@ -20854,6 +25950,64 @@ static bool IsNativeOverlayRenderedChatFrame(byte[] message)
         message.AsSpan(36).ToArray().Any(value => value != 0);
 }
 
+static NativeOverlayAlphaBounds GetNativeOverlayAlphaBounds(byte[] message)
+{
+    Assert.True(IsNativeOverlayFullSizeFrame(message));
+    var width = (int)BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(24, 4));
+    var height = (int)BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4));
+    var pixels = message.AsSpan(36);
+    var minX = width;
+    var minY = height;
+    var maxX = -1;
+    var maxY = -1;
+    for (var y = 0; y < height; y++)
+    {
+        var rowOffset = y * width * 4;
+        for (var x = 0; x < width; x++)
+        {
+            if (pixels[rowOffset + x * 4 + 3] == 0)
+            {
+                continue;
+            }
+
+            if (x < minX)
+            {
+                minX = x;
+            }
+
+            if (y < minY)
+            {
+                minY = y;
+            }
+
+            if (x > maxX)
+            {
+                maxX = x;
+            }
+
+            if (y > maxY)
+            {
+                maxY = y;
+            }
+        }
+    }
+
+    return new NativeOverlayAlphaBounds(minX, minY, maxX, maxY);
+}
+
+static bool IsNativeOverlayBlankFrame(byte[] message)
+{
+    return message.Length == 40 &&
+        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(0, 4)) == 0x564C4F56u &&
+        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(4, 4)) == 1u &&
+        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(8, 4)) == 4u &&
+        message[12] == 1 &&
+        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(24, 4)) == 1u &&
+        BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4)) == 1u &&
+        message[32] == 0 &&
+        message.AsSpan(36, 4).ToArray().All(value => value == 0);
+}
+
 static bool IsNativeOverlayTransparentFrame(byte[] message)
 {
     return IsNativeOverlayFullSizeFrame(message) &&
@@ -20927,9 +26081,9 @@ static void AssertNativeOverlayChatFrame(byte[] message)
     var height = BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(28, 4));
     Assert.True(width >= NativeOverlaySizing.MinWidth);
     Assert.True(height >= NativeOverlaySizing.MinHeight);
-    Assert.Equal(payloadSize, width * height * 4);
+    Assert.Equal((ulong)payloadSize, (ulong)width * height * 4);
     Assert.Equal(255, message[32]);
-    Assert.Equal((int)(36 + payloadSize), message.Length);
+    Assert.Equal(36 + (int)payloadSize, message.Length);
     Assert.True(message.AsSpan(36).ToArray().Any(value => value != 0));
 }
 
@@ -21036,6 +26190,21 @@ static void SetMainWindowHandle(MainWindow window)
     var windowHandleField = typeof(MainWindow).GetField("windowHandle", BindingFlags.Instance | BindingFlags.NonPublic);
     Assert.NotNull(windowHandleField);
     windowHandleField!.SetValue(window, new System.Windows.Interop.WindowInteropHelper(window).Handle);
+}
+
+static void AttachMainWindowMessageHook(MainWindow window)
+{
+    var method = typeof(MainWindow).GetMethod("WindowMessageHook", BindingFlags.Instance | BindingFlags.NonPublic);
+    Assert.NotNull(method);
+    var handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+    Assert.True(handle != IntPtr.Zero);
+    var source = System.Windows.Interop.HwndSource.FromHwnd(handle);
+    Assert.NotNull(source);
+    var hook = (System.Windows.Interop.HwndSourceHook)Delegate.CreateDelegate(
+        typeof(System.Windows.Interop.HwndSourceHook),
+        window,
+        method!);
+    source!.AddHook(hook);
 }
 
 static void SetMainWindowViewModel(MainWindow window, MainViewModel viewModel)
@@ -21147,8 +26316,15 @@ static IEnumerable<T> FindVisualDescendants<T>(System.Windows.DependencyObject r
     }
 }
 
+var testFilter = Environment.GetEnvironmentVariable("SVS_TEST_FILTER");
+var selectedTests = string.IsNullOrWhiteSpace(testFilter)
+    ? tests
+    : tests
+        .Where(test => test.Name.Contains(testFilter, StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+
 var failed = 0;
-foreach (var test in tests)
+foreach (var test in selectedTests)
 {
     try
     {
@@ -21162,8 +26338,14 @@ foreach (var test in tests)
     }
 }
 
-Console.WriteLine(failed == 0 ? $"All {tests.Length} tests passed." : $"{failed} of {tests.Length} tests failed.");
+Console.WriteLine(failed == 0 ? $"All {selectedTests.Length} tests passed." : $"{failed} of {selectedTests.Length} tests failed.");
 return failed == 0 ? 0 : 1;
+
+internal readonly record struct NativeOverlayAlphaBounds(int MinX, int MinY, int MaxX, int MaxY)
+{
+    public int Width => MaxX >= MinX ? MaxX - MinX + 1 : 0;
+    public int Height => MaxY >= MinY ? MaxY - MinY + 1 : 0;
+}
 
 internal static class TestSta
 {
@@ -21367,6 +26549,21 @@ internal static class NativeWindowTest
         return new IntPtr(unchecked((short)x & 0xFFFF | ((short)y << 16)));
     }
 
+    public static IntPtr MakeMouseLParamFromScreenPoint(IntPtr handle, System.Windows.Point screenPoint)
+    {
+        var point = new NativePoint
+        {
+            X = (int)Math.Round(screenPoint.X),
+            Y = (int)Math.Round(screenPoint.Y)
+        };
+        if (!ScreenToClient(handle, ref point))
+        {
+            throw new InvalidOperationException("Failed to convert screen point to native client coordinates.");
+        }
+
+        return MakeMouseLParam(point.X, point.Y);
+    }
+
     public static IntPtr SendMessage(IntPtr handle, int message, IntPtr wParam, IntPtr lParam)
     {
         return SendMessageNative(handle, message, wParam, lParam);
@@ -21473,6 +26670,10 @@ internal static class NativeWindowTest
 
     [DllImport("user32")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ScreenToClient(IntPtr hWnd, ref NativePoint lpPoint);
+
+    [DllImport("user32")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetCursorPos(int x, int y);
 }
 
@@ -21549,8 +26750,18 @@ internal static class Assert
         var actualArray = actual.ToArray();
         if (!expectedArray.SequenceEqual(actualArray))
         {
-            throw new InvalidOperationException($"Expected [{string.Join(", ", expectedArray)}], got [{string.Join(", ", actualArray)}].");
+            throw new InvalidOperationException($"Expected [{string.Join(", ", expectedArray.Select(FormatAssertValue))}], got [{string.Join(", ", actualArray.Select(FormatAssertValue))}].");
         }
+    }
+
+    private static string FormatAssertValue<T>(T value)
+    {
+        return value switch
+        {
+            StreamTabViewModel tab => tab.Target.Channel,
+            null => "",
+            _ => value.ToString() ?? ""
+        };
     }
 
     public static void Throws<TException>(Action action)
@@ -21613,6 +26824,33 @@ internal static class Assert
         {
             throw new InvalidOperationException($"Expected '{actual}' not to contain '{unexpectedSubstring}'.");
         }
+    }
+}
+
+internal static class KickWebhookTestSignature
+{
+    public static void AddKickHeaders(
+        HttpRequestMessage request,
+        RSA rsa,
+        string eventType,
+        string messageId,
+        string timestamp,
+        byte[] bodyBytes)
+    {
+        var signedPrefix = Encoding.UTF8.GetBytes($"{messageId}.{timestamp}.");
+        var signedBytes = new byte[signedPrefix.Length + bodyBytes.Length];
+        Buffer.BlockCopy(signedPrefix, 0, signedBytes, 0, signedPrefix.Length);
+        Buffer.BlockCopy(bodyBytes, 0, signedBytes, signedPrefix.Length, bodyBytes.Length);
+        var signature = Convert.ToBase64String(rsa.SignData(
+            signedBytes,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1));
+
+        request.Headers.TryAddWithoutValidation("Kick-Event-Type", eventType);
+        request.Headers.TryAddWithoutValidation("Kick-Event-Version", "1");
+        request.Headers.TryAddWithoutValidation("Kick-Event-Message-Id", messageId);
+        request.Headers.TryAddWithoutValidation("Kick-Event-Message-Timestamp", timestamp);
+        request.Headers.TryAddWithoutValidation("Kick-Event-Signature", signature);
     }
 }
 
@@ -21933,6 +27171,136 @@ internal sealed class FakeTwitchVodService : ITwitchVodService
     }
 }
 
+internal sealed class FakeKickVodService : IKickVodService
+{
+    private readonly object gate = new();
+    private readonly Queue<KickVodSearchResult> results = new();
+    private readonly List<KickVodSearchRequest> requests = [];
+    private KickVodSearchResult currentResult;
+
+    public FakeKickVodService(params KickVodSearchResult[] results)
+    {
+        if (results.Length == 0)
+        {
+            throw new ArgumentException("At least one Kick VOD result is required.", nameof(results));
+        }
+
+        foreach (var result in results)
+        {
+            this.results.Enqueue(result);
+        }
+
+        currentResult = results[^1];
+    }
+
+    public int CallCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requests.Count;
+            }
+        }
+    }
+
+    public IReadOnlyList<KickVodSearchRequest> Requests
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requests.ToArray();
+            }
+        }
+    }
+
+    public Task<KickVodSearchResult> SearchAsync(
+        KickVodSearchRequest request,
+        AppSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        KickVodSearchResult result;
+        lock (gate)
+        {
+            requests.Add(request);
+            if (results.Count > 0)
+            {
+                currentResult = results.Dequeue();
+            }
+
+            result = currentResult;
+        }
+
+        return Task.FromResult(result);
+    }
+}
+
+internal sealed class FakeStreamSearchService : IStreamSearchService
+{
+    private readonly object gate = new();
+    private readonly Queue<StreamSearchResult> results = new();
+    private readonly List<StreamSearchRequest> requests = [];
+    private StreamSearchResult currentResult;
+
+    public FakeStreamSearchService(params StreamSearchResult[] results)
+    {
+        if (results.Length == 0)
+        {
+            throw new ArgumentException("At least one stream search result is required.", nameof(results));
+        }
+
+        foreach (var result in results)
+        {
+            this.results.Enqueue(result);
+        }
+
+        currentResult = results[^1];
+    }
+
+    public int CallCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requests.Count;
+            }
+        }
+    }
+
+    public IReadOnlyList<StreamSearchRequest> Requests
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requests.ToArray();
+            }
+        }
+    }
+
+    public Task<StreamSearchResult> SearchAsync(
+        StreamSearchRequest request,
+        AppSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        StreamSearchResult result;
+        lock (gate)
+        {
+            requests.Add(request);
+            if (results.Count > 0)
+            {
+                currentResult = results.Dequeue();
+            }
+
+            result = currentResult;
+        }
+
+        return Task.FromResult(result);
+    }
+}
+
 internal sealed class FakeBrowseService : IBrowseService
 {
     private readonly object gate = new();
@@ -22218,6 +27586,27 @@ internal sealed class FakeTransportSession : IStreamTransportSession
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
+internal sealed class BlockingTransportSession : IStreamTransportSession
+{
+    private readonly Task releaseDispose;
+    private readonly TaskCompletionSource disposeStarted;
+
+    public BlockingTransportSession(Task releaseDispose, TaskCompletionSource disposeStarted)
+    {
+        this.releaseDispose = releaseDispose;
+        this.disposeStarted = disposeStarted;
+    }
+
+    public Uri PlaybackUri { get; } = new("http://127.0.0.1:5000/");
+    public event EventHandler<string>? LogLineReceived { add { } remove { } }
+
+    public async ValueTask DisposeAsync()
+    {
+        disposeStarted.TrySetResult();
+        await releaseDispose;
+    }
+}
+
 internal sealed class FakePlaybackEngineFactory : IPlaybackEngineFactory
 {
     private readonly object gate = new();
@@ -22300,10 +27689,14 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public bool AudioTrackEnabled { get; private set; } = true;
     public bool OverlayVisible { get; private set; }
     public string OverlayText { get; private set; } = "";
+    public int OverlayTextSetCount { get; private set; }
     public bool IgnoreSetMutedUntilPlayed { get; init; }
     public bool IgnoreAudibleWhilePaused { get; init; }
+    public int FailingSeekCount { get; set; }
     public Task PlayCompletion { get; init; } = Task.CompletedTask;
     public TaskCompletionSource PlayStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task SeekCompletion { get; init; } = Task.CompletedTask;
+    public TaskCompletionSource SeekStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task StopCompletion { get; init; } = Task.CompletedTask;
     public TaskCompletionSource StopStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public FakeSharedAudioState? SharedAudioState { get; init; }
@@ -22311,10 +27704,14 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public bool UsesNativeOverlayOverride { get; init; }
     public string? NativeOverlayPipeNameOverride { get; init; }
     public string? NativeOverlayPositionStatePathOverride { get; set; }
+    public string? NativeOverlayDirectoryOverride { get; init; }
     public Func<FakePlaybackEngine, (bool IsAvailable, PlaybackClock Clock)>? PlaybackClockOverride { get; set; }
+    public int VideoWidth { get; set; } = 1920;
+    public int VideoHeight { get; set; } = 1080;
     public bool UsesNativeOverlay => UsesNativeOverlayOverride;
     public string? NativeOverlayPipeName => NativeOverlayPipeNameOverride;
     public string? NativeOverlayPositionStatePath => NativeOverlayPositionStatePathOverride;
+    public string? NativeOverlayDirectory => NativeOverlayDirectoryOverride;
     public IntPtr VideoHandle { get; private set; }
     public IReadOnlyList<IntPtr> VideoHandleHistory => videoHandleHistory.ToArray();
     public IReadOnlyList<Uri> PlayedUris => playedUris.ToArray();
@@ -22355,8 +27752,20 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
 
     public Task SeekAsync(TimeSpan position, CancellationToken cancellationToken = default)
     {
+        if (FailingSeekCount > 0)
+        {
+            FailingSeekCount--;
+            throw new InvalidOperationException("Simulated seek failure.");
+        }
+
+        SeekStarted.TrySetResult();
+        return SeekCoreAsync(position, cancellationToken);
+    }
+
+    private async Task SeekCoreAsync(TimeSpan position, CancellationToken cancellationToken)
+    {
+        await SeekCompletion.WaitAsync(cancellationToken);
         Position = position;
-        return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken = default)
@@ -22380,9 +27789,9 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
 
     public bool TryGetVideoSize(out int width, out int height)
     {
-        width = 1920;
-        height = 1080;
-        return Played;
+        width = VideoWidth;
+        height = VideoHeight;
+        return Played && width > 0 && height > 0;
     }
 
     public bool TryGetVideoCursor(out int x, out int y)
@@ -22457,6 +27866,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
 
     public void SetOverlayText(string? text, bool visible, double opacity, double fontSize)
     {
+        OverlayTextSetCount++;
         OverlayText = text ?? "";
         OverlayVisible = visible;
     }
@@ -22954,6 +28364,53 @@ internal sealed class FakeReplayChatProvider : IReplayChatProvider
         {
             requests.Add(replay);
             offsets.Add(offset);
+        }
+
+        return Task.FromResult(result);
+    }
+}
+
+internal sealed class FakeKickEventSubscriptionService : IKickEventSubscriptionService
+{
+    private readonly KickEventSubscriptionEnsureResult result;
+    private readonly object gate = new();
+    private readonly List<StreamTarget> requests = [];
+
+    public FakeKickEventSubscriptionService(KickEventSubscriptionEnsureResult result)
+    {
+        this.result = result;
+    }
+
+    public int CallCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requests.Count;
+            }
+        }
+    }
+
+    public IReadOnlyList<StreamTarget> Requests
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requests.ToArray();
+            }
+        }
+    }
+
+    public Task<KickEventSubscriptionEnsureResult> EnsureChatMessageSentSubscriptionAsync(
+        StreamTarget target,
+        ChatSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+        lock (gate)
+        {
+            requests.Add(target);
         }
 
         return Task.FromResult(result);

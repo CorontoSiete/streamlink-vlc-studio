@@ -320,6 +320,18 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         return true;
     }
 
+    public bool TryBeginBottomResizeFromScreenClick(int screenX, int screenY)
+    {
+        if (!IsVisible ||
+            !TryGetBottomResizeHitTest(screenX, screenY, out var hitTest))
+        {
+            return false;
+        }
+
+        BeginNativeResize(hitTest, screenX, screenY);
+        return true;
+    }
+
     public Rect GetRestorableBounds()
     {
         if (streamFullscreen && IsUsableBounds(streamFullscreenRestoreBounds))

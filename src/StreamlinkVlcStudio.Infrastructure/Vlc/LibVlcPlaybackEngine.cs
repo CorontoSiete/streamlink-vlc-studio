@@ -23,6 +23,7 @@ public sealed class LibVlcPlaybackEngineFactory : IPlaybackEngineFactory
 
 public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 {
+    private const int NativeOverlayShowPlaceholder = 0;
     private const int SwpNoZOrder = 0x0004;
     private const int SwpNoActivate = 0x0010;
     private const int SwpShowWindow = 0x0040;
@@ -85,6 +86,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         if (nativeOverlay is not null)
         {
             UsesNativeOverlay = true;
+            NativeOverlayDirectory = nativeOverlay.OverlayDirectory;
             NativeOverlayPipeName = $"svs_{Guid.NewGuid():N}";
             NativeOverlayPositionStatePath = string.IsNullOrWhiteSpace(nativeOverlayPositionStatePath)
                 ? Path.Combine(
@@ -98,7 +100,10 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             SetVlcEnvironmentVariable(
                 "VLC_PLUGIN_PATH",
                 BuildPluginPath(vlcDirectory, nativeOverlay.PluginRoot, Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH")));
-            logger.Write(AppLogLevel.Info, "VlcOverlay", $"Native VLC overlay plugin enabled from {nativeOverlay.PluginRoot}.");
+            logger.Write(
+                AppLogLevel.Info,
+                "VlcOverlay",
+                $"Native VLC overlay startup plugin={nativeOverlay.PluginPath} pluginSha256={nativeOverlay.PluginSha256} controller={nativeOverlay.ControllerPath} controllerSha256={nativeOverlay.ControllerSha256} pipe={NativeOverlayPipeName} show-placeholder={NativeOverlayShowPlaceholder} pluginRoot={nativeOverlay.PluginRoot} overlay={nativeOverlay.OverlayDirectory}.");
         }
 
         LibVlcNative.SetDllDirectory(vlcDirectory);
@@ -119,6 +124,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     public bool UsesNativeOverlay { get; }
     public string? NativeOverlayPipeName { get; }
     public string? NativeOverlayPositionStatePath { get; }
+    public string? NativeOverlayDirectory { get; }
     public event EventHandler? VideoOutputRebound;
     public event EventHandler? AudioStateReapplied;
 
@@ -1087,13 +1093,13 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private static List<string> BuildLibVlcOptions(string vlcDirectory, IAppLogger logger)
     {
-        logger.Write(AppLogLevel.Info, "libVLC", "Using Windows GDI VLC video output with hardware decoding disabled to avoid DXGI renderer crashes.");
+        logger.Write(AppLogLevel.Info, "libVLC", "Using Windows GDI VLC video output with automatic hardware decoding.");
         return
         [
             "--no-video-title-show",
             "--quiet",
             "--vout=wingdi",
-            "--avcodec-hw=none",
+            "--avcodec-hw=any",
             "--network-caching=500",
             "--live-caching=300",
             "--drop-late-frames",
@@ -1242,7 +1248,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     private static string BuildOverlaySubSourceOption(string pipeName, string positionStatePath)
     {
         var optionPositionStatePath = positionStatePath.Replace('\\', '/');
-        return $"--sub-source=myoverlay{{pipe={pipeName},position-state-path={optionPositionStatePath},show-placeholder=0}}";
+        return $"--sub-source=myoverlay{{pipe={pipeName},position-state-path={optionPositionStatePath},show-placeholder={NativeOverlayShowPlaceholder}}}";
     }
 
     private void SetVlcEnvironmentVariable(string name, string value)

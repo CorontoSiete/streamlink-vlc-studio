@@ -47,32 +47,59 @@ jobs:
           --no-restore
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:IncludeAllContentForSelfExtract=true
+          -p:PublishTrimmed=false
+          -p:RequireBundledVlcOverlay=true
           -p:EnableCompressionInSingleFile=true
           -p:DebugType=none
           -p:DebugSymbols=false
           --output artifacts\publish\StreamlinkVlcStudio
 
-      - name: Stage executable
+      - name: Package release zip
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $publishDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\StreamlinkVlcStudio"
-          $publishedExe = Join-Path $publishDir "StreamlinkVlcStudio.App.Wpf.exe"
-          $releaseExe = Join-Path $env:GITHUB_WORKSPACE "artifacts\StreamlinkVlcStudio.exe"
+          $overlaySource = Join-Path $env:GITHUB_WORKSPACE "src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay"
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts\package"
 
-          if (-not (Test-Path -LiteralPath $publishedExe -PathType Leaf)) {
-            throw "Published executable missing: $publishedExe"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package-release.ps1 `
+            -PublishedAppDirectory $publishDir `
+            -OverlaySource $overlaySource `
+            -OutputRoot $outputRoot `
+            -Quiet
+
+          $zipPath = Join-Path $outputRoot "StreamlinkVlcStudio-release.zip"
+          if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+            throw "Release zip missing: $zipPath"
           }
 
-          New-Item -ItemType Directory -Path (Split-Path -Parent $releaseExe) -Force | Out-Null
-          Copy-Item -LiteralPath $publishedExe -Destination $releaseExe -Force
+      - name: Build setup installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $releaseZip = Join-Path $env:GITHUB_WORKSPACE "artifacts\package\StreamlinkVlcStudio-release.zip"
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts"
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1 `
+            -ReleaseZip $releaseZip `
+            -OutputRoot $outputRoot `
+            -Quiet
+
+          $setupPath = Join-Path $outputRoot "StreamlinkVlcStudio-Setup.exe"
+          if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+            throw "Setup installer missing: $setupPath"
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StreamlinkVlcStudio-exe
-          path: artifacts\StreamlinkVlcStudio.exe
+          name: StreamlinkVlcStudio-release
+          path: |
+            artifacts\StreamlinkVlcStudio-Setup.exe
+            artifacts\package\StreamlinkVlcStudio-release.zip
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -85,8 +112,9 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           gh release create $env:RELEASE_TAG `
-            "artifacts\StreamlinkVlcStudio.exe" `
+            "artifacts\StreamlinkVlcStudio-Setup.exe" `
+            "artifacts\package\StreamlinkVlcStudio-release.zip" `
             --target "${{ github.sha }}" `
             --title "Streamlink VLC Studio $env:RELEASE_TAG" `
-            --notes "Automated self-contained Windows executable for commit ${{ github.sha }}." `
+            --notes "Automated Windows setup installer and release zip for commit ${{ github.sha }}." `
             --latest

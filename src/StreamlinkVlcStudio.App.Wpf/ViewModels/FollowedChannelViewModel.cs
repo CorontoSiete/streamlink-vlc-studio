@@ -3,7 +3,7 @@ using StreamlinkVlcStudio.Core.Models;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
-public sealed class FollowedChannelViewModel : ObservableObject
+public sealed class FollowedChannelViewModel : ObservableObject, IHomeStreamOpenItemViewModel
 {
     private readonly FollowedLiveStream stream;
 

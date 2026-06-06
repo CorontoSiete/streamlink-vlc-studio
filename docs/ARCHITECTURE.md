@@ -19,6 +19,7 @@ Tradeoffs considered:
   - Settings model.
   - Service contracts.
   - Followed live stream models.
+  - Stream search and VOD browsing contracts.
   - Stream input parsing.
   - Advanced Streamlink argument tokenization.
   - Twitch IRC and Kick Pusher payload parsing.
@@ -32,8 +33,10 @@ Tradeoffs considered:
   - Direct libVLC P/Invoke playback engine.
   - `vlc-overlay` plugin preparation for chat-on-video mode.
   - Followed live streams adapter for Twitch Helix and configured Kick channel slugs.
+  - Twitch/Kick channel search adapter and Twitch/Kick VOD adapters.
   - Twitch IRC adapter with anonymous read-only mode and OAuth send mode.
   - Isolated Kick chat adapter with public Pusher reading and OAuth API sending.
+  - Official Kick webhook listener, signature verifier, replay-chat cache, and event subscription manager.
 
 - `StreamlinkVlcStudio.App.Wpf`
   - WPF shell.
@@ -43,7 +46,7 @@ Tradeoffs considered:
   - Single-stream and paged multi-stream video layout for up to 16 streams per page.
   - Playback controls.
   - Settings drawer.
-  - Home page for live followed channels and recently watched streams.
+  - Home page for stream search, live followed channels, platform VOD browsing, and recently watched streams.
   - Docked chat rendering.
 
 - `StreamlinkVlcStudio.Tests`
@@ -78,6 +81,15 @@ Followed streams load once at startup and refresh every minute while the app is 
 
 Clicking a home card opens the same `StreamTarget` flow used by browser capture and manual stream input.
 
+## Home Stream Search Flow
+
+- Exact Twitch/Kick URLs are parsed into a single platform candidate.
+- Bare queries of three or more characters call `IStreamSearchService`, which searches Twitch channels through Helix when Twitch OAuth and Client ID are configured, and searches Kick channels through Kick website search with a curl fallback when normal HTTP is blocked.
+- Short bare queries keep exact candidate probing only.
+- Results are deduplicated by platform/channel and ranked by exact match, prefix match, contains match, live state, then source order.
+- Live or unknown candidates are probed through Streamlink before playback is enabled. Offline candidates remain visible without Streamlink probing.
+- The WPF home search dropdown renders `Live`, `Offline`, and `Unavailable` rows. Live rows open normal playback. Offline rows switch to the VOD page, select the matching platform, set the streamer/channel search text, and run the VOD search. Unavailable rows show the probe/configuration reason but do not execute playback.
+
 ## Home Recent Streams Flow
 
 - A stream is added to recent history only after its tab reaches `PlaybackStatus.Playing`.
@@ -86,6 +98,16 @@ Clicking a home card opens the same `StreamTarget` flow used by browser capture 
 - Opening the Recent page starts a five-minute metadata refresh timer; each tick refreshes visible Recent row thumbnails and live/offline indicators through platform metadata, preserves existing thumbnails when metadata is unavailable, and shows an unknown live status rather than inferring one.
 - Deleting a recent row removes that platform/channel from `AppSettings.RecentStreams`, clears its transient live-status cache entry, rebuilds the Recent view models, and saves settings.
 - Clicking a recent row opens the stored `StreamTarget` through the same candidate/open path used by followed-stream cards and browser capture.
+
+## Home VOD Flow
+
+- The VOD page keeps a selected platform state and reuses the streamer/channel text box for Twitch login or Kick slug searches.
+- Twitch VOD browsing uses Helix `users` and `videos`, supports type filters and cursor-based load more, and requires Twitch OAuth plus a matching Client ID.
+- Kick VOD browsing reads `kick.com/api/v2/channels/{slug}/videos` with browser-style headers and the same curl fallback pattern used for Kick website reads. It is best-effort because the endpoint is part of Kick's website surface.
+- VOD rows are represented by a platform-aware view model that builds explicit `StreamTargetKind.TwitchVod` or `StreamTargetKind.KickVod` targets.
+- Twitch VOD tabs resolve the selected Twitch URL through Streamlink `--stream-url` before libVLC playback, then load replay chat by VOD ID when available.
+- Kick VOD tabs play the returned HLS source directly in libVLC without Streamlink URL resolution. When the VOD item includes a start time, replay chat is loaded from the verified official Kick `chat.message.sent` webhook cache under `%APPDATA%\StreamlinkVlcStudio\replay-chat\kick-official`.
+- Explicit VOD tabs disable live viewer polling, live chat sending, return-to-live behavior, and Recent-stream writes.
 
 ## Chat Flow
 
@@ -109,6 +131,7 @@ Clicking a home card opens the same `StreamTarget` flow used by browser capture 
   - Validates the configured user access token before docked chat sending.
   - Sends docked chat through Kick's public chat API using the configured user access token.
   - Native VLC overlay reading works anonymously. Native VLC overlay typing uses the current Kick user access token when one is configured.
+  - Official Kick VOD chat is cache-backed: a local listener accepts only signed `chat.message.sent` webhooks, stores them by channel/day, and replay tabs align cached messages by VOD start time. When the listener is enabled, Kick tabs also create or verify the official event subscription for the broadcaster through `/public/v1/events/subscriptions` using the configured Kick app credentials. Kick's current official REST/OpenAPI surface has no historical VOD chat/messages endpoint.
   - Failure is non-fatal and shown as a system chat message.
 
 Kick's public chat surface changes more often than Twitch IRC. That is why the adapter is small, replaceable, and not allowed to block playback.
@@ -153,7 +176,7 @@ Important settings:
 - `Chat.VlcOverlayDirectory`
 - `Chat.VlcOverlayFontSize`
 
-When `Chat.Layout` is `Overlay`, the app resolves a valid `vlc-overlay` directory from `Chat.VlcOverlayDirectory` or the bundled `vlc-overlay` folder beside the executable. A valid overlay directory must contain `build\libmyoverlay_plugin.dll` and `build\vlc_chat_overlay.exe`. The app prepares the plugin in a writable local plugin cache, starts libVLC with `--sub-source=myoverlay`, and launches the native controller with a per-tab pipe name. The overlay is therefore composited by VLC itself instead of WPF, avoiding HWND airspace problems and allowing direct in-overlay chat input. The VLC plugin position state path is stable per platform/channel, so dragged chat position and size are restored for that stream.
+When `Chat.Layout` is `Overlay`, the app resolves a valid `vlc-overlay` directory from `Chat.VlcOverlayDirectory`, the bundled `vlc-overlay` folder beside the executable, or the embedded overlay bundle extracted from the single executable. A valid overlay directory must contain `build\libmyoverlay_plugin.dll` and `build\vlc_chat_overlay.exe`. The app prepares the plugin in a writable local plugin cache, starts libVLC with `--sub-source=myoverlay`, and launches the native controller with a per-tab pipe name. The overlay is therefore composited by VLC itself instead of WPF, avoiding HWND airspace problems and allowing direct in-overlay chat input. The VLC plugin position state path is stable per platform/channel, so dragged chat position and size are restored for that stream.
 
 ## Error Handling
 

@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
 
@@ -15,7 +14,6 @@ public sealed partial class VideoSurface : HwndHost
     private const int BlackBrush = 4;
     private const int WmEraseBackground = 0x0014;
     private const int WmSetCursor = 0x0020;
-    private const int WmNcDestroy = 0x0082;
     private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
     private const int WmLeftButtonDoubleClick = 0x0203;
@@ -31,15 +29,10 @@ public sealed partial class VideoSurface : HwndHost
     private const int SwpNoZOrder = 0x0004;
     private const int SwpNoActivate = 0x0010;
     private const int SwpShowWindow = 0x0040;
-    private static readonly UIntPtr ChildWindowSubclassId = new(0x53565301u);
     private static readonly object WindowClassGate = new();
     private static readonly NativeWindowProc RegisteredWindowProc = DefWindowProcCallback;
-    private static readonly SubclassProc RegisteredChildWindowSubclassProc = ChildWindowSubclassCallback;
-    private readonly HashSet<IntPtr> subclassedChildWindows = [];
     private static bool windowClassRegistered;
     private IntPtr handle;
-    private GCHandle childWindowSubclassHandle;
-    private DispatcherTimer? childWindowHookRefreshTimer;
     private long lastLeftButtonDownAt = long.MinValue;
     private int lastLeftButtonDownX;
     private int lastLeftButtonDownY;
@@ -86,21 +79,11 @@ public sealed partial class VideoSurface : HwndHost
         }
 
         SyncNativeBounds();
-        EnsureChildWindowSubclassHandle();
-        StartChildWindowHookRefreshTimer();
-        RefreshChildWindowMouseHooks();
         return new HandleRef(this, handle);
     }
 
     protected override void DestroyWindowCore(HandleRef hwnd)
     {
-        StopChildWindowHookRefreshTimer();
-        RemoveChildWindowMouseHooks();
-        if (childWindowSubclassHandle.IsAllocated)
-        {
-            childWindowSubclassHandle.Free();
-        }
-
         if (hwnd.Handle != IntPtr.Zero)
         {
             DestroyWindow(hwnd.Handle);
@@ -183,77 +166,6 @@ public sealed partial class VideoSurface : HwndHost
         }
 
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
-    }
-
-    private IntPtr ChildWindowWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam)
-    {
-        if (msg == WmNcDestroy)
-        {
-            subclassedChildWindows.Remove(hwnd);
-            RemoveWindowSubclass(hwnd, RegisteredChildWindowSubclassProc, ChildWindowSubclassId);
-            return DefSubclassProc(hwnd, msg, wParam, lParam);
-        }
-
-        if (msg == WmSetCursor && TryRaiseNativeSetCursorRequested(out var cursorResult))
-        {
-            return cursorResult;
-        }
-
-        if (msg == WmLeftButtonDoubleClick)
-        {
-            ResetLastLeftButtonDown();
-            MouseLeftButtonDoubleClicked?.Invoke(this, EventArgs.Empty);
-        }
-        else if (msg == WmLeftButtonDown)
-        {
-            if (TryRaiseNativeMouseLeftButtonDown(hwnd, lParam, out var mouseDownResult))
-            {
-                return mouseDownResult;
-            }
-
-            _ = SetCapture(hwnd);
-            SurfaceMouseLeftButtonPressed?.Invoke(this, EventArgs.Empty);
-            if (IsLeftButtonDoubleClick(lParam))
-            {
-                ResetLastLeftButtonDown();
-                MouseLeftButtonDoubleClicked?.Invoke(this, EventArgs.Empty);
-            }
-            else
-            {
-                CaptureLastLeftButtonDown(lParam);
-            }
-        }
-        else if (msg == WmMouseMove)
-        {
-            if (TryRaiseNativeMouseEvent(hwnd, lParam, NativeMouseMoved, out var mouseMoveResult))
-            {
-                return mouseMoveResult;
-            }
-        }
-        else if (msg == WmLeftButtonUp)
-        {
-            var mouseUpHandled = TryRaiseNativeMouseEvent(hwnd, lParam, NativeMouseLeftButtonUp, out var mouseUpResult);
-            if (GetCapture() == hwnd)
-            {
-                ReleaseCapture();
-            }
-
-            if (mouseUpHandled)
-            {
-                return mouseUpResult;
-            }
-        }
-        else if (msg == WmMouseWheel)
-        {
-            var delta = GetWheelDelta(wParam);
-            if (delta != 0)
-            {
-                MouseWheelScrolled?.Invoke(this, new VideoSurfaceMouseWheelEventArgs(delta));
-                return IntPtr.Zero;
-            }
-        }
-
-        return DefSubclassProc(hwnd, msg, wParam, lParam);
     }
 
     private bool TryRaiseNativeMouseEvent(
@@ -345,8 +257,6 @@ public sealed partial class VideoSurface : HwndHost
             return;
         }
 
-        RefreshChildWindowMouseHooks();
-
         var source = PresentationSource.FromVisual(this);
         var visible = IsVisible &&
             ActualWidth > 0 &&
@@ -415,100 +325,6 @@ public sealed partial class VideoSurface : HwndHost
             IntPtr.Zero);
     }
 
-    private void EnsureChildWindowSubclassHandle()
-    {
-        if (!childWindowSubclassHandle.IsAllocated)
-        {
-            childWindowSubclassHandle = GCHandle.Alloc(this);
-        }
-    }
-
-    private void StartChildWindowHookRefreshTimer()
-    {
-        if (childWindowHookRefreshTimer is not null)
-        {
-            return;
-        }
-
-        childWindowHookRefreshTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
-        {
-            Interval = TimeSpan.FromMilliseconds(500)
-        };
-        childWindowHookRefreshTimer.Tick += ChildWindowHookRefreshTimerOnTick;
-        childWindowHookRefreshTimer.Start();
-    }
-
-    private void StopChildWindowHookRefreshTimer()
-    {
-        if (childWindowHookRefreshTimer is null)
-        {
-            return;
-        }
-
-        childWindowHookRefreshTimer.Stop();
-        childWindowHookRefreshTimer.Tick -= ChildWindowHookRefreshTimerOnTick;
-        childWindowHookRefreshTimer = null;
-    }
-
-    private void ChildWindowHookRefreshTimerOnTick(object? sender, EventArgs e)
-    {
-        RefreshChildWindowMouseHooks();
-    }
-
-    private void RefreshChildWindowMouseHooks()
-    {
-        if (handle == IntPtr.Zero || !childWindowSubclassHandle.IsAllocated)
-        {
-            return;
-        }
-
-        var childWindows = new HashSet<IntPtr>();
-        EnumChildWindows(
-            handle,
-            (childHandle, _) =>
-            {
-                childWindows.Add(childHandle);
-                if (!subclassedChildWindows.Contains(childHandle) &&
-                    SetWindowSubclass(
-                        childHandle,
-                        RegisteredChildWindowSubclassProc,
-                        ChildWindowSubclassId,
-                        GCHandle.ToIntPtr(childWindowSubclassHandle)))
-                {
-                    subclassedChildWindows.Add(childHandle);
-                }
-
-                return true;
-            },
-            IntPtr.Zero);
-
-        foreach (var childHandle in subclassedChildWindows.ToArray())
-        {
-            if (!childWindows.Contains(childHandle) || !IsWindow(childHandle))
-            {
-                RemoveChildWindowMouseHook(childHandle);
-            }
-        }
-    }
-
-    private void RemoveChildWindowMouseHooks()
-    {
-        foreach (var childHandle in subclassedChildWindows.ToArray())
-        {
-            RemoveChildWindowMouseHook(childHandle);
-        }
-    }
-
-    private void RemoveChildWindowMouseHook(IntPtr childHandle)
-    {
-        if (childHandle != IntPtr.Zero && IsWindow(childHandle))
-        {
-            RemoveWindowSubclass(childHandle, RegisteredChildWindowSubclassProc, ChildWindowSubclassId);
-        }
-
-        subclassedChildWindows.Remove(childHandle);
-    }
-
     private static void EnsureWindowClassRegistered()
     {
         lock (WindowClassGate)
@@ -555,26 +371,6 @@ public sealed partial class VideoSurface : HwndHost
 
     private static IntPtr DefWindowProcCallback(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam) =>
         DefWindowProc(hwnd, msg, wParam, lParam);
-
-    private static IntPtr ChildWindowSubclassCallback(
-        IntPtr hwnd,
-        int msg,
-        IntPtr wParam,
-        IntPtr lParam,
-        UIntPtr subclassId,
-        IntPtr referenceData)
-    {
-        if (referenceData != IntPtr.Zero)
-        {
-            var handle = GCHandle.FromIntPtr(referenceData);
-            if (handle.Target is VideoSurface surface)
-            {
-                return surface.ChildWindowWndProc(hwnd, msg, wParam, lParam);
-            }
-        }
-
-        return DefSubclassProc(hwnd, msg, wParam, lParam);
-    }
 
     private bool IsLeftButtonDoubleClick(IntPtr lParam)
     {
@@ -627,14 +423,6 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     private delegate IntPtr NativeWindowProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
-    private delegate IntPtr SubclassProc(
-        IntPtr hwnd,
-        int msg,
-        IntPtr wParam,
-        IntPtr lParam,
-        UIntPtr subclassId,
-        IntPtr referenceData);
-
     private delegate bool EnumChildWindowProc(IntPtr hwnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -706,28 +494,6 @@ public sealed partial class VideoSurface : HwndHost
 
     [LibraryImport("user32")]
     private static partial IntPtr GetParent(IntPtr hwnd);
-
-    [LibraryImport("user32")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool IsWindow(IntPtr hwnd);
-
-    [LibraryImport("comctl32", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowSubclass(
-        IntPtr hwnd,
-        SubclassProc subclassProc,
-        UIntPtr subclassId,
-        IntPtr referenceData);
-
-    [LibraryImport("comctl32", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool RemoveWindowSubclass(
-        IntPtr hwnd,
-        SubclassProc subclassProc,
-        UIntPtr subclassId);
-
-    [LibraryImport("comctl32")]
-    private static partial IntPtr DefSubclassProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [LibraryImport("user32")]
     private static partial int FillRect(IntPtr hdc, ref NativeRect rect, IntPtr brush);
