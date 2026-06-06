@@ -107,7 +107,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: build-${{ github.run_number }}-${{ github.run_attempt }}
+          RELEASE_TAG: build-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -116,5 +116,5 @@ jobs:
             "artifacts\package\StreamlinkVlcStudio-release.zip" `
             --target "${{ github.sha }}" `
             --title "Streamlink VLC Studio $env:RELEASE_TAG" `
-            --notes "Automated Windows setup installer and release zip for commit ${{ github.sha }}." `
+            --notes "Automated Windows setup installer and release zip for commit ${{ github.sha }} from workflow run ${{ github.run_id }} attempt ${{ github.run_attempt }}." `
             --latest
