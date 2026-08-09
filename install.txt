@@ -1,0 +1,86 @@
+Streamlink VLC Studio
+
+Recommended latest install/update:
+
+Download StreamlinkVlcStudio-Setup.exe from the latest GitHub release and run
+it. The setup installer contains the app release zip, installs or updates the
+app, checks Streamlink and VLC, writes the detected dependency paths, creates
+the Start Menu shortcut, and launches the app when run normally.
+
+The installer registers Uninstall.exe for the current Windows user, so the app
+appears in Apps & features / Control Panel. Uninstall removes the app install
+folder, Start Menu shortcut, uninstall registry entry, logs, settings, token
+files, overlay cache, and other %APPDATA%\StreamlinkVlcStudio and
+%LOCALAPPDATA%\StreamlinkVlcStudio leftovers. It does not uninstall shared
+dependencies such as VLC or Streamlink.
+
+PowerShell install is also available:
+
+1. Open PowerShell.
+
+2. Run:
+
+   $installer = Join-Path $env:TEMP "Install-StreamlinkVlcStudio.ps1"
+   Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/CorontoSiete/streamlink-vlc-studio/releases/latest/download/Install-StreamlinkVlcStudio.ps1" -OutFile $installer
+   powershell.exe -ExecutionPolicy Bypass -File $installer -Launch
+
+The installer downloads Streamlink VLC Studio from GitHub, preferring the latest
+release asset and falling back to the newest non-expired GitHub Actions artifact.
+It installs or updates Streamlink from Streamlink's GitHub Windows builds,
+installs or updates VLC 64-bit from VideoLAN, writes the detected Streamlink and
+VLC paths to %APPDATA%\StreamlinkVlcStudio\settings.json, and creates a Start
+Menu shortcut.
+
+GitHub install mode requires the repository and either its releases or Actions
+artifacts to be public. For a private repository, set GITHUB_TOKEN to a token
+with repo/actions read access before running the installer.
+
+Force GitHub app download:
+
+   powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -AppSource GitHub -Launch
+
+Dependency-only setup from this extracted zip:
+
+   powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -SkipApp
+
+Local app setup from this extracted zip:
+
+   powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -AppSource Local -Launch
+
+Manual portable setup:
+
+1. Extract this zip to a normal folder, for example:
+   C:\Users\you\Apps\StreamlinkVlcStudio
+
+2. Install Streamlink for Windows if it is not already installed.
+
+3. Install VLC 64-bit if it is not already installed.
+
+4. Run StreamlinkVlcStudio.exe.
+
+5. Open Settings and verify:
+   - Streamlink executable points to streamlink.exe.
+   - VLC directory points to the folder containing libvlc.dll.
+
+The executable embeds the VLC chat overlay plugin and controller and extracts
+them to local app data when needed. A local zip package can also include an
+inspection/override copy under:
+vlc-overlay\build
+
+You do not need to set VLC overlay plugin directory for the included overlay.
+Only set that field if you want to override the bundled overlay with a custom
+vlc-overlay build.
+
+The release also includes the Brave/Chromium capture extension under:
+browser-extension
+
+To install it in Brave:
+1. Open brave://extensions
+2. Enable Developer mode.
+3. Click Load unpacked.
+4. Select the extracted browser-extension folder.
+
+Keep StreamlinkVlcStudio.exe running before clicking Twitch or Kick links.
+
+Tokens and account-sensitive settings are saved under:
+%APPDATA%\StreamlinkVlcStudio
