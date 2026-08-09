@@ -32569,11 +32569,31 @@ static T? FindVisualAncestor<T>(DependencyObject child)
 }
 
 var testFilter = Environment.GetEnvironmentVariable("SVS_TEST_FILTER");
-var selectedTests = string.IsNullOrWhiteSpace(testFilter)
+var skipInteractiveWindowTests = string.Equals(
+    Environment.GetEnvironmentVariable("SVS_SKIP_INTERACTIVE_WINDOW_TESTS"),
+    "true",
+    StringComparison.OrdinalIgnoreCase);
+var interactiveWindowTestNames = new HashSet<string>(StringComparer.Ordinal)
+{
+    "inactive window first click focuses docked chat input and accepts typing",
+    "theatre chat input stays above the taskbar and accepts physical typing",
+    "docked and theatre chat release native overlay keyboard capture before typing"
+};
+var selectedTests = (string.IsNullOrWhiteSpace(testFilter)
     ? tests
     : tests
         .Where(test => test.Name.Contains(testFilter, StringComparison.OrdinalIgnoreCase))
-        .ToArray();
+        .ToArray())
+    .Where(test => !skipInteractiveWindowTests || !interactiveWindowTestNames.Contains(test.Name))
+    .ToArray();
+
+if (skipInteractiveWindowTests)
+{
+    foreach (var test in tests.Where(test => interactiveWindowTestNames.Contains(test.Name)))
+    {
+        Console.WriteLine($"SKIP {test.Name} (interactive desktop unavailable)");
+    }
+}
 
 var failed = 0;
 foreach (var test in selectedTests)

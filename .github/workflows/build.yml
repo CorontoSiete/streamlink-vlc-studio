@@ -52,6 +52,9 @@ jobs:
         run: dotnet build StreamlinkVlcStudio.sln --configuration Release --no-restore
 
       - name: Test
+        env:
+          # Hosted Windows runners do not provide a reliable interactive foreground desktop.
+          SVS_SKIP_INTERACTIVE_WINDOW_TESTS: "true"
         run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore
 
       - name: Test browser extension
