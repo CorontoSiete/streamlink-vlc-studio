@@ -1,0 +1,185 @@
+{
+  "source": "https://help.kick.com/en/articles/7113357-understanding-kick-chat-badges",
+  "entries": [
+    {
+      "id": "broadcaster",
+      "version": "1",
+      "title": "Broadcaster",
+      "image": "global/broadcaster.png"
+    },
+    {
+      "id": "broadcaster",
+      "version": "0",
+      "title": "Broadcaster",
+      "image": "global/broadcaster.png"
+    },
+    {
+      "id": "channel_host",
+      "version": "1",
+      "title": "Broadcaster",
+      "image": "global/broadcaster.png"
+    },
+    {
+      "id": "channel_host",
+      "version": "0",
+      "title": "Broadcaster",
+      "image": "global/broadcaster.png"
+    },
+    {
+      "id": "creator",
+      "version": "1",
+      "title": "Creator",
+      "image": "global/broadcaster.png"
+    },
+    {
+      "id": "creator",
+      "version": "0",
+      "title": "Creator",
+      "image": "global/broadcaster.png"
+    },
+    {
+      "id": "founder",
+      "version": "1",
+      "title": "Founder",
+      "image": "global/founder.png"
+    },
+    {
+      "id": "founder",
+      "version": "0",
+      "title": "Founder",
+      "image": "global/founder.png"
+    },
+    {
+      "id": "global_mod",
+      "version": "1",
+      "title": "Moderator",
+      "image": "global/moderator.png"
+    },
+    {
+      "id": "global_mod",
+      "version": "0",
+      "title": "Moderator",
+      "image": "global/moderator.png"
+    },
+    {
+      "id": "mod",
+      "version": "1",
+      "title": "Moderator",
+      "image": "global/moderator.png"
+    },
+    {
+      "id": "mod",
+      "version": "0",
+      "title": "Moderator",
+      "image": "global/moderator.png"
+    },
+    {
+      "id": "moderator",
+      "version": "1",
+      "title": "Moderator",
+      "image": "global/moderator.png"
+    },
+    {
+      "id": "moderator",
+      "version": "0",
+      "title": "Moderator",
+      "image": "global/moderator.png"
+    },
+    {
+      "id": "og",
+      "version": "1",
+      "title": "OG",
+      "image": "global/og.png"
+    },
+    {
+      "id": "og",
+      "version": "0",
+      "title": "OG",
+      "image": "global/og.png"
+    },
+    {
+      "id": "sidekick",
+      "version": "1",
+      "title": "Sidekick",
+      "image": "global/sidekick.png"
+    },
+    {
+      "id": "sidekick",
+      "version": "0",
+      "title": "Sidekick",
+      "image": "global/sidekick.png"
+    },
+    {
+      "id": "staff",
+      "version": "1",
+      "title": "Staff",
+      "image": "global/staff.png"
+    },
+    {
+      "id": "staff",
+      "version": "0",
+      "title": "Staff",
+      "image": "global/staff.png"
+    },
+    {
+      "id": "sub_gift_leader",
+      "version": "1",
+      "title": "Sub Gifter",
+      "image": "global/sub_gifter.png"
+    },
+    {
+      "id": "sub_gift_leader",
+      "version": "0",
+      "title": "Sub Gifter",
+      "image": "global/sub_gifter.png"
+    },
+    {
+      "id": "sub_gifter",
+      "version": "1",
+      "title": "Sub Gifter",
+      "image": "global/sub_gifter.png"
+    },
+    {
+      "id": "sub_gifter",
+      "version": "0",
+      "title": "Sub Gifter",
+      "image": "global/sub_gifter.png"
+    },
+    {
+      "id": "subscriber",
+      "version": "1",
+      "title": "Subscriber",
+      "image": "global/subscriber.png"
+    },
+    {
+      "id": "subscriber",
+      "version": "0",
+      "title": "Subscriber",
+      "image": "global/subscriber.png"
+    },
+    {
+      "id": "verified",
+      "version": "1",
+      "title": "Verified",
+      "image": "global/verified.png"
+    },
+    {
+      "id": "verified",
+      "version": "0",
+      "title": "Verified",
+      "image": "global/verified.png"
+    },
+    {
+      "id": "vip",
+      "version": "1",
+      "title": "VIP",
+      "image": "global/vip.png"
+    },
+    {
+      "id": "vip",
+      "version": "0",
+      "title": "VIP",
+      "image": "global/vip.png"
+    }
+  ]
+}

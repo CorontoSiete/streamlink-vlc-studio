@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Core\StreamlinkVlcStudio.Core.csproj" />
+    <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Infrastructure\StreamlinkVlcStudio.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Override the vulnerable version inherited through the toast package in this project graph. -->
+    <PackageReference Include="System.Drawing.Common" Version="10.0.10" />
+  </ItemGroup>
+
+  <Target Name="RunDependencyFreeTests" BeforeTargets="VSTest" DependsOnTargets="Build">
+    <PropertyGroup>
+      <!-- Reuse the host that launched MSBuild. Merely finding a repo-local host does not
+           mean that host contains the target framework's runtime. -->
+      <DependencyFreeTestDotNet Condition="'$(DotNetHostPath)' != ''">&quot;$(DotNetHostPath)&quot;</DependencyFreeTestDotNet>
+      <DependencyFreeTestDotNet Condition="'$(DependencyFreeTestDotNet)' == ''">dotnet</DependencyFreeTestDotNet>
+    </PropertyGroup>
+    <Exec Command="$(DependencyFreeTestDotNet) &quot;$(TargetPath)&quot;" />
+  </Target>
+
+</Project>

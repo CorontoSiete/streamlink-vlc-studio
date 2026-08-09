@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\StreamlinkVlcStudio.Core\StreamlinkVlcStudio.Core.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <BundledVlcOverlayRoot Condition="'$(BundledVlcOverlayRoot)' == ''">$(MSBuildProjectDirectory)\Vlc\BundledOverlay</BundledVlcOverlayRoot>
+    <RequireBundledVlcOverlay Condition="'$(RequireBundledVlcOverlay)' == ''">true</RequireBundledVlcOverlay>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll') and Exists('$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe')">
+    <EmbeddedResource Include="$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll">
+      <LogicalName>StreamlinkVlcStudio.Infrastructure.Vlc.BundledOverlay.build.libmyoverlay_plugin.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe">
+      <LogicalName>StreamlinkVlcStudio.Infrastructure.Vlc.BundledOverlay.build.vlc_chat_overlay.exe</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="ValidateBundledVlcOverlay" BeforeTargets="CoreCompile" Condition="'$(RequireBundledVlcOverlay)' == 'true'">
+    <Error Condition="!Exists('$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll')" Text="Bundled VLC overlay plugin missing: $(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll" />
+    <Error Condition="!Exists('$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe')" Text="Bundled VLC overlay controller missing: $(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe" />
+  </Target>
+
+</Project>

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle
+    Name="Streamlink VLC Studio"
+    Manufacturer="Streamlink VLC Studio"
+    Version="$(var.BundleVersion)"
+    UpgradeCode="B1A4CC92-5E23-4F5E-9D67-1A4EE6F57C18"
+    IconSourceFile="$(var.AppIcon)"
+    AboutUrl="https://github.com/CorontoSiete/streamlink-vlc-studio"
+    Compressed="yes"
+    Condition="VersionNT64">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        Theme="hyperlinkLicense"
+        LicenseUrl=""
+        ShowVersion="yes"
+        SuppressOptionsUI="yes"
+        LaunchTarget="[ProgramFiles64Folder]Streamlink VLC Studio\StreamlinkVlcStudio.exe"
+        LaunchArguments="--setup"
+        LaunchWorkingFolder="[ProgramFiles64Folder]Streamlink VLC Studio" />
+    </BootstrapperApplication>
+
+    <util:FileSearch
+      Id="StreamlinkMachineSearch"
+      Variable="StreamlinkMachineInstalled"
+      Result="exists"
+      Path="[ProgramFiles64Folder]Streamlink\bin\streamlink.exe" />
+    <util:FileSearch
+      Id="StreamlinkUserSearch"
+      Variable="StreamlinkUserInstalled"
+      Result="exists"
+      Path="[LocalAppDataFolder]Programs\Streamlink\bin\streamlink.exe" />
+
+    <Chain>
+      <ExePackage
+        Id="Streamlink"
+        DisplayName="Streamlink (x64)"
+        SourceFile="$(var.StreamlinkInstaller)"
+        InstallArguments="/S"
+        PerMachine="yes"
+        Permanent="yes"
+        DetectCondition="StreamlinkMachineInstalled OR StreamlinkUserInstalled" />
+      <MsiPackage
+        Id="Vlc"
+        DisplayName="VLC media player (64-bit)"
+        SourceFile="$(var.VlcMsi)"
+        ForcePerMachine="yes"
+        Permanent="yes" />
+      <MsiPackage
+        Id="StreamlinkVlcStudio"
+        DisplayName="Streamlink VLC Studio"
+        SourceFile="$(var.AppMsi)"
+        ForcePerMachine="yes">
+        <MsiProperty Name="INSTALLFOLDER" Value="[ProgramFiles64Folder]Streamlink VLC Studio" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

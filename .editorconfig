@@ -1,0 +1,29 @@
+root = true
+
+[*]
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,targets,xaml}]
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.cs]
+# Warn on obvious dead / redundant code so CI catches it early.
+# Private member is unused.
+dotnet_diagnostic.IDE0051.severity = warning
+# Private member is assigned but its value is never used.
+dotnet_diagnostic.IDE0052.severity = warning
+# Field is never used.
+dotnet_diagnostic.CS0169.severity = warning
+# Field is assigned but its value is never used.
+dotnet_diagnostic.CS0414.severity = warning
+# Variable is assigned but its value is never used.
+dotnet_diagnostic.CS0219.severity = warning
+# Variable is declared but never used.
+dotnet_diagnostic.CS0168.severity = warning
+# Local function is declared but never used.
+dotnet_diagnostic.CS8321.severity = warning

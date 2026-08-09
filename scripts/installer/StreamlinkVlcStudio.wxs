@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package
+    Name="Streamlink VLC Studio"
+    Manufacturer="Streamlink VLC Studio"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="85EC9B91-312C-4B8E-A293-57D749B10C4B"
+    Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Streamlink VLC Studio is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="DISABLEADVTSHORTCUTS" Value="1" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Streamlink VLC Studio" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="StartMenuProgramsFolder" Name="Streamlink VLC Studio" />
+    </StandardDirectory>
+
+    <Icon Id="StreamlinkVlcStudio.exe" SourceFile="$(var.PayloadDir)\StreamlinkVlcStudio.exe" />
+
+    <!-- The shortcut is keyed to the machine-installed executable. Windows Installer
+         materializes it as a normal .lnk because DISABLEADVTSHORTCUTS is set above. -->
+    <Component Id="MainExecutable" Directory="INSTALLFOLDER">
+      <File
+        Id="StreamlinkVlcStudioExecutable"
+        Source="$(var.PayloadDir)\StreamlinkVlcStudio.exe"
+        KeyPath="yes">
+        <Shortcut
+          Id="StreamlinkVlcStudioStartMenuShortcut"
+          Name="Streamlink VLC Studio"
+          Description="Watch Twitch and Kick streams with Streamlink and VLC."
+          Directory="StartMenuProgramsFolder"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="StreamlinkVlcStudio.exe"
+          Advertise="yes" />
+      </File>
+      <RemoveFolder Id="RemoveStartMenuProgramsFolder" Directory="StartMenuProgramsFolder" On="uninstall" />
+      <RemoveRegistryKey
+        Id="RemoveLegacyUninstallRegistration"
+        Root="HKCU"
+        Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamlinkVlcStudio"
+        Action="removeOnInstall" />
+      <RemoveFile
+        Id="RemoveLegacyStartMenuShortcut"
+        Directory="ProgramMenuFolder"
+        Name="Streamlink VLC Studio.lnk"
+        On="install" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="Streamlink VLC Studio" Level="1">
+      <Files Include="$(var.PayloadDir)\**" Directory="INSTALLFOLDER">
+        <Exclude Files="$(var.PayloadDir)\StreamlinkVlcStudio.exe" />
+        <Exclude Files="$(var.PayloadDir)\install.ps1" />
+        <Exclude Files="$(var.PayloadDir)\Uninstall.exe" />
+      </Files>
+      <ComponentRef Id="MainExecutable" />
+    </Feature>
+  </Package>
+</Wix>

@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Surface dead-code / redundancy IDE style rules configured in .editorconfig
+      (IDE0051, IDE0052, ...) during `dotnet build`, so CI catches them.
+    -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+</Project>

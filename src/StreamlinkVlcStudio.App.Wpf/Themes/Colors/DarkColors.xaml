@@ -1,0 +1,110 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Dark Theme Colors (matches original app palette) -->
+
+    <!-- Surfaces -->
+    <Color x:Key="StudioBaseColor">#0A0A0B</Color>
+    <Color x:Key="StudioSurface0Color">#0F0F11</Color>
+    <Color x:Key="StudioSurface1Color">#17171A</Color>
+    <Color x:Key="StudioSurface2Color">#1C1C1E</Color>
+    <Color x:Key="StudioSurface3Color">#232326</Color>
+    <Color x:Key="StudioSurfaceCardColor">#131315</Color>
+    <Color x:Key="StudioSurfaceHoverColor">#212124</Color>
+
+    <!-- Borders -->
+    <Color x:Key="StudioBorderColor">#333338</Color>
+    <Color x:Key="StudioBorderStrongColor">#484850</Color>
+
+    <!-- Accent (Teal) -->
+    <Color x:Key="StudioAccentColor">#2DD4BF</Color>
+    <Color x:Key="StudioAccentHoverColor">#5EEAD4</Color>
+    <Color x:Key="StudioAccentPressedColor">#1E3F3B</Color>
+    <Color x:Key="StudioFocusColor">#48C7B5</Color>
+    <Color x:Key="StudioAccentTextColor">#7FE8D9</Color>
+
+    <!-- Text -->
+    <Color x:Key="StudioTextColor">#EAEAEE</Color>
+    <Color x:Key="StudioTextSecondaryColor">#DADADD</Color>
+    <Color x:Key="StudioTextMutedColor">#727279</Color>
+    <Color x:Key="StudioTextPlaceholderColor">#6E6E76</Color>
+    <Color x:Key="StudioTextDimColor">#5A5A62</Color>
+
+    <!-- UI Elements -->
+    <Color x:Key="StudioScrollbarColor">#66666E</Color>
+    <Color x:Key="StudioDisabledColor">#1A1A1C</Color>
+    <Color x:Key="StudioDisabledBorderColor">#2E2E33</Color>
+
+    <!-- Semantic: Success / Live -->
+    <Color x:Key="StudioSuccessColor">#3DE47B</Color>
+    <Color x:Key="StudioSuccessSubtleColor">#153A25</Color>
+    <Color x:Key="StudioSuccessBorderColor">#35A967</Color>
+    <Color x:Key="StudioSuccessTextColor">#CFFFE2</Color>
+
+    <!-- Semantic: Danger -->
+    <Color x:Key="StudioDangerColor">#F45B69</Color>
+    <Color x:Key="StudioDangerSubtleColor">#32181E</Color>
+
+    <!-- Semantic: Warning -->
+    <Color x:Key="StudioWarningColor">#F59E0B</Color>
+
+    <!-- Semantic: Info -->
+    <Color x:Key="StudioInfoColor">#6AA7FF</Color>
+    <Color x:Key="StudioInfoSubtleColor">#182840</Color>
+
+    <!-- Platform: Twitch -->
+    <Color x:Key="StudioTwitchColor">#9146FF</Color>
+    <Color x:Key="StudioTwitchSubtleColor">#2B1744</Color>
+    <Color x:Key="StudioTwitchTextColor">#F5EDFF</Color>
+
+    <!-- Platform: Kick -->
+    <Color x:Key="StudioKickColor">#53FC18</Color>
+    <Color x:Key="StudioKickSubtleColor">#132A0B</Color>
+    <Color x:Key="StudioKickTextColor">#D8FFD1</Color>
+
+    <!-- Category Badge -->
+    <Color x:Key="StudioCategoryBgColor">#191510</Color>
+    <Color x:Key="StudioCategoryBorderColor">#7B623C</Color>
+    <Color x:Key="StudioCategoryTextColor">#E5D6BD</Color>
+
+    <!-- Brushes -->
+    <SolidColorBrush x:Key="StudioBaseBrush" Color="{StaticResource StudioBaseColor}" />
+    <SolidColorBrush x:Key="StudioSurface0Brush" Color="{StaticResource StudioSurface0Color}" />
+    <SolidColorBrush x:Key="StudioSurface1Brush" Color="{StaticResource StudioSurface1Color}" />
+    <SolidColorBrush x:Key="StudioSurface2Brush" Color="{StaticResource StudioSurface2Color}" />
+    <SolidColorBrush x:Key="StudioSurface3Brush" Color="{StaticResource StudioSurface3Color}" />
+    <SolidColorBrush x:Key="StudioSurfaceCardBrush" Color="{StaticResource StudioSurfaceCardColor}" />
+    <SolidColorBrush x:Key="StudioSurfaceHoverBrush" Color="{StaticResource StudioSurfaceHoverColor}" />
+    <SolidColorBrush x:Key="StudioBorderBrush" Color="{StaticResource StudioBorderColor}" />
+    <SolidColorBrush x:Key="StudioBorderStrongBrush" Color="{StaticResource StudioBorderStrongColor}" />
+    <SolidColorBrush x:Key="StudioAccentBrush" Color="{StaticResource StudioAccentColor}" />
+    <SolidColorBrush x:Key="StudioAccentHoverBrush" Color="{StaticResource StudioAccentHoverColor}" />
+    <SolidColorBrush x:Key="StudioAccentPressedBrush" Color="{StaticResource StudioAccentPressedColor}" />
+    <SolidColorBrush x:Key="StudioFocusBrush" Color="{StaticResource StudioFocusColor}" />
+    <SolidColorBrush x:Key="StudioAccentTextBrush" Color="{StaticResource StudioAccentTextColor}" />
+    <SolidColorBrush x:Key="StudioTextBrush" Color="{StaticResource StudioTextColor}" />
+    <SolidColorBrush x:Key="StudioTextSecondaryBrush" Color="{StaticResource StudioTextSecondaryColor}" />
+    <SolidColorBrush x:Key="StudioTextMutedBrush" Color="{StaticResource StudioTextMutedColor}" />
+    <SolidColorBrush x:Key="StudioTextPlaceholderBrush" Color="{StaticResource StudioTextPlaceholderColor}" />
+    <SolidColorBrush x:Key="StudioTextDimBrush" Color="{StaticResource StudioTextDimColor}" />
+    <SolidColorBrush x:Key="StudioScrollbarBrush" Color="{StaticResource StudioScrollbarColor}" />
+    <SolidColorBrush x:Key="StudioDisabledBrush" Color="{StaticResource StudioDisabledColor}" />
+    <SolidColorBrush x:Key="StudioDisabledBorderBrush" Color="{StaticResource StudioDisabledBorderColor}" />
+    <SolidColorBrush x:Key="StudioSuccessBrush" Color="{StaticResource StudioSuccessColor}" />
+    <SolidColorBrush x:Key="StudioSuccessSubtleBrush" Color="{StaticResource StudioSuccessSubtleColor}" />
+    <SolidColorBrush x:Key="StudioSuccessBorderBrush" Color="{StaticResource StudioSuccessBorderColor}" />
+    <SolidColorBrush x:Key="StudioSuccessTextBrush" Color="{StaticResource StudioSuccessTextColor}" />
+    <SolidColorBrush x:Key="StudioDangerBrush" Color="{StaticResource StudioDangerColor}" />
+    <SolidColorBrush x:Key="StudioDangerSubtleBrush" Color="{StaticResource StudioDangerSubtleColor}" />
+    <SolidColorBrush x:Key="StudioWarningBrush" Color="{StaticResource StudioWarningColor}" />
+    <SolidColorBrush x:Key="StudioInfoBrush" Color="{StaticResource StudioInfoColor}" />
+    <SolidColorBrush x:Key="StudioInfoSubtleBrush" Color="{StaticResource StudioInfoSubtleColor}" />
+    <SolidColorBrush x:Key="StudioTwitchBrush" Color="{StaticResource StudioTwitchColor}" />
+    <SolidColorBrush x:Key="StudioTwitchSubtleBrush" Color="{StaticResource StudioTwitchSubtleColor}" />
+    <SolidColorBrush x:Key="StudioTwitchTextBrush" Color="{StaticResource StudioTwitchTextColor}" />
+    <SolidColorBrush x:Key="StudioKickBrush" Color="{StaticResource StudioKickColor}" />
+    <SolidColorBrush x:Key="StudioKickSubtleBrush" Color="{StaticResource StudioKickSubtleColor}" />
+    <SolidColorBrush x:Key="StudioKickTextBrush" Color="{StaticResource StudioKickTextColor}" />
+    <SolidColorBrush x:Key="StudioCategoryBgBrush" Color="{StaticResource StudioCategoryBgColor}" />
+    <SolidColorBrush x:Key="StudioCategoryBorderBrush" Color="{StaticResource StudioCategoryBorderColor}" />
+    <SolidColorBrush x:Key="StudioCategoryTextBrush" Color="{StaticResource StudioCategoryTextColor}" />
+</ResourceDictionary>
