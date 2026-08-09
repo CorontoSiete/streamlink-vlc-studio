@@ -53,7 +53,8 @@ jobs:
 
       - name: Test
         env:
-          # Hosted Windows runners do not provide a reliable interactive foreground desktop.
+          # Hosted Windows runners do not provide a reliable interactive foreground desktop;
+          # the test harness skips its STA/WPF desktop tests in this headless CI mode.
           SVS_SKIP_INTERACTIVE_WINDOW_TESTS: "true"
         run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore
 

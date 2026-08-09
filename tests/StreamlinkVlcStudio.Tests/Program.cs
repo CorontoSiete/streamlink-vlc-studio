@@ -32569,39 +32569,25 @@ static T? FindVisualAncestor<T>(DependencyObject child)
 }
 
 var testFilter = Environment.GetEnvironmentVariable("SVS_TEST_FILTER");
-var skipInteractiveWindowTests = string.Equals(
-    Environment.GetEnvironmentVariable("SVS_SKIP_INTERACTIVE_WINDOW_TESTS"),
-    "true",
-    StringComparison.OrdinalIgnoreCase);
-var interactiveWindowTestNames = new HashSet<string>(StringComparer.Ordinal)
-{
-    "inactive window first click focuses docked chat input and accepts typing",
-    "theatre chat input stays above the taskbar and accepts physical typing",
-    "docked and theatre chat release native overlay keyboard capture before typing"
-};
-var selectedTests = (string.IsNullOrWhiteSpace(testFilter)
+var selectedTests = string.IsNullOrWhiteSpace(testFilter)
     ? tests
     : tests
         .Where(test => test.Name.Contains(testFilter, StringComparison.OrdinalIgnoreCase))
-        .ToArray())
-    .Where(test => !skipInteractiveWindowTests || !interactiveWindowTestNames.Contains(test.Name))
     .ToArray();
 
-if (skipInteractiveWindowTests)
-{
-    foreach (var test in tests.Where(test => interactiveWindowTestNames.Contains(test.Name)))
-    {
-        Console.WriteLine($"SKIP {test.Name} (interactive desktop unavailable)");
-    }
-}
-
 var failed = 0;
+var skipped = 0;
 foreach (var test in selectedTests)
 {
     try
     {
         await test.Run();
         Console.WriteLine($"PASS {test.Name}");
+    }
+    catch (InteractiveDesktopTestSkippedException ex)
+    {
+        skipped++;
+        Console.WriteLine($"SKIP {test.Name}: {ex.Message}");
     }
     catch (Exception ex)
     {
@@ -32610,8 +32596,19 @@ foreach (var test in selectedTests)
     }
 }
 
-Console.WriteLine(failed == 0 ? $"All {selectedTests.Length} tests passed." : $"{failed} of {selectedTests.Length} tests failed.");
+var passed = selectedTests.Length - failed - skipped;
+Console.WriteLine(failed == 0
+    ? $"All {passed} tests passed; {skipped} skipped."
+    : $"{failed} of {selectedTests.Length} tests failed; {skipped} skipped.");
 return failed == 0 ? 0 : 1;
+
+internal sealed class InteractiveDesktopTestSkippedException : Exception
+{
+    public InteractiveDesktopTestSkippedException()
+        : base("interactive desktop unavailable")
+    {
+    }
+}
 
 internal readonly record struct NativeOverlayAlphaBounds(int MinX, int MinY, int MaxX, int MaxY)
 {
@@ -32691,6 +32688,14 @@ internal static class TestSta
 
     public static Task RunAsync(Func<Task> action)
     {
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("SVS_SKIP_INTERACTIVE_WINDOW_TESTS"),
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromException(new InteractiveDesktopTestSkippedException());
+        }
+
         EnsureApplication();
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
