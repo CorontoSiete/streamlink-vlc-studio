@@ -22,9 +22,11 @@ internal static class RegressionTestCatalog
         ("Hotkey recorder captures without native input and preserves two-way binding", HotkeyRecorderCapturesAndUpdatesBindingAsync),
         ("Configured hotkeys route through main window preview input", ConfiguredHotkeyRoutesThroughMainWindowAsync),
         ("App updater starts bundled installer script when available", AppUpdaterStartsBundledInstallerScriptAsync),
+        ("App updater keeps app open when installed version matches GitHub latest", AppUpdaterKeepsAppOpenWhenCurrentVersionMatchesLatestAsync),
         ("App updater downloads and launches checksum-verified MSI", AppUpdaterDownloadsAndLaunchesVerifiedMsiAsync),
         ("App updater rejects MSI checksum mismatch before launch", AppUpdaterRejectsMsiChecksumMismatchAsync),
         ("Update command reports status and requests shutdown after launch", UpdateCommandReportsStatusAndRequestsShutdownAsync),
+        ("Update command keeps app open when updater reports latest version", UpdateCommandKeepsAppOpenWhenUpdaterReportsLatestAsync),
         ("Installer OS gates allow 64-bit Windows 10 and 11 without build-specific blocks", InstallerOsGatesAllow64BitWindows10And11)
     ];
 
@@ -400,9 +402,23 @@ internal static class RegressionTestCatalog
         {
             var scriptPath = Path.Combine(root, "install.ps1");
             await File.WriteAllTextAsync(scriptPath, "# test installer");
+            var requests = new List<Uri>();
             var launched = new List<ProcessStartInfo>();
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
-                throw new InvalidOperationException("HTTP should not be used when install.ps1 is present.")));
+            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+            {
+                requests.Add(request.RequestUri!);
+                return request.RequestUri!.AbsoluteUri switch
+                {
+                    "https://api.github.com/repos/owner/repo/releases/latest" => new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            CreateLatestReleaseJson(msiSize: 1, checksumSize: 1),
+                            Encoding.UTF8,
+                            "application/json")
+                    },
+                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+                };
+            }));
             using var updater = new GitHubReleaseAppUpdateService(
                 new MemoryLogger(),
                 httpClient,
@@ -413,12 +429,14 @@ internal static class RegressionTestCatalog
                 {
                     launched.Add(startInfo);
                     return true;
-                });
+                },
+                getCurrentInstalledVersion: () => "1.0.6");
 
             var result = await updater.StartLatestReleaseUpdateAsync();
 
             Assert.True(result.RequestApplicationShutdown);
             Assert.Contains("installer script", result.Message);
+            Assert.Equal(1, requests.Count);
             Assert.Equal(1, launched.Count);
             var startInfo = launched[0];
             Assert.Equal("powershell.exe", startInfo.FileName);
@@ -430,6 +448,59 @@ internal static class RegressionTestCatalog
             AssertArgumentValue(arguments, "-AppSource", "GitHub");
             Assert.True(arguments.Contains("-ForceStopApp"));
             Assert.True(arguments.Contains("-Launch"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static async Task AppUpdaterKeepsAppOpenWhenCurrentVersionMatchesLatestAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "svs-updater-current-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var requests = new List<Uri>();
+            var launched = false;
+            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+            {
+                requests.Add(request.RequestUri!);
+                return request.RequestUri!.AbsoluteUri switch
+                {
+                    "https://api.github.com/repos/owner/repo/releases/latest" => new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            CreateLatestReleaseJson(msiSize: 1, checksumSize: 1),
+                            Encoding.UTF8,
+                            "application/json")
+                    },
+                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+                };
+            }));
+            using var updater = new GitHubReleaseAppUpdateService(
+                new MemoryLogger(),
+                httpClient,
+                "owner/repo",
+                root,
+                Path.Combine(root, "updates"),
+                _ =>
+                {
+                    launched = true;
+                    return true;
+                },
+                getCurrentInstalledVersion: () => "1.0.7.0");
+
+            var result = await updater.StartLatestReleaseUpdateAsync();
+
+            Assert.Equal(false, result.RequestApplicationShutdown);
+            Assert.Contains("latest version", result.Message);
+            Assert.Contains("1.0.7", result.Message);
+            Assert.Equal(1, requests.Count);
+            Assert.Equal(false, launched);
         }
         finally
         {
@@ -484,7 +555,8 @@ internal static class RegressionTestCatalog
                 {
                     launched.Add(startInfo);
                     return true;
-                });
+                },
+                getCurrentInstalledVersion: () => "1.0.6");
 
             var result = await updater.StartLatestReleaseUpdateAsync();
 
@@ -547,7 +619,8 @@ internal static class RegressionTestCatalog
                 {
                     launched = true;
                     return true;
-                });
+                },
+                getCurrentInstalledVersion: () => "1.0.6");
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => updater.StartLatestReleaseUpdateAsync());
@@ -593,6 +666,42 @@ internal static class RegressionTestCatalog
                 entry.Level == AppLogLevel.Info &&
                 entry.Source == "Updater" &&
                 entry.Message == "Updater launched."));
+        }
+        finally
+        {
+            await viewModel.DisposeAsync().AsTask();
+        }
+    }
+
+    private static async Task UpdateCommandKeepsAppOpenWhenUpdaterReportsLatestAsync()
+    {
+        var settings = new AppSettings();
+        var logger = new MemoryLogger();
+        var updater = new FakeAppUpdateService(new AppUpdateStartResult("You're on the latest version (1.0.7).", false));
+        var shutdownRequests = 0;
+        var viewModel = TestViewModels.CreateMain(
+            settings,
+            new FakeSettingsService(settings),
+            new FakeStreamlinkService(),
+            new FakePlaybackEngineFactory(),
+            new FakeChatClientFactory(),
+            logger,
+            action => action(),
+            appUpdateService: updater,
+            requestShutdown: () => shutdownRequests++);
+
+        try
+        {
+            await viewModel.UpdateAppCommand.ExecuteAsync();
+
+            Assert.Equal(1, updater.CallCount);
+            Assert.Equal("You're on the latest version (1.0.7).", viewModel.AppUpdateStatus);
+            Assert.Equal("You're on the latest version (1.0.7).", viewModel.StatusMessage);
+            Assert.Equal(0, shutdownRequests);
+            Assert.True(logger.Entries.Any(entry =>
+                entry.Level == AppLogLevel.Info &&
+                entry.Source == "Updater" &&
+                entry.Message == "You're on the latest version (1.0.7)."));
         }
         finally
         {
