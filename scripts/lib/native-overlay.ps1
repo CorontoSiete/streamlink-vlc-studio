@@ -50,6 +50,22 @@ function Get-NativeOverlayRelativeManifestPath {
     $relative
 }
 
+function Get-NativeOverlayFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Assert-NativeOverlaySource {
     [CmdletBinding()]
     param(
@@ -112,7 +128,7 @@ function Assert-NativeOverlaySource {
             throw "Native dependency length mismatch for $relative. Expected $($entry.length), found $($file.Length)."
         }
 
-        $actualHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = Get-NativeOverlayFileSha256 $file.FullName
         $expectedHash = ([string]$entry.sha256).Trim().ToLowerInvariant()
         if (-not [string]::Equals($actualHash, $expectedHash, [StringComparison]::Ordinal)) {
             throw "Native dependency SHA-256 mismatch for $relative. Expected $expectedHash, found $actualHash."
