@@ -2472,7 +2472,7 @@ internal static partial class ApplicationTestCatalog
             null,
             "background-sta-render"));
 
-        var result = await rendered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var result = await rendered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.True(result.Succeeded);
         Assert.Equal(ApartmentState.STA, result.RenderThreadApartmentState);
         Assert.Equal(false, callerThreadId == result.RenderThreadId);

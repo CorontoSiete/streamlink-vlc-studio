@@ -43,6 +43,20 @@ function Get-SafeInstallFiles([string]$Directory) {
     @($files | Sort-Object FullName)
 }
 
+function Get-InstallFileSha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Write-JsonAtomically([string]$Path, $Value) {
     $parent = Split-Path -Parent ([IO.Path]::GetFullPath($Path))
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
@@ -113,7 +127,7 @@ function Write-InstallOwnershipState {
         $files += [ordered]@{
             path = $relative
             length = $file.Length
-            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            sha256 = Get-InstallFileSha256 $file.FullName
         }
     }
 
@@ -126,7 +140,7 @@ function Write-InstallOwnershipState {
     }
     $manifestPath = Join-Path $root $script:InstallManifestFileName
     Write-JsonAtomically $manifestPath $manifest
-    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifestHash = Get-InstallFileSha256 $manifestPath
 
     $owner = [ordered]@{
         schemaVersion = 1
@@ -161,7 +175,7 @@ function Read-InstallOwnershipState([string]$Directory) {
         $owner.installId -ne $manifest.installId) {
         throw "Installation ownership state does not identify Streamlink VLC Studio: $root"
     }
-    $actualManifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualManifestHash = Get-InstallFileSha256 $manifestPath
     if (-not [string]::Equals($actualManifestHash, [string]$owner.manifestSha256, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Installation manifest hash does not match its ownership marker: $root"
     }
