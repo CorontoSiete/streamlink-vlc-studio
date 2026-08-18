@@ -277,7 +277,35 @@ try {
     [IO.File]::WriteAllText((Join-Path $sbomRoot 'app.exe'), 'stub app')
     $sbomPath = Join-Path $testRoot 'test.spdx.json'
     $assetsPath = Join-Path $repoRoot 'src\StreamlinkVlcStudio.App.Wpf\obj\project.assets.json'
-    $publishedDepsPath = Join-Path $repoRoot 'src\StreamlinkVlcStudio.App.Wpf\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamlinkVlcStudio.App.Wpf.deps.json'
+    $publishedDepsPath = Join-Path $testRoot 'published.deps.json'
+    $publishedDeps = [ordered]@{
+        runtimeTarget = [ordered]@{
+            name = '.NETCoreApp,Version=v10.0/win-x64'
+            signature = ''
+        }
+        targets = [ordered]@{}
+        libraries = [ordered]@{
+            'runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.10' = [ordered]@{
+                type = 'runtimepack'
+                serviceable = $false
+                sha512 = ''
+            }
+            'runtimepack.Microsoft.WindowsDesktop.App.Runtime.win-x64/10.0.10' = [ordered]@{
+                type = 'runtimepack'
+                serviceable = $false
+                sha512 = ''
+            }
+            'runtimepack.Microsoft.Windows.SDK.NET.Ref/10.0.19041.57' = [ordered]@{
+                type = 'runtimepack'
+                serviceable = $false
+                sha512 = ''
+            }
+        }
+    }
+    [IO.File]::WriteAllText(
+        $publishedDepsPath,
+        ($publishedDeps | ConvertTo-Json -Depth 8),
+        [Text.UTF8Encoding]::new($false))
     & (Join-Path $scriptRoot 'generate-sbom.ps1') `
         -RootDirectory $sbomRoot `
         -OutputPath $sbomPath `
