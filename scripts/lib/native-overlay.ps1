@@ -70,7 +70,8 @@ function Assert-NativeOverlaySource {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$OverlaySource,
-        [Parameter(Mandatory = $true)][string]$ManifestPath)
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [switch]$SkipAuthenticodeWhenUnavailable)
 
     $sourceRoot = [IO.Path]::GetFullPath($OverlaySource)
     if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
@@ -134,8 +135,16 @@ function Assert-NativeOverlaySource {
             throw "Native dependency SHA-256 mismatch for $relative. Expected $expectedHash, found $actualHash."
         }
 
+        $signatureStatus = [string]$entry.authenticode
         if ($IsWindows -or $env:OS -eq 'Windows_NT') {
-            $signatureStatus = (Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString()
+            try {
+                $signatureStatus = (Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString()
+            } catch [System.Management.Automation.CommandNotFoundException] {
+                if (-not $SkipAuthenticodeWhenUnavailable) {
+                    throw
+                }
+            }
+
             if (-not [string]::Equals($signatureStatus, [string]$entry.authenticode, [StringComparison]::Ordinal)) {
                 throw "Native dependency signature status mismatch for $relative. Expected $($entry.authenticode), found $signatureStatus."
             }
@@ -146,7 +155,7 @@ function Assert-NativeOverlaySource {
             SourcePath = $file.FullName
             Length = $file.Length
             Sha256 = $actualHash
-            Authenticode = [string]$entry.authenticode
+            Authenticode = $signatureStatus
         })
     }
 

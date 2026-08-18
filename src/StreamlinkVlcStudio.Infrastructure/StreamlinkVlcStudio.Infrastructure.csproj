@@ -25,7 +25,7 @@
     <Error Condition="!Exists('$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe')" Text="Bundled VLC overlay controller missing: $(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe" />
     <Exec
       Condition="'$(OS)' == 'Windows_NT' and '$(BundledVlcOverlayRoot)' == '$(MSBuildProjectDirectory)\Vlc\BundledOverlay'"
-      Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\verify-native-dependencies.ps1&quot; -RepositoryRoot &quot;$(MSBuildThisFileDirectory)..\..&quot;"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\verify-native-dependencies.ps1&quot; -RepositoryRoot &quot;$(MSBuildThisFileDirectory)..\..&quot; -SkipAuthenticodeWhenUnavailable"
       ConsoleToMSBuild="true" />
   </Target>
 

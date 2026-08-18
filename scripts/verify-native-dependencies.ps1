@@ -2,7 +2,8 @@
 param(
     [string]$RepositoryRoot,
     [string]$ManifestPath,
-    [string]$OverlaySource
+    [string]$OverlaySource,
+    [switch]$SkipAuthenticodeWhenUnavailable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,5 +27,8 @@ $source = if ([string]::IsNullOrWhiteSpace($OverlaySource)) {
 . (Join-Path $scriptRoot 'lib\common.ps1')
 . (Join-Path $scriptRoot 'lib\native-overlay.ps1')
 
-$verified = @(Assert-NativeOverlaySource -OverlaySource $source -ManifestPath $manifest)
+$verified = @(Assert-NativeOverlaySource `
+    -OverlaySource $source `
+    -ManifestPath $manifest `
+    -SkipAuthenticodeWhenUnavailable:$SkipAuthenticodeWhenUnavailable)
 Write-Host "Verified $($verified.Count) pinned native overlay inputs from $source."
