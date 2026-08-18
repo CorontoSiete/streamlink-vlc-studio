@@ -13,6 +13,10 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Publish the activation endpoint before claiming the mutex. A second
+        // launch can otherwise observe the mutex during this short window and
+        // have nowhere to signal the primary instance.
+        activationEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationEventName);
         singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var isPrimaryInstance);
         if (!isPrimaryInstance)
         {
@@ -21,7 +25,6 @@ public partial class App : Application
             return;
         }
 
-        activationEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationEventName);
         activationSignalCancellation = new CancellationTokenSource();
         activationSignalTask = Task.Run(() => WatchActivationSignals(activationSignalCancellation.Token));
 
@@ -89,9 +92,34 @@ public partial class App : Application
         }
 
         WaitHandle[] handles = [activationEvent, cancellationToken.WaitHandle];
-        while (WaitHandle.WaitAny(handles) == 0)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            Dispatcher.BeginInvoke(ActivateMainWindow);
+            int signaledHandle;
+            try
+            {
+                signaledHandle = WaitHandle.WaitAny(handles);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            if (signaledHandle != 0 ||
+                cancellationToken.IsCancellationRequested ||
+                Dispatcher.HasShutdownStarted ||
+                Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            try
+            {
+                Dispatcher.BeginInvoke(ActivateMainWindow);
+            }
+            catch (InvalidOperationException) when (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
         }
     }
 

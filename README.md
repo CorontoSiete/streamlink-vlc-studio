@@ -4,15 +4,16 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 
 ## Current Features
 
-- Browser extension capture for Twitch and Kick channel links; the extension prevents browser navigation and sends the clicked stream to the desktop app.
-- Browser extension auto-claim for visible Twitch channel-point `Claim Bonus` buttons while a Twitch stream page is open.
+- Browser extension capture for direct Twitch and Kick channel links; the extension prevents browser navigation and sends the clicked stream to the desktop app.
+- Browser extension auto-claim for visible Twitch channel-point `Claim Bonus` buttons while a direct Twitch channel page is open.
+- Official Twitch live-clip button on the selected stream tab; Kick clipping remains disabled because Kick has no official clip-creation API.
 - Streamlink external HTTP transport.
 - Embedded libVLC playback in a WPF HWND surface.
 - Quality presets: `best`, `source`, `1080p60`, `1080p`, `720p60`, `720p`, `480p`, `audio_only`, `worst`.
 - Low-latency Streamlink defaults for Twitch/HLS.
 - Platform replay seekbar for Twitch and best-effort Kick replays. Live playback keeps the existing Streamlink HTTP path; seeking behind live switches to platform VOD HLS playback in libVLC.
 - Subscriber-only Twitch VOD playback: if Streamlink cannot resolve a Twitch VOD, the app falls back to a direct CloudFront playlist derived from the VOD's public storyboard metadata (TwitchNoSub technique). Pasting a `https://www.twitch.tv/videos/{id}` URL into the search box opens it directly. Very recent uploads cannot be resolved this way, and `audio_only` maps to the lowest video variant.
-- Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. Only the selected tab is audible; inactive visible streams stay muted.
+- Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. Only the selected tab is audible; inactive visible streams stay muted. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted.
 - Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL.
 - Home page showing live followed Twitch streams, configured Kick followed channel slugs that are currently live, Twitch/Kick VOD browsing, and recently watched streams.
 - Per-tab state: target, quality, status, mute, chat visibility, logs, chat messages.
@@ -21,40 +22,43 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - Kick chat via isolated public Pusher-style adapter, with OAuth chat sending through Kick's public API.
 - Twitch replay chat from Twitch VOD chat GraphQL, with cached TwitchDownloader JSON files under `%APPDATA%\StreamlinkVlcStudio\replay-chat\twitch` still supported. Kick VOD replay chat uses verified official `chat.message.sent` webhooks captured into `%APPDATA%\StreamlinkVlcStudio\replay-chat\kick-official`; Kick's official REST API does not expose historical VOD chat.
 - Native VLC plugin chat overlay mode using `vlc-overlay`, with draggable/resizable chat and in-overlay chat input.
-- JSON settings and file logging.
+- JSON settings with Windows current-user DPAPI protection for account secrets, plus file logging.
 - Dependency-free tests.
 
 ## Requirements
 
-- Windows x64.
-- Windows 10 or later, x64.
+- 64-bit Windows 10 or Windows 11.
 - Administrator permission for the per-machine installation under `C:\Program Files`.
-- Internet access during the full installer so it can download the platform authorization pages and dependencies.
+- Internet access for platform sign-in and streaming. The full installer embeds its reviewed dependency installers and does not download them during setup.
 
-`StreamlinkVlcStudio-Setup.exe` is the normal installer. It contains the self-contained app, the official x64 Streamlink installer, and the official x64 VLC MSI. It installs the app and dependencies, creates the Start Menu shortcut, and then launches the first-run account wizard. The wizard never asks for a Twitch or Kick password: sign-in and consent happen in the platform browser. Streamlink and VLC are treated as shared dependencies and are left installed if the app is later removed.
+`StreamlinkVlcStudio-Setup.exe` is the normal installer. It contains the self-contained app MSI and the reviewed, version-locked x64 Streamlink and VLC installers. It installs the app and any missing dependencies, creates the Start Menu shortcut, and offers to launch the first-run account wizard. The wizard never asks for a Twitch or Kick password: sign-in and consent happen in the platform browser. Streamlink and VLC are treated as shared dependencies and are left installed if the app is later removed.
 
 `StreamlinkVlcStudio-Setup.msi` is the app-only Windows Installer package for advanced/manual use. It installs the app payload and bundled VLC overlay but does not install Streamlink or VLC. The release zip includes the separate PowerShell dependency workflow.
 
-The self-contained GitHub release does not require the .NET SDK. Building from source requires the .NET 9 SDK selected by `global.json`, Streamlink, and VLC 64-bit with `libvlc.dll`.
+The self-contained GitHub release does not require the .NET SDK. Building from source requires the .NET 10 SDK selected by `global.json`; running that build also requires Streamlink and VLC 64-bit with `libvlc.dll`.
 
 ## Install Latest Release
 
-Download `StreamlinkVlcStudio-Setup.exe` from the latest GitHub release and run it. The installer walks through installing Streamlink, VLC, and the app, then offers a Launch button. Click Launch to open the setup wizard:
+Download `StreamlinkVlcStudio-Setup.exe` from the latest GitHub release and verify it against the release's `SHA256SUMS.txt` before running it. The installer walks through installing Streamlink, VLC, and the app, then offers a Launch button. Click Launch to open the setup wizard:
 
-1. Twitch: create a Twitch developer app, set its redirect URL to exactly `http://localhost:39178`, enter its Client ID, and click Connect Twitch. The wizard requests `chat:read`, `chat:edit`, `user:read:follows`, and `channel:manage:predictions`.
+1. Twitch: create a Twitch developer app, set its redirect URL to exactly `http://localhost:39178`, enter its Client ID, and click Connect Twitch. The wizard requests `chat:read`, `chat:edit`, `user:read:follows`, `channel:manage:predictions`, and `clips:edit`.
 2. Kick: create a Kick developer app, set its redirect URL to exactly `http://localhost:39177`, enter its Client ID and Client Secret, and click Connect Kick. The wizard requests `user:read`, `channel:read`, and `chat:write`.
 3. Finish setup. Either platform can be skipped; public playback does not require an account. A connected platform is saved before the app opens normally.
 
-The full installer uses `C:\Program Files\Streamlink VLC Studio` for the app so its Launch button is reliable. The app creates `Start Menu\Programs\Streamlink VLC Studio\Streamlink VLC Studio` and appears in Apps & features / Programs and Features.
+The full installer uses `C:\Program Files\Streamlink VLC Studio` for the app. It creates `Start Menu\Programs\Streamlink VLC Studio\Streamlink VLC Studio` and registers the app with Apps & features / Programs and Features.
 
-Uninstall Streamlink VLC Studio from Apps & features / Control Panel. The bundle removes the app and shortcut but leaves shared Streamlink and VLC installations, and it leaves user settings and tokens under `%APPDATA%\StreamlinkVlcStudio`.
+Uninstall Streamlink VLC Studio from Apps & features / Control Panel. The bundle removes the app and shortcut but leaves shared Streamlink and VLC installations, and it leaves user data, including DPAPI-protected account secrets, under `%APPDATA%\StreamlinkVlcStudio`.
 
-The release zip also provides the advanced PowerShell installer. It can install or update the app and dependencies from GitHub, or install dependencies only. GitHub install mode requires the repository and either its releases or Actions artifacts to be public. For a private repository, set `GITHUB_TOKEN` to a token with repo/actions read access before running the installer.
+The release zip also provides the advanced PowerShell installer. It can install or update the app and its version-locked dependencies from the latest final GitHub release, install the adjacent extracted payload, or install dependencies only. A GitHub app download requires both `StreamlinkVlcStudio-release.zip` and `SHA256SUMS.txt`; the script verifies the zip before installing it. Normal `Auto`, `Release`, and `GitHub` modes never fall back to an arbitrary Actions artifact. `Auto` falls back only to an app payload beside `install.ps1`; the explicit developer artifact mode additionally requires a trusted 40-character main-branch commit. For a private repository, set `GITHUB_TOKEN` to a token with release-content read access (and Actions read access only when using developer artifact mode).
+
+From inside the app, Settings > Advanced > Updates can start the same latest-release update path. Release-zip installs use the bundled `install.ps1`; MSI/full-installer installs download `StreamlinkVlcStudio-Setup.msi` and verify it against `SHA256SUMS.txt` before launching Windows Installer.
+
+The PowerShell workflow installs the app to `%LOCALAPPDATA%\Programs\StreamlinkVlcStudio` by default. It reads `dependencies\windows-installers.json`, verifies the pinned dependency downloads by size and SHA-256 plus the recorded signature/product metadata, and keeps an already installed dependency when its detected version is the same or newer. Run these examples from an extracted release zip:
 
 Useful installer options:
 
 ```powershell
-# Force download from GitHub instead of using a local extracted app.
+# Force a verified download from the latest final GitHub release.
 powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -AppSource GitHub -Launch
 
 # Install from an extracted release zip instead of GitHub.
@@ -99,11 +103,26 @@ $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 node --test browser-extension\tests\content-core.test.js
 ```
 
+Twitch/Kick routes that are platform pages rather than channels are defined once in
+`shared\platform-routes.json`. After changing that policy, regenerate the extension artifact with
+`powershell -File scripts\generate-browser-route-policy.ps1`; the browser tests enforce exact parity.
+Packaging and CI use `-Check`, so a stale generated route file is rejected before an installer or
+release archive is staged.
+
+The .NET test project is a dependency-free executable runner. Use `SVS_TEST_FILTER` for a focused
+subsystem run, and `SVS_SKIP_INTERACTIVE_WINDOW_TESTS=true` on headless Windows agents. Verification
+also includes PowerShell parser checks and a Release build; timed-out tests are reported and return
+failure rather than silently passing.
+
+Headless CI enforces its reviewed interactive-test skip ceiling. The manually dispatched
+`Interactive desktop tests` workflow is reserved for a signed-in self-hosted Windows runner labeled
+`interactive-desktop`; it runs the complete WPF suite and permits no skips.
+
 ## Browser Capture Extension
 
-The reliable no-navigation flow uses the unpacked extension in `browser-extension`. It intercepts Twitch/Kick links before the browser routes to them, calls the local app listener at `http://127.0.0.1:39179/capture`, and leaves the browser on the current page. After each intercepted click, the page shows a small Twitch & Kick player status message so capture success or app-not-running failures are visible.
+The reliable no-navigation flow uses the unpacked extension in `browser-extension`. On supported Twitch and Kick pages, it intercepts an unmodified left-click only when the destination is a direct channel route such as `https://www.twitch.tv/{channel}` or `https://kick.com/{channel}` (including the supported bare and mobile hosts). It canonicalizes that URL, calls the local app listener at `http://127.0.0.1:39179/capture`, and leaves the browser on the current page. VOD, clip, directory/category, settings, and other multi-segment or reserved platform routes navigate normally. After each intercepted channel click, the page shows a small Twitch & Kick player status message so capture success or app-not-running failures are visible.
 
-On Twitch pages, the same extension watches for the channel-point bonus control and clicks the visible `Claim Bonus` button automatically. This only acts on the Twitch page DOM: you still need to be logged in, have the Twitch stream page open, and have Twitch exposing a claimable bonus. Streamlink-only playback in VLC does not create a browser-side claim button by itself.
+On direct Twitch channel pages, the same extension watches for the channel-point bonus control and clicks the visible `Claim Bonus` button automatically. The observer is inactive on Twitch VOD, directory, settings, and other non-channel routes. This only acts on the Twitch page DOM: you still need to be logged in, have the Twitch channel page open, and have Twitch exposing a claimable bonus. Streamlink-only playback in VLC does not create a browser-side claim button by itself.
 
 Install once in a Chromium browser:
 
@@ -112,7 +131,7 @@ Install once in a Chromium browser:
 3. Click `Load unpacked`.
 4. Select the repo's `browser-extension` folder, or the extracted `browser-extension` folder from the release zip.
 
-The desktop app must be running before you click streams. If it is not running, the extension keeps the browser on the current page and shows a retry message.
+The desktop app must be running before you click a direct channel link. If it is not running, the extension keeps the browser on the current page and shows a retry message.
 
 ## Package
 
@@ -120,12 +139,17 @@ Create a friend-ready release zip, app-only MSI, and full dependency installer:
 
 ```powershell
 $root = (Get-Location).Path
-& "$root\scripts\build-installer.ps1"
+& "$root\scripts\build-installer.ps1" -ProductVersion 1.0.0
 ```
 
-The package script publishes the app with the native VLC chat overlay embedded from `src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay\build` by default, stages the required sidecar `vlc-overlay\build` payload, stages only the Brave/Chromium capture extension runtime files from `browser-extension`, includes the local `install.ps1` for the advanced dependency workflow, and writes `release\StreamlinkVlcStudio-release.zip`. It fails if `build\libmyoverlay_plugin.dll`, `build\vlc_chat_overlay.exe`, or the required extension runtime files are missing.
+The package script publishes the app with the native VLC chat overlay embedded from `src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay\build` by default, stages the required sidecar `vlc-overlay\build` payload, stages the complete Brave/Chromium capture extension runtime and guide, and includes the top-level install guides, `install.ps1`, its shared helpers, release contract, and locked Windows dependency manifest. It writes `release\StreamlinkVlcStudio-release.zip` and validates the staged payload against `shared\release-contract.json`. Packaging fails on an ambiguous payload root, missing runtime file, unexpected or altered native-overlay input (including hidden files), stale routes, or any provenance/dependency mismatch.
 
-The installer script runs the package script when `-ReleaseZip` is not supplied, builds `release\StreamlinkVlcStudio-Setup.msi` with WiX, resolves the official x64 Streamlink Windows installer from `streamlink/windows-builds`, resolves the official x64 VLC MSI from VideoLAN's `last/win64` directory, and embeds both dependencies in `release\StreamlinkVlcStudio-Setup.exe` with WiX Burn. The build fails if an unambiguous upstream asset cannot be found; it does not guess an asset. WiX 6.0.2 is installed into the repository's ignored `.tools` directory on first use. `-ProductVersion` must be a three-part numeric MSI version with each part from 0 through 255; the bundle uses the same version with a fourth `.0` field. Run `scripts\package-release.ps1` directly when only the zip is needed.
+For a clean verification pass, route restore/build/publish, per-project intermediate output, and
+packaging output to temporary directories outside the source tree. The ignored `.audit-*`,
+`.codex-*`, `.tools`, `.wix`, `artifacts`, `bin`, and `obj` directories are disposable generated
+output; the bundled overlay binaries under `src\...\BundledOverlay\build` are required source assets.
+
+The installer script runs the package script when `-ReleaseZip` is not supplied and builds `release\StreamlinkVlcStudio-Setup.msi` with WiX. It downloads exactly the Streamlink and VLC x64 installers recorded in `dependencies\windows-installers.json`, whose canonical byte-count field is `length`, using a bounded temporary download and one shared verifier for length, SHA-256, Authenticode signer/status, and product metadata. After installation, a dependency is accepted only when a discovered executable's parsed version is at least the pinned version; rejected candidates are reported. The verified dependencies are embedded in `release\StreamlinkVlcStudio-Setup.exe` with WiX Burn. The build fails on any manifest or verification mismatch and does not discover or guess a newer upstream asset. WiX and extension versions are compared semantically. MSI/bootstrapper outputs are validated in temporary staging and promoted together with rollback. WiX 6.0.2 is installed into the repository's ignored `.tools` directory on first use. `-ProductVersion` must be a three-part numeric MSI version with each part from 0 through 255; the bundle uses the same version with a fourth `.0` field. Run `scripts\package-release.ps1` directly when only the zip is needed.
 
 Framework-dependent Windows publish without creating a zip:
 
@@ -143,13 +167,15 @@ Packaging notes:
 
 - Ship `StreamlinkVlcStudio-Setup.exe` for normal users, keep `StreamlinkVlcStudio-Setup.msi` as the app-only/manual option, and keep `StreamlinkVlcStudio-release.zip` for portable/manual inspection and the PowerShell dependency workflow.
 - The local `release` directory contains those three distributable files by default.
+- CI publishes those three distributables together with `SHA256SUMS.txt`, `StreamlinkVlcStudio.spdx.json`, and `RELEASE-METADATA.json`. These six names and their output paths are defined once in `shared/release-contract.json`; CI independently revalidates the closed set, rejects non-increasing release versions, and records GitHub build-provenance and SBOM attestations before publishing.
+- SBOM generation reconstructs dependencies from project assets, publish `.deps.json`, runtime packs, the Windows installer manifest, and native-overlay provenance. Verification reconstructs that canonical set independently and rejects missing or extra dependency records.
 - The MSI deliberately does not install the legacy `Uninstall.exe` or register a custom uninstall key; Windows Installer owns the MSI uninstall entry.
 - The release zip includes the legacy `Uninstall.exe` only for the separate PowerShell/manual path. It is not used by the MSI.
-- The release zip includes `install.ps1`, which can install/update the app and runtime dependencies from the latest upstream releases.
+- The release zip includes `install.ps1`, its shared helpers, and the reviewed dependency manifest; the script installs the pinned runtime dependencies rather than discovering the latest upstream versions.
 - The single executable embeds `vlc-overlay\build\libmyoverlay_plugin.dll` and `vlc-overlay\build\vlc_chat_overlay.exe` and extracts them on demand. The local release zip also includes a sidecar `vlc-overlay\build` copy for inspection or manual override use.
 - The release zip includes `browser-extension\manifest.json` and the extension scripts; Brave/Chromium users can load that extracted folder directly.
 - Do not bundle user Streamlink configs, tokens, browser cookies, or account data.
-- The build and installer contain no user tokens, browser cookies, or account data. After authorization, the app stores its own settings and tokens in `%APPDATA%\StreamlinkVlcStudio\settings.json`.
+- The build and installer contain no user tokens, browser cookies, or account data. After authorization, the app stores its settings in `%APPDATA%\StreamlinkVlcStudio\settings.json`. Twitch OAuth, Kick access/refresh tokens, and the Kick client secret are removed from the readable `Chat` object and stored in a `ProtectedSecrets` envelope encrypted with Windows DPAPI for the current user. Other settings remain readable JSON. Protected secrets are not portable to another Windows user profile; legacy plaintext secret fields are migrated on load, while an envelope that cannot be decrypted is backed up and cleared so the accounts can be reconnected.
 
 ## Configure Streamlink And VLC
 
@@ -165,15 +191,15 @@ The app does not bypass ads, DRM, geo restrictions, or age gates. One exception:
 
 The full installer opens the connection wizard on first launch. You can also change the connections later under Settings > Accounts.
 
-- Twitch typing and home: set `Twitch Client ID`, configure the Twitch developer app redirect URL as exactly `http://localhost:39178`, then click `Connect Twitch` in the wizard or Settings. The app opens Twitch OAuth, requests `chat:read chat:edit user:read:follows channel:manage:predictions`, validates the returned user access token, saves it as `Twitch OAuth token`, and uses the token login for IRC, followed streams, VOD browsing, and prediction actions. A Twitch Client ID by itself cannot send chat or load Twitch home data.
-- Twitch manual token: you can still paste `Twitch OAuth token` directly. It must be an active user access token with `chat:read`, `chat:edit`, `user:read:follows`, and `channel:manage:predictions` for all authenticated features; Twitch VOD browsing also requires a valid Twitch OAuth token and matching Client ID. The `oauth:` or `Bearer` prefix is optional.
+- Twitch typing and home: set `Twitch Client ID`, configure the Twitch developer app redirect URL as exactly `http://localhost:39178`, then click `Connect Twitch` in the wizard or Settings. The app opens Twitch OAuth, requests `chat:read chat:edit user:read:follows channel:manage:predictions clips:edit`, validates the returned user access token, saves it as `Twitch OAuth token`, and uses the token login for IRC, followed streams, VOD browsing, prediction actions, and live clip creation. A Twitch Client ID by itself cannot send chat or load Twitch home data.
+- Twitch manual token: you can still paste `Twitch OAuth token` directly. It must be an active user access token with `chat:read`, `chat:edit`, `user:read:follows`, `channel:manage:predictions`, and `clips:edit` for all authenticated features; Twitch VOD browsing also requires a valid Twitch OAuth token and matching Client ID. The `oauth:` or `Bearer` prefix is optional.
 - Kick reading: no token is required. The app resolves the Kick chatroom ID from public channel metadata and connects to Kick's public Pusher-style chat feed.
 - Kick typing: set `Kick Client ID` and `Kick Client Secret`, configure the Kick developer app redirect URL as exactly `http://localhost:39177`, then click `Connect Kick`. The app opens Kick OAuth, requests `user:read channel:read chat:write`, saves the returned user access/refresh tokens, and refreshes the access token when it expires. If Kick omits `channel:read` from the user token, the app uses a short-lived app token from your Client ID/Secret to resolve the channel broadcaster ID needed for user-mode chat sends.
 - Kick manual token: you can still paste `Kick user access token` directly. It must be an active user access token with `chat:write`; without a refresh token it will stop working when Kick expires it. Kick Client ID/Secret alone do not enable typing in chat.
 - Kick VOD chat: set `Kick Client ID` and `Kick Client Secret`, enable `Listen for official Kick chat webhooks`, and configure your Kick developer app webhook URL to a public tunnel that forwards to `http://127.0.0.1:39180/kick-webhook` (or your configured port). When a Kick stream or VOD tab starts, the app uses Kick's official event subscription API to create or verify the `chat.message.sent` webhook subscription for that broadcaster, verifies Kick's webhook signature, and caches messages for later VOD replay. This cannot backfill messages that were sent before the webhook was configured and received.
 - Chat layout defaults to `Overlay`, which uses the native VLC overlay plugin and controller for the full chatbox. Use `Docked` in Settings if you want the old side panel.
 - The release executable embeds the native VLC overlay plugin and controller and extracts them to local app data when needed. Leave `VLC overlay plugin directory` blank unless you want to override the bundled overlay with another valid `vlc-overlay` build.
-- Tokens are saved in `%APPDATA%\StreamlinkVlcStudio\settings.json`; treat that file as account-sensitive.
+- Account secrets are saved in the current-user DPAPI-protected `ProtectedSecrets` envelope inside `%APPDATA%\StreamlinkVlcStudio\settings.json`; treat the file and any recovery backups as account-sensitive.
 
 ## Replay Seekbar
 
@@ -181,6 +207,7 @@ The seekbar depends on platform VOD/replay availability. It does not record a lo
 
 - Twitch replay lookup uses the saved Twitch OAuth token and Client ID to match the current live stream to a public `archive` VOD by stream ID or start time. If Twitch does not expose a public archive for the current stream, the seekbar stays disabled with the reason in its tooltip/status text.
 - Seeking behind live resolves the matched VOD through `streamlink --stream-url`, plays the raw VOD HLS URL in libVLC, and uses libVLC time seeking. Dragging to the live edge or clicking `Live` restarts normal live playback.
+- If the matched live VOD is subscriber-only and Streamlink rejects it, the seekbar uses the same storyboard-derived CloudFront fallback as an explicit subscriber-only Twitch VOD.
 - Twitch VODs opened from Home use the selected video URL directly, initialize the seekbar from Twitch metadata, and load replay chat by VOD ID when Twitch replay chat is available. Kick VODs opened from Home play the returned HLS source directly and load chat from the verified official Kick webhook cache when matching messages were captured while the official webhook listener was configured. Live viewer polling, live chat sending, the `Live` return action, and Recent-stream recording are disabled for explicit VOD tabs.
 - Chat sending is disabled while behind live. Twitch replay chat first uses any TwitchDownloader JSON file for the VOD in `%APPDATA%\StreamlinkVlcStudio\replay-chat\twitch` as `<vodId>.json`, `<vodId>_chat.json`, `v<vodId>.json`, or `v<vodId>_chat.json`; when no cache file exists, the app fetches replay chat directly through Twitch's VOD comments GraphQL path and prefetches more chat as replay playback advances.
 - Current-live Twitch DVR replays use captured-only chat until Twitch publishes the normal VOD/comments ID. Chat before this tab connected is unavailable, and captured messages appear when replay playback reaches their timestamps. Kick live seekback chat is timestamp-aligned too; after a message appears at the replay time, it remains in chat like live chat until the normal 100-message limit is reached or you seek again.
@@ -252,6 +279,7 @@ Example:
   - Confirm libVLC renders video in the app window.
   - Switch quality and reload.
   - Open a Twitch stream page while logged in and confirm any visible `Claim Bonus` channel-point button is claimed automatically.
+  - Select a live Twitch tab, click `Clip`, and confirm the published clip opens in the default browser. Re-authorize Twitch first if the token predates the `clips:edit` scope.
 
 - Kick playback:
   - Load the browser extension.
@@ -259,6 +287,7 @@ Example:
   - Confirm the browser stays on the home page.
   - Confirm Streamlink resolves and plays.
   - Test low-latency on/off if buffering occurs.
+  - Confirm the `Clip` button is disabled for a Kick tab.
 
 - Multiple tabs:
   - Click two or more live streams.

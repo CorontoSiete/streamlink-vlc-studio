@@ -58,10 +58,21 @@ public static class ExecutableResolver
         return !string.IsNullOrWhiteSpace(directory) && File.Exists(Path.Combine(directory, "libvlc.dll"));
     }
 
-    private static string? FindOnPath(string fileName)
+    private static string? FindOnPath(string fileName) =>
+        FindOnPath(fileName, Environment.GetEnvironmentVariable("PATH"));
+
+    internal static string? FindOnPath(string fileName, string? pathValue)
     {
-        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        if (string.IsNullOrWhiteSpace(fileName) ||
+            !string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal) ||
+            fileName.Any(char.IsControl))
+        {
+            return null;
+        }
+
+        foreach (var directory in (pathValue ?? "").Split(
+                     Path.PathSeparator,
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var normalizedDirectory = NormalizeCandidatePath(directory);
             if (string.IsNullOrWhiteSpace(normalizedDirectory))
@@ -81,6 +92,39 @@ public static class ExecutableResolver
 
     private static string? NormalizeCandidatePath(string? path)
     {
-        return string.IsNullOrWhiteSpace(path) ? null : path.Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var candidate = path.Trim();
+        var startsWithQuote = candidate.StartsWith('"');
+        var endsWithQuote = candidate.EndsWith('"');
+        if (startsWithQuote != endsWithQuote)
+        {
+            return null;
+        }
+
+        if (startsWithQuote)
+        {
+            candidate = candidate[1..^1].Trim();
+        }
+
+        if (candidate.Length == 0 ||
+            candidate.Contains('"') ||
+            candidate.Any(char.IsControl) ||
+            !Path.IsPathFullyQualified(candidate))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(candidate);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 }

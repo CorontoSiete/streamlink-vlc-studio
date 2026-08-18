@@ -3,6 +3,8 @@ using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Limits;
+using StreamlinkVlcStudio.Infrastructure.Text;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Streamlink;
@@ -11,6 +13,12 @@ public sealed partial class StreamlinkService : IStreamlinkService
 {
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(8);
+    // This is a per-Streamlink-process buffer. Multi-stream tiles use a smaller
+    // buffer so a 16-tile grid does not reserve hundreds of megabytes before
+    // libVLC starts decoding. It does not change the requested Streamlink quality
+    // or the selected media variant.
+    private const string DefaultExternalHttpRingBufferSize = "32M";
+    private const string MultiStreamExternalHttpRingBufferSize = "16M";
     private readonly IAppLogger logger;
 
     public StreamlinkService(IAppLogger logger)
@@ -26,62 +34,29 @@ public sealed partial class StreamlinkService : IStreamlinkService
             return new StreamlinkProbeResult(false, "Streamlink executable was not found.");
         }
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = request.StreamlinkPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildProbeArguments(request))
-        {
-            psi.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = psi };
+        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildProbeArguments(request));
         logger.Write(AppLogLevel.Info, "Streamlink", $"Probing {request.Target.Url} ({request.Quality})");
 
-        if (!process.Start())
+        var result = await RunRedirectedProcessAsync(psi, ProbeTimeout, cancellationToken).ConfigureAwait(false);
+        if (result.TimedOut)
         {
-            return new StreamlinkProbeResult(false, "Streamlink process could not be started.");
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ProbeTimeout);
-        var outputTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-        var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
-
-        string output;
-        string error;
-
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            output = await outputTask.ConfigureAwait(false);
-            error = await errorTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
-            await ObserveOutputReadsAsync(outputTask, errorTask).ConfigureAwait(false);
-            if (cancellationToken.IsCancellationRequested)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-
             return new StreamlinkProbeResult(false, "Timed out while checking this platform.");
         }
 
-        var message = BuildProbeMessage(output, error);
+        if (result.OutputWasTruncated)
+        {
+            return new StreamlinkProbeResult(false, "Streamlink returned more diagnostic output than the safety limit allows.");
+        }
 
-        if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
+        var message = BuildProbeMessage(result.StandardOutput, result.StandardError);
+        if (result.ExitCode == 0 && TryReadFirstAbsoluteUri(result.StandardOutput, out _))
         {
             return new StreamlinkProbeResult(true, "Playable stream found.");
         }
 
-        return new StreamlinkProbeResult(false, string.IsNullOrWhiteSpace(message) ? $"Streamlink exited with code {process.ExitCode}." : message);
+        return new StreamlinkProbeResult(
+            false,
+            string.IsNullOrWhiteSpace(message) ? $"Streamlink exited with code {result.ExitCode}." : message);
     }
 
     public async Task<StreamlinkResolvedUrl> ResolveStreamUrlAsync(StreamTransportRequest request, CancellationToken cancellationToken = default)
@@ -92,62 +67,28 @@ public sealed partial class StreamlinkService : IStreamlinkService
             throw new FileNotFoundException("Streamlink executable was not found.", request.StreamlinkPath);
         }
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = request.StreamlinkPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildStreamUrlArguments(request))
-        {
-            psi.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = psi };
+        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildStreamUrlArguments(request));
         logger.Write(AppLogLevel.Info, "Streamlink", $"Resolving direct stream URL for {request.Target.Url} ({request.Quality})");
 
-        if (!process.Start())
+        var result = await RunRedirectedProcessAsync(psi, StartupTimeout, cancellationToken).ConfigureAwait(false);
+        if (result.TimedOut)
         {
-            throw new InvalidOperationException("Streamlink process could not be started.");
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(StartupTimeout);
-        var outputTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-        var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
-
-        string output;
-        string error;
-
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            output = await outputTask.ConfigureAwait(false);
-            error = await errorTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
-            await ObserveOutputReadsAsync(outputTask, errorTask).ConfigureAwait(false);
-            if (cancellationToken.IsCancellationRequested)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-
             throw new TimeoutException("Timed out while resolving the direct Streamlink URL.");
         }
 
-        if (process.ExitCode == 0 && TryReadFirstAbsoluteUri(output, out var streamUri))
+        if (result.OutputWasTruncated)
+        {
+            throw new InvalidDataException("Streamlink returned more output than the safety limit allows.");
+        }
+
+        if (result.ExitCode == 0 && TryReadFirstAbsoluteUri(result.StandardOutput, out var streamUri))
         {
             return new StreamlinkResolvedUrl(streamUri, "Resolved direct Streamlink URL.");
         }
 
-        var message = BuildProbeMessage(output, error);
+        var message = BuildProbeMessage(result.StandardOutput, result.StandardError);
         throw new InvalidOperationException(string.IsNullOrWhiteSpace(message)
-            ? $"Streamlink exited with code {process.ExitCode} while resolving the direct stream URL."
+            ? $"Streamlink exited with code {result.ExitCode} while resolving the direct stream URL."
             : message);
     }
 
@@ -159,19 +100,7 @@ public sealed partial class StreamlinkService : IStreamlinkService
             throw new FileNotFoundException("Streamlink executable was not found.", request.StreamlinkPath);
         }
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = request.StreamlinkPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildArguments(request))
-        {
-            psi.ArgumentList.Add(argument);
-        }
+        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildArguments(request));
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var session = new StreamlinkExternalHttpSession(process, logger);
@@ -188,16 +117,13 @@ public sealed partial class StreamlinkService : IStreamlinkService
             session.AddLogLine(data);
             logger.Write(AppLogLevel.Info, "Streamlink", data);
 
-            var match = LocalHttpUrlPattern().Match(data);
-            if (match.Success && Uri.TryCreate(match.Value.Replace("0.0.0.0", "127.0.0.1", StringComparison.Ordinal), UriKind.Absolute, out var uri))
+            if (TryReadLocalHttpUri(data, out var uri))
             {
                 session.SetPlaybackUri(uri);
                 uriCompletion.TrySetResult(uri);
             }
         }
 
-        process.OutputDataReceived += (_, args) => HandleLine(args.Data);
-        process.ErrorDataReceived += (_, args) => HandleLine(args.Data);
         process.Exited += (_, _) => exitCompletion.TrySetResult();
 
         logger.Write(AppLogLevel.Info, "Streamlink", $"Starting Streamlink for {request.Target.Url} ({request.Quality})");
@@ -214,35 +140,96 @@ public sealed partial class StreamlinkService : IStreamlinkService
             throw;
         }
 
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        var outputPump = PumpOutputAsync(
+            process.StandardOutput.BaseStream,
+            process.StandardOutput.CurrentEncoding,
+            HandleLine);
+        var errorPump = PumpOutputAsync(
+            process.StandardError.BaseStream,
+            process.StandardError.CurrentEncoding,
+            HandleLine);
+        session.AttachOutputPumps(outputPump, errorPump);
 
-        using var timeout = new CancellationTokenSource(StartupTimeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
-
-        var delayTask = Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
-        var completed = await Task.WhenAny(uriCompletion.Task, exitCompletion.Task, delayTask).ConfigureAwait(false);
-        var exitedBeforeReady = completed == exitCompletion.Task || exitCompletion.Task.IsCompleted || process.HasExited;
-        if (completed == uriCompletion.Task && !exitedBeforeReady)
+        var sessionTransferred = false;
+        try
         {
-            logger.Write(AppLogLevel.Info, "Streamlink", $"Streamlink HTTP transport ready at {session.PlaybackUri}");
-            return session;
+            using var timeout = new CancellationTokenSource(StartupTimeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
+
+            var delayTask = Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+            var completed = await Task.WhenAny(uriCompletion.Task, exitCompletion.Task, delayTask).ConfigureAwait(false);
+            // The timeout task is only a race sentinel. Cancel it as soon as one of the real
+            // completion paths wins so a successful session does not leave a pending task behind.
+            linked.Cancel();
+            var exitedBeforeReady = completed == exitCompletion.Task || exitCompletion.Task.IsCompleted || process.HasExited;
+            if (completed == uriCompletion.Task && !exitedBeforeReady)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                logger.Write(AppLogLevel.Info, "Streamlink", $"Streamlink HTTP transport ready at {session.PlaybackUri}");
+                sessionTransferred = true;
+                return session;
+            }
+
+            var recent = string.Join(Environment.NewLine, session.RecentLogLines.TakeLast(12));
+            if (exitedBeforeReady)
+            {
+                throw new InvalidOperationException($"Streamlink exited before providing an HTTP transport URL. Recent output:{Environment.NewLine}{recent}");
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            throw new TimeoutException($"Timed out waiting for Streamlink HTTP transport. Recent output:{Environment.NewLine}{recent}");
         }
-
-        var recent = string.Join(Environment.NewLine, session.RecentLogLines.TakeLast(12));
-        await session.DisposeAsync().ConfigureAwait(false);
-
-        if (exitedBeforeReady)
+        finally
         {
-            throw new InvalidOperationException($"Streamlink exited before providing an HTTP transport URL. Recent output:{Environment.NewLine}{recent}");
+            if (!sessionTransferred)
+            {
+                await session.DisposeAsync().ConfigureAwait(false);
+            }
         }
+    }
 
-        if (cancellationToken.IsCancellationRequested)
+    private async Task PumpOutputAsync(
+        Stream stream,
+        System.Text.Encoding encoding,
+        Action<string?> handleLine)
+    {
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-        }
+            using var reader = new BoundedStreamLineReader(
+                stream,
+                encoding,
+                PayloadLimits.ProcessLineBytes);
+            while (true)
+            {
+                BoundedTextLine? line;
+                try
+                {
+                    line = await reader.ReadLineAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (System.Text.DecoderFallbackException)
+                {
+                    logger.Write(AppLogLevel.Warning, "Streamlink", "Streamlink emitted a line with invalid text encoding.");
+                    continue;
+                }
 
-        throw new TimeoutException($"Timed out waiting for Streamlink HTTP transport. Recent output:{Environment.NewLine}{recent}");
+                if (line is null)
+                {
+                    return;
+                }
+
+                handleLine(line.Value.WasTruncated
+                    ? $"{line.Value.Text} ...[line truncated]"
+                    : line.Value.Text);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            logger.Write(AppLogLevel.Warning, "Streamlink", "A Streamlink output pipe closed unexpectedly.", ex);
+        }
     }
 
     private static IEnumerable<string> BuildArguments(StreamTransportRequest request)
@@ -263,7 +250,9 @@ public sealed partial class StreamlinkService : IStreamlinkService
         yield return "--stream-types";
         yield return "hls";
         yield return "--ringbuffer-size";
-        yield return "32M";
+        yield return request.IsMultiStream
+            ? MultiStreamExternalHttpRingBufferSize
+            : DefaultExternalHttpRingBufferSize;
 
         if (request.LowLatency && request.Target.Platform == PlatformKind.Twitch)
         {
@@ -343,7 +332,8 @@ public sealed partial class StreamlinkService : IStreamlinkService
     {
         foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (Uri.TryCreate(line, UriKind.Absolute, out uri!))
+            if (Uri.TryCreate(line, UriKind.Absolute, out uri!) &&
+                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
             {
                 return true;
             }
@@ -369,6 +359,22 @@ public sealed partial class StreamlinkService : IStreamlinkService
         return combined[..360].TrimEnd() + "...";
     }
 
-    [GeneratedRegex(@"http://(?:(?:127\.0\.0\.1)|(?:0\.0\.0\.0)|localhost):\d+/", RegexOptions.CultureInvariant)]
+    private static bool TryReadLocalHttpUri(string output, out Uri uri)
+    {
+        var match = LocalHttpUrlPattern().Match(output);
+        if (!match.Success ||
+            !Uri.TryCreate(
+                match.Value.Replace("0.0.0.0", "127.0.0.1", StringComparison.Ordinal),
+                UriKind.Absolute,
+                out uri!))
+        {
+            uri = null!;
+            return false;
+        }
+
+        return true;
+    }
+
+    [GeneratedRegex(@"http://(?:127\.0\.0\.1|0\.0\.0\.0|localhost):\d+/?(?=\s|$)", RegexOptions.CultureInvariant)]
     private static partial Regex LocalHttpUrlPattern();
 }

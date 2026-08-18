@@ -8,7 +8,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 public static class KickOfficialChatWebhookParser
 {
-    public const string ChatMessageSentEventType = "chat.message.sent";
+    public const string ChatMessageSentEventType = KickEventNameValidator.ChatMessageSent;
 
     public static bool TryParseChatMessage(string body, out ChatMessage message, out string error)
     {
@@ -62,10 +62,13 @@ public static class KickOfficialChatWebhookParser
             return "";
         }
 
-        return FirstNonEmpty(
+        var candidate = FirstNonEmpty(
             GetOptionalString(broadcaster, "channel_slug"),
             GetOptionalString(broadcaster, "slug"),
             GetOptionalString(broadcaster, "username"));
+        return StreamInputParser.TryNormalizeChannelSlug(PlatformKind.Kick, candidate, out var channel)
+            ? channel
+            : "";
     }
 
 }

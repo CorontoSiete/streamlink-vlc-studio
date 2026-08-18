@@ -10,7 +10,7 @@
     IconSourceFile="$(var.AppIcon)"
     AboutUrl="https://github.com/CorontoSiete/streamlink-vlc-studio"
     Compressed="yes"
-    Condition="VersionNT64">
+    Condition="VersionNT64 &gt;= v10.0">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication
         Theme="hyperlinkLicense"
@@ -22,16 +22,29 @@
         LaunchWorkingFolder="[ProgramFiles64Folder]Streamlink VLC Studio" />
     </BootstrapperApplication>
 
-    <util:FileSearch
-      Id="StreamlinkMachineSearch"
-      Variable="StreamlinkMachineInstalled"
-      Result="exists"
-      Path="[ProgramFiles64Folder]Streamlink\bin\streamlink.exe" />
-    <util:FileSearch
-      Id="StreamlinkUserSearch"
-      Variable="StreamlinkUserInstalled"
-      Result="exists"
-      Path="[LocalAppDataFolder]Programs\Streamlink\bin\streamlink.exe" />
+    <util:RegistrySearch
+      Id="StreamlinkMachine64VersionSearch"
+      Variable="StreamlinkMachine64Version"
+      Root="HKLM"
+      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Streamlink"
+      Value="DisplayVersion"
+      Result="value"
+      Bitness="always64" />
+    <util:RegistrySearch
+      Id="StreamlinkMachine32VersionSearch"
+      Variable="StreamlinkMachine32Version"
+      Root="HKLM"
+      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Streamlink"
+      Value="DisplayVersion"
+      Result="value"
+      Bitness="always32" />
+    <util:RegistrySearch
+      Id="StreamlinkUserVersionSearch"
+      Variable="StreamlinkUserVersion"
+      Root="HKCU"
+      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Streamlink"
+      Value="DisplayVersion"
+      Result="value" />
 
     <Chain>
       <ExePackage
@@ -41,7 +54,7 @@
         InstallArguments="/S"
         PerMachine="yes"
         Permanent="yes"
-        DetectCondition="StreamlinkMachineInstalled OR StreamlinkUserInstalled" />
+        DetectCondition="(StreamlinkMachine64Version AND StreamlinkMachine64Version &gt;= v$(var.StreamlinkMinimumVersion)) OR (StreamlinkMachine32Version AND StreamlinkMachine32Version &gt;= v$(var.StreamlinkMinimumVersion)) OR (StreamlinkUserVersion AND StreamlinkUserVersion &gt;= v$(var.StreamlinkMinimumVersion))" />
       <MsiPackage
         Id="Vlc"
         DisplayName="VLC media player (64-bit)"

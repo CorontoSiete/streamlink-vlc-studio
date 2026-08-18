@@ -1,40 +1,13 @@
 (function (global) {
   "use strict";
 
-  const TWITCH_NON_CHANNEL_PATHS = new Set([
-    "clips",
-    "directory",
-    "downloads",
-    "drops",
-    "inventory",
-    "jobs",
-    "login",
-    "moderator",
-    "p",
-    "popout",
-    "search",
-    "settings",
-    "signup",
-    "subscriptions",
-    "turbo",
-    "videos",
-    "wallet"
-  ]);
+  const routePolicy = global.StreamlinkVlcStudioPlatformRoutes;
+  if (!routePolicy || !Array.isArray(routePolicy.twitch) || !Array.isArray(routePolicy.kick)) {
+    throw new Error("Generated platform route policy was not loaded before content-core.js.");
+  }
 
-  const KICK_NON_CHANNEL_PATHS = new Set([
-    "about",
-    "categories",
-    "community-guidelines",
-    "dashboard",
-    "following",
-    "login",
-    "privacy",
-    "register",
-    "search",
-    "terms-of-service",
-    "video",
-    "videos"
-  ]);
+  const TWITCH_NON_CHANNEL_PATHS = new Set(routePolicy.twitch);
+  const KICK_NON_CHANNEL_PATHS = new Set(routePolicy.kick);
 
   function normalizeHost(host) {
     let normalized = String(host || "").toLowerCase();
@@ -51,6 +24,15 @@
 
   function isTwitchHost(host) {
     return normalizeHost(host) === "twitch.tv";
+  }
+
+  function isTwitchChannelRoute(rawUrl) {
+    const canonical = channelFromUrl(rawUrl, rawUrl);
+    return canonical !== null && canonical.startsWith("https://www.twitch.tv/");
+  }
+
+  function isSupportedHttpProtocol(url) {
+    return url.protocol === "http:" || url.protocol === "https:";
   }
 
   function hasKnownPlatformHostWithoutScheme(value) {
@@ -82,6 +64,10 @@
     }
 
     const host = normalizeHost(url.hostname);
+    if (!isSupportedHttpProtocol(url)) {
+      return null;
+    }
+
     const segments = url.pathname.split("/").filter(Boolean);
     if (segments.length !== 1) {
       return null;
@@ -114,6 +100,10 @@
   function platformNameFromUrl(rawUrl) {
     try {
       const url = new URL(String(rawUrl || "").trim());
+      if (!isSupportedHttpProtocol(url)) {
+        return "stream";
+      }
+
       const host = normalizeHost(url.hostname);
       if (host === "twitch.tv") {
         return "Twitch";
@@ -155,14 +145,21 @@
   }
 
   function getElementLabel(element) {
-    const parts = [];
+    const candidates = [];
     if (typeof element.getAttribute === "function") {
-      parts.push(element.getAttribute("aria-label"));
-      parts.push(element.getAttribute("title"));
+      candidates.push(element.getAttribute("aria-label"));
+      candidates.push(element.getAttribute("title"));
     }
 
-    parts.push(element.textContent);
-    return normalizeText(parts.filter(Boolean).join(" "));
+    candidates.push(element.textContent);
+    for (const candidate of candidates) {
+      const normalized = normalizeText(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return "";
   }
 
   function hasUsableGeometry(element) {
@@ -229,7 +226,7 @@
     }
 
     const label = getElementLabel(element);
-    return label === "claim bonus" || label.startsWith("claim bonus ");
+    return label === "claim bonus";
   }
 
   function addIfClaimable(results, seen, element) {
@@ -266,6 +263,7 @@
     captureStatusFromResponse,
     findChannelPointClaimElements,
     isChannelPointClaimElement,
+    isTwitchChannelRoute,
     isTwitchHost,
     platformNameFromUrl
   };

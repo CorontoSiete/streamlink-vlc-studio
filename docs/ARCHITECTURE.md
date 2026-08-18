@@ -2,7 +2,7 @@
 
 ## Stack Choice
 
-The first implementation is Windows-first .NET 8 WPF with a clean core/infrastructure split.
+The current implementation is Windows-first .NET 10 WPF with a clean core/infrastructure split.
 
 Tradeoffs considered:
 
@@ -31,23 +31,44 @@ Tradeoffs considered:
   - Safe Streamlink process spawning with `ProcessStartInfo.ArgumentList`.
   - Streamlink external HTTP transport lifecycle.
   - Direct libVLC P/Invoke playback engine.
+  - Shared libVLC runtime leases plus atomic audio-request state; `LibVlcPlaybackEngine` remains the playback façade.
   - `vlc-overlay` plugin preparation for chat-on-video mode.
   - Followed live streams adapter for Twitch Helix and configured Kick channel slugs.
   - Twitch/Kick channel search adapter and Twitch/Kick VOD adapters.
+  - Twitch subscriber-only VOD/replay fallback resolver using public storyboard-derived CloudFront playlists.
   - Twitch IRC adapter with anonymous read-only mode and OAuth send mode.
   - Isolated Kick chat adapter with public Pusher reading and OAuth API sending.
   - Official Kick webhook listener, signature verifier, replay-chat cache, and event subscription manager.
+  - One Twitch GraphQL transport and one Kick website JSON/fallback reader shared by replay, chat, VOD, and browsing callers.
+  - `ReplayResolver`, `ReplayChatProvider`, and `BrowseService` remain compatibility façades; browse payload mapping, Twitch rate-limit coordination, replay URL validation, and Kick webhook authentication/replay protection are separate components.
 
 - `StreamlinkVlcStudio.App.Wpf`
   - WPF shell.
   - Embedded HWND video surface.
-  - Browser extension capture through a loopback HTTP listener; the native low-level mouse hook/UI Automation browser-click fallback is only enabled if that listener cannot start.
+  - Browser extension capture of canonical, direct Twitch/Kick channel routes through a loopback HTTP listener; VOD and other non-channel routes are rejected. The native low-level mouse hook/UI Automation browser-click fallback is only enabled if that listener cannot start.
   - Per-tab view models.
   - Single-stream and paged multi-stream video layout for up to 16 streams per page.
   - Playback controls.
   - Settings drawer.
   - Home page for stream search, live followed channels, platform VOD browsing, and recently watched streams.
   - Docked chat rendering.
+  - Internal lifecycle controllers keep search cancellation/debounce, VOD and Browse pagination
+    generations, recent-stream transient state, tab grouping, inactive-tab playback policy,
+    background operation draining, tab-start throttling, deferred playback cleanup, and
+    tab lifecycle boundaries out of the UI-facing state adapters. The view models still
+    own WPF collections and public commands, while the controllers provide reusable, shutdown-safe
+    operation boundaries.
+  - `MainViewModelDependencies` and `StreamTabViewModelDependencies` are the required composition
+    records used by application startup. Tests use centralized `TestViewModels` builders so service
+    wiring is defined once instead of relying on positional constructor adapters.
+  - Playback teardown is isolated in `PlaybackResourceCoordinator`; chat event subscription and
+    Twitch prediction wiring are isolated in `ChatClientEventCoordinator`; native overlay capability
+    checks use the cancellable `NativeOverlayCapabilityProbe`. These coordinators own operation
+    lifetimes, not WPF collections or serialized settings.
+  - Native PiP hit testing goes through `IWindowHitTester` and `WindowHitTestPolicy`, allowing z-order
+    decisions to be tested without calling `user32` and keeping detached-window teardown predictable.
+  - Home middle-button scroll calculations are owned by `HomeAutoScrollController`; the code-behind keeps compatibility forwarding methods for the existing event and test surface.
+  - Native overlay transport uses one complete-message codec with a 32 MiB limit, bounded control-reserved write budgeting, generation/sequence-checked resize persistence, and identity-keyed capability probes.
 
 - `StreamlinkVlcStudio.Tests`
   - Dependency-free console test runner for pure logic and config round trips.
@@ -69,7 +90,7 @@ This keeps Streamlink responsible for platform stream resolution and HLS transpo
 
 - Twitch:
   - Reuses the Twitch OAuth token and Client ID from chat settings.
-  - Requests `chat:read chat:edit user:read:follows` during Twitch authorization.
+  - Requests `chat:read chat:edit user:read:follows channel:manage:predictions clips:edit` during Twitch authorization.
   - Validates the token and calls Twitch Helix `streams/followed` with pagination to load all live followed channels for the authorized user.
 
 - Kick:
@@ -106,14 +127,27 @@ Clicking a home card opens the same `StreamTarget` flow used by browser capture 
 - Kick VOD browsing reads `kick.com/api/v2/channels/{slug}/videos` with browser-style headers and the same curl fallback pattern used for Kick website reads. It is best-effort because the endpoint is part of Kick's website surface.
 - VOD rows are represented by a platform-aware view model that builds explicit `StreamTargetKind.TwitchVod` or `StreamTargetKind.KickVod` targets.
 - Twitch VOD tabs resolve the selected Twitch URL through Streamlink `--stream-url` before libVLC playback, then load replay chat by VOD ID when available.
+- Live tabs use the same storyboard-derived CloudFront fallback when seeking into a subscriber-only matching Twitch VOD and Streamlink cannot resolve it.
 - Kick VOD tabs play the returned HLS source directly in libVLC without Streamlink URL resolution. When the VOD item includes a start time, replay chat is loaded from the verified official Kick `chat.message.sent` webhook cache under `%APPDATA%\StreamlinkVlcStudio\replay-chat\kick-official`.
 - Explicit VOD tabs disable live viewer polling, live chat sending, return-to-live behavior, and Recent-stream writes.
 
+## Clip Flow
+
+- The top `Clip` button is bound to `MainViewModel.CreateClipCommand`, so it acts only on the selected tab.
+- The command is enabled only for a live Twitch target. Twitch VOD and Kick tabs remain disabled.
+- `TwitchClipService` validates the Twitch user token, requires `clips:edit`, resolves the selected channel to a broadcaster ID through Helix `users`, and starts a 30-second clip through Helix `clips`.
+- Twitch clip creation is asynchronous. The service polls Helix `clips?id=...` for up to 60 seconds, then opens the returned public clip URL with the system browser.
+- Kick has no official clip-creation path in this application, so no private Kick website endpoint is called.
+
 ## Chat Flow
+
+Live Twitch and Kick connections are supervised after the initial connection. EOF, provider reconnect
+requests, remote close, and transient failures retry with jittered 1/2/4/8/16/30-second backoff.
+Sixty stable seconds reset the backoff; explicit disconnect/disposal cancels and drains it.
 
 - Twitch:
   - Anonymous read-only IRC over TLS when no token is configured.
-  - Runs Twitch OAuth implicit flow on `http://localhost:39178` to acquire a user access token with `chat:read chat:edit` from the configured Twitch Client ID.
+  - Runs Twitch OAuth implicit flow on `http://localhost:39178` to acquire a user access token with `chat:read chat:edit user:read:follows channel:manage:predictions clips:edit` from the configured Twitch Client ID.
   - Authenticated IRC over TLS when a Twitch OAuth token is configured.
   - Requests Twitch tags/commands capability.
   - Validates configured tokens and falls back to read-only chat when they are unusable.
@@ -143,6 +177,16 @@ Settings live at:
 ```text
 %APPDATA%\StreamlinkVlcStudio\settings.json
 ```
+
+Non-secret settings remain readable JSON. `Chat.TwitchOAuthToken`,
+`Chat.KickOAuthToken`, `Chat.KickRefreshToken`, and `Chat.KickClientSecret` are
+removed from the serialized `Chat` object and stored in the top-level
+`ProtectedSecrets` envelope. That envelope uses Windows DPAPI with current-user
+scope and application-specific entropy, so it is not portable to another Windows
+user profile. Loading a legacy file migrates plaintext values into the envelope.
+If an existing envelope cannot be decrypted, the service preserves a timestamped
+backup, clears the account secrets, and saves the remaining settings so the user
+can reconnect the accounts.
 
 Important settings:
 
@@ -178,6 +222,10 @@ Important settings:
 
 When `Chat.Layout` is `Overlay`, the app resolves a valid `vlc-overlay` directory from `Chat.VlcOverlayDirectory`, the bundled `vlc-overlay` folder beside the executable, or the embedded overlay bundle extracted from the single executable. A valid overlay directory must contain `build\libmyoverlay_plugin.dll` and `build\vlc_chat_overlay.exe`. The app prepares the plugin in a writable local plugin cache, starts libVLC with `--sub-source=myoverlay`, and launches the native controller with a per-tab pipe name. The overlay is therefore composited by VLC itself instead of WPF, avoiding HWND airspace problems and allowing direct in-overlay chat input. The VLC plugin position state path is stable per platform/channel, so dragged chat position and size are restored for that stream.
 
+Kick channel/chatroom dictionaries retain their public JSON shape, but all reads, copy-on-write updates,
+and persistence pass through one identity store so concurrent callbacks and saves never enumerate a
+mutating dictionary.
+
 ## Error Handling
 
 - Missing Streamlink/VLC paths produce visible UI errors.
@@ -185,6 +233,30 @@ When `Chat.Layout` is `Overlay`, the app resolves a valid `vlc-overlay` director
 - Offline/restricted streams surface as tab errors.
 - Chat failures are chat/system messages and logger entries.
 - Streamlink process cleanup uses `Kill(entireProcessTree: true)`.
+- All short-lived redirected processes use `BoundedProcessRunner`: stdout and stderr are drained,
+  timeout is returned as data, caller cancellation is rethrown, and child trees are terminated.
+- Infrastructure and UI HTTP integrations obtain clients from `HttpClientFactory` with an explicit
+  positive timeout. Injected clients remain caller-owned; clients created by chat services are
+  disposed by the service that created them.
+
+## Build and generated output policy
+
+- `bin/`, `obj/`, `artifacts/`, `.tools/`, `.wix/`, `.audit-*`, and `.codex-*` are generated or
+  machine-local output and are ignored. Verification builds should use output roots outside the
+  repository when the source tree must remain clean.
+- `src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build` is intentional runtime input:
+  its `libmyoverlay_plugin.dll` and `vlc_chat_overlay.exe` are embedded and staged into releases.
+  Cleanup must never remove those two files.
+- The dependency-free test executable remains the test entry point. Subsystem-specific additions
+  are registered from separate test files and can be filtered with `SVS_TEST_FILTER`; a timeout or
+  failure returns a non-zero exit code.
+- `.dependency-audit/` and `.nuget/` are ignored generated caches. The repository must not be initialized
+  as a Git checkout merely to run validation.
+- `shared/release-contract.json` defines the one valid payload root, required browser/native/runtime
+  files, canonical output paths, and exact six-asset release set. Package, installer, staging, and CI
+  entrypoints consume that contract rather than maintaining independent asset lists.
+- Windows dependency manifests use `length` as the canonical byte-count field. Native overlay staging
+  verifies a closed manifest set, including hidden files, before copying exactly the verified provenance.
 
 ## Future Portability
 

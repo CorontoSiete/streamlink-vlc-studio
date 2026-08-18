@@ -22,6 +22,14 @@ internal static class TabNavigationKeyPolicy
             return false;
         }
 
+        return CanNavigate(isFullscreen, isFullscreenModeActive, isSettingsOpen);
+    }
+
+    public static bool CanNavigate(
+        bool isFullscreen,
+        bool isFullscreenModeActive,
+        bool isSettingsOpen)
+    {
         return isFullscreen
             ? isFullscreenModeActive
             : !isSettingsOpen;
@@ -37,7 +45,7 @@ internal static class TabNavigationKeyPolicy
         };
     }
 
-    private static bool IsTextEditingElement(IInputElement? element)
+    internal static bool IsTextEditingElement(IInputElement? element)
     {
         return element is TextBoxBase { Visibility: Visibility.Visible } or PasswordBox { Visibility: Visibility.Visible };
     }

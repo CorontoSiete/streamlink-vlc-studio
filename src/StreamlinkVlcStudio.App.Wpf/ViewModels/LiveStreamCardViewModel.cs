@@ -1,17 +1,73 @@
+using StreamlinkVlcStudio.App.Wpf.Controls;
 using StreamlinkVlcStudio.Core.Models;
 using static StreamlinkVlcStudio.App.Wpf.ViewModels.StreamViewModelHelpers;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
-public sealed class BrowseLiveStreamViewModel : ObservableObject, IHomeStreamOpenItemViewModel
+public enum LiveStreamCardSource
 {
-    private readonly BrowseLiveStream stream;
+    Followed,
+    Browse
+}
 
-    public BrowseLiveStreamViewModel(
-        BrowseLiveStream stream,
-        Func<BrowseLiveStreamViewModel, bool, Task> openAsync)
+public sealed record LiveStreamCardData(
+    LiveStreamCardSource Source,
+    StreamTarget Target,
+    PlatformKind Platform,
+    string Channel,
+    string DisplayName,
+    string Title,
+    string CategoryName,
+    int? ViewerCount,
+    string ThumbnailUrl,
+    string ProfileImageUrl,
+    DateTimeOffset? StartedAtUtc,
+    bool? IsMature,
+    string Language)
+{
+    public static LiveStreamCardData FromFollowedStream(FollowedLiveStream stream) => new(
+        LiveStreamCardSource.Followed,
+        stream.Target,
+        stream.Platform,
+        stream.Channel,
+        stream.DisplayName,
+        stream.Title,
+        stream.CategoryName,
+        stream.ViewerCount,
+        stream.ThumbnailUrl,
+        stream.ProfileImageUrl,
+        stream.StartedAtUtc,
+        stream.IsMature,
+        stream.Language);
+
+    public static LiveStreamCardData FromBrowseStream(BrowseLiveStream stream) => new(
+        LiveStreamCardSource.Browse,
+        stream.Target,
+        stream.Platform,
+        stream.Channel,
+        stream.DisplayName,
+        stream.Title,
+        stream.CategoryName,
+        stream.ViewerCount,
+        stream.ThumbnailUrl,
+        stream.ProfileImageUrl,
+        stream.StartedAtUtc,
+        stream.IsMature,
+        stream.Language);
+}
+
+public sealed class LiveStreamCardViewModel : ObservableObject, IHomeStreamOpenItemViewModel
+{
+    private readonly LiveStreamCardData stream;
+
+    public LiveStreamCardViewModel(
+        LiveStreamCardData stream,
+        Func<LiveStreamCardViewModel, bool, Task> openAsync,
+        long thumbnailCacheVersion = 0)
     {
         this.stream = stream;
+        ThumbnailCacheVersion = thumbnailCacheVersion;
+        ThumbnailImageRequest = new AnimatedImageRequest(stream.ThumbnailUrl, thumbnailCacheVersion);
         OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
     }
@@ -19,6 +75,8 @@ public sealed class BrowseLiveStreamViewModel : ObservableObject, IHomeStreamOpe
     public AsyncRelayCommand OpenCommand { get; }
 
     public AsyncRelayCommand OpenAndStayOnHomeCommand { get; }
+
+    public LiveStreamCardSource Source => stream.Source;
 
     public StreamTarget Target => stream.Target;
 
@@ -43,6 +101,10 @@ public sealed class BrowseLiveStreamViewModel : ObservableObject, IHomeStreamOpe
     public string ProfileImageUrl => stream.ProfileImageUrl;
 
     public bool HasProfileImage => !string.IsNullOrWhiteSpace(stream.ProfileImageUrl);
+
+    public long ThumbnailCacheVersion { get; }
+
+    public AnimatedImageRequest ThumbnailImageRequest { get; }
 
     public bool HasThumbnail => !string.IsNullOrWhiteSpace(stream.ThumbnailUrl);
 
@@ -82,5 +144,4 @@ public sealed class BrowseLiveStreamViewModel : ObservableObject, IHomeStreamOpe
             return parts.Count == 0 ? stream.Platform.ToString() : string.Join(" | ", parts);
         }
     }
-
 }

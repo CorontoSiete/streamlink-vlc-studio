@@ -51,6 +51,12 @@ internal static partial class WindowInteropHelpers
     [LibraryImport("user32")]
     private static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
 
+    [LibraryImport("user32")]
+    private static partial IntPtr MonitorFromPoint(WindowPoint point, uint dwFlags);
+
+    [LibraryImport("user32")]
+    private static partial IntPtr MonitorFromRect(ref NativeRectangle rectangle, uint dwFlags);
+
     [LibraryImport("user32", EntryPoint = "GetMonitorInfoW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo lpmi);
@@ -76,6 +82,20 @@ internal static partial class WindowInteropHelpers
         };
 
         return monitor != IntPtr.Zero && GetMonitorInfo(monitor, ref monitorInfo);
+    }
+
+    /// <summary>Reads monitor info for the monitor nearest to a native screen point.</summary>
+    public static bool TryGetMonitorInfoForPoint(WindowPoint point, out MonitorInfo monitorInfo)
+    {
+        var monitor = MonitorFromPoint(point, MonitorDefaultToNearest);
+        return TryGetMonitorInfoForMonitor(monitor, out monitorInfo);
+    }
+
+    /// <summary>Reads monitor info for the monitor nearest to a native screen rectangle.</summary>
+    public static bool TryGetMonitorInfoForRect(NativeRectangle rectangle, out MonitorInfo monitorInfo)
+    {
+        var monitor = MonitorFromRect(ref rectangle, MonitorDefaultToNearest);
+        return TryGetMonitorInfoForMonitor(monitor, out monitorInfo);
     }
 
     /// <summary>

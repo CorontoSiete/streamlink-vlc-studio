@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
+using StreamlinkVlcStudio.Core.Json;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Text;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Core.Parsing;
@@ -30,11 +32,8 @@ public static class KickPusherParser
                 return null;
             }
 
-            var eventName = eventElement.ValueKind == JsonValueKind.String
-                ? eventElement.GetString() ?? ""
-                : eventElement.ToString();
-            if (!eventName.Contains("ChatMessage", StringComparison.OrdinalIgnoreCase) &&
-                !eventName.Contains("chat.message", StringComparison.OrdinalIgnoreCase))
+            if (eventElement.ValueKind != JsonValueKind.String ||
+                !KickEventNameValidator.IsChatMessageEvent(eventElement.GetString()))
             {
                 return null;
             }
@@ -62,8 +61,8 @@ public static class KickPusherParser
             return null;
         }
 
-        var content = GetString(data, "content") ?? GetString(data, "message") ?? "";
-        if (string.IsNullOrWhiteSpace(content))
+        var content = GetStrictString(data, "content") ?? GetStrictString(data, "message") ?? "";
+        if (string.IsNullOrWhiteSpace(content) || content.Length > 16 * 1024)
         {
             return null;
         }
@@ -71,7 +70,7 @@ public static class KickPusherParser
         var messageId = GetMessageId(data);
         var username = "unknown";
         string? color = null;
-        IReadOnlyList<ChatBadge> badges = Array.Empty<ChatBadge>();
+        ChatBadge[] badges = [];
         if (data.TryGetProperty("sender", out var sender))
         {
             username = GetString(sender, "username") ?? GetString(sender, "slug") ?? username;
@@ -87,14 +86,14 @@ public static class KickPusherParser
             badges = ParseBadges(user);
         }
 
-        if (badges.Count == 0)
+        if (badges.Length == 0)
         {
             badges = ParseBadges(data);
         }
 
         var timestamp = TryReadMessageTimestamp(data, out var parsedTimestamp)
             ? parsedTimestamp
-            : DateTimeOffset.Now;
+            : DateTimeOffset.UtcNow;
 
         return new ChatMessage(
             PlatformKind.Kick,
@@ -108,11 +107,11 @@ public static class KickPusherParser
             MessageId: messageId);
     }
 
-    private static IReadOnlyList<ChatBadge> ParseBadges(JsonElement element)
+    private static ChatBadge[] ParseBadges(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Object)
         {
-            return Array.Empty<ChatBadge>();
+            return [];
         }
 
         var badges = new List<ParsedKickBadge>();
@@ -130,7 +129,7 @@ public static class KickPusherParser
                 .ThenBy(badge => badge.Index)
                 .Select(badge => badge.Badge)
                 .ToArray()
-            : Array.Empty<ChatBadge>();
+            : [];
     }
 
     private static void AddKickBadgesFromProperty(List<ParsedKickBadge> badges, JsonElement element, string propertyName)
@@ -181,7 +180,15 @@ public static class KickPusherParser
                 GetString(badge, "metadata", "info"));
             var title = ResolveBadgeTitle(id, version, explicitTitle, GetString(badge, "name"));
             var imageUrl = GetBadgeImageUrl(badge);
-            AddBadge(badges, id, version, title, imageUrl, TryGetInt(badge, "sort_order", badges.Count), badges.Count);
+            AddBadge(
+                badges,
+                id,
+                version,
+                title,
+                imageUrl,
+                TryGetInt(badge, "sort_order", badges.Count),
+                badges.Count,
+                HasSpecificTitle(id, title));
         }
     }
 
@@ -192,7 +199,8 @@ public static class KickPusherParser
         string? title,
         string? imageUrl,
         int sortOrder,
-        int index)
+        int index,
+        bool hasSpecificTitle = false)
     {
         id = NormalizeBadgeId(id);
         if (string.IsNullOrWhiteSpace(id))
@@ -200,10 +208,13 @@ public static class KickPusherParser
             return;
         }
 
+        var badgeTitle = ChatTextNormalizer.NormalizeBadgeTitle(
+            string.IsNullOrWhiteSpace(title) ? ResolveBadgeTitle(id) : title,
+            ResolveBadgeTitle(id));
         var badge = new ChatBadge(
             id,
             string.IsNullOrWhiteSpace(version) ? null : version.Trim(),
-            string.IsNullOrWhiteSpace(title) ? ResolveBadgeTitle(id) : title.Trim(),
+            badgeTitle,
             string.IsNullOrWhiteSpace(imageUrl) ? null : imageUrl.Trim());
 
         var existingIndex = badges.FindIndex(existing =>
@@ -215,48 +226,29 @@ public static class KickPusherParser
                 existing.Badge with
                 {
                     Version = NullIfEmpty(FirstNonEmpty(existing.Badge.Version, badge.Version)),
-                    Title = NullIfEmpty(FirstNonEmpty(existing.Badge.Title, badge.Title)),
+                    Title = existing.HasSpecificTitle || !hasSpecificTitle
+                        ? NullIfEmpty(FirstNonEmpty(existing.Badge.Title, badge.Title))
+                        : badge.Title,
                     ImageUrl = NullIfEmpty(FirstNonEmpty(existing.Badge.ImageUrl, badge.ImageUrl))
                 },
                 Math.Min(existing.SortOrder, sortOrder),
-                existing.Index);
+                existing.Index,
+                existing.HasSpecificTitle || hasSpecificTitle);
 
             return;
         }
 
-        badges.Add(new ParsedKickBadge(badge, sortOrder, index));
+        badges.Add(new ParsedKickBadge(badge, sortOrder, index, hasSpecificTitle));
+    }
+
+    private static bool HasSpecificTitle(string? id, string title)
+    {
+        return !string.Equals(title, ResolveBadgeTitle(id), StringComparison.Ordinal);
     }
 
     private static string NormalizeBadgeId(string? id)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            return "";
-        }
-
-        var normalized = id.Trim().ToLowerInvariant().Replace('-', '_');
-        return normalized switch
-        {
-            "gift_sub" => "sub_gifter",
-            "gift_subs" => "sub_gifter",
-            "gift_subscriber" => "sub_gifter",
-            "gift_subscription" => "sub_gifter",
-            "gifted_sub" => "sub_gifter",
-            "gifted_subs" => "sub_gifter",
-            "gifted_subscriber" => "sub_gifter",
-            "gifted_subscription" => "sub_gifter",
-            "gifter" => "sub_gifter",
-            "subgifter" => "sub_gifter",
-            "sub_gift" => "sub_gifter",
-            "sub_gifter_badge" => "sub_gifter",
-            "sub_gifts" => "sub_gifter",
-            "subscriber_gifter" => "sub_gifter",
-            "subscription_gift" => "sub_gifter",
-            "subscription_gifts" => "sub_gifter",
-            "subscription" => "subscriber",
-            "sub" => "subscriber",
-            _ => normalized
-        };
+        return KickBadgeIdNormalizer.Normalize(id);
     }
 
     private static string ResolveBadgeTitle(string? id)
@@ -273,7 +265,7 @@ public static class KickPusherParser
         }
 
         if (normalized == "subscriber" &&
-            int.TryParse(version, out var subscriberMonths) &&
+            int.TryParse(version, NumberStyles.Integer, CultureInfo.InvariantCulture, out var subscriberMonths) &&
             subscriberMonths > 0)
         {
             return $"{subscriberMonths}-Month Subscriber";
@@ -303,17 +295,9 @@ public static class KickPusherParser
             "subscriber" => "Subscriber",
             "verified" => "Verified",
             "vip" => "VIP",
-            var badgeId when badgeId.Length > 0 => ToTitle(badgeId),
+            var badgeId when badgeId.Length > 0 => HumanizeIdentifier(badgeId),
             _ => "Badge"
         };
-    }
-
-    private static string ToTitle(string value)
-    {
-        return string.Join(
-            ' ',
-            value.Split(['-', '_'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(part => part.Length == 0 ? part : char.ToUpperInvariant(part[0]) + part[1..]));
     }
 
     private static string? GetBadgeImageUrl(JsonElement badge)
@@ -407,23 +391,12 @@ public static class KickPusherParser
         var trimmed = value.Trim();
         return trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
             trimmed.StartsWith("//", StringComparison.Ordinal) ||
-            trimmed.StartsWith("/", StringComparison.Ordinal);
+            trimmed.StartsWith('/');
     }
 
     private static int TryGetInt(JsonElement item, string propertyName, int fallback)
     {
-        if (item.ValueKind != JsonValueKind.Object ||
-            !item.TryGetProperty(propertyName, out var property))
-        {
-            return fallback;
-        }
-
-        return property.ValueKind switch
-        {
-            JsonValueKind.Number when property.TryGetInt32(out var value) => value,
-            JsonValueKind.String when int.TryParse(property.GetString(), out var value) => value,
-            _ => fallback
-        };
+        return JsonElementReader.TryGetInt32(item, propertyName) ?? fallback;
     }
 
     private static bool TryReadMessageTimestamp(JsonElement data, out DateTimeOffset timestamp)
@@ -525,14 +498,19 @@ public static class KickPusherParser
     private static bool TryReadUnixTimestamp(double value, out DateTimeOffset timestamp)
     {
         timestamp = default;
-        if (double.IsNaN(value) || double.IsInfinity(value))
+        if (!double.IsFinite(value))
         {
             return false;
         }
 
-        var milliseconds = Math.Abs(value) >= 1_000_000_000_000
-            ? value
-            : value * 1000;
+        var magnitude = Math.Abs(value);
+        var milliseconds = magnitude switch
+        {
+            >= 1_000_000_000_000_000_000d => value / 1_000_000d,
+            >= 1_000_000_000_000_000d => value / 1_000d,
+            >= 1_000_000_000_000d => value,
+            _ => value * 1000d
+        };
         if (milliseconds < long.MinValue || milliseconds > long.MaxValue)
         {
             return false;
@@ -550,11 +528,11 @@ public static class KickPusherParser
         }
     }
 
-    private static IReadOnlyList<ChatEmote> ParseEmoteMarkers(string message)
+    private static ChatEmote[] ParseEmoteMarkers(string message)
     {
         if (string.IsNullOrWhiteSpace(message))
         {
-            return Array.Empty<ChatEmote>();
+            return [];
         }
 
         var emotes = new List<ChatEmote>();
@@ -569,7 +547,7 @@ public static class KickPusherParser
 
             var idStart = markerStart + "[emote:".Length;
             var idEnd = idStart;
-            while (idEnd < message.Length && char.IsDigit(message[idEnd]))
+            while (idEnd < message.Length && message[idEnd] is >= '0' and <= '9')
             {
                 idEnd++;
             }
@@ -631,7 +609,16 @@ public static class KickPusherParser
             }
         }
 
-        return current.ValueKind == JsonValueKind.String ? current.GetString() : current.ToString();
+        return NullIfEmpty(JsonElementReader.GetScalarString(current));
+    }
+
+    private static string? GetStrictString(JsonElement element, string propertyName)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(propertyName, out var property) &&
+            property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
     }
 
     private static string? GetMessageId(JsonElement data)
@@ -648,5 +635,9 @@ public static class KickPusherParser
         return null;
     }
 
-    private sealed record ParsedKickBadge(ChatBadge Badge, int SortOrder, int Index);
+    private sealed record ParsedKickBadge(
+        ChatBadge Badge,
+        int SortOrder,
+        int Index,
+        bool HasSpecificTitle);
 }

@@ -9,6 +9,13 @@ public sealed class VideoSurfaceGridPanel : Panel
 {
     private const double AspectRatioTolerance = 0.01;
     private readonly Dictionary<UIElement, List<(DependencyPropertyDescriptor Descriptor, EventHandler Handler)>> childPlacementListeners = [];
+    private Window? ownerWindow;
+
+    public VideoSurfaceGridPanel()
+    {
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+    }
 
     public static readonly DependencyProperty AspectRatioProperty = DependencyProperty.RegisterAttached(
         "AspectRatio",
@@ -56,15 +63,27 @@ public sealed class VideoSurfaceGridPanel : Panel
         var columns = Math.Max(1, Columns);
         var childWidth = double.IsInfinity(availableSize.Width) ? double.PositiveInfinity : availableSize.Width / columns;
         var childHeight = double.IsInfinity(availableSize.Height) ? double.PositiveInfinity : availableSize.Height / rows;
+        var desiredWidth = 0.0;
+        var desiredHeight = 0.0;
 
         foreach (UIElement child in InternalChildren)
         {
-            var columnSpan = Math.Clamp(Grid.GetColumnSpan(child), 1, columns);
-            var rowSpan = Math.Clamp(Grid.GetRowSpan(child), 1, rows);
+            var column = Math.Clamp(Grid.GetColumn(child), 0, columns - 1);
+            var row = Math.Clamp(Grid.GetRow(child), 0, rows - 1);
+            var columnSpan = Math.Clamp(Grid.GetColumnSpan(child), 1, columns - column);
+            var rowSpan = Math.Clamp(Grid.GetRowSpan(child), 1, rows - row);
             child.Measure(new Size(childWidth * columnSpan, childHeight * rowSpan));
+            desiredWidth = Math.Max(
+                desiredWidth,
+                Math.Min(double.MaxValue, child.DesiredSize.Width * columns / columnSpan));
+            desiredHeight = Math.Max(
+                desiredHeight,
+                Math.Min(double.MaxValue, child.DesiredSize.Height * rows / rowSpan));
         }
 
-        return availableSize;
+        return new Size(
+            double.IsInfinity(availableSize.Width) ? desiredWidth : availableSize.Width,
+            double.IsInfinity(availableSize.Height) ? desiredHeight : availableSize.Height);
     }
 
     protected override Size ArrangeOverride(Size finalSize)
@@ -126,6 +145,13 @@ public sealed class VideoSurfaceGridPanel : Panel
 
         var gridAspectRatio = cellAspectRatio * columns / rows;
         var viewportAspectRatio = (double)widthPixels / heightPixels;
+        // Window sizing is integral in device pixels. Treat a sub-tolerance mismatch as
+        // the same aspect instead of creating a one-pixel gutter on the right or bottom.
+        if (Math.Abs(viewportAspectRatio - gridAspectRatio) <= AspectRatioTolerance)
+        {
+            return new PixelRect(0, 0, widthPixels, heightPixels);
+        }
+
         if (viewportAspectRatio > gridAspectRatio)
         {
             var contentWidth = RoundToPartitionMultiple(heightPixels * gridAspectRatio, widthPixels, columns);
@@ -182,9 +208,63 @@ public sealed class VideoSurfaceGridPanel : Panel
             RemoveChildPlacementListeners(removedElement);
         }
 
-        if (visualAdded is UIElement addedElement)
+        if (IsLoaded && visualAdded is UIElement addedElement)
         {
             AddChildPlacementListeners(addedElement);
+        }
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        AttachOwnerWindow();
+        foreach (UIElement child in InternalChildren)
+        {
+            AddChildPlacementListeners(child);
+        }
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        RemoveAllChildPlacementListeners();
+        DetachOwnerWindow();
+    }
+
+    private void OnOwnerWindowClosed(object? sender, EventArgs e)
+    {
+        RemoveAllChildPlacementListeners();
+        DetachOwnerWindow();
+    }
+
+    private void AttachOwnerWindow()
+    {
+        var window = Window.GetWindow(this);
+        if (ReferenceEquals(window, ownerWindow))
+        {
+            return;
+        }
+
+        DetachOwnerWindow();
+        ownerWindow = window;
+        if (ownerWindow is not null)
+        {
+            ownerWindow.Closed += OnOwnerWindowClosed;
+        }
+    }
+
+    private void DetachOwnerWindow()
+    {
+        if (ownerWindow is not null)
+        {
+            ownerWindow.Closed -= OnOwnerWindowClosed;
+            ownerWindow = null;
+        }
+    }
+
+    private void RemoveAllChildPlacementListeners()
+    {
+        foreach (var child in childPlacementListeners.Keys.ToArray())
+        {
+            RemoveChildPlacementListeners(child);
         }
     }
 
@@ -197,9 +277,7 @@ public sealed class VideoSurfaceGridPanel : Panel
             Grid.RowProperty,
             Grid.ColumnProperty,
             Grid.RowSpanProperty,
-            Grid.ColumnSpanProperty,
-            VisibilityProperty,
-            AspectRatioProperty
+            Grid.ColumnSpanProperty
         })
         {
             var descriptor = DependencyPropertyDescriptor.FromProperty(dependencyProperty, child.GetType());

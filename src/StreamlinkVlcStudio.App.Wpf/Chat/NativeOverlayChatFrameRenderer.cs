@@ -14,12 +14,6 @@ namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
 internal static class NativeOverlayChatFrameRenderer
 {
-    private const uint NativeOverlayMagic = 0x564C4F56u;
-    private const uint NativeOverlayVersion = 1u;
-    private const byte NativeOverlayFrameType = 1;
-    private const byte NativeOverlayScrollbarStateFrameType = 4;
-    private const int NativeOverlayHeaderSize = 36;
-    private const int NativeOverlayBlankFramePayloadSize = 4;
     private const int NativeOverlayDefaultHeight = 292;
     private const int NativeOverlayHorizontalPadding = 8;
     private const int NativeOverlayTopPadding = 8;
@@ -42,9 +36,11 @@ internal static class NativeOverlayChatFrameRenderer
         out int width,
         out int height,
         int messageOffset = 0,
-        object? imageCachePinOwner = null)
+        object? imageCachePinOwner = null,
+        NativeReplayOverlayFrameRenderContext? renderContext = null)
     {
-        var layout = ResolveReplayOverlayLayout(settings, fontSize, videoHeight, positionStatePath);
+        var layout = FitLayoutToProtocolBudget(
+            ResolveReplayOverlayLayout(settings, fontSize, videoHeight, positionStatePath));
         width = layout.FrameWidth;
         height = layout.FrameHeight;
         if (!CanRenderOnCurrentThread)
@@ -52,14 +48,24 @@ internal static class NativeOverlayChatFrameRenderer
             return null;
         }
 
-        var payloadSize = (long)width * height * 4;
-        if (payloadSize <= 0 || payloadSize > NativeOverlaySizing.MaxFramePayloadBytes)
+        if (!NativeOverlayProtocolCodec.TryGetFrameMessageSize(
+                width,
+                height,
+                out _,
+                out _))
         {
-            return null;
+            width = 1;
+            height = 1;
+            return new NativeOverlayChatFrame(
+                BuildTransparentBlankFrameMessage(),
+                false,
+                false,
+                null,
+                [],
+                NativeReplayOverlayRenderedSelection.Empty);
         }
 
-        var frame = new byte[NativeOverlayHeaderSize + payloadSize];
-        WriteFrameHeader(frame, width, height, (uint)payloadSize);
+        var frame = NativeOverlayProtocolCodec.CreateFrameMessage(width, height);
         if (messages.Count == 0)
         {
             if (imageCachePinOwner is not null)
@@ -81,8 +87,9 @@ internal static class NativeOverlayChatFrameRenderer
             layout,
             animationClock,
             messageOffset,
-            imageCachePinOwner);
-        CopyPbgraToRgba(rendered.Bitmap, frame.AsSpan(NativeOverlayHeaderSize));
+            imageCachePinOwner,
+            renderContext);
+        CopyPbgraToRgba(rendered.Bitmap, frame.AsSpan(NativeOverlayProtocolCodec.HeaderSize));
         return new NativeOverlayChatFrame(
             frame,
             rendered.HasAnimatedContent,
@@ -97,7 +104,8 @@ internal static class NativeOverlayChatFrameRenderer
         NativeReplayOverlayLayout layout,
         TimeSpan animationClock,
         int messageOffset,
-        object? imageCachePinOwner)
+        object? imageCachePinOwner,
+        NativeReplayOverlayFrameRenderContext? renderContext)
     {
         var width = layout.FrameWidth;
         var height = layout.FrameHeight;
@@ -107,7 +115,7 @@ internal static class NativeOverlayChatFrameRenderer
         var inputGap = ScaleReferencePixels(layout.VideoHeight, NativeOverlayInputGap);
         var bottomPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayBottomPadding);
         var bottomReserve = inputHeight + inputGap + bottomPadding;
-        var selection = MeasureVisibleMessages(messages, layout, messageOffset);
+        var selection = MeasureVisibleMessages(messages, layout, messageOffset, renderContext);
         var messageBlocks = selection.MessageBlocks;
         var images = messageBlocks
             .SelectMany(block => block.AnimatedEmoteImages)
@@ -122,11 +130,12 @@ internal static class NativeOverlayChatFrameRenderer
                     .Select(key => key!.Value));
         }
 
-        var stack = new StackPanel
+        var stack = renderContext?.Stack ?? new StackPanel
         {
             Orientation = Orientation.Vertical,
             VerticalAlignment = VerticalAlignment.Bottom
         };
+        stack.Children.Clear();
 
         for (var index = 0; index < messageBlocks.Count; index++)
         {
@@ -139,18 +148,24 @@ internal static class NativeOverlayChatFrameRenderer
             stack.Children.Add(messageBlock);
         }
 
-        var root = new Border
+        var root = renderContext?.PrepareRoot(
+            width,
+            height,
+            new Thickness(horizontalPadding, topPadding, horizontalPadding, bottomReserve)) ?? new Border
+            {
+                Width = width,
+                Height = height,
+                Background = Brushes.Transparent,
+                Padding = new Thickness(horizontalPadding, topPadding, horizontalPadding, bottomReserve),
+                ClipToBounds = true,
+                Child = stack
+            };
+        if (renderContext is null)
         {
-            Width = width,
-            Height = height,
-            Background = Brushes.Transparent,
-            Padding = new Thickness(horizontalPadding, topPadding, horizontalPadding, bottomReserve),
-            ClipToBounds = true,
-            Child = stack
-        };
-        TextOptions.SetTextFormattingMode(root, TextFormattingMode.Display);
-        TextOptions.SetTextRenderingMode(root, TextRenderingMode.Grayscale);
-        RenderOptions.SetBitmapScalingMode(root, BitmapScalingMode.HighQuality);
+            TextOptions.SetTextFormattingMode(root, TextFormattingMode.Display);
+            TextOptions.SetTextRenderingMode(root, TextRenderingMode.Grayscale);
+            RenderOptions.SetBitmapScalingMode(root, BitmapScalingMode.HighQuality);
+        }
 
         root.Measure(new Size(width, height));
         root.Arrange(new Rect(0, 0, width, height));
@@ -195,7 +210,8 @@ internal static class NativeOverlayChatFrameRenderer
     internal static NativeReplayOverlayMessageSelection MeasureVisibleMessages(
         IReadOnlyList<ChatMessage> messages,
         NativeReplayOverlayLayout layout,
-        int messageOffset = 0)
+        int messageOffset = 0,
+        NativeReplayOverlayFrameRenderContext? renderContext = null)
     {
         var horizontalPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayHorizontalPadding);
         var topPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayTopPadding);
@@ -225,7 +241,9 @@ internal static class NativeOverlayChatFrameRenderer
                 return measured;
             }
 
-            var block = CreateMessageBlock(messages[index], layout.Presentation);
+            var block = renderContext?.GetMessageBlock(messages[index], layout.Presentation) ??
+                CreateMessageBlock(messages[index], layout.Presentation);
+            block.Height = double.NaN;
             block.Measure(new Size(availableWidth, double.PositiveInfinity));
             measured = (block, Math.Max(1, (int)Math.Ceiling(block.DesiredSize.Height)));
             measuredBlocks[index] = measured;
@@ -388,6 +406,28 @@ internal static class NativeOverlayChatFrameRenderer
             NativeOverlayChatPresentation.Create(baseReferenceFontSize, videoHeight));
     }
 
+    private static NativeReplayOverlayLayout FitLayoutToProtocolBudget(NativeReplayOverlayLayout layout)
+    {
+        var fitted = NativeOverlayProtocolCodec.FitFrameDimensions(layout.FrameWidth, layout.FrameHeight);
+        if (fitted.Width == layout.FrameWidth && fitted.Height == layout.FrameHeight)
+        {
+            return layout;
+        }
+
+        var scale = Math.Min(
+            fitted.Width / (double)Math.Max(1, layout.FrameWidth),
+            fitted.Height / (double)Math.Max(1, layout.FrameHeight));
+        var fittedVideoHeight = Math.Max(1, (int)Math.Round(layout.VideoHeight * scale));
+        return CreateReplayOverlayLayout(
+            fitted.Width,
+            fitted.Height,
+            layout.ReferenceWidth,
+            layout.ReferenceHeight,
+            fittedVideoHeight,
+            NativeOverlaySizing.GetVideoScale(fittedVideoHeight),
+            layout.EffectiveReferenceFontSize);
+    }
+
     private static bool TryReadNativeOverlaySizeFile(
         string path,
         out int width,
@@ -449,21 +489,9 @@ internal static class NativeOverlayChatFrameRenderer
         return NativeOverlaySizing.ScaleReferencePixels(videoHeight, value);
     }
 
-    private static void WriteFrameHeader(byte[] frame, int width, int height, uint payloadSize)
-    {
-        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(0, 4), NativeOverlayMagic);
-        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(4, 4), NativeOverlayVersion);
-        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(8, 4), payloadSize);
-        frame[12] = NativeOverlayFrameType;
-        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(24, 4), (uint)width);
-        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(28, 4), (uint)height);
-        frame[32] = 255;
-    }
-
     internal static byte[] BuildTransparentBlankFrameMessage()
     {
-        var message = new byte[NativeOverlayHeaderSize + NativeOverlayBlankFramePayloadSize];
-        WriteFrameHeader(message, 1, 1, NativeOverlayBlankFramePayloadSize);
+        var message = NativeOverlayProtocolCodec.CreateFrameMessage(1, 1);
         message[32] = 0;
         return message;
     }
@@ -475,17 +503,23 @@ internal static class NativeOverlayChatFrameRenderer
         out int width,
         out int height)
     {
-        var layout = ResolveReplayOverlayLayout(
+        var layout = FitLayoutToProtocolBudget(ResolveReplayOverlayLayout(
             settings,
             ChatSettings.DefaultVlcOverlayFontSize,
             videoHeight,
-            positionStatePath);
+            positionStatePath));
         width = layout.FrameWidth;
         height = layout.FrameHeight;
-        var payloadSize = checked(width * height * 4);
-        var message = new byte[NativeOverlayHeaderSize + payloadSize];
-        WriteFrameHeader(message, width, height, (uint)payloadSize);
-        return message;
+        try
+        {
+            return NativeOverlayProtocolCodec.CreateFrameMessage(width, height);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            width = 1;
+            height = 1;
+            return BuildTransparentBlankFrameMessage();
+        }
     }
 
     internal static byte[] BuildScrollbarStateFrameMessage(
@@ -504,10 +538,8 @@ internal static class NativeOverlayChatFrameRenderer
                     totalMessages)
                 : 0;
 
-        var message = new byte[NativeOverlayHeaderSize];
-        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(0, 4), NativeOverlayMagic);
-        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(4, 4), NativeOverlayVersion);
-        message[12] = NativeOverlayScrollbarStateFrameType;
+        var message = NativeOverlayProtocolCodec.CreateHeaderMessage(
+            NativeOverlayProtocolCodec.ScrollbarStateFrameType);
         BinaryPrimitives.WriteInt32LittleEndian(message.AsSpan(16, 4), messageOffset);
         BinaryPrimitives.WriteInt32LittleEndian(message.AsSpan(20, 4), maximumMessageOffset);
         BinaryPrimitives.WriteInt32LittleEndian(message.AsSpan(24, 4), visibleMessages);
@@ -520,8 +552,8 @@ internal static class NativeOverlayChatFrameRenderer
     {
         var width = bitmap.PixelWidth;
         var height = bitmap.PixelHeight;
-        var stride = width * 4;
-        var pixelBytes = stride * height;
+        var stride = checked((int)((long)width * 4L));
+        var pixelBytes = checked((int)((long)stride * height));
         var pixels = ArrayPool<byte>.Shared.Rent(pixelBytes);
         try
         {
@@ -564,6 +596,77 @@ internal static class NativeOverlayChatFrameRenderer
         TimeSpan? NextAnimationFrameDelay,
         IReadOnlyCollection<AnimatedEmoteImageCacheKey> PendingImageLoads,
         NativeReplayOverlayRenderedSelection RenderedSelection);
+}
+
+internal sealed class NativeReplayOverlayFrameRenderContext
+{
+    private const int MaximumCachedMessageBlocks = 512;
+    private readonly Dictionary<ChatMessage, DockedChatMessageTextBlock> messageBlocks =
+        new(ReferenceEqualityComparer.Instance);
+    private NativeOverlayChatPresentation? presentation;
+    private long contentVersion = long.MinValue;
+
+    internal StackPanel Stack { get; } = new()
+    {
+        Orientation = Orientation.Vertical,
+        VerticalAlignment = VerticalAlignment.Bottom
+    };
+
+    private Border? root;
+
+    internal void EnsureContentVersion(long nextContentVersion)
+    {
+        if (contentVersion == nextContentVersion)
+        {
+            return;
+        }
+
+        contentVersion = nextContentVersion;
+        messageBlocks.Clear();
+    }
+
+    internal Border PrepareRoot(int width, int height, Thickness padding)
+    {
+        root ??= new Border
+        {
+            Background = Brushes.Transparent,
+            ClipToBounds = true,
+            Child = Stack
+        };
+        root.Width = width;
+        root.Height = height;
+        root.Padding = padding;
+        TextOptions.SetTextFormattingMode(root, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(root, TextRenderingMode.Grayscale);
+        RenderOptions.SetBitmapScalingMode(root, BitmapScalingMode.HighQuality);
+        return root;
+    }
+
+    internal DockedChatMessageTextBlock GetMessageBlock(
+        ChatMessage message,
+        NativeOverlayChatPresentation nextPresentation)
+    {
+        if (presentation is null || !presentation.Equals(nextPresentation))
+        {
+            presentation = nextPresentation;
+            messageBlocks.Clear();
+        }
+
+        if (messageBlocks.TryGetValue(message, out var block))
+        {
+            return block;
+        }
+
+        block = NativeOverlayChatFrameRenderer.CreateMessageBlock(message, nextPresentation);
+        messageBlocks[message] = block;
+        if (messageBlocks.Count > MaximumCachedMessageBlocks)
+        {
+            var oldest = messageBlocks.Keys.First();
+            messageBlocks.Remove(oldest);
+        }
+
+        return block;
+    }
 }
 
 internal sealed record NativeOverlayChatFrame(

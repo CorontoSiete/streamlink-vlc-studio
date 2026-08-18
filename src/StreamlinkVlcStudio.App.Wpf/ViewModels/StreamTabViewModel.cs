@@ -19,6 +19,8 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Processes;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
@@ -34,7 +36,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private static readonly TimeSpan NativeOverlayClearTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan NativeReplayOverlayFrameWriteTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan NativeOverlayPipeConnectTimeout = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan NativeOverlayCapabilityProbeTimeout = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan VideoSurfaceReadyTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan VideoAspectRatioChangingInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan VideoAspectRatioStableInterval = TimeSpan.FromSeconds(15);
@@ -52,8 +53,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private static readonly TimeSpan ReplayDiagnosticsSlowThreshold = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan NativeReplayOverlayRefreshDelay = TimeSpan.FromMilliseconds(16);
     private static readonly TimeSpan NativeReplayOverlayDefaultAnimationDelay = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan NativeReplayOverlayMinimumAnimationDelay = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan NativeReplayOverlayMaximumAnimationDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan[] NativeReplayOverlayWarmupRefreshDelays =
     [
         TimeSpan.FromMilliseconds(250),
@@ -61,7 +60,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         TimeSpan.FromMilliseconds(1500),
         TimeSpan.FromSeconds(3)
     ];
-    private const double NativeReplayOverlayRenderCostDelayMultiplier = 3.0;
     private static readonly TimeSpan DefaultTwitchLiveDvrPromotionPollInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DockedLocalEchoDeduplicationWindow = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ViewerCountRefreshInterval = TimeSpan.FromSeconds(60);
@@ -73,16 +71,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private const int NativeReplayOverlayMessagesPerScrollNotch = 3;
     private const int VideoAspectRatioStableSampleThreshold = 3;
     private const string TwitchLiveDvrReplayIdPrefix = "live-dvr-";
-    private const uint NativeOverlayMagic = 0x564C4F56u;
-    private const uint NativeOverlayVersion = 1u;
-    private const uint NativeOverlayShutdownEventType = 6;
-    private const uint NativeOverlayChatInputFocusEventType = 4;
-    private const int NativeOverlayEventMessageSize = 16;
     private const string NativeOverlayFontSizeArgument = "--font-size";
     private const string KickVodReplayChatStatusMessageIdPrefix = "kick-vod-replay-chat-status";
     private const double DefaultVideoAspectRatio = 16.0 / 9.0;
-    private static readonly object NativeOverlayControllerCapabilityGate = new();
-    private static readonly Dictionary<string, bool> NativeOverlayFontSizeSupportByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly IStreamlinkService streamlinkService;
     private readonly IPlaybackEngineFactory playbackFactory;
     private readonly IChatClientFactory chatFactory;
@@ -94,6 +85,17 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private readonly ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver;
     private readonly IAppLogger logger;
     private readonly Action<Action> dispatch;
+    private readonly PlaybackResourceCoordinator playbackResourceCoordinator;
+    private readonly PlaybackCleanupController playbackCleanupController;
+    private readonly ChatClientEventCoordinator chatClientEventCoordinator;
+    private readonly BoundedProcessRunner processRunner = new();
+    private readonly NativeOverlayCapabilityProbe nativeOverlayCapabilityProbe = new();
+    private readonly object disposalGate = new();
+    private readonly CancellationTokenSource lifetimeCancellation = new();
+    private readonly SemaphoreSlim lifecycleGate = new(1, 1);
+    private readonly SemaphoreSlim playbackTransitionGate = new(1, 1);
+    private Task? disposalTask;
+    private bool disposed;
     private readonly object chatMessageUiGate = new();
     private readonly Queue<PendingChatMessage> pendingChatMessages = [];
     private readonly List<DockedLocalEcho> pendingDockedLocalEchoes = [];
@@ -113,6 +115,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         VideoAspectRatioStableInterval,
         VideoAspectRatioStableSampleThreshold);
     private readonly object chatConnectionGate = new();
+    private readonly object nativeOverlayStartupGate = new();
+    private readonly object kickWebhookSubscriptionGate = new();
     private readonly object replayChatLoadGate = new();
     private readonly object replayClockAnchorGate = new();
     private readonly object replayClockUiGate = new();
@@ -130,6 +134,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private readonly NativeReplayOverlayFrameWriteGate nativeReplayOverlayFrameWriteGate;
     private readonly NativeReplayOverlayRenderState nativeReplayOverlayRenderState = new();
     private NativeReplayOverlayFrameScheduler? nativeReplayOverlayFrameScheduler;
+    private Task<NativeReplayOverlayFrameScheduler>? nativeReplayOverlayFrameSchedulerCreationTask;
     private TaskCompletionSource<IntPtr> videoHandleReady = CreateVideoHandleReadySource();
     private TaskCompletionSource videoSurfaceStateChanged = CreateVideoSurfaceStateChangedSource();
     private readonly SemaphoreSlim nativeOverlayProcessGate = new(1, 1);
@@ -147,6 +152,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource? replayAvailabilityRefreshCancellation;
     private CancellationTokenSource? liveDvrPromotionPollingCancellation;
     private Task? chatConnectionTask;
+    private CancellationTokenSource? chatConnectionCancellation;
+    private Task? nativeOverlayStartupTask;
+    private CancellationTokenSource? nativeOverlayStartupCancellation;
+    private Task? kickWebhookSubscriptionTask;
+    private CancellationTokenSource? kickWebhookSubscriptionCancellation;
     private Task? viewerCountPollingTask;
     private Task? videoAspectRatioPollingTask;
     private Task? replayClockPollingTask;
@@ -161,9 +171,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource? replayChatLoadCancellation;
     private ReplayChatLoadRequest? activeCapturedReplayChatLoadRequest;
     private ReplayChatLoadRequest? pendingCapturedReplayChatLoadRequest;
+    private long replayAvailabilityRefreshVersion;
+    private long chatConnectionVersion;
+    private long nativeOverlayStartupVersion;
     private long replayChatStateVersion;
     private long replaySeekOperationVersion;
-    private long replayAvailabilityRefreshVersion;
     private TimeSpan? pendingResumeHoldPosition;
     private bool pendingResumeHoldAllowsLiveTransition;
     private ReplayClockSnapshot? pausedReplayClock;
@@ -208,12 +220,15 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private long nativeReplayOverlayAnimationTimerVersion;
     private CancellationTokenSource? nativeReplayOverlayAnimationCancellation;
     private long nativeReplayOverlayAnimationEpochTimestamp = Stopwatch.GetTimestamp();
+    private long nativeReplayOverlayRenderContentVersion;
     private object? nativeReplayOverlayActiveImageCachePinOwner;
     private readonly HashSet<AnimatedEmoteImageCacheKey> nativeReplayOverlayPendingImageLoads = [];
     private readonly HashSet<int> suppressedNativeOverlayStoppedProcessIds = [];
     private bool isDirectExplicitVodReplayPlayback;
+    private CancellationTokenSource? activeStartCancellation;
     private KickOverlayChannelInfo? resolvedKickOverlayChannelInfo;
     private string? resolvedTwitchOverlayRoomId;
+    private bool multiStreamResourceProfile;
     private bool playbackEngineNativeOverlayRequested;
     private string playbackEngineOverlayDirectory = "";
     private string title;
@@ -257,6 +272,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private bool isReplaySeekPreviewActive;
     private bool isReplayMode;
     private bool isBehindLive;
+    private bool backgroundResourceServicesSuspended;
+    private bool livePlaybackConnectionSuspended;
     private double replaySeekValue;
     private double replaySeekSliderValue;
     private double replaySeekMaximum = 1;
@@ -267,29 +284,29 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private TimeSpan lastReplayChatOffset = TimeSpan.MinValue;
     private bool capturedReplayChatEvictedMessages;
     private bool capturedReplayChatNoticeShown;
-    private CancellationTokenSource? activeStartCancellation;
     private TwitchPredictionAccessState twitchPredictionAccess = TwitchPredictionAccessState.Pending;
     private TwitchPredictionFeedItemViewModel? activeTwitchPredictionFeedItem;
     private System.Threading.Timer? twitchPredictionClockTimer;
     private bool isTwitchPredictionRequestInFlight;
 
-    public StreamTabViewModel(
-        StreamTarget target,
-        string quality,
-        IStreamlinkService streamlinkService,
-        IPlaybackEngineFactory playbackFactory,
-        IChatClientFactory chatFactory,
-        IAppLogger logger,
-        Action<Action> dispatch,
-        int initialVolume = DefaultVolume,
-        IViewerCountService? viewerCountService = null,
-        IReplayResolver? replayResolver = null,
-        IReplayChatProvider? replayChatProvider = null,
-        TimeSpan? twitchLiveDvrPromotionPollInterval = null,
-        IKickChatHistoryProvider? kickChatHistoryProvider = null,
-        IKickEventSubscriptionService? kickEventSubscriptionService = null,
-        ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver = null)
+    internal StreamTabViewModel(StreamTabViewModelDependencies dependencies)
     {
+        var target = dependencies.Target;
+        var quality = dependencies.Quality;
+        var streamlinkService = dependencies.StreamlinkService;
+        var playbackFactory = dependencies.PlaybackFactory;
+        var chatFactory = dependencies.ChatFactory;
+        var logger = dependencies.Logger;
+        var dispatch = dependencies.Dispatch;
+        var initialVolume = dependencies.InitialVolume;
+        var viewerCountService = dependencies.ViewerCountService;
+        var replayResolver = dependencies.ReplayResolver;
+        var replayChatProvider = dependencies.ReplayChatProvider;
+        var kickChatHistoryProvider = dependencies.KickChatHistoryProvider;
+        var kickEventSubscriptionService = dependencies.KickEventSubscriptionService;
+        var twitchSubOnlyVodResolver = dependencies.TwitchSubOnlyVodResolver;
+        var twitchLiveDvrPromotionPollInterval = dependencies.TwitchLiveDvrPromotionPollInterval;
+
         Target = target;
         this.quality = quality;
         this.streamlinkService = streamlinkService;
@@ -297,19 +314,33 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         this.chatFactory = chatFactory;
         this.viewerCountService = viewerCountService;
         this.logger = logger;
-        this.dispatch = dispatch;
+        this.dispatch = action => dispatch(() =>
+        {
+            if (!disposed)
+            {
+                action();
+            }
+        });
         this.replayResolver = replayResolver;
         this.replayChatProvider = replayChatProvider;
         this.kickChatHistoryProvider = kickChatHistoryProvider;
         this.kickEventSubscriptionService = kickEventSubscriptionService;
         this.twitchSubOnlyVodResolver = twitchSubOnlyVodResolver;
+        playbackResourceCoordinator = new PlaybackResourceCoordinator(logger, () => Target.DisplayName);
+        playbackCleanupController = new PlaybackCleanupController(logger, () => Target.DisplayName);
+        chatClientEventCoordinator = new ChatClientEventCoordinator(
+            ChatClientOnMessageReceived,
+            ChatClientOnStatusChanged,
+            TwitchPredictionClientOnPredictionReceived,
+            TwitchPredictionClientOnPredictionAccessChanged,
+            access => this.dispatch(() => ApplyTwitchPredictionAccess(access)));
         this.twitchLiveDvrPromotionPollInterval =
             twitchLiveDvrPromotionPollInterval is { } interval && interval > TimeSpan.Zero
                 ? interval
                 : DefaultTwitchLiveDvrPromotionPollInterval;
         nativeReplayOverlayEventHost = new NativeOverlayReplayEventHost(
             logger,
-            dispatch,
+            this.dispatch,
             InvalidateNativeReplayOverlayFrame,
             GetNativeReplayOverlayVideoHeight,
             replayScrolled: ScrollNativeReplayOverlay,
@@ -322,7 +353,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             ReplayDiagnosticsSlowThreshold,
             OnNativeReplayOverlayFrameWriteSucceeded,
             () => playbackEngine?.NativeOverlayPipeName,
-            writeTimeout: NativeReplayOverlayFrameWriteTimeout);
+            writeTimeout: NativeReplayOverlayFrameWriteTimeout,
+            validateProtocolMessages: true);
         AnimatedEmoteImage.ImageCacheEntryCompleted += OnAnimatedEmoteImageCacheEntryCompleted;
         DockedChatBadgeCatalog.Shared.CatalogChanged += OnChatRenderCatalogChanged;
         DockedChatEmoteCatalog.Shared.CatalogChanged += OnChatRenderCatalogChanged;
@@ -353,6 +385,19 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand StartTwitchPredictionCommand { get; }
     public RelayCommand AddTwitchPredictionOutcomeCommand { get; }
     public event EventHandler? AudioStateApplied;
+
+    internal Task PlaybackCleanupIdleTask => playbackCleanupController.IdleTask;
+
+    internal Task ReplayChatLoadIdleTask
+    {
+        get
+        {
+            lock (replayChatLoadGate)
+            {
+                return replayChatLoadTask ?? Task.CompletedTask;
+            }
+        }
+    }
 
     public string ProfileImageUrl
     {
@@ -616,6 +661,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         get => isVideoVisible;
         private set => SetProperty(ref isVideoVisible, value);
     }
+
+    public bool IsBackgroundResourceServicesSuspended
+    {
+        get => backgroundResourceServicesSuspended;
+        private set => SetProperty(ref backgroundResourceServicesSuspended, value);
+    }
+
+    internal bool IsLivePlaybackConnectionSuspended => livePlaybackConnectionSuspended;
 
     public bool IsDetached
     {
@@ -1026,6 +1079,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     public void RefreshChatOverlay(ChatSettings settings)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         chatSettings = settings;
         ConfigureSharedChatCatalogs(settings);
         UpdateNativeChatOverlay();
@@ -1045,6 +1103,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     public async Task RestartChatAsync(AppSettings settings, CancellationToken cancellationToken = default)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         currentSettings = settings;
         chatSettings = settings.Chat;
         ConfigureSharedChatCatalogs(settings.Chat);
@@ -1063,7 +1126,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             if (!IsNativeOverlayChatCurrent(settings))
             {
                 await StopNativeOverlayChatAsync(clearOverlay: false);
-                await TryStartNativeOverlayChatAsync(settings, cancellationToken);
+                await StartNativeOverlayChatTrackedAsync(settings, cancellationToken);
             }
 
             if (shouldKeepCaptureChatClient)
@@ -1105,6 +1168,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     public async Task ReconfigurePlaybackForChatOverlaySettingsAsync(AppSettings settings, CancellationToken cancellationToken = default)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         if (!ShouldRestartPlaybackForChatOverlaySettings(settings))
         {
             await RestartChatAsync(settings, cancellationToken);
@@ -1115,24 +1183,59 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         var restorePausedByTabSwitch = PausedByTabSwitch;
 
         await StopChatAsync(clearNativeOverlay: true);
-        await StartAsync(settings, cancellationToken: cancellationToken);
+        await StartAsync(
+            settings,
+            optimizeForMultiStream: multiStreamResourceProfile,
+            cancellationToken: cancellationToken);
 
         if (restorePaused && Status == PlaybackStatus.Playing && playbackEngine is not null)
         {
-            await playbackEngine.PauseAsync(cancellationToken);
-            Status = PlaybackStatus.Paused;
-            PausedByTabSwitch = restorePausedByTabSwitch;
+            await playbackTransitionGate.WaitAsync(cancellationToken);
+            try
+            {
+                if (Status == PlaybackStatus.Playing && playbackEngine is not null)
+                {
+                    await playbackEngine.PauseAsync(cancellationToken);
+                    Status = PlaybackStatus.Paused;
+                    PausedByTabSwitch = restorePausedByTabSwitch;
+                }
+            }
+            finally
+            {
+                playbackTransitionGate.Release();
+            }
         }
     }
 
     public async Task StartAsync(
         AppSettings settings,
         bool preferStableLivePlayback = false,
+        bool optimizeForMultiStream = false,
         CancellationToken cancellationToken = default)
     {
-        currentSettings = settings;
-        chatSettings = settings.Chat;
-        ConfigureSharedChatCatalogs(settings.Chat);
+        await StartWithResultAsync(
+            settings,
+            preferStableLivePlayback,
+            optimizeForMultiStream,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts playback and reports whether the media reached the playing state
+    /// before visibility policy or another lifecycle operation changed it.
+    /// <see cref="StartAsync"/> remains the public compatibility wrapper used
+    /// by existing callers that only need the historical task completion.
+    /// </summary>
+    internal async Task<PlaybackStartResult> StartWithResultAsync(
+        AppSettings settings,
+        bool preferStableLivePlayback = false,
+        bool optimizeForMultiStream = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (disposed)
+        {
+            return PlaybackStartResult.NotStarted;
+        }
 
         if (string.IsNullOrWhiteSpace(settings.StreamlinkPath))
         {
@@ -1144,19 +1247,58 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             throw new InvalidOperationException("Configure the VLC directory in Settings.");
         }
 
+        try
+        {
+            await lifecycleGate.WaitAsync(lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+            return PlaybackStartResult.NotStarted;
+        }
+
+        if (disposed)
+        {
+            lifecycleGate.Release();
+            return PlaybackStartResult.NotStarted;
+        }
+
+        var playbackTransitionAcquired = false;
+        try
+        {
+            await playbackTransitionGate.WaitAsync(lifetimeCancellation.Token);
+            playbackTransitionAcquired = true;
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+            lifecycleGate.Release();
+            return PlaybackStartResult.NotStarted;
+        }
+
+        // Commit the start's settings only after the lifecycle gate is held.  Disposal can
+        // therefore not finish between the initial guard and these state mutations.
+        currentSettings = settings;
+        chatSettings = settings.Chat;
+        multiStreamResourceProfile = optimizeForMultiStream;
+        ConfigureSharedChatCatalogs(settings.Chat);
+
         IsBusy = true;
         ErrorMessage = "";
-        using var activeStart = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var activeStart = CancellationTokenSource.CreateLinkedTokenSource(
+            lifetimeCancellation.Token,
+            cancellationToken);
         RegisterActiveStartCancellation(activeStart);
         var startCancellationToken = activeStart.Token;
         CancellationTokenSource? streamStartCancellation = null;
         Task<IStreamTransportSession>? pendingStreamSession = null;
         var pendingStreamSessionNeedsCleanup = false;
         Uri? directPlaybackUri = null;
+        TwitchSubOnlyVodResolution? subOnlyVodResolution = null;
+        var playbackStarted = false;
 
         try
         {
             await StopViewerCountPollingAsync();
+            await StopKickWebhookSubscriptionAsync();
             if (Target.IsExplicitVod)
             {
                 SetViewerCountUnavailable("Viewer count polling is disabled for VOD playback.");
@@ -1190,7 +1332,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                         Quality,
                         settings.StreamlinkPath!,
                         effectiveLowLatency,
-                        customArguments);
+                        customArguments,
+                        IsMultiStream: optimizeForMultiStream);
                     streamStartCancellation = CancellationTokenSource.CreateLinkedTokenSource(startCancellationToken);
                     pendingStreamSession = streamlinkService.StartExternalHttpAsync(liveRequest, streamStartCancellation.Token);
                     pendingStreamSessionNeedsCleanup = true;
@@ -1219,6 +1362,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                             var bypass = await twitchSubOnlyVodResolver.ResolveAsync(
                                 new TwitchSubOnlyVodRequest(ResolveTwitchVodId(), Quality),
                                 startCancellationToken);
+                            subOnlyVodResolution = bypass;
                             directPlaybackUri = bypass.PlaybackUri;
                             AddSystemMessage($"Playing sub-only VOD via direct playlist ({bypass.QualityKey}).");
                         }
@@ -1249,9 +1393,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             var nativeOverlayPositionStatePath = enableNativeOverlay
                 ? BuildNativeOverlayPositionStatePath(Target)
                 : null;
-            playbackEngine = await Task.Run(
-                () => playbackFactory.Create(settings.VlcDirectory, enableNativeOverlay, nativeOverlayPositionStatePath),
-                startCancellationToken);
+            playbackEngine = await playbackFactory.CreateAsync(
+                settings.VlcDirectory,
+                enableNativeOverlay,
+                nativeOverlayPositionStatePath,
+                startCancellationToken,
+                settings.VideoRendererMode);
             playbackEngine.VideoOutputRebound += PlaybackEngineOnVideoOutputRebound;
             playbackEngine.AudioStateReapplied += PlaybackEngineOnAudioStateReapplied;
             playbackEngineNativeOverlayRequested = enableNativeOverlay;
@@ -1315,10 +1462,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             isDirectExplicitVodReplayPlayback = Target.IsExplicitVod && streamSession is null;
             ApplyAudio();
             Status = PlaybackStatus.Playing;
-            EnsureOfficialKickChatSubscriptionInBackground(settings);
+            playbackStarted = true;
+            EnsureOfficialKickChatSubscriptionInBackground(settings, startCancellationToken);
             if (Target.IsExplicitVod)
             {
-                InitializeExplicitVodReplaySession(settings);
+                InitializeExplicitVodReplaySession(settings, subOnlyVodResolution);
             }
 
             UpdateNativeChatOverlay();
@@ -1327,18 +1475,28 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 _ = BlankNativeOverlayAsync(playbackEngine.NativeOverlayPipeName, CancellationToken.None);
             }
 
-            StartVideoAspectRatioPolling();
-            if (!Target.IsExplicitVod)
+            if (!backgroundResourceServicesSuspended)
             {
-                StartViewerCountPolling(settings);
-                if (Target.Platform == PlatformKind.Kick)
+                StartVideoAspectRatioPolling();
+                if (!Target.IsExplicitVod)
                 {
-                    StartReplayAvailabilityRefreshInBackground(settings);
+                    StartViewerCountPolling(settings);
+                    if (Target.Platform == PlatformKind.Kick)
+                    {
+                        StartReplayAvailabilityRefreshInBackground(settings);
+                    }
+                    else
+                    {
+                        await RefreshReplayAvailabilityAsync(settings, startCancellationToken);
+                    }
                 }
-                else
-                {
-                    await RefreshReplayAvailabilityAsync(settings, startCancellationToken);
-                }
+            }
+
+            // A hidden tab can be paused by the visibility policy while its Streamlink session is
+            // still resolving. Reapply that policy once the playback engine exists.
+            if (backgroundResourceServicesSuspended)
+            {
+                await PauseForTabSwitchCoreAsync();
             }
 
             if (!Target.IsExplicitVod && settings.Chat.ConnectAutomatically && IsChatVisible)
@@ -1349,7 +1507,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                         settings,
                         startCancellationToken,
                         startCaptureChatClient: ShouldKeepChatClientForCapturedReplay(settings));
-                    return;
+                    return new PlaybackStartResult(playbackStarted, Status);
                 }
 
                 _ = StartChatAsync(startCancellationToken);
@@ -1367,6 +1525,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             Status = PlaybackStatus.Stopped;
             SetViewerCountPending("Viewer count is stopped.");
             ResetReplayState("Replay is stopped.");
+            playbackStarted = false;
         }
         catch (Exception ex)
         {
@@ -1383,13 +1542,22 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             ResetReplayState("Replay unavailable because playback did not start.");
             logger.Write(AppLogLevel.Error, "Playback", $"Failed to start {Target.DisplayName}", ex);
             await StopPlaybackOnlyAsync(PlaybackStopTimeout);
+            playbackStarted = false;
         }
         finally
         {
             ClearActiveStartCancellation(activeStart);
             streamStartCancellation?.Dispose();
             IsBusy = false;
+            if (playbackTransitionAcquired)
+            {
+                playbackTransitionGate.Release();
+            }
+
+            lifecycleGate.Release();
         }
+
+        return new PlaybackStartResult(playbackStarted, Status);
     }
 
     private string ResolveTwitchVodId()
@@ -1411,59 +1579,155 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         return "";
     }
 
-    private void EnsureOfficialKickChatSubscriptionInBackground(AppSettings settings)
+    private void EnsureOfficialKickChatSubscriptionInBackground(
+        AppSettings settings,
+        CancellationToken cancellationToken = default)
     {
         if (Target.Platform != PlatformKind.Kick ||
             !settings.Chat.KickWebhookListenerEnabled ||
-            kickEventSubscriptionService is null)
+            kickEventSubscriptionService is null ||
+            disposed)
         {
             return;
         }
 
         var target = Target;
-        _ = Task.Run(async () =>
+        lock (kickWebhookSubscriptionGate)
         {
-            try
-            {
-                var result = await kickEventSubscriptionService
-                    .EnsureChatMessageSentSubscriptionAsync(target, settings.Chat)
-                    .ConfigureAwait(false);
-                var level = result.IsSuccess || result.Status == KickEventSubscriptionEnsureStatus.NotNeeded
-                    ? AppLogLevel.Info
-                    : AppLogLevel.Warning;
-                logger.Write(level, "KickWebhook", result.Message);
-                if (!result.IsSuccess &&
-                    result.Status != KickEventSubscriptionEnsureStatus.NotNeeded)
-                {
-                    AddSystemMessage(result.Message);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                var message = $"Official Kick chat webhook subscription failed for {target.Channel}: {ex.Message}";
-                logger.Write(AppLogLevel.Warning, "KickWebhook", message, ex);
-                AddSystemMessage(message);
-            }
-        });
+            CancelCancellationSource(kickWebhookSubscriptionCancellation);
+            var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                lifetimeCancellation.Token,
+                cancellationToken);
+            var operationReady = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var task = EnsureOfficialKickChatSubscriptionWhenReadyAsync(
+                target,
+                settings,
+                operationCancellation,
+                operationReady.Task);
+            kickWebhookSubscriptionCancellation = operationCancellation;
+            kickWebhookSubscriptionTask = task;
+            operationReady.TrySetResult();
+        }
     }
 
-    public async Task PauseOrResumeAsync()
+    private async Task EnsureOfficialKickChatSubscriptionWhenReadyAsync(
+        StreamTarget target,
+        AppSettings settings,
+        CancellationTokenSource operationCancellation,
+        Task operationReady)
     {
-        if (playbackEngine is null)
+        await operationReady.ConfigureAwait(false);
+        await EnsureOfficialKickChatSubscriptionAsync(target, settings, operationCancellation)
+            .ConfigureAwait(false);
+    }
+
+    private async Task EnsureOfficialKickChatSubscriptionAsync(
+        StreamTarget target,
+        AppSettings settings,
+        CancellationTokenSource operationCancellation)
+    {
+        try
+        {
+            var result = await kickEventSubscriptionService!
+                .EnsureChatMessageSentSubscriptionAsync(target, settings.Chat, operationCancellation.Token)
+                .ConfigureAwait(false);
+            if (operationCancellation.IsCancellationRequested || disposed)
+            {
+                return;
+            }
+
+            var level = result.IsSuccess || result.Status == KickEventSubscriptionEnsureStatus.NotNeeded
+                ? AppLogLevel.Info
+                : AppLogLevel.Warning;
+            logger.Write(level, "KickWebhook", result.Message);
+            if (!result.IsSuccess &&
+                result.Status != KickEventSubscriptionEnsureStatus.NotNeeded)
+            {
+                AddSystemMessage(result.Message);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (operationCancellation.IsCancellationRequested || disposed)
+            {
+                return;
+            }
+
+            var message = $"Official Kick chat webhook subscription failed for {target.Channel}: {ex.Message}";
+            logger.Write(AppLogLevel.Warning, "KickWebhook", message, ex);
+            AddSystemMessage(message);
+        }
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested || disposed)
+        {
+        }
+        finally
+        {
+            lock (kickWebhookSubscriptionGate)
+            {
+                if (ReferenceEquals(kickWebhookSubscriptionCancellation, operationCancellation))
+                {
+                    kickWebhookSubscriptionCancellation = null;
+                    kickWebhookSubscriptionTask = null;
+                }
+            }
+
+            operationCancellation.Dispose();
+        }
+    }
+
+    private async Task StopKickWebhookSubscriptionAsync()
+    {
+        Task? subscriptionTask;
+        CancellationTokenSource? subscriptionCancellation;
+        lock (kickWebhookSubscriptionGate)
+        {
+            subscriptionTask = kickWebhookSubscriptionTask;
+            subscriptionCancellation = kickWebhookSubscriptionCancellation;
+        }
+
+        CancelCancellationSource(subscriptionCancellation);
+        if (subscriptionTask is null)
         {
             return;
         }
 
-        if (Status == PlaybackStatus.Paused)
+        try
         {
-            await ResumeWithHoldAsync();
+            await subscriptionTask.ConfigureAwait(false);
         }
-        else if (Status == PlaybackStatus.Playing)
+        catch (OperationCanceledException)
         {
-            CapturePauseHold(allowLiveTransition: true);
-            await playbackEngine.PauseAsync();
-            Status = PlaybackStatus.Paused;
-            PausedByTabSwitch = false;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "KickWebhook", $"Kick webhook subscription cleanup failed for {Target.DisplayName}.", ex);
+        }
+    }
+
+    public async Task PauseOrResumeAsync()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await playbackTransitionGate.WaitAsync(lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            await PauseOrResumeCoreAsync();
+        }
+        finally
+        {
+            playbackTransitionGate.Release();
         }
     }
 
@@ -1471,25 +1735,265 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     public async Task PauseForTabSwitchAsync()
     {
-        if (playbackEngine is not null && Status == PlaybackStatus.Playing)
+        if (disposed)
         {
-            CapturePauseHold(allowLiveTransition: false);
-            await playbackEngine.PauseAsync();
-            Status = PlaybackStatus.Paused;
-            PausedByTabSwitch = true;
+            return;
+        }
+
+        try
+        {
+            await playbackTransitionGate.WaitAsync(lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            await PauseForTabSwitchCoreAsync();
+        }
+        finally
+        {
+            playbackTransitionGate.Release();
         }
     }
 
     public async Task ResumeFromTabSwitchAsync()
     {
-        if (playbackEngine is not null && Status == PlaybackStatus.Paused && PausedByTabSwitch)
+        if (disposed)
         {
-            await ResumeWithHoldAsync();
-            ApplyAudio();
+            return;
+        }
+
+        try
+        {
+            await playbackTransitionGate.WaitAsync(lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            await ResumeFromTabSwitchCoreAsync();
+        }
+        finally
+        {
+            playbackTransitionGate.Release();
         }
     }
 
-    // Records the offset to restore on the next resume so playback holds position instead of
+    private async Task PauseOrResumeCoreAsync()
+    {
+        if (disposed || playbackEngine is null)
+        {
+            return;
+        }
+
+        if (Status == PlaybackStatus.Paused)
+        {
+            if (livePlaybackConnectionSuspended)
+            {
+                await ResumeLivePlaybackConnectionAsync(lifetimeCancellation.Token);
+            }
+            else
+            {
+                await ResumeWithHoldAsync(lifetimeCancellation.Token);
+            }
+
+            ApplyAudio();
+        }
+        else if (Status == PlaybackStatus.Playing)
+        {
+            // A manual pause is deliberately position-preserving, including for a live tab.
+            // Automatic inactive-tab suspension uses the separate connection-stopping path below.
+            livePlaybackConnectionSuspended = false;
+            CapturePauseHold(allowLiveTransition: true);
+            await playbackEngine.PauseAsync(lifetimeCancellation.Token);
+            Status = PlaybackStatus.Paused;
+            PausedByTabSwitch = false;
+        }
+    }
+
+    private async Task PauseForTabSwitchCoreAsync()
+    {
+        IsBackgroundResourceServicesSuspended = true;
+        var engine = playbackEngine;
+        if (engine is not null && Status == PlaybackStatus.Playing && !PausedByTabSwitch)
+        {
+            if (CanSuspendLivePlaybackConnection())
+            {
+                // Do not capture a replay hold here.  The Streamlink process and its URI remain
+                // valid, while stopping only libVLC closes the local HTTP reader and prevents the
+                // external-HTTP ring buffer from advancing while this tab is hidden.
+                pendingResumeHoldPosition = null;
+                pendingResumeHoldAllowsLiveTransition = false;
+                await engine.StopAsync(lifetimeCancellation.Token);
+                livePlaybackConnectionSuspended = true;
+            }
+            else
+            {
+                CapturePauseHold(allowLiveTransition: false);
+                await engine.PauseAsync(lifetimeCancellation.Token);
+            }
+
+            Status = PlaybackStatus.Paused;
+            PausedByTabSwitch = true;
+        }
+
+        await StopBackgroundResourceServicesAsync();
+    }
+
+    private async Task ResumeFromTabSwitchCoreAsync()
+    {
+        var wasSuspended = IsBackgroundResourceServicesSuspended;
+        IsBackgroundResourceServicesSuspended = false;
+        if (!wasSuspended && !PausedByTabSwitch)
+        {
+            return;
+        }
+
+        var reconnectingLivePlayback = livePlaybackConnectionSuspended;
+        if (playbackEngine is not null && Status == PlaybackStatus.Paused && PausedByTabSwitch)
+        {
+            try
+            {
+                if (reconnectingLivePlayback)
+                {
+                    IsBusy = true;
+                    await ResumeLivePlaybackConnectionAsync(lifetimeCancellation.Token);
+                }
+                else
+                {
+                    await ResumeWithHoldAsync(lifetimeCancellation.Token);
+                }
+
+                if (reconnectingLivePlayback)
+                {
+                    // PlayAsync applies the requested audio state while creating the fresh
+                    // player. Notify the main view model so a selected tab can reassert its
+                    // shared audible state without issuing a redundant engine call here.
+                    AudioStateApplied?.Invoke(this, EventArgs.Empty);
+                }
+                else
+                {
+                    ApplyAudio();
+                }
+            }
+            catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex) when (reconnectingLivePlayback)
+            {
+                SetAutomaticLiveResumeError(ex);
+                return;
+            }
+            finally
+            {
+                if (reconnectingLivePlayback)
+                {
+                    IsBusy = false;
+                }
+            }
+        }
+
+        await ResumeBackgroundResourceServicesAsync(
+            suppressReplayPlaybackUrlResolution: reconnectingLivePlayback);
+    }
+
+    private async Task StopBackgroundResourceServicesAsync()
+    {
+        CancelReplayAvailabilityPolling();
+        await StopLiveDvrPromotionPollingAsync();
+        await StopReplayClockPollingAsync();
+        await StopViewerCountPollingAsync();
+        await StopVideoAspectRatioPollingAsync();
+    }
+
+    private async Task ResumeBackgroundResourceServicesAsync(
+        bool suppressReplayPlaybackUrlResolution = false)
+    {
+        if (IsBackgroundResourceServicesSuspended ||
+            playbackEngine is null ||
+            Status is not (PlaybackStatus.Playing or PlaybackStatus.Paused) ||
+            currentSettings is not { } settings)
+        {
+            return;
+        }
+
+        StartVideoAspectRatioPolling();
+        if (Target.IsExplicitVod)
+        {
+            StartReplayClockPolling();
+            return;
+        }
+
+        StartViewerCountPolling(settings);
+        if (Target.Platform == PlatformKind.Kick)
+        {
+            StartReplayAvailabilityRefreshInBackground(
+                settings,
+                prefetchPlaybackUrl: !suppressReplayPlaybackUrlResolution);
+        }
+        else
+        {
+            await RefreshReplayAvailabilityCoreAsync(
+                settings,
+                CancellationToken.None,
+                refreshVersion: 0,
+                prefetchPlaybackUrl: !suppressReplayPlaybackUrlResolution);
+        }
+
+        if (replaySession is { IsAvailable: true })
+        {
+            StartReplayClockPolling();
+        }
+    }
+
+    private bool CanSuspendLivePlaybackConnection()
+    {
+        return Target.Kind == StreamTargetKind.Live &&
+            streamSession is not null &&
+            !IsReplayMode &&
+            !IsBehindLive;
+    }
+
+    private async Task ResumeLivePlaybackConnectionAsync(CancellationToken cancellationToken)
+    {
+        var engine = playbackEngine ?? throw new InvalidOperationException("Playback is no longer available.");
+        var session = streamSession ?? throw new InvalidOperationException("The Streamlink session is no longer available.");
+
+        Status = PlaybackStatus.Starting;
+        await engine.PlayAsync(session.PlaybackUri, Volume, CurrentAudioState, cancellationToken);
+        isDirectExplicitVodReplayPlayback = false;
+        IsReplayMode = false;
+        IsBehindLive = false;
+        pendingResumeHoldPosition = null;
+        pendingResumeHoldAllowsLiveTransition = false;
+        livePlaybackConnectionSuspended = false;
+        PausedByTabSwitch = false;
+        ErrorMessage = "";
+        Status = PlaybackStatus.Playing;
+    }
+
+    private void SetAutomaticLiveResumeError(Exception exception)
+    {
+        livePlaybackConnectionSuspended = false;
+        PausedByTabSwitch = false;
+        Status = PlaybackStatus.Error;
+        ErrorMessage = $"Automatic live resume failed: {exception.Message}";
+        AddSystemMessage(ErrorMessage);
+        logger.Write(
+            AppLogLevel.Error,
+            "Playback",
+            $"Failed to reconnect hidden live playback for {Target.DisplayName}.",
+            exception);
+    }
+
+    // Records the offset to restore on the next manual resume so playback holds position instead of
     // snapping to the live edge (libVLC repositions a live HLS stream to live on resume).
     private void CapturePauseHold(bool allowLiveTransition)
     {
@@ -1560,27 +2064,69 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         if (IsReplayMode || (allowLiveTransition && CanSeekReplay))
         {
-            await SeekReplayAsync(position, cancellationToken, forceReload: true, holdExactPosition: true);
+            await SeekReplaySerializedAsync(
+                position,
+                cancellationToken,
+                forceReload: true,
+                holdExactPosition: true,
+                playbackTransitionAlreadyHeld: true);
         }
     }
 
     public async Task StopAsync()
     {
+        if (disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await lifecycleGate.WaitAsync(lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (disposed)
+        {
+            lifecycleGate.Release();
+            return;
+        }
+
         CancelActiveStart();
         CancelReplayAvailabilityRefresh();
-        await StopAsync(PlaybackStopTimeout);
+        try
+        {
+            await StopAsync(PlaybackStopTimeout);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
     }
 
     private async Task StopAsync(TimeSpan? playbackStopTimeout)
     {
-        await StopViewerCountPollingAsync();
-        CancelReplayAvailabilityRefresh();
-        await StopLiveDvrPromotionPollingAsync();
-        await StopPlaybackOnlyAsync(playbackStopTimeout);
-        await StopChatAsync();
-        Status = PlaybackStatus.Stopped;
-        SetViewerCountPending("Viewer count is stopped.");
-        ResetReplayState("Replay is stopped.");
+        await playbackTransitionGate.WaitAsync();
+        try
+        {
+            IsBackgroundResourceServicesSuspended = false;
+            await StopKickWebhookSubscriptionAsync();
+            await StopViewerCountPollingAsync();
+            CancelReplayAvailabilityRefresh();
+            await StopLiveDvrPromotionPollingAsync();
+            await StopPlaybackOnlyAsync(playbackStopTimeout);
+            await StopChatAsync();
+            Status = PlaybackStatus.Stopped;
+            SetViewerCountPending("Viewer count is stopped.");
+            ResetReplayState("Replay is stopped.");
+        }
+        finally
+        {
+            playbackTransitionGate.Release();
+        }
     }
 
     public void BeginReplaySeekPreview()
@@ -1685,8 +2231,45 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         IsReplaySeekInProgress = false;
     }
 
-    public async Task SeekReplayAsync(TimeSpan offset, CancellationToken cancellationToken = default, bool forceReload = false, bool holdExactPosition = false)
+    public Task SeekReplayAsync(
+        TimeSpan offset,
+        CancellationToken cancellationToken = default,
+        bool forceReload = false,
+        bool holdExactPosition = false) =>
+        SeekReplaySerializedAsync(
+            offset,
+            cancellationToken,
+            forceReload,
+            holdExactPosition,
+            playbackTransitionAlreadyHeld: false);
+
+    private async Task SeekReplaySerializedAsync(
+        TimeSpan offset,
+        CancellationToken cancellationToken,
+        bool forceReload,
+        bool holdExactPosition,
+        bool playbackTransitionAlreadyHeld)
     {
+        if (disposed)
+        {
+            return;
+        }
+
+        // A seek can be started directly by a WPF mouse/key event.  Several of the setup steps below
+        // can complete synchronously (especially when the replay URL is already prefetched), which
+        // would keep the routed input event on the dispatcher while the replay transition starts.
+        // Yield before touching the seek state so the slider release is returned to WPF immediately.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        await Task.Yield();
+        if (disposed || cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
         if (replaySession is not { IsAvailable: true } replay)
         {
             try
@@ -1725,177 +2308,232 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var seekOperationVersion = BeginReplaySeekOperation();
-        var replayChatVersion = GetReplayChatStateVersion();
-        var shouldLoadReplayChat = false;
-        var targetReplayWindowHasMessages = false;
-        IsBusy = true;
-        try
+        if (!holdExactPosition && !Target.IsExplicitVod && duration - targetOffset <= ReplayLiveEdgeThreshold)
         {
-            await replayPlaybackTransitionGate.WaitAsync(cancellationToken);
+            // Return-to-live starts a fresh Streamlink transport and therefore must run before this
+            // seek acquires the player transition gate.
+            await ReturnToLiveAsync(cancellationToken);
+            return;
+        }
+
+        var playbackTransitionAcquired = false;
+        if (!playbackTransitionAlreadyHeld)
+        {
             try
             {
-                if (!IsCurrentReplaySession(replay) ||
-                    playbackEngine is null)
-                {
-                    return;
-                }
+                await playbackTransitionGate.WaitAsync(cancellationToken);
+                playbackTransitionAcquired = true;
+            }
+            catch (OperationCanceledException) when (
+                disposed ||
+                lifetimeCancellation.IsCancellationRequested ||
+                cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
 
-                duration = GetCurrentReplayDuration(replay);
-                targetOffset = ClampReplayOffset(offset, duration);
-                // holdExactPosition (resume-from-pause) keeps the exact paused timestamp instead of
-                // snapping to live when the spot is within the live-edge window.
-                if (!holdExactPosition && !Target.IsExplicitVod && duration - targetOffset <= ReplayLiveEdgeThreshold)
+        try
+        {
+            var seekOperationVersion = BeginReplaySeekOperation();
+            var replayChatVersion = GetReplayChatStateVersion();
+            var shouldLoadReplayChat = false;
+            var targetReplayWindowHasMessages = false;
+            IsBusy = true;
+            try
+            {
+                await replayPlaybackTransitionGate.WaitAsync(cancellationToken);
+                try
                 {
-                    await ReturnToLiveAsync(cancellationToken);
-                    return;
-                }
-
-                CancelActiveStart();
-                replayChatVersion = ClearReplayChat();
-                BeginKickSeekbackReplayChatBacklog(replay, targetOffset);
-                if (ShouldUseCapturedReplayChat(replay))
-                {
-                    RefreshCapturedReplayChat(
-                        targetOffset,
-                        force: true,
-                        suppressUnavailableNotice: true);
-                    targetReplayWindowHasMessages = HasCapturedReplayChatWindowMessages(targetOffset);
-                }
-
-                var seekedInPlace = false;
-                if (!forceReload && CanSeekCurrentReplayInPlace(replay))
-                {
-                    try
+                    if (!IsCurrentReplaySession(replay) ||
+                        playbackEngine is null)
                     {
-                        Status = PlaybackStatus.Starting;
-                        await playbackEngine.SeekAsync(targetOffset, cancellationToken);
-                        SetReplayClockAnchor(
+                        return;
+                    }
+
+                    duration = GetCurrentReplayDuration(replay);
+                    targetOffset = ClampReplayOffset(offset, duration);
+                    // holdExactPosition (resume-from-pause) keeps the exact paused timestamp instead of
+                    // snapping to live when the spot is within the live-edge window.
+                    if (!holdExactPosition && !Target.IsExplicitVod && duration - targetOffset <= ReplayLiveEdgeThreshold)
+                    {
+                        // The live-edge case was handled before taking playbackTransitionGate. If the
+                        // replay clock moved to the edge while waiting, leave the current media alone;
+                        // the next explicit Return to Live action will perform the full transport reset.
+                        return;
+                    }
+
+                    CancelActiveStart();
+                    replayChatVersion = ClearReplayChat();
+                    BeginKickSeekbackReplayChatBacklog(replay, targetOffset);
+                    if (ShouldUseCapturedReplayChat(replay))
+                    {
+                        RefreshCapturedReplayChat(
                             targetOffset,
-                            duration,
-                            seekOperationVersion,
-                            awaitingSeekConfirmation: true);
-
-                        IsReplayMode = true;
-                        IsBehindLive = !Target.IsExplicitVod;
-                        Status = PlaybackStatus.Playing;
-                        ApplyReplayClock(targetOffset, duration, isSeekable: true);
-                        StartReplayClockPolling();
-                        seekedInPlace = true;
+                            force: true,
+                            suppressUnavailableNotice: true);
+                        targetReplayWindowHasMessages = HasCapturedReplayChatWindowMessages(targetOffset);
                     }
-                    catch (Exception ex) when (ex is not OperationCanceledException &&
-                        !Target.IsExplicitVod &&
-                        CanResolveReplayPlaybackUrl(replay, settings))
+
+                    var seekedInPlace = false;
+                    if (!forceReload && CanSeekCurrentReplayInPlace(replay))
                     {
-                        currentReplayPlaybackKey = null;
-                        CancelReplayPlaybackUrlResolution();
-                        logger.Write(
-                            AppLogLevel.Info,
-                            "Replay",
-                            $"In-place replay seek failed for {Target.DisplayName}; reloading replay media.",
-                            ex);
+                        try
+                        {
+                            Status = PlaybackStatus.Starting;
+                            await playbackEngine.SeekAsync(targetOffset, cancellationToken);
+                            SetReplayClockAnchor(
+                                targetOffset,
+                                duration,
+                                seekOperationVersion,
+                                awaitingSeekConfirmation: true);
+
+                            IsReplayMode = true;
+                            IsBehindLive = !Target.IsExplicitVod;
+                            Status = PlaybackStatus.Playing;
+                            ApplyReplayClock(targetOffset, duration, isSeekable: true);
+                            StartReplayClockPolling();
+                            seekedInPlace = true;
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException &&
+                            !Target.IsExplicitVod &&
+                            CanResolveReplayPlaybackUrl(replay, settings))
+                        {
+                            currentReplayPlaybackKey = null;
+                            CancelReplayPlaybackUrlResolution();
+                            logger.Write(
+                                AppLogLevel.Info,
+                                "Replay",
+                                $"In-place replay seek failed for {Target.DisplayName}; reloading replay media.",
+                                ex);
+                        }
                     }
-                }
 
-                if (!seekedInPlace)
-                {
-                    var replayPlaybackKey = CreateReplayPlaybackUrlKey(replay, settings);
-                    var urlWaitStopwatch = Stopwatch.StartNew();
-                    var resolved = await ResolveReplayPlaybackUrlForSeekAsync(replayPlaybackKey, cancellationToken);
-                    urlWaitStopwatch.Stop();
-                    LogReplayFirstSeekStage("URL wait", urlWaitStopwatch.Elapsed);
-                    var replayTransitionWork = PrepareReplayTransitionWork(replay, settings);
-
-                    try
+                    if (!seekedInPlace)
                     {
-                        Status = PlaybackStatus.Starting;
-                        var playStopwatch = Stopwatch.StartNew();
-                        await playbackEngine.PlayAsync(resolved.StreamUri, Volume, CurrentAudioState, cancellationToken);
-                        playStopwatch.Stop();
-                        LogReplayFirstSeekStage("PlayAsync", playStopwatch.Elapsed);
-                        await ClearNativeReplayOverlayForReplayTransitionAsync(
-                            replay,
-                            targetReplayWindowHasMessages,
-                            cancellationToken);
-                        isDirectExplicitVodReplayPlayback = Target.IsExplicitVod;
-                        var seekStopwatch = Stopwatch.StartNew();
-                        await playbackEngine.SeekAsync(targetOffset, cancellationToken);
-                        seekStopwatch.Stop();
-                        LogReplayFirstSeekStage("SeekAsync", seekStopwatch.Elapsed);
-                        currentReplayPlaybackKey = replayPlaybackKey;
-                        SetReplayClockAnchor(
-                            targetOffset,
-                            duration,
-                            seekOperationVersion,
-                            awaitingSeekConfirmation: true);
-                        ApplyAudio();
+                        var replayPlaybackKey = CreateReplayPlaybackUrlKey(replay, settings);
+                        var urlWaitStopwatch = Stopwatch.StartNew();
+                        var resolved = await ResolveReplayPlaybackUrlForSeekAsync(replayPlaybackKey, cancellationToken);
+                        urlWaitStopwatch.Stop();
+                        LogReplayFirstSeekStage("URL wait", urlWaitStopwatch.Elapsed);
+                        var replayTransitionWork = PrepareReplayTransitionWork(replay, settings);
+                        var prePlaybackTransitionWork = replayTransitionWork
+                            .Where(work => work.RunBeforePlayback)
+                            .ToArray();
+                        var deferredTransitionWork = replayTransitionWork
+                            .Where(work => !work.RunBeforePlayback)
+                            .ToArray();
 
-                        IsReplayMode = true;
-                        IsBehindLive = !Target.IsExplicitVod;
-                        Status = PlaybackStatus.Playing;
-                        ApplyReplayClock(targetOffset, duration, isSeekable: true);
-                        StartReplayClockPolling();
+                        // The live native overlay controller and the replay renderer share VLC's
+                        // single frame pipe. Stop that controller before PlayAsync makes the replay
+                        // eligible for overlay rendering; otherwise the first empty replay frame can
+                        // occupy the writer while the controller still owns the pipe, starving the
+                        // loaded replay-chat frame behind it.
+                        var prePlaybackCleanupStopwatch = Stopwatch.StartNew();
+                        await RunReplayTransitionWorkAsync(prePlaybackTransitionWork);
+                        prePlaybackCleanupStopwatch.Stop();
+                        LogReplayFirstSeekStage(
+                            $"pre-playback transition cleanup ({prePlaybackTransitionWork.Length} items)",
+                            prePlaybackCleanupStopwatch.Elapsed);
+
+                        try
+                        {
+                            Status = PlaybackStatus.Starting;
+                            var playStopwatch = Stopwatch.StartNew();
+                            await playbackEngine.PlayAsync(resolved.StreamUri, Volume, CurrentAudioState, cancellationToken);
+                            playStopwatch.Stop();
+                            LogReplayFirstSeekStage("PlayAsync", playStopwatch.Elapsed);
+                            await ClearNativeReplayOverlayForReplayTransitionAsync(
+                                replay,
+                                targetReplayWindowHasMessages,
+                                cancellationToken);
+                            isDirectExplicitVodReplayPlayback = Target.IsExplicitVod;
+                            var seekStopwatch = Stopwatch.StartNew();
+                            await playbackEngine.SeekAsync(targetOffset, cancellationToken);
+                            seekStopwatch.Stop();
+                            LogReplayFirstSeekStage("SeekAsync", seekStopwatch.Elapsed);
+                            currentReplayPlaybackKey = replayPlaybackKey;
+                            SetReplayClockAnchor(
+                                targetOffset,
+                                duration,
+                                seekOperationVersion,
+                                awaitingSeekConfirmation: true);
+                            ApplyAudio();
+
+                            IsReplayMode = true;
+                            IsBehindLive = !Target.IsExplicitVod;
+                            Status = PlaybackStatus.Playing;
+                            ApplyReplayClock(targetOffset, duration, isSeekable: true);
+                            StartReplayClockPolling();
+                        }
+                        catch
+                        {
+                            await RunReplayTransitionWorkAsync(
+                                deferredTransitionWork.Where(work => work.RunOnPlaybackFailure).ToArray());
+                            throw;
+                        }
+
+                        var cleanupScheduleStopwatch = Stopwatch.StartNew();
+                        RunReplayTransitionWorkInBackground(deferredTransitionWork);
+                        cleanupScheduleStopwatch.Stop();
+                        LogReplayFirstSeekStage(
+                            $"transition cleanup scheduling ({deferredTransitionWork.Length} items)",
+                            cleanupScheduleStopwatch.Elapsed);
                     }
-                    catch
+
+                    if (ChatMessages.Count > 0)
                     {
-                        await RunReplayTransitionWorkAsync(
-                            replayTransitionWork.Where(work => work.RunOnPlaybackFailure).ToArray());
-                        throw;
+                        InvalidateNativeReplayOverlayFrame();
+                    }
+                    else
+                    {
+                        QueueNativeChatOverlayUpdateAfterReplayWindowApply();
                     }
 
-                    var cleanupScheduleStopwatch = Stopwatch.StartNew();
-                    RunReplayTransitionWorkInBackground(replayTransitionWork);
-                    cleanupScheduleStopwatch.Stop();
-                    LogReplayFirstSeekStage(
-                        $"transition cleanup scheduling ({replayTransitionWork.Count} items)",
-                        cleanupScheduleStopwatch.Elapsed);
+                    shouldLoadReplayChat = CanLoadReplayChat(replay);
                 }
-
-                if (ChatMessages.Count > 0)
+                finally
                 {
-                    InvalidateNativeReplayOverlayFrame();
+                    replayPlaybackTransitionGate.Release();
                 }
-                else
-                {
-                    QueueNativeChatOverlayUpdateAfterReplayWindowApply();
-                }
-
-                shouldLoadReplayChat = CanLoadReplayChat(replay);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                AddSystemMessage($"Replay seek failed: {ex.Message}");
+                logger.Write(AppLogLevel.Warning, "Replay", $"Replay seek failed for {Target.DisplayName}.", ex);
             }
             finally
             {
-                replayPlaybackTransitionGate.Release();
+                if (IsLatestReplaySeekOperation(seekOperationVersion))
+                {
+                    IsBusy = false;
+                    IsReplaySeekInProgress = false;
+                    FlushNativeReplayOverlayRefreshAfterSeek();
+                }
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            AddSystemMessage($"Replay seek failed: {ex.Message}");
-            logger.Write(AppLogLevel.Warning, "Replay", $"Replay seek failed for {Target.DisplayName}.", ex);
+
+            if (shouldLoadReplayChat && IsLatestReplaySeekOperation(seekOperationVersion))
+            {
+                var replayChatQueueStopwatch = Stopwatch.StartNew();
+                QueueReplayChatLoad(
+                    replay,
+                    settings,
+                    targetOffset,
+                    notifyUnavailable: true,
+                    replayChatVersion);
+                replayChatQueueStopwatch.Stop();
+                LogReplayFirstSeekStage("replay chat queueing", replayChatQueueStopwatch.Elapsed);
+            }
         }
         finally
         {
-            if (IsLatestReplaySeekOperation(seekOperationVersion))
+            if (playbackTransitionAcquired)
             {
-                IsBusy = false;
-                IsReplaySeekInProgress = false;
-                FlushNativeReplayOverlayRefreshAfterSeek();
+                playbackTransitionGate.Release();
             }
-        }
-
-        if (shouldLoadReplayChat && IsLatestReplaySeekOperation(seekOperationVersion))
-        {
-            var replayChatQueueStopwatch = Stopwatch.StartNew();
-            QueueReplayChatLoad(
-                replay,
-                settings,
-                targetOffset,
-                notifyUnavailable: true,
-                replayChatVersion);
-            replayChatQueueStopwatch.Stop();
-            LogReplayFirstSeekStage("replay chat queueing", replayChatQueueStopwatch.Elapsed);
         }
     }
 
@@ -1906,6 +2544,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ReturnToLiveAsync(CancellationToken cancellationToken)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         if (Target.IsExplicitVod)
         {
             AddSystemMessage("Return to live is not available for VOD playback.");
@@ -1925,11 +2568,19 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        await StartAsync(currentSettings, cancellationToken: cancellationToken);
+        await StartAsync(
+            currentSettings,
+            optimizeForMultiStream: multiStreamResourceProfile,
+            cancellationToken: cancellationToken);
     }
 
     public async Task SendChatMessageAsync()
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var message = NormalizeOutgoingMessage(OutgoingChatText);
         if (string.IsNullOrWhiteSpace(message))
         {
@@ -1948,7 +2599,29 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (chatClient is null)
+        var client = chatClient;
+        if (client is null)
+        {
+            // Playback starts chat in the background so a slow platform connection cannot delay
+            // video.  A send requested during that short hand-off should wait for the already
+            // scheduled connection instead of reporting a false "not connected" error.
+            var pendingConnection = GetChatConnectionTask();
+            if (pendingConnection is not null)
+            {
+                try
+                {
+                    await pendingConnection;
+                }
+                catch (OperationCanceledException) when (disposed)
+                {
+                    return;
+                }
+
+                client = chatClient;
+            }
+        }
+
+        if (client is null)
         {
             AddSystemMessage("Chat is not connected yet.");
             return;
@@ -1963,7 +2636,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            await chatClient.SendMessageAsync(message);
+            await client.SendMessageAsync(message);
             OutgoingChatText = "";
             localEcho ??= CreateLocalEchoMessage(message);
             AddChatMessage(localEcho, isRememberedDockedLocalEcho: rememberDockedLocalEcho);
@@ -1985,26 +2658,109 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
+        lock (disposalGate)
+        {
+            if (disposalTask is null)
+            {
+                disposed = true;
+                disposalTask = DisposeCoreAsync();
+            }
+
+            return new ValueTask(disposalTask);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        lifetimeCancellation.Cancel();
         AnimatedEmoteImage.ImageCacheEntryCompleted -= OnAnimatedEmoteImageCacheEntryCompleted;
         DockedChatBadgeCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
         DockedChatEmoteCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
         CancelNativeReplayOverlayAnimationState();
+        CancelNativeReplayOverlayWarmupRefresh();
         StopTwitchPredictionClock();
         CancelActiveStart();
-        await StopAsync(PlaybackStopTimeout);
-        await nativeReplayOverlayEventHost.DisposeAsync();
-        if (nativeReplayOverlayFrameScheduler is not null)
-        {
-            await nativeReplayOverlayFrameScheduler.DisposeAsync();
-        }
+        CancelReplayAvailabilityRefresh();
 
-        nativeReplayOverlayFrameWriteGate.Dispose();
+        var lifecycleAcquired = false;
+        try
+        {
+            await lifecycleGate.WaitAsync();
+            lifecycleAcquired = true;
+            await StopAsync(PlaybackStopTimeout);
+            await WaitForReplayAvailabilityRefreshOnceAsync(CancellationToken.None);
+
+            Task? replayChatTask;
+            lock (replayChatLoadGate)
+            {
+                replayChatTask = replayChatLoadTask;
+            }
+
+            if (replayChatTask is not null)
+            {
+                try
+                {
+                    await replayChatTask;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            await nativeReplayOverlayEventHost.DisposeAsync();
+            Task<NativeReplayOverlayFrameScheduler>? schedulerCreationTask;
+            NativeReplayOverlayFrameScheduler? scheduler;
+            lock (nativeReplayOverlayFrameSchedulerGate)
+            {
+                schedulerCreationTask = nativeReplayOverlayFrameSchedulerCreationTask;
+                nativeReplayOverlayFrameSchedulerCreationTask = null;
+                scheduler = nativeReplayOverlayFrameScheduler;
+                nativeReplayOverlayFrameScheduler = null;
+            }
+
+            if (schedulerCreationTask is not null)
+            {
+                try
+                {
+                    scheduler ??= await schedulerCreationTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+                {
+                }
+                catch (TimeoutException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native replay overlay renderer startup cleanup failed.", ex);
+                }
+            }
+
+            if (scheduler is not null)
+            {
+                await scheduler.DisposeAsync();
+            }
+
+            parkingVideoSurface?.Dispose();
+            parkingVideoSurface = null;
+        }
+        finally
+        {
+            if (lifecycleAcquired)
+            {
+                lifecycleGate.Release();
+            }
+
+            await nativeReplayOverlayFrameWriteGate.DisposeAsync();
+            lifetimeCancellation.Dispose();
+        }
     }
 
     private void OnChatRenderCatalogChanged(object? sender, EventArgs e)
     {
+        Interlocked.Increment(ref nativeReplayOverlayRenderContentVersion);
         dispatch(InvalidateNativeReplayOverlayFrame);
     }
 
@@ -2243,57 +2999,141 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private async Task StartChatAsync(CancellationToken cancellationToken)
     {
-        var connectionTask = StartChatCoreAsync(cancellationToken);
+        Task connectionTask;
+        TaskCompletionSource? operationReady = null;
         lock (chatConnectionGate)
         {
-            chatConnectionTask = connectionTask;
+            if (disposed)
+            {
+                return;
+            }
+
+            if (chatConnectionTask is not null)
+            {
+                connectionTask = chatConnectionTask;
+            }
+            else
+            {
+                var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    lifetimeCancellation.Token,
+                    cancellationToken);
+                var version = ++chatConnectionVersion;
+                operationReady = new TaskCompletionSource();
+                connectionTask = StartChatOperationWhenReadyAsync(
+                    operationCancellation,
+                    version,
+                    operationReady.Task);
+                chatConnectionCancellation = operationCancellation;
+                chatConnectionTask = connectionTask;
+            }
         }
 
+        // Complete the hand-off outside chatConnectionGate.  The operation's synchronous prefix
+        // needs to reacquire that gate when it validates its generation.  Using a synchronous TCS
+        // here makes the client attach happen before a fire-and-forget caller can publish chat
+        // messages, while ConnectAsync still yields as soon as it reaches real network I/O.
+        operationReady?.TrySetResult();
+        await connectionTask.ConfigureAwait(false);
+    }
+
+    private async Task StartChatOperationWhenReadyAsync(
+        CancellationTokenSource operationCancellation,
+        long version,
+        Task operationReady)
+    {
+        await operationReady.ConfigureAwait(false);
+        await StartChatOperationAsync(operationCancellation, version).ConfigureAwait(false);
+    }
+
+    private async Task StartChatOperationAsync(
+        CancellationTokenSource operationCancellation,
+        long version)
+    {
         try
         {
-            await connectionTask.ConfigureAwait(false);
+            await StopChatClientCoreAsync().ConfigureAwait(false);
+            if (!IsCurrentChatConnection(version, operationCancellation.Token))
+            {
+                return;
+            }
+
+            await StartChatCoreAsync(operationCancellation.Token, version).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AddSystemMessage($"Chat unavailable: {ex.Message}");
+            logger.Write(AppLogLevel.Warning, "Chat", $"Chat failed for {Target.DisplayName}", ex);
+        }
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested || disposed)
+        {
         }
         finally
         {
             lock (chatConnectionGate)
             {
-                if (ReferenceEquals(chatConnectionTask, connectionTask))
+                if (chatConnectionCancellation is not null &&
+                    ReferenceEquals(chatConnectionCancellation, operationCancellation))
                 {
+                    chatConnectionCancellation = null;
                     chatConnectionTask = null;
                 }
             }
+
+            operationCancellation.Dispose();
         }
     }
 
-    private async Task StartChatCoreAsync(CancellationToken cancellationToken)
+    private async Task StartChatCoreAsync(CancellationToken cancellationToken, long version)
     {
         IChatClient? client = null;
         try
         {
-            await StopChatClientAsync();
-            client = chatFactory.Create(Target.Platform);
-            AttachChatClient(client);
-            chatClient = client;
-            await client.ConnectAsync(Target, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            if (client is not null && ReferenceEquals(chatClient, client))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsCurrentChatConnection(version, cancellationToken))
             {
-                chatClient = null;
-                DetachChatClient(client);
-                try
-                {
-                    await client.DisposeAsync();
-                }
-                catch (Exception disposeException)
-                {
-                    logger.Write(AppLogLevel.Warning, "Chat", $"Failed to dispose failed chat client for {Target.DisplayName}.", disposeException);
-                }
+                return;
             }
 
-            AddSystemMessage($"Chat unavailable: {ex.Message}");
-            logger.Write(AppLogLevel.Warning, "Chat", $"Chat failed for {Target.DisplayName}", ex);
+            client = chatFactory.Create(Target.Platform);
+            if (!IsCurrentChatConnection(version, cancellationToken))
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
+                return;
+            }
+
+            chatClient = client;
+            AttachChatClient(client);
+            await client.ConnectAsync(Target, cancellationToken).ConfigureAwait(false);
+            if (!IsCurrentChatConnection(version, cancellationToken))
+            {
+                await DisposeCurrentChatClientAsync(client).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (client is not null)
+            {
+                await DisposeCurrentChatClientAsync(client).ConfigureAwait(false);
+            }
+        }
+        catch (Exception)
+        {
+            if (client is not null)
+            {
+                await DisposeCurrentChatClientAsync(client).ConfigureAwait(false);
+            }
+
+            throw;
+        }
+    }
+
+    private bool IsCurrentChatConnection(long version, CancellationToken cancellationToken)
+    {
+        lock (chatConnectionGate)
+        {
+            return !disposed &&
+            version == chatConnectionVersion &&
+                !cancellationToken.IsCancellationRequested;
         }
     }
 
@@ -2336,10 +3176,58 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private async Task StopChatClientAsync()
     {
+        Task? connectionTask;
+        CancellationTokenSource? connectionCancellation;
+        lock (chatConnectionGate)
+        {
+            chatConnectionVersion++;
+            connectionTask = chatConnectionTask;
+            connectionCancellation = chatConnectionCancellation;
+        }
+
+        CancelCancellationSource(connectionCancellation);
+        if (connectionTask is not null)
+        {
+            try
+            {
+                await connectionTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.Write(AppLogLevel.Warning, "Chat", $"Chat startup cleanup failed for {Target.DisplayName}.", ex);
+            }
+        }
+
+        await StopChatClientCoreAsync().ConfigureAwait(false);
+    }
+
+    private async Task StopChatClientCoreAsync()
+    {
         var client = DetachChatClientForStop();
         if (client is not null)
         {
-            await DisposeDetachedChatClientAsync(client);
+            await DisposeDetachedChatClientAsync(client).ConfigureAwait(false);
+        }
+    }
+
+    private async Task DisposeCurrentChatClientAsync(IChatClient client)
+    {
+        if (ReferenceEquals(chatClient, client))
+        {
+            chatClient = null;
+            DetachChatClient(client);
+        }
+
+        try
+        {
+            await client.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception disposeException)
+        {
+            logger.Write(AppLogLevel.Warning, "Chat", $"Failed to dispose failed chat client for {Target.DisplayName}.", disposeException);
         }
     }
 
@@ -2361,7 +3249,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         await client.DisposeAsync();
     }
 
-    private void InitializeExplicitVodReplaySession(AppSettings settings)
+    private void InitializeExplicitVodReplaySession(
+        AppSettings settings,
+        TwitchSubOnlyVodResolution? subOnlyVodResolution = null)
     {
         if (!settings.Replay.Enabled)
         {
@@ -2371,7 +3261,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         if (Target.IsExplicitTwitchVod)
         {
-            InitializeExplicitTwitchVodReplaySession();
+            InitializeExplicitTwitchVodReplaySession(subOnlyVodResolution);
             return;
         }
 
@@ -2384,11 +3274,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         SetReplayUnavailable("The selected VOD type is not supported for replay seeking.");
     }
 
-    private void InitializeExplicitTwitchVodReplaySession()
+    private void InitializeExplicitTwitchVodReplaySession(
+        TwitchSubOnlyVodResolution? subOnlyVodResolution = null)
     {
         if (!TryValidateExplicitVodReplayFields(
                 "Twitch",
                 requireDirectHlsSource: false,
+                fallbackDuration: subOnlyVodResolution?.MediaDuration,
                 out var mediaId,
                 out var duration))
         {
@@ -2397,10 +3289,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         var replay = new ReplaySessionInfo(
             Target.Platform,
-            Target.Channel,
+            string.IsNullOrWhiteSpace(subOnlyVodResolution?.OwnerLogin)
+                ? Target.Channel
+                : subOnlyVodResolution.OwnerLogin,
             Target.Url,
             mediaId,
-            null,
+            subOnlyVodResolution?.CreatedAtUtc,
             duration,
             true,
             "",
@@ -2416,6 +3310,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         if (!TryValidateExplicitVodReplayFields(
                 "Kick",
                 requireDirectHlsSource: true,
+                fallbackDuration: null,
                 out var mediaId,
                 out var duration))
         {
@@ -2449,11 +3344,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private bool TryValidateExplicitVodReplayFields(
         string platformName,
         bool requireDirectHlsSource,
+        TimeSpan? fallbackDuration,
         out string mediaId,
         out TimeSpan duration)
     {
         mediaId = Target.MediaId.Trim();
-        duration = Target.MediaDuration;
+        duration = Target.MediaDuration > TimeSpan.Zero
+            ? Target.MediaDuration
+            : fallbackDuration.GetValueOrDefault();
 
         if (string.IsNullOrWhiteSpace(mediaId))
         {
@@ -2489,11 +3387,29 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         QueueEmptyReplayChatWindowUiApply(clearNativeOverlayImmediately: true);
     }
 
-    private async Task RefreshReplayAvailabilityAsync(
+    private Task RefreshReplayAvailabilityAsync(
         AppSettings settings,
         CancellationToken cancellationToken,
         long refreshVersion = 0)
     {
+        return RefreshReplayAvailabilityCoreAsync(
+            settings,
+            cancellationToken,
+            refreshVersion,
+            prefetchPlaybackUrl: true);
+    }
+
+    private async Task RefreshReplayAvailabilityCoreAsync(
+        AppSettings settings,
+        CancellationToken cancellationToken,
+        long refreshVersion,
+        bool prefetchPlaybackUrl)
+    {
+        if (IsBackgroundResourceServicesSuspended)
+        {
+            return;
+        }
+
         if (!settings.Replay.Enabled)
         {
             if (IsReplayAvailabilityRefreshCurrent(refreshVersion))
@@ -2517,7 +3433,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         try
         {
             var replay = await replayResolver.ResolveCurrentReplayAsync(Target, Quality, settings, cancellationToken);
-            if (!IsReplayAvailabilityRefreshCurrent(refreshVersion))
+            if (IsBackgroundResourceServicesSuspended ||
+                !IsReplayAvailabilityRefreshCurrent(refreshVersion))
             {
                 return;
             }
@@ -2544,7 +3461,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 await StopLiveDvrPromotionPollingAsync();
             }
 
-            QueueReplayPlaybackUrlResolution(replay, settings);
+            if (prefetchPlaybackUrl)
+            {
+                QueueReplayPlaybackUrlResolution(replay, settings);
+            }
 
             var duration = GetCurrentReplayDuration(replay);
             dispatch(() =>
@@ -2593,8 +3513,15 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         await refreshTask.WaitAsync(cancellationToken);
     }
 
-    private void StartReplayAvailabilityRefreshInBackground(AppSettings settings)
+    private void StartReplayAvailabilityRefreshInBackground(
+        AppSettings settings,
+        bool prefetchPlaybackUrl = true)
     {
+        if (IsBackgroundResourceServicesSuspended)
+        {
+            return;
+        }
+
         CancelReplayAvailabilityRefresh();
         var cancellation = new CancellationTokenSource();
         var cancellationToken = cancellation.Token;
@@ -2607,7 +3534,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             {
                 try
                 {
-                    await RefreshReplayAvailabilityAsync(settings, cancellationToken, refreshVersion);
+                    await RefreshReplayAvailabilityCoreAsync(
+                        settings,
+                        cancellationToken,
+                        refreshVersion,
+                        prefetchPlaybackUrl);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -2654,6 +3585,24 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private void CancelReplayAvailabilityPolling()
+    {
+        CancellationTokenSource? cancellation;
+        lock (replayAvailabilityRefreshGate)
+        {
+            cancellation = replayAvailabilityRefreshCancellation;
+            Interlocked.Increment(ref replayAvailabilityRefreshVersion);
+        }
+
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
     private IReadOnlyList<ReplayTransitionWork> PrepareReplayTransitionWork(
         ReplaySessionInfo replay,
         AppSettings settings)
@@ -2664,11 +3613,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             ? new ReplayTransitionWork(
                 "stop live native overlay controller",
                 StopNativeOverlayChatAfterReplayTransitionAsync,
-                RunOnPlaybackFailure: true)
+                RunOnPlaybackFailure: true,
+                RunBeforePlayback: true)
             : new ReplayTransitionWork(
                 "stop live native overlay controller",
                 () => StopDetachedNativeOverlayChatAfterReplayTransitionAsync(detachedNativeOverlayChat),
-                RunOnPlaybackFailure: true));
+                RunOnPlaybackFailure: true,
+                RunBeforePlayback: true));
 
         if (ShouldUseCapturedReplayChat(replay))
         {
@@ -2709,26 +3660,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private async Task StopNativeOverlayChatAfterReplayTransitionAsync()
     {
         await StopNativeOverlayChatAsync(clearOverlay: false).ConfigureAwait(false);
-        dispatch(() =>
-        {
-            if (IsReplayMode || IsBehindLive)
-            {
-                QueueNativeChatOverlayUpdateAfterReplayWindowApply();
-            }
-        });
     }
 
     private async Task StopDetachedNativeOverlayChatAfterReplayTransitionAsync(DetachedNativeOverlayChat detached)
     {
         SuppressNativeOverlayStoppedNotice(detached.Process);
         await StopDetachedNativeOverlayChatAsync(detached, clearOverlay: false).ConfigureAwait(false);
-        dispatch(() =>
-        {
-            if (IsReplayMode || IsBehindLive)
-            {
-                QueueNativeChatOverlayUpdateAfterReplayWindowApply();
-            }
-        });
     }
 
     private void SuppressNativeOverlayStoppedNotice(Process? process)
@@ -2816,7 +3753,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
 
         var key = CreateReplayPlaybackUrlKey(replay, settings);
-        if (IsDirectReplayPlaybackUrl(replay))
+        if (IsDirectReplayPlaybackUrl(replay) &&
+            !ShouldTrySubOnlyVodFallback(key))
         {
             ReplayPlaybackUrlResolution? previousDirectResolution;
             lock (replayPlaybackUrlResolutionGate)
@@ -2925,14 +3863,30 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         return fallbackResolved;
     }
 
-    private Task<StreamlinkResolvedUrl> ResolveReplayPlaybackUrlCoreAsync(
+    private async Task<StreamlinkResolvedUrl> ResolveReplayPlaybackUrlCoreAsync(
         ReplayPlaybackUrlKey key,
         CancellationToken cancellationToken)
     {
         if (key.Target.Platform == PlatformKind.Twitch &&
             TryCreateDirectReplayPlaybackUri(key.Target.Url, out var directReplayUri))
         {
-            return Task.FromResult(new StreamlinkResolvedUrl(directReplayUri, "Using direct replay HLS URL."));
+            if (ShouldTrySubOnlyVodFallback(key))
+            {
+                try
+                {
+                    return await ResolveSubOnlyReplayPlaybackUrlAsync(key, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception fallbackError) when (fallbackError is not OperationCanceledException)
+                {
+                    logger.Write(
+                        AppLogLevel.Info,
+                        "Replay",
+                        $"Sub-only replay fallback was unavailable for {Target.DisplayName}; using the direct replay HLS URL.",
+                        fallbackError);
+                }
+            }
+
+            return new StreamlinkResolvedUrl(directReplayUri, "Using direct replay HLS URL.");
         }
 
         var request = new StreamTransportRequest(
@@ -2942,7 +3896,69 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             false,
             CommandLineTokenizer.Tokenize(key.CustomArguments));
 
-        return streamlinkService.ResolveStreamUrlAsync(request, cancellationToken);
+        try
+        {
+            return await streamlinkService.ResolveStreamUrlAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception streamlinkError) when (streamlinkError is not OperationCanceledException &&
+            ShouldTrySubOnlyVodFallback(key))
+        {
+            logger.Write(
+                AppLogLevel.Info,
+                "Replay",
+                $"Streamlink could not resolve replay {key.ReplayId} for {Target.DisplayName} ({streamlinkError.Message}); trying the sub-only VOD fallback.");
+            try
+            {
+                return await ResolveSubOnlyReplayPlaybackUrlAsync(key, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception fallbackError) when (fallbackError is not OperationCanceledException)
+            {
+                throw new InvalidOperationException(
+                    $"Streamlink could not play the live replay: {streamlinkError.Message} Sub-only fallback also failed: {fallbackError.Message}",
+                    fallbackError);
+            }
+        }
+    }
+
+    private async Task<StreamlinkResolvedUrl> ResolveSubOnlyReplayPlaybackUrlAsync(
+        ReplayPlaybackUrlKey key,
+        CancellationToken cancellationToken)
+    {
+        if (twitchSubOnlyVodResolver is null)
+        {
+            throw new InvalidOperationException("The sub-only VOD resolver is not configured.");
+        }
+
+        var bypass = await twitchSubOnlyVodResolver.ResolveAsync(
+                new TwitchSubOnlyVodRequest(key.ReplayId, key.Quality),
+                cancellationToken)
+            .ConfigureAwait(false);
+        AddSystemMessage($"Playing sub-only live replay via direct playlist ({bypass.QualityKey}).");
+        return new StreamlinkResolvedUrl(bypass.PlaybackUri, bypass.Message);
+    }
+
+    private bool ShouldTrySubOnlyVodFallback(ReplayPlaybackUrlKey key)
+    {
+        if (key.Target.Platform != PlatformKind.Twitch ||
+            twitchSubOnlyVodResolver is null ||
+            !IsNumericTwitchVodId(key.ReplayId))
+        {
+            return false;
+        }
+
+        if (!TryCreateDirectReplayPlaybackUri(key.Target.Url, out _))
+        {
+            return true;
+        }
+
+        return Uri.TryCreate(key.Target.Url, UriKind.Absolute, out var uri) &&
+            uri.Host.EndsWith(".cloudfront.net", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsNumericTwitchVodId(string value)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+            value.All(static character => character is >= '0' and <= '9');
     }
 
     private bool CanResolveReplayPlaybackUrl(ReplaySessionInfo replay, AppSettings settings)
@@ -3100,13 +4116,18 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         if (replaySession is not { IsAvailable: true } replay ||
             currentSettings is null ||
             CanSeekCurrentReplayInPlace(replay) ||
-            !CanResolveReplayPlaybackUrl(replay, currentSettings) ||
-            IsDirectReplayPlaybackUrl(replay))
+            !CanResolveReplayPlaybackUrl(replay, currentSettings))
         {
             return true;
         }
 
         var key = CreateReplayPlaybackUrlKey(replay, currentSettings);
+        if (IsDirectReplayPlaybackUrl(replay) &&
+            !ShouldTrySubOnlyVodFallback(key))
+        {
+            return true;
+        }
+
         lock (replayPlaybackUrlResolutionGate)
         {
             return replayPlaybackUrlReadinessKey is { } readinessKey &&
@@ -3163,13 +4184,18 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private bool IsReplayPlaybackUrlPrefetchPending(ReplaySessionInfo replay, AppSettings settings)
     {
-        if (!CanResolveReplayPlaybackUrl(replay, settings) ||
-            IsDirectReplayPlaybackUrl(replay))
+        if (!CanResolveReplayPlaybackUrl(replay, settings))
         {
             return false;
         }
 
         var key = CreateReplayPlaybackUrlKey(replay, settings);
+        if (IsDirectReplayPlaybackUrl(replay) &&
+            !ShouldTrySubOnlyVodFallback(key))
+        {
+            return false;
+        }
+
         lock (replayPlaybackUrlResolutionGate)
         {
             return replayPlaybackUrlReadinessKey is { } readinessKey &&
@@ -3187,6 +4213,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private static bool TryCreateDirectReplayPlaybackUri(string replayUrl, out Uri uri)
     {
         if (Uri.TryCreate(replayUrl, UriKind.Absolute, out uri!) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
             uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
         {
             return true;
@@ -3241,6 +4268,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void StartReplayClockPolling()
     {
+        if (IsBackgroundResourceServicesSuspended)
+        {
+            return;
+        }
+
         replayClockPollingCancellation?.Cancel();
         replayClockPollingCancellation?.Dispose();
 
@@ -3827,7 +4859,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private sealed record ReplayTransitionWork(
         string Description,
         Func<Task> ExecuteAsync,
-        bool RunOnPlaybackFailure);
+        bool RunOnPlaybackFailure,
+        bool RunBeforePlayback = false);
 
     private async Task LoadReplayChatAsync(
         ReplaySessionInfo replay,
@@ -3875,9 +4908,25 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        var loadStopwatch = Stopwatch.StartNew();
+        logger.Write(
+            AppLogLevel.Debug,
+            "Replay",
+            $"Replay chat load started for {Target.DisplayName} at {StreamViewModelHelpers.FormatClockTime(offset)} (VOD {replay.ReplayId}).");
         var result = await replayChatProvider.LoadChatAsync(replay, settings, offset, cancellationToken);
+        loadStopwatch.Stop();
+        logger.Write(
+            result.IsAvailable ? AppLogLevel.Debug : AppLogLevel.Info,
+            "Replay",
+            $"Replay chat load completed for {Target.DisplayName} at {StreamViewModelHelpers.FormatClockTime(offset)} " +
+            $"in {loadStopwatch.Elapsed.TotalMilliseconds:0} ms: available={result.IsAvailable.ToString().ToLowerInvariant()}, " +
+            $"messages={result.Messages.Count}, coverage={FormatReplayChatCoverage(result)}.");
         if (!IsReplayChatLoadCurrent(replay, replayChatVersion))
         {
+            logger.Write(
+                AppLogLevel.Debug,
+                "Replay",
+                $"Discarded stale replay chat load for {Target.DisplayName} at {StreamViewModelHelpers.FormatClockTime(offset)} (VOD {replay.ReplayId}).");
             return;
         }
 
@@ -3913,6 +4962,17 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         replayChatSelector.AddRange(result.Messages);
         UpdateReplayChatWindow(offset, force: true);
+    }
+
+    private static string FormatReplayChatCoverage(ReplayChatLoadResult result)
+    {
+        var from = result.LoadedFromOffset is { } loadedFrom
+            ? StreamViewModelHelpers.FormatClockTime(loadedFrom)
+            : "(none)";
+        var through = result.LoadedThroughOffset is { } loadedThrough
+            ? StreamViewModelHelpers.FormatClockTime(loadedThrough)
+            : "(none)";
+        return $"{from}-{through}";
     }
 
     private long ClearReplayChat()
@@ -4175,7 +5235,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             StartReplayChatLoadCore(request, useCapturedReplayChat: true);
         }
 
-        CancelReplayChatLoadSource(staleCancellation);
+        CancelCancellationSource(staleCancellation);
     }
 
     private void StartReplayChatLoadCore(ReplayChatLoadRequest request, bool useCapturedReplayChat)
@@ -4788,10 +5848,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             pendingCapturedReplayChatLoadRequest = null;
         }
 
-        CancelReplayChatLoadSource(cancellation);
+        CancelCancellationSource(cancellation);
     }
 
-    private static void CancelReplayChatLoadSource(CancellationTokenSource? cancellation)
+    private static void CancelCancellationSource(CancellationTokenSource? cancellation)
     {
         if (cancellation is null)
         {
@@ -5168,7 +6228,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void StartLiveDvrPromotionPolling(AppSettings settings)
     {
-        if (replayResolver is null)
+        if (IsBackgroundResourceServicesSuspended || replayResolver is null)
         {
             return;
         }
@@ -5395,7 +6455,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             selectionStopwatch.Elapsed,
             "Replay",
             $"Replay chat window selection took {selectionStopwatch.Elapsed.TotalMilliseconds:0} ms for {selection.Messages.Count} visible messages.");
-
         QueueReplayChatWindowUiApply(selection, force, expectedReplaySeekOperationVersion);
     }
 
@@ -5644,6 +6703,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void StartViewerCountPolling(AppSettings settings)
     {
+        if (IsBackgroundResourceServicesSuspended)
+        {
+            return;
+        }
+
         if (viewerCountService is null)
         {
             SetViewerCountUnavailable("Viewer count service is not configured.");
@@ -5674,6 +6738,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void StartVideoAspectRatioPolling()
     {
+        if (IsBackgroundResourceServicesSuspended)
+        {
+            return;
+        }
+
         videoAspectRatioPollingCancellation?.Cancel();
         videoAspectRatioPollingCancellation?.Dispose();
         ResetVideoAspectRatioPollingBackoff();
@@ -5930,35 +6999,21 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void AttachChatClient(IChatClient client)
     {
-        client.MessageReceived += ChatClientOnMessageReceived;
-        client.StatusChanged += ChatClientOnStatusChanged;
-        if (client is ITwitchPredictionClient predictions)
-        {
-            twitchPredictionClient = predictions;
-            predictions.PredictionReceived += TwitchPredictionClientOnPredictionReceived;
-            predictions.PredictionAccessChanged += TwitchPredictionClientOnPredictionAccessChanged;
-            ApplyTwitchPredictionAccess(predictions.PredictionAccess);
-        }
+        chatClientEventCoordinator.Attach(client);
+        twitchPredictionClient = chatClientEventCoordinator.PredictionClient;
     }
 
     private void DetachChatClient(IChatClient client)
     {
-        client.MessageReceived -= ChatClientOnMessageReceived;
-        client.StatusChanged -= ChatClientOnStatusChanged;
-        if (client is ITwitchPredictionClient predictions)
-        {
-            predictions.PredictionReceived -= TwitchPredictionClientOnPredictionReceived;
-            predictions.PredictionAccessChanged -= TwitchPredictionClientOnPredictionAccessChanged;
-            if (ReferenceEquals(twitchPredictionClient, predictions))
-            {
-                twitchPredictionClient = null;
-                ApplyTwitchPredictionAccess(TwitchPredictionAccessState.Pending);
-            }
-        }
+        chatClientEventCoordinator.Detach(client);
+        twitchPredictionClient = chatClientEventCoordinator.PredictionClient;
     }
 
     private async Task StopPlaybackOnlyAsync(TimeSpan? playbackStopTimeout = null)
     {
+        livePlaybackConnectionSuspended = false;
+        pendingResumeHoldPosition = null;
+        pendingResumeHoldAllowsLiveTransition = false;
         await StopVideoAspectRatioPollingAsync();
         await StopReplayClockPollingAsync();
         await StopNativeReplayOverlayEventHostAsync();
@@ -6060,59 +7115,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private async Task StopPlaybackEngineAsync(IPlaybackEngine engine, TimeSpan? timeout, IDisposable? parkingSurface)
     {
-        var shutdownTask = Task.Run(async () =>
-        {
-            try
-            {
-                await engine.StopAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                engine.Dispose();
-                parkingSurface?.Dispose();
-            }
-        });
-
-        try
-        {
-            if (timeout is null)
-            {
-                await shutdownTask;
-            }
-            else
-            {
-                await shutdownTask.WaitAsync(timeout.Value);
-            }
-        }
-        catch (TimeoutException)
-        {
-            logger.Write(
-                AppLogLevel.Warning,
-                "Playback",
-                $"Timed out stopping playback for {Target.DisplayName}; cleanup will continue in the background.");
-            ObserveBackgroundShutdown(shutdownTask);
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Playback", $"Failed to stop playback for {Target.DisplayName}.", ex);
-        }
-    }
-
-    private void ObserveBackgroundShutdown(Task shutdownTask)
-    {
-        _ = shutdownTask.ContinueWith(
-            completed =>
-            {
-                if (completed.Exception is not null)
-                {
-                    logger.Write(
-                        AppLogLevel.Warning,
-                        "Playback",
-                        $"Background playback cleanup failed for {Target.DisplayName}.",
-                        completed.Exception.GetBaseException());
-                }
-            },
-            TaskScheduler.Default);
+        await playbackResourceCoordinator.StopAsync(
+            engine,
+            timeout,
+            parkingSurface,
+            lifetimeCancellation.Token,
+            playbackCleanupController.Observe);
     }
 
     private void RegisterActiveStartCancellation(CancellationTokenSource cancellation)
@@ -6260,19 +7268,41 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var capturedReplayMessage = TryCaptureReplayChatMessage(message);
-        if (IsBehindLive || IsReplayMode)
+        // The live path only touches lock-protected buffers here. AddChatMessage
+        // performs the single coalesced dispatcher hop that owns the WPF-bound
+        // collections, rather than scheduling one dispatcher callback per IRC
+        // message before that batching can take effect.
+        if (!IsBehindLive && !IsReplayMode)
         {
-            if (capturedReplayMessage is not null &&
-                IsCapturedReplayChatMessageInCurrentWindow(capturedReplayMessage))
-            {
-                RefreshCapturedReplayChat(GetCurrentReplayStepOffset(), force: true);
-            }
-
+            // Replay capture is protected by capturedReplayChatGate and must be
+            // updated immediately when a replay session is already known; only
+            // remembering the source message would miss later live messages.
+            _ = TryCaptureReplayChatMessage(message);
+            AddChatMessage(message, isRememberedDockedLocalEcho: false);
             return;
         }
 
-        AddChatMessage(message, isRememberedDockedLocalEcho: false);
+        dispatch(() =>
+        {
+            if (!ReferenceEquals(sender, chatClient))
+            {
+                return;
+            }
+
+            var capturedReplayMessage = TryCaptureReplayChatMessage(message);
+            if (IsBehindLive || IsReplayMode)
+            {
+                if (capturedReplayMessage is not null &&
+                    IsCapturedReplayChatMessageInCurrentWindow(capturedReplayMessage))
+                {
+                    RefreshCapturedReplayChat(GetCurrentReplayStepOffset(), force: true);
+                }
+
+                return;
+            }
+
+            AddChatMessage(message, isRememberedDockedLocalEcho: false);
+        });
     }
 
     private bool IsCapturedReplayChatMessageInCurrentWindow(ReplayChatMessage message)
@@ -6293,32 +7323,41 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void ChatClientOnStatusChanged(object? sender, string message)
     {
-        if (!ReferenceEquals(sender, chatClient))
+        dispatch(() =>
         {
-            return;
-        }
+            if (!ReferenceEquals(sender, chatClient))
+            {
+                return;
+            }
 
-        AddSystemMessage(message);
+            AddSystemMessage(message);
+        });
     }
 
     private void TwitchPredictionClientOnPredictionAccessChanged(object? sender, TwitchPredictionAccessState access)
     {
-        if (!ReferenceEquals(sender, twitchPredictionClient))
+        dispatch(() =>
         {
-            return;
-        }
+            if (!ReferenceEquals(sender, twitchPredictionClient))
+            {
+                return;
+            }
 
-        dispatch(() => ApplyTwitchPredictionAccess(access));
+            ApplyTwitchPredictionAccess(access);
+        });
     }
 
     private void TwitchPredictionClientOnPredictionReceived(object? sender, TwitchPrediction prediction)
     {
-        if (!ReferenceEquals(sender, twitchPredictionClient))
+        dispatch(() =>
         {
-            return;
-        }
+            if (!ReferenceEquals(sender, twitchPredictionClient))
+            {
+                return;
+            }
 
-        UpsertTwitchPrediction(prediction);
+            UpsertTwitchPredictionCore(prediction);
+        });
     }
 
     private void ApplyTwitchPredictionAccess(TwitchPredictionAccessState access)
@@ -6330,69 +7369,70 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void UpsertTwitchPrediction(TwitchPrediction prediction)
     {
-        if (!CanProcessTwitchPredictionEvents ||
-            string.IsNullOrWhiteSpace(prediction.Id))
+        dispatch(() => UpsertTwitchPredictionCore(prediction));
+    }
+
+    private void UpsertTwitchPredictionCore(TwitchPrediction prediction)
+    {
+        if (!CanProcessTwitchPredictionEvents || string.IsNullOrWhiteSpace(prediction.Id))
         {
             return;
         }
 
-        dispatch(() =>
+        var existing = DockedChatFeedItems
+            .OfType<TwitchPredictionFeedItemViewModel>()
+            .FirstOrDefault(item => string.Equals(item.PredictionId, prediction.Id, StringComparison.Ordinal));
+
+        if (prediction.IsOpen)
         {
-            var existing = DockedChatFeedItems
-                .OfType<TwitchPredictionFeedItemViewModel>()
-                .FirstOrDefault(item => string.Equals(item.PredictionId, prediction.Id, StringComparison.Ordinal));
-
-            if (prediction.IsOpen)
+            for (var index = DockedChatFeedItems.Count - 1; index >= 0; index--)
             {
-                for (var index = DockedChatFeedItems.Count - 1; index >= 0; index--)
+                if (DockedChatFeedItems[index] is TwitchPredictionFeedItemViewModel card &&
+                    !string.Equals(card.PredictionId, prediction.Id, StringComparison.Ordinal))
                 {
-                    if (DockedChatFeedItems[index] is TwitchPredictionFeedItemViewModel card &&
-                        !string.Equals(card.PredictionId, prediction.Id, StringComparison.Ordinal))
-                    {
-                        DockedChatFeedItems.RemoveAt(index);
-                    }
+                    DockedChatFeedItems.RemoveAt(index);
                 }
+            }
 
-                if (existing is null)
-                {
-                    existing = new TwitchPredictionFeedItemViewModel(
-                        prediction,
-                        twitchPredictionAccess.CanManage,
-                        LockTwitchPredictionAsync,
-                        CancelTwitchPredictionAsync,
-                        ResolveTwitchPredictionAsync);
-                    DockedChatFeedItems.Add(existing);
-                }
-                else
-                {
-                    existing.Update(prediction, twitchPredictionAccess.CanManage);
-                }
-
-                activeTwitchPredictionFeedItem = existing;
-                StartTwitchPredictionClock();
+            if (existing is null)
+            {
+                existing = new TwitchPredictionFeedItemViewModel(
+                    prediction,
+                    twitchPredictionAccess.CanManage,
+                    LockTwitchPredictionAsync,
+                    CancelTwitchPredictionAsync,
+                    ResolveTwitchPredictionAsync);
+                DockedChatFeedItems.Add(existing);
             }
             else
             {
-                if (existing is not null)
-                {
-                    DockedChatFeedItems.Remove(existing);
-                }
-
-                if (activeTwitchPredictionFeedItem is not null &&
-                    string.Equals(activeTwitchPredictionFeedItem.PredictionId, prediction.Id, StringComparison.Ordinal))
-                {
-                    activeTwitchPredictionFeedItem = null;
-                }
-
-                if (!DockedChatFeedItems.OfType<TwitchPredictionFeedItemViewModel>().Any(card => card.IsOpen))
-                {
-                    StopTwitchPredictionClock();
-                }
+                existing.Update(prediction, twitchPredictionAccess.CanManage);
             }
 
-            PruneDockedChatFeedItems();
-            RaiseTwitchPredictionCommandState();
-        });
+            activeTwitchPredictionFeedItem = existing;
+            StartTwitchPredictionClock();
+        }
+        else
+        {
+            if (existing is not null)
+            {
+                DockedChatFeedItems.Remove(existing);
+            }
+
+            if (activeTwitchPredictionFeedItem is not null &&
+                string.Equals(activeTwitchPredictionFeedItem.PredictionId, prediction.Id, StringComparison.Ordinal))
+            {
+                activeTwitchPredictionFeedItem = null;
+            }
+
+            if (!DockedChatFeedItems.OfType<TwitchPredictionFeedItemViewModel>().Any(card => card.IsOpen))
+            {
+                StopTwitchPredictionClock();
+            }
+        }
+
+        PruneDockedChatFeedItems();
+        RaiseTwitchPredictionCommandState();
     }
 
     private void RaiseTwitchPredictionCommandState()
@@ -6432,6 +7472,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void AddSystemMessage(string message)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var systemMessage = new ChatMessage(Target.Platform, Target.Channel, "system", message, DateTimeOffset.Now, "#A6E3A1");
         AddChatMessage(systemMessage, isRememberedDockedLocalEcho: false);
     }
@@ -6457,6 +7502,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void AddChatMessage(ChatMessage message, bool isRememberedDockedLocalEcho)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var shouldDispatch = false;
         lock (chatMessageUiGate)
         {
@@ -6682,8 +7732,16 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         return message.Replace('\r', ' ').Replace('\n', ' ').Trim();
     }
 
-    private async Task<bool> StartNativeOverlayChatAsync(AppSettings settings, CancellationToken cancellationToken)
+    private async Task<bool> StartNativeOverlayChatAsync(
+        AppSettings settings,
+        CancellationToken cancellationToken,
+        long? operationVersion = null)
     {
+        if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken))
+        {
+            return false;
+        }
+
         var engine = playbackEngine;
         if (engine is not { UsesNativeOverlay: true } ||
             string.IsNullOrWhiteSpace(engine.NativeOverlayPipeName))
@@ -6691,7 +7749,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return false;
         }
 
-        if (IsReplayMode || IsBehindLive)
+        if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine) ||
+            IsReplayMode || IsBehindLive)
         {
             return false;
         }
@@ -6699,11 +7758,17 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         var pipeName = engine.NativeOverlayPipeName!;
         var launchKey = BuildNativeOverlayLaunchKey(settings);
         await StopNativeReplayOverlayEventHostAsync();
+        if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine))
+        {
+            return false;
+        }
+
         var overlayDirectory = ResolveNativeOverlayControllerDirectory(engine, settings.Chat);
         var controllerPath = string.IsNullOrWhiteSpace(overlayDirectory)
             ? GetConfiguredNativeOverlayControllerPath(settings.Chat)
             : VlcOverlayDirectoryResolver.GetControllerPath(overlayDirectory);
-        if (IsReplayMode || IsBehindLive)
+        if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine) ||
+            IsReplayMode || IsBehindLive)
         {
             return false;
         }
@@ -6718,6 +7783,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         await nativeOverlayProcessGate.WaitAsync(cancellationToken);
         try
         {
+            if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine))
+            {
+                return false;
+            }
+
             if (IsProcessRunning(nativeOverlayProcess) &&
                 string.Equals(nativeOverlayPipeName, pipeName, StringComparison.Ordinal) &&
                 string.Equals(nativeOverlayLaunchKey, launchKey, StringComparison.Ordinal))
@@ -6725,7 +7795,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 return true;
             }
 
-            if (IsReplayMode || IsBehindLive)
+            if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine) ||
+                IsReplayMode || IsBehindLive)
             {
                 return false;
             }
@@ -6745,7 +7816,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             {
                 kickBadgeManifestPath = FindKickBadgeManifestPath();
                 kickInfo = await ResolveKickOverlayChannelInfoAsync(settings.Chat, settings.Chat.KickSendAsBot, cancellationToken);
-                if (IsReplayMode || IsBehindLive)
+                if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine) ||
+                    IsReplayMode || IsBehindLive)
                 {
                     return false;
                 }
@@ -6766,7 +7838,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 launchKey = BuildNativeOverlayLaunchKey(settings, twitchBadgeManifestPath: twitchBadgeManifestPath);
             }
 
-            if (IsReplayMode || IsBehindLive)
+            if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine) ||
+                IsReplayMode || IsBehindLive)
             {
                 return false;
             }
@@ -6804,7 +7877,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             startInfo.ArgumentList.Add("--owner-process-id");
             startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
             var fontSize = GetNativeOverlayFontSize(settings);
-            if (NativeOverlayControllerSupportsFontSize(controllerPath))
+            if (await nativeOverlayCapabilityProbe.SupportsFontSizeAsync(controllerPath, cancellationToken))
             {
                 startInfo.ArgumentList.Add(NativeOverlayFontSizeArgument);
                 startInfo.ArgumentList.Add(fontSize.ToString(CultureInfo.InvariantCulture));
@@ -6885,6 +7958,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             process.ErrorDataReceived += (_, args) => LogNativeOverlayLine(args.Data);
             process.Exited += (_, _) => OnNativeOverlayProcessExited(process);
 
+            if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine))
+            {
+                process.Dispose();
+                TryDeleteNativeOverlayTokenFile(tokenFile);
+                tokenFile = null;
+                return false;
+            }
+
             try
             {
                 if (!process.Start())
@@ -6902,6 +7983,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             {
                 DisposeFailedNativeOverlayProcess(process);
                 throw;
+            }
+
+            if (!IsCurrentNativeOverlayStartup(operationVersion, cancellationToken, engine))
+            {
+                DisposeFailedNativeOverlayProcess(process);
+                TryDeleteNativeOverlayTokenFile(tokenFile);
+                tokenFile = null;
+                return false;
             }
 
             nativeOverlayProcess = process;
@@ -6923,46 +8012,132 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private Task<bool> StartNativeOverlayChatTrackedAsync(
+        AppSettings settings,
+        CancellationToken cancellationToken,
+        bool startCaptureChatClient = false)
+    {
+        lock (nativeOverlayStartupGate)
+        {
+            if (disposed)
+            {
+                return Task.FromResult(false);
+            }
+
+            CancelCancellationSource(nativeOverlayStartupCancellation);
+            var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                lifetimeCancellation.Token,
+                cancellationToken);
+            var version = ++nativeOverlayStartupVersion;
+            var operationReady = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var task = RunNativeOverlayChatStartupWhenReadyAsync(
+                settings,
+                operationCancellation,
+                version,
+                startCaptureChatClient,
+                operationReady.Task);
+            nativeOverlayStartupCancellation = operationCancellation;
+            nativeOverlayStartupTask = task;
+            operationReady.TrySetResult();
+            return task;
+        }
+    }
+
+    private async Task<bool> RunNativeOverlayChatStartupWhenReadyAsync(
+        AppSettings settings,
+        CancellationTokenSource operationCancellation,
+        long version,
+        bool startCaptureChatClient,
+        Task operationReady)
+    {
+        await operationReady.ConfigureAwait(false);
+        return await RunNativeOverlayChatStartupAsync(
+                settings,
+                operationCancellation,
+                version,
+                startCaptureChatClient)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<bool> RunNativeOverlayChatStartupAsync(
+        AppSettings settings,
+        CancellationTokenSource operationCancellation,
+        long version,
+        bool startCaptureChatClient)
+    {
+        try
+        {
+            var started = await TryStartNativeOverlayChatAsync(
+                    settings,
+                    operationCancellation.Token,
+                    version)
+                .ConfigureAwait(false);
+            if (!IsCurrentNativeOverlayStartup(version, operationCancellation.Token))
+            {
+                return false;
+            }
+
+            if (started &&
+                startCaptureChatClient &&
+                ShouldKeepChatClientForCapturedReplay(settings))
+            {
+                await StartChatAsync(operationCancellation.Token).ConfigureAwait(false);
+                return true;
+            }
+
+            if (!started &&
+                startCaptureChatClient &&
+                ShouldKeepChatClientForCapturedReplay(settings))
+            {
+                await EnsureChatClientConnectedAsync(operationCancellation.Token).ConfigureAwait(false);
+            }
+
+            return started;
+        }
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested || disposed)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Background chat startup failed for {Target.DisplayName}.", ex);
+            return false;
+        }
+        finally
+        {
+            lock (nativeOverlayStartupGate)
+            {
+                if (ReferenceEquals(nativeOverlayStartupCancellation, operationCancellation))
+                {
+                    nativeOverlayStartupCancellation = null;
+                    nativeOverlayStartupTask = null;
+                }
+            }
+
+            operationCancellation.Dispose();
+        }
+    }
+
     private void StartNativeOverlayChatInBackground(
         AppSettings settings,
         CancellationToken cancellationToken,
         bool startCaptureChatClient = false)
     {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var started = await TryStartNativeOverlayChatAsync(settings, cancellationToken);
-                if (started &&
-                    startCaptureChatClient &&
-                    ShouldKeepChatClientForCapturedReplay(settings))
-                {
-                    await StartChatAsync(cancellationToken);
-                    return;
-                }
-
-                if (!started &&
-                    startCaptureChatClient &&
-                    ShouldKeepChatClientForCapturedReplay(settings))
-                {
-                    await EnsureChatClientConnectedAsync(cancellationToken);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-            }
-            catch (Exception ex)
-            {
-                logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Background chat startup failed for {Target.DisplayName}.", ex);
-            }
-        });
+        _ = StartNativeOverlayChatTrackedAsync(
+            settings,
+            cancellationToken,
+            startCaptureChatClient);
     }
 
-    private async Task<bool> TryStartNativeOverlayChatAsync(AppSettings settings, CancellationToken cancellationToken)
+    private async Task<bool> TryStartNativeOverlayChatAsync(
+        AppSettings settings,
+        CancellationToken cancellationToken,
+        long? operationVersion = null)
     {
         try
         {
-            return await StartNativeOverlayChatAsync(settings, cancellationToken);
+            return await StartNativeOverlayChatAsync(settings, cancellationToken, operationVersion);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -6976,8 +8151,35 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private bool IsCurrentNativeOverlayStartup(
+        long? operationVersion,
+        CancellationToken cancellationToken,
+        IPlaybackEngine? expectedEngine = null)
+    {
+        if (disposed || cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        if (expectedEngine is not null && !ReferenceEquals(expectedEngine, playbackEngine))
+        {
+            return false;
+        }
+
+        if (operationVersion is not { } version)
+        {
+            return true;
+        }
+
+        lock (nativeOverlayStartupGate)
+        {
+            return version == nativeOverlayStartupVersion;
+        }
+    }
+
     private async Task StopNativeOverlayChatAsync(bool clearOverlay = false)
     {
+        await StopNativeOverlayStartupAsync().ConfigureAwait(false);
         TryReleaseNativeOverlayChatInputFocus();
 
         DetachedNativeOverlayChat? detached;
@@ -6994,6 +8196,36 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         if (detached is not null)
         {
             await StopDetachedNativeOverlayChatAsync(detached, clearOverlay);
+        }
+    }
+
+    private async Task StopNativeOverlayStartupAsync()
+    {
+        Task? startupTask;
+        CancellationTokenSource? startupCancellation;
+        lock (nativeOverlayStartupGate)
+        {
+            nativeOverlayStartupVersion++;
+            startupTask = nativeOverlayStartupTask;
+            startupCancellation = nativeOverlayStartupCancellation;
+        }
+
+        CancelCancellationSource(startupCancellation);
+        if (startupTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await startupTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Native chat overlay startup cleanup failed for {Target.DisplayName}.", ex);
         }
     }
 
@@ -7140,7 +8372,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private async Task<bool> RequestNativeOverlayShutdownAsync(string pipeName, CancellationToken cancellationToken = default)
     {
-        var shutdownMessage = BuildNativeOverlayEventMessage(NativeOverlayShutdownEventType, 0);
+        var shutdownMessage = NativeOverlayProtocolCodec.BuildEventMessage(
+            NativeOverlayProtocolCodec.ShutdownEventType,
+            0);
         var (sent, _) = await TryWriteNativeOverlayMessageAsync(
             $"{pipeName}_events",
             shutdownMessage,
@@ -7270,11 +8504,37 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         CancellationToken cancellationToken = default,
         byte[]? followupMessage = null)
     {
+        if (!NativeOverlayProtocolCodec.TryValidateEncodedMessage(message, out var invalidReason))
+        {
+            var exception = new InvalidDataException($"Invalid native-overlay message: {invalidReason}.");
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", exception.Message);
+            return (false, exception);
+        }
+
+        if (followupMessage is not null &&
+            !NativeOverlayProtocolCodec.TryValidateEncodedMessage(followupMessage, out invalidReason))
+        {
+            var exception = new InvalidDataException($"Invalid native-overlay follow-up message: {invalidReason}.");
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", exception.Message);
+            return (false, exception);
+        }
+
         var deadline = DateTimeOffset.UtcNow + timeout;
         Exception? lastException = null;
 
         while (DateTimeOffset.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
         {
+            using var attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            // ConnectAsync has its own timeout, but pipe writes and FlushAsync do not.  Use one
+            // linked deadline for the complete operation so a connected-but-stalled overlay
+            // cannot keep the replay writer blocked indefinitely.
+            attemptCancellation.CancelAfter(remaining);
             try
             {
                 await using var pipe = new NamedPipeClientStream(
@@ -7285,16 +8545,22 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 var connectTimeout = (int)Math.Clamp(
                     NativeOverlayPipeConnectTimeout.TotalMilliseconds,
                     1,
-                    Math.Max(1, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds));
-                await pipe.ConnectAsync(connectTimeout, cancellationToken);
-                await pipe.WriteAsync(message, cancellationToken);
+                    Math.Max(1, remaining.TotalMilliseconds));
+                await pipe.ConnectAsync(connectTimeout, attemptCancellation.Token);
+                await pipe.WriteAsync(message, attemptCancellation.Token);
                 if (followupMessage is { Length: > 0 })
                 {
-                    await pipe.WriteAsync(followupMessage, cancellationToken);
+                    await pipe.WriteAsync(followupMessage, attemptCancellation.Token);
                 }
 
-                await pipe.FlushAsync(cancellationToken);
+                await pipe.FlushAsync(attemptCancellation.Token);
                 return (true, null);
+            }
+            catch (OperationCanceledException) when (
+                !cancellationToken.IsCancellationRequested &&
+                attemptCancellation.IsCancellationRequested)
+            {
+                lastException = new TimeoutException("The native VLC overlay pipe write timed out.");
             }
             catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
             {
@@ -7339,7 +8605,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         return TryWriteNativeOverlayEventSynchronously(
             $"{pipeName}_events",
-            BuildNativeOverlayEventMessage(NativeOverlayChatInputFocusEventType, 0),
+            NativeOverlayProtocolCodec.BuildEventMessage(
+                NativeOverlayProtocolCodec.ChatInputFocusEventType,
+                0),
             NativeOverlayInputFocusReleaseTimeout);
     }
 
@@ -7381,16 +8649,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
 
         return false;
-    }
-
-    private static byte[] BuildNativeOverlayEventMessage(uint type, int value)
-    {
-        var message = new byte[NativeOverlayEventMessageSize];
-        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(0, 4), NativeOverlayMagic);
-        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(4, 4), NativeOverlayVersion);
-        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(8, 4), type);
-        BinaryPrimitives.WriteInt32LittleEndian(message.AsSpan(12, 4), value);
-        return message;
     }
 
     private void LogNativeOverlayLine(string? line)
@@ -7458,8 +8716,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             kickBadgeManifestPath ??= FindKickBadgeManifestPath();
             parts.Add(FileFingerprint(kickBadgeManifestPath));
             parts.Add(chat.KickSendAsBot ? "bot" : "user");
-            parts.Add(GetConfiguredKickSetting(chat.KickChatroomIds, effectiveKickChatroomId));
-            parts.Add(GetConfiguredKickSetting(chat.KickBroadcasterUserIds, effectiveKickBroadcasterUserId));
+            parts.Add(GetConfiguredKickSetting(chat, broadcaster: false, effectiveKickChatroomId));
+            parts.Add(GetConfiguredKickSetting(chat, broadcaster: true, effectiveKickBroadcasterUserId));
             parts.Add(TokenFingerprint(kickToken ?? chat.KickOAuthToken));
             parts.Add(TokenFingerprint(chat.KickClientId));
             parts.Add(TokenFingerprint(chat.KickClientSecret));
@@ -7492,7 +8750,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            using var httpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(15), includeUserAgent: true);
             var clientId = settings.TwitchClientId.Trim();
             TwitchTokenInfo? tokenInfo = null;
 
@@ -7530,8 +8788,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 return null;
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
+            using var document = JsonDocument.Parse(responseBody);
             if (TryReadTwitchHelixUserId(document.RootElement, out var roomId))
             {
                 return CacheResolvedTwitchOverlayRoomId(roomId);
@@ -7636,9 +8894,15 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         await completion.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
     }
 
-    private string GetConfiguredKickSetting(Dictionary<string, string> values, string? fallback = null)
+    private string GetConfiguredKickSetting(
+        ChatSettings settings,
+        bool broadcaster,
+        string? fallback = null)
     {
-        return values.TryGetValue(Target.Channel, out var value) && !string.IsNullOrWhiteSpace(value)
+        var found = broadcaster
+            ? settings.TryGetKickBroadcasterUserId(Target.Channel, out var value)
+            : settings.TryGetKickChatroomId(Target.Channel, out value);
+        return found && !string.IsNullOrWhiteSpace(value)
             ? value.Trim()
             : string.IsNullOrWhiteSpace(fallback) ? "" : fallback.Trim();
     }
@@ -7733,13 +8997,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         var hasConfiguredBroadcasterUserId = false;
         var cachedInfo = resolvedKickOverlayChannelInfo;
 
-        if (settings.KickChatroomIds.TryGetValue(Target.Channel, out var configuredChatroomId) &&
+        if (settings.TryGetKickChatroomId(Target.Channel, out var configuredChatroomId) &&
             !string.IsNullOrWhiteSpace(configuredChatroomId))
         {
-            chatroomId = configuredChatroomId.Trim();
+            chatroomId = KickChannelInfoJson.NormalizeNumericId(configuredChatroomId);
         }
 
-        if (settings.KickBroadcasterUserIds.TryGetValue(Target.Channel, out var configuredBroadcasterUserId) &&
+        if (settings.TryGetKickBroadcasterUserId(Target.Channel, out var configuredBroadcasterUserId) &&
             long.TryParse(configuredBroadcasterUserId, out var parsedBroadcasterUserId))
         {
             broadcasterUserId = parsedBroadcasterUserId;
@@ -7829,7 +9093,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private static async Task<KickOverlayChannelInfo?> TryResolveKickChannelMetadataWithHttpClientAsync(string channel, CancellationToken cancellationToken)
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = HttpClientFactory.Create(
+            TimeSpan.FromSeconds(18),
+            includeUserAgent: true,
+            acceptJson: true);
         httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
         httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
 
@@ -7843,158 +9110,47 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return null;
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        return ReadKickOverlayChannelInfo(document.RootElement);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
+        using var document = JsonDocument.Parse(responseBody);
+        return ToKickOverlayChannelInfo(KickChannelInfoJson.Read(document.RootElement));
     }
 
     private async Task<KickOverlayChannelInfo?> TryResolveKickChannelMetadataWithCurlAsync(string channel, CancellationToken cancellationToken)
     {
-        var curlPath = ResolveCurlPath();
-        if (string.IsNullOrWhiteSpace(curlPath))
-        {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "curl.exe was not found; Kick chatroom metadata fallback is unavailable.");
-            return null;
-        }
+        var curlPath = KickCurlArguments.ResolveCurlPath();
 
         var escapedChannel = Uri.EscapeDataString(channel);
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
+        var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(
+            curlPath,
+            KickCurlArguments.BuildJsonRequest(
+                $"https://kick.com/api/v2/channels/{escapedChannel}",
+                $"https://kick.com/{escapedChannel}"));
+        var result = await processRunner.RunAsync(
+            startInfo,
+            TimeSpan.FromSeconds(18),
+            cancellationToken);
 
-        foreach (var argument in BuildKickMetadataCurlArguments(escapedChannel))
+        if (result.TimedOut)
         {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            return null;
-        }
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(18));
-
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
-            {
-            }
-
             logger.Write(AppLogLevel.Warning, "ChatOverlay", $"curl.exe timed out resolving Kick metadata for {channel}.");
             return null;
         }
 
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+        if (result.ExitCode != 0 ||
+            result.OutputWasTruncated ||
+            string.IsNullOrWhiteSpace(result.StandardOutput))
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"curl.exe failed resolving Kick metadata for {channel}: {stderr.Trim()}");
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"curl.exe failed resolving Kick metadata for {channel}: {result.StandardError.Trim()}");
             return null;
         }
 
-        using var document = JsonDocument.Parse(stdout);
-        return ReadKickOverlayChannelInfo(document.RootElement);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        return ToKickOverlayChannelInfo(KickChannelInfoJson.Read(document.RootElement));
     }
 
-    private static string? ResolveCurlPath()
+    private static KickOverlayChannelInfo ToKickOverlayChannelInfo(KickChannelInfo channelInfo)
     {
-        var configured = Environment.GetEnvironmentVariable("STREAMLINK_KICK_CURL");
-        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured))
-        {
-            return configured;
-        }
-
-        return "curl.exe";
-    }
-
-    private static IEnumerable<string> BuildKickMetadataCurlArguments(string escapedChannel)
-    {
-        yield return "--location";
-        yield return "--silent";
-        yield return "--show-error";
-        yield return "--fail";
-        yield return "--compressed";
-        yield return "--max-time";
-        yield return "15";
-        yield return "--user-agent";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-        yield return "--header";
-        yield return "Accept: application/json,text/plain,*/*";
-        yield return "--header";
-        yield return "Accept-Language: *";
-        yield return "--referer";
-        yield return $"https://kick.com/{escapedChannel}";
-        yield return $"https://kick.com/api/v2/channels/{escapedChannel}";
-    }
-
-    private static KickOverlayChannelInfo ReadKickOverlayChannelInfo(JsonElement root)
-    {
-        string? chatroomId = null;
-        long? broadcasterUserId = null;
-
-        if (root.TryGetProperty("chatroom", out var chatroom) &&
-            chatroom.TryGetProperty("id", out var id))
-        {
-            chatroomId = id.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(chatroomId) &&
-            root.TryGetProperty("data", out var data) &&
-            data.TryGetProperty("chatroom", out var dataChatroom) &&
-            dataChatroom.TryGetProperty("id", out var dataChatroomId))
-        {
-            chatroomId = dataChatroomId.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(chatroomId) &&
-            root.TryGetProperty("chatroom_id", out var chatroomIdProperty))
-        {
-            chatroomId = chatroomIdProperty.ToString();
-        }
-
-        if (root.TryGetProperty("user", out var user) &&
-            user.TryGetProperty("id", out var userId))
-        {
-            broadcasterUserId = TryGetInt64(userId);
-        }
-
-        if (broadcasterUserId is null &&
-            root.TryGetProperty("data", out data) &&
-            data.TryGetProperty("user", out var dataUser) &&
-            dataUser.TryGetProperty("id", out var dataUserId))
-        {
-            broadcasterUserId = TryGetInt64(dataUserId);
-        }
-
-        if (broadcasterUserId is null &&
-            root.TryGetProperty("broadcaster_user_id", out var broadcasterUserIdProperty))
-        {
-            broadcasterUserId = TryGetInt64(broadcasterUserIdProperty);
-        }
-
-        if (string.IsNullOrWhiteSpace(chatroomId) || !chatroomId.All(char.IsDigit))
-        {
-            chatroomId = null;
-        }
-
-        return new KickOverlayChannelInfo(chatroomId, broadcasterUserId);
+        return new KickOverlayChannelInfo(channelInfo.ChatroomId, channelInfo.BroadcasterUserId);
     }
 
     private static string NormalizeOutgoingMessage(string message)
@@ -8134,6 +9290,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         var overlayFontSize = currentSettings is null
             ? settings.VlcOverlayFontSize
             : GetNativeOverlayFontSize(currentSettings);
+        var renderContentVersion = Volatile.Read(ref nativeReplayOverlayRenderContentVersion);
         var frameKey = BuildNativeReplayOverlayFrameKey(
             engine.NativeOverlayPipeName!,
             engine.NativeOverlayPositionStatePath,
@@ -8158,7 +9315,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
 
         var imageCachePinOwner = new object();
-        GetNativeReplayOverlayFrameScheduler().QueueRender(new NativeReplayOverlayFrameRequest(
+        var request = new NativeReplayOverlayFrameRequest(
             plan.Version,
             engine.NativeOverlayPipeName!,
             messages,
@@ -8170,7 +9327,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             MessageOffset: messageOffset,
             ScrollSessionKey: replaySessionKey,
             AnimationClock: plan.AnimationClock,
-            ImageCachePinOwner: imageCachePinOwner));
+            ImageCachePinOwner: imageCachePinOwner,
+            RenderContentVersion: renderContentVersion);
+        _ = QueueNativeReplayOverlayFrameAsync(request);
     }
 
     private ChatMessage[] GetNativeReplayOverlayMessages()
@@ -8363,7 +9522,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void StartNativeReplayOverlayEventHost(string pipeName, string positionStatePath)
     {
+        var isReconnect = !nativeReplayOverlayEventHost.IsRunning ||
+            !string.Equals(nativeReplayOverlayEventHost.PipeName, pipeName, StringComparison.Ordinal);
         nativeReplayOverlayEventHost.Start(pipeName, positionStatePath);
+        if (isReconnect)
+        {
+            nativeReplayOverlayFrameWriteGate.NotifyReconnected(pipeName);
+        }
     }
 
     private void SuspendNativeReplayOverlayResizePersistence()
@@ -8558,14 +9723,81 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         nativeReplayOverlayFrameScheduler?.CancelPending();
     }
 
-    private NativeReplayOverlayFrameScheduler GetNativeReplayOverlayFrameScheduler()
+    private async Task QueueNativeReplayOverlayFrameAsync(NativeReplayOverlayFrameRequest request)
     {
+        try
+        {
+            var scheduler = await GetNativeReplayOverlayFrameSchedulerAsync().ConfigureAwait(false);
+            if (!disposed)
+            {
+                scheduler.QueueRender(request);
+            }
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not start the native VLC replay overlay renderer.", ex);
+        }
+    }
+
+    private async Task<NativeReplayOverlayFrameScheduler> GetNativeReplayOverlayFrameSchedulerAsync()
+    {
+        Task<NativeReplayOverlayFrameScheduler> creationTask;
         lock (nativeReplayOverlayFrameSchedulerGate)
         {
-            return nativeReplayOverlayFrameScheduler ??= new NativeReplayOverlayFrameScheduler(
-                logger,
-                OnNativeReplayOverlayFrameRendered);
+            if (nativeReplayOverlayFrameScheduler is not null)
+            {
+                return nativeReplayOverlayFrameScheduler;
+            }
+
+            nativeReplayOverlayFrameSchedulerCreationTask ??=
+                NativeReplayOverlayFrameScheduler.CreateAsync(
+                    logger,
+                    OnNativeReplayOverlayFrameRendered,
+                    lifetimeCancellation.Token);
+            creationTask = nativeReplayOverlayFrameSchedulerCreationTask;
         }
+
+        NativeReplayOverlayFrameScheduler scheduler;
+        try
+        {
+            scheduler = await creationTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (nativeReplayOverlayFrameSchedulerGate)
+            {
+                if (ReferenceEquals(nativeReplayOverlayFrameSchedulerCreationTask, creationTask))
+                {
+                    nativeReplayOverlayFrameSchedulerCreationTask = null;
+                }
+            }
+
+            throw;
+        }
+
+        var disposeScheduler = false;
+        lock (nativeReplayOverlayFrameSchedulerGate)
+        {
+            if (disposed)
+            {
+                disposeScheduler = true;
+            }
+            else
+            {
+                nativeReplayOverlayFrameScheduler = scheduler;
+            }
+        }
+
+        if (disposeScheduler)
+        {
+            await scheduler.DisposeAsync();
+            throw new OperationCanceledException(lifetimeCancellation.Token);
+        }
+
+        return scheduler;
     }
 
     private int GetNativeReplayOverlayVideoHeight()
@@ -8621,6 +9853,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (result.Request.Messages.Count > 0)
+        {
+            nativeReplayOverlayFrameWriteGate.SupersedePersistentCriticalClears();
+        }
+
         ApplyNativeReplayOverlayRenderedSelection(result.Request, result.RenderedSelection);
         TrackNativeReplayOverlayPendingImageLoads(result.PendingImageLoads);
         if (!result.HasAnimatedContent)
@@ -8628,8 +9865,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             CancelNativeReplayOverlayAnimationTimer();
         }
 
+        // Empty frames clear the native plugin's placeholder while replay chat is loading or
+        // when the selected timestamp has no messages. The write gate cancels this persistent
+        // clear as soon as a loaded chat frame is rendered, so it cannot starve that frame.
         var isCriticalWrite = result.Request.Messages.Count == 0 ||
-            (Target.IsExplicitKickVod && result.Request.Messages.All(IsKickVodReplayChatStatusMessage));
+            (Target.IsExplicitKickVod &&
+                result.Request.Messages.All(IsKickVodReplayChatStatusMessage));
         var writeKind = result.Request.Messages.Count == 0
             ? "blank-frame"
             : Target.IsExplicitKickVod && result.Request.Messages.All(IsKickVodReplayChatStatusMessage)
@@ -8666,9 +9907,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var delay = NormalizeNativeReplayOverlayAnimationDelay(
+        var delay = CalculateNativeReplayOverlayAnimationDelay(
+            request.AnimationClock,
             request.NextAnimationFrameDelay,
-            request.RenderDuration);
+            GetNativeReplayOverlayAnimationClock());
         ScheduleNativeReplayOverlayAnimationFrame(
             delay,
             request.Version,
@@ -8806,33 +10048,17 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         });
     }
 
-    internal static TimeSpan NormalizeNativeReplayOverlayAnimationDelay(TimeSpan? delay, TimeSpan renderDuration)
+    internal static TimeSpan CalculateNativeReplayOverlayAnimationDelay(
+        TimeSpan animationClock,
+        TimeSpan? nextAnimationFrameDelay,
+        TimeSpan currentAnimationClock)
     {
-        var normalizedDelay = delay is { } value && value > TimeSpan.Zero
+        var normalizedDelay = nextAnimationFrameDelay is { } value && value > TimeSpan.Zero
             ? value
             : NativeReplayOverlayDefaultAnimationDelay;
-        if (normalizedDelay < NativeReplayOverlayMinimumAnimationDelay)
-        {
-            normalizedDelay = NativeReplayOverlayMinimumAnimationDelay;
-        }
-
-        if (renderDuration <= TimeSpan.Zero)
-        {
-            return normalizedDelay;
-        }
-
-        var pacedTicks = (long)Math.Ceiling(renderDuration.Ticks * NativeReplayOverlayRenderCostDelayMultiplier);
-        if (pacedTicks <= 0)
-        {
-            return normalizedDelay;
-        }
-
-        var renderPacedDelay = TimeSpan.FromTicks(Math.Min(
-            pacedTicks,
-            NativeReplayOverlayMaximumAnimationDelay.Ticks));
-        return renderPacedDelay > normalizedDelay
-            ? renderPacedDelay
-            : normalizedDelay;
+        var nextFrameClock = animationClock + normalizedDelay;
+        var remaining = nextFrameClock - currentAnimationClock;
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
     private TimeSpan GetNativeReplayOverlayAnimationClock()
@@ -8990,92 +10216,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             value,
             ChatSettings.MinimumFontSize,
             ChatSettings.MaximumFontSize));
-    }
-
-    private static bool NativeOverlayControllerSupportsFontSize(string controllerPath)
-    {
-        var key = BuildNativeOverlayControllerCapabilityKey(controllerPath);
-        lock (NativeOverlayControllerCapabilityGate)
-        {
-            if (NativeOverlayFontSizeSupportByPath.TryGetValue(key, out var cached))
-            {
-                return cached;
-            }
-        }
-
-        var supported = ProbeNativeOverlayControllerFontSize(controllerPath);
-        lock (NativeOverlayControllerCapabilityGate)
-        {
-            NativeOverlayFontSizeSupportByPath[key] = supported;
-        }
-
-        return supported;
-    }
-
-    private static string BuildNativeOverlayControllerCapabilityKey(string controllerPath)
-    {
-        try
-        {
-            var info = new FileInfo(controllerPath);
-            return $"{info.FullName}|{info.Length.ToString(CultureInfo.InvariantCulture)}|{info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture)}";
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            return controllerPath;
-        }
-    }
-
-    private static bool ProbeNativeOverlayControllerFontSize(string controllerPath)
-    {
-        try
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = controllerPath,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-            startInfo.ArgumentList.Add("--help");
-
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return false;
-            }
-
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit((int)NativeOverlayCapabilityProbeTimeout.TotalMilliseconds))
-            {
-                TryKillProcess(process);
-                return false;
-            }
-
-            var output = outputTask.GetAwaiter().GetResult();
-            var error = errorTask.GetAwaiter().GetResult();
-            return output.Contains(NativeOverlayFontSizeArgument, StringComparison.OrdinalIgnoreCase) ||
-                error.Contains(NativeOverlayFontSizeArgument, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
-        {
-            return false;
-        }
-    }
-
-    private static void TryKillProcess(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
-        {
-        }
     }
 
     private static string? ResolveVlcOverlayDirectory(ChatSettings settings)

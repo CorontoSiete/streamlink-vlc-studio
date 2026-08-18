@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.Globalization;
 using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
@@ -20,6 +21,7 @@ public enum SettingsCategory
     Playback,
     Accounts,
     Chat,
+    Hotkeys,
     Advanced
 }
 
@@ -59,6 +61,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IKickVodService? kickVodService;
     private readonly IKickEventSubscriptionService? kickEventSubscriptionService;
     private readonly ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver;
+    private readonly ITwitchClipService? twitchClipService;
+    private readonly IAppUpdateService? appUpdateService;
     private readonly IBrowseService? browseService;
     private readonly TimeSpan recentThumbnailRefreshInterval;
     private readonly TimeSpan followedChannelsRefreshInterval;
@@ -67,20 +71,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly TimeSpan browseCategorySearchDebounceInterval;
     private readonly IAppLogger logger;
     private readonly Action<Action> dispatch;
+    private readonly Func<Action, bool>? tryDispatch;
+    private readonly Action<Uri> openBrowser;
+    private readonly Action? requestShutdown;
     private EventHandler<LogEntry>? loggerEntryWrittenHandler;
+    private readonly object disposalGate = new();
     private readonly object detachedDisposalsGate = new();
-    private readonly object tabStartsGate = new();
-    private readonly object recentStreamHintsGate = new();
     private readonly object recentThumbnailRefreshTimerGate = new();
     private readonly object followedChannelsRefreshTimerGate = new();
-    private readonly object streamSearchGate = new();
-    private readonly object twitchVodSearchGate = new();
-    private readonly object browseCategorySearchGate = new();
     private readonly object browseCategoryViewerCountGate = new();
-    private readonly object browseStreamSearchGate = new();
-    private readonly object inactivePlaybackPolicyGate = new();
+    private readonly CancellationTokenSource lifetimeCancellation = new();
+    private readonly StreamSearchController streamSearchController = new();
+    private readonly VodBrowseController vodBrowseController = new();
     private readonly SemaphoreSlim streamOpenGate = new(1, 1);
-    private readonly SemaphoreSlim tabStartConcurrency = new(MaxConcurrentTabStarts, MaxConcurrentTabStarts);
+    private readonly TabStartController tabStartController = new(MaxConcurrentTabStarts);
     private readonly SemaphoreSlim chatSettingsApplyGate = new(1, 1);
     private readonly SemaphoreSlim vlcPluginMultiViewChatPolicyGate = new(1, 1);
     private readonly SemaphoreSlim recentStreamsGate = new(1, 1);
@@ -89,13 +93,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly CancellationTokenSource recentThumbnailRefreshCancellation = new();
     private readonly CancellationTokenSource followedChannelsRefreshCancellation = new();
     private readonly List<Task> detachedDisposals = [];
-    private readonly List<List<StreamTabViewModel>> multiViewTabGroups = [];
-    private readonly List<List<StreamTabViewModel>> pictureInPictureTabGroups = [];
-    private readonly List<List<StreamTabViewModel>> pictureInPictureVisibleTabGroups = [];
-    private readonly Dictionary<string, RecentStreamHint> recentStreamHints = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, RecentStreamLiveStatus> recentStreamLiveStatuses = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<Guid> activeTabStarts = [];
+    private readonly BackgroundOperationController backgroundOperationController;
+    private readonly TabGroupingController tabGroupingController = new();
+    private readonly RecentStreamController recentStreamController = new();
     private readonly HashSet<StreamTabViewModel> vlcPluginMultiViewChatPolicyHiddenTabs = [];
+    private readonly TabPlaybackPolicyController inactivePlaybackPolicyController;
+    private ChatSettings? observedChatSettings;
+    private Task? disposalTask;
     private StreamTabViewModel? selectedTab;
     private TabStripItemViewModel? selectedTabStripItem;
     private string newStreamText = "";
@@ -110,6 +114,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private string browseCategorySearchText = "";
     private string browseStatus = "Browse Twitch or Kick categories.";
     private string browseCategoryStatus = "Browse Twitch or Kick categories.";
+    private string appUpdateStatus = "Ready to update from the latest verified GitHub release.";
     private string browseCategoryNextCursor = "";
     private string browseStreamNextCursor = "";
     private string kickFollowedChannelsText;
@@ -137,61 +142,53 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private bool suppressInactiveTabPause;
     private bool applyingSelectedTabSelection;
     private bool disposed;
-    private bool inactivePlaybackPolicyLoopQueued;
-    private bool inactivePlaybackPolicyRunRequested;
-    private int streamSearchGeneration;
     private int followedChannelsAutomaticRefreshActive;
     private int inactivePlaybackPolicyApplyPassCount;
     private System.Threading.Timer? recentThumbnailRefreshTimer;
     private System.Threading.Timer? followedChannelsRefreshTimer;
-    private System.Threading.Timer? streamSearchDebounceTimer;
-    private System.Threading.Timer? twitchVodSearchDebounceTimer;
-    private CancellationTokenSource? streamSearchCancellation;
-    private CancellationTokenSource? twitchVodSearchCancellation;
-    private CancellationTokenSource? browseCategorySearchCancellation;
     private CancellationTokenSource? browseCategoryViewerCountCancellation;
-    private CancellationTokenSource? browseStreamSearchCancellation;
     private bool browseCategoryViewerCountLoadPending;
     private TwitchVodTypeFilter selectedTwitchVodType = TwitchVodTypeFilter.Archive;
     private PlatformKind selectedVodPlatform = PlatformKind.Twitch;
     private PlatformKind selectedBrowsePlatform = PlatformKind.Twitch;
     private BrowseCategoryViewModel? selectedBrowseCategory;
     private string twitchVodNextCursor = "";
-    private int twitchVodSearchGeneration;
-    private int browseCategorySearchGeneration;
-    private int browseCategoryViewerCountGeneration;
-    private int browseStreamSearchGeneration;
     private int videoGridRows = VideoGridLayoutCalculator.BaseGridSize;
     private int videoGridColumns = VideoGridLayoutCalculator.BaseGridSize;
-    private System.Threading.Timer? browseCategorySearchDebounceTimer;
 
-    public MainViewModel(
-        AppSettings settings,
-        ISettingsService settingsService,
-        IStreamlinkService streamlinkService,
-        IPlaybackEngineFactory playbackFactory,
-        IChatClientFactory chatFactory,
-        IAppLogger logger,
-        Action<Action> dispatch,
-        IViewerCountService? viewerCountService = null,
-        IFollowedStreamsService? followedStreamsService = null,
-        IStreamMetadataService? streamMetadataService = null,
-        IReplayResolver? replayResolver = null,
-        IReplayChatProvider? replayChatProvider = null,
-        TimeSpan? recentThumbnailRefreshInterval = null,
-        TimeSpan? streamSearchDebounceInterval = null,
-        ITwitchVodService? twitchVodService = null,
-        TimeSpan? twitchVodSearchDebounceInterval = null,
-        IBrowseService? browseService = null,
-        TimeSpan? browseCategorySearchDebounceInterval = null,
-        IKickChatHistoryProvider? kickChatHistoryProvider = null,
-        TimeSpan? followedChannelsRefreshInterval = null,
-        IStreamSearchService? streamSearchService = null,
-        IKickVodService? kickVodService = null,
-        IKickEventSubscriptionService? kickEventSubscriptionService = null,
-        ILiveNotificationService? liveNotificationService = null,
-        ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver = null)
+    internal MainViewModel(MainViewModelDependencies dependencies)
     {
+        var settings = dependencies.Settings;
+        var settingsService = dependencies.SettingsService;
+        var streamlinkService = dependencies.StreamlinkService;
+        var playbackFactory = dependencies.PlaybackFactory;
+        var chatFactory = dependencies.ChatFactory;
+        var logger = dependencies.Logger;
+        var dispatch = dependencies.Dispatch;
+        var viewerCountService = dependencies.ViewerCountService;
+        var followedStreamsService = dependencies.FollowedStreamsService;
+        var streamMetadataService = dependencies.StreamMetadataService;
+        var replayResolver = dependencies.ReplayResolver;
+        var replayChatProvider = dependencies.ReplayChatProvider;
+        var kickChatHistoryProvider = dependencies.KickChatHistoryProvider;
+        var liveNotificationService = dependencies.LiveNotificationService;
+        var streamSearchService = dependencies.StreamSearchService;
+        var twitchVodService = dependencies.TwitchVodService;
+        var kickVodService = dependencies.KickVodService;
+        var kickEventSubscriptionService = dependencies.KickEventSubscriptionService;
+        var twitchSubOnlyVodResolver = dependencies.TwitchSubOnlyVodResolver;
+        var twitchClipService = dependencies.TwitchClipService;
+        var appUpdateService = dependencies.AppUpdateService;
+        var browseService = dependencies.BrowseService;
+        var recentThumbnailRefreshInterval = dependencies.RecentThumbnailRefreshInterval;
+        var followedChannelsRefreshInterval = dependencies.FollowedChannelsRefreshInterval;
+        var streamSearchDebounceInterval = dependencies.StreamSearchDebounceInterval;
+        var twitchVodSearchDebounceInterval = dependencies.TwitchVodSearchDebounceInterval;
+        var browseCategorySearchDebounceInterval = dependencies.BrowseCategorySearchDebounceInterval;
+        var openBrowser = dependencies.OpenBrowser;
+        var requestShutdown = dependencies.RequestShutdown;
+        var tryDispatch = dependencies.TryDispatch;
+
         Settings = settings;
         this.settingsService = settingsService;
         this.streamlinkService = streamlinkService;
@@ -209,6 +206,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.kickVodService = kickVodService;
         this.kickEventSubscriptionService = kickEventSubscriptionService;
         this.twitchSubOnlyVodResolver = twitchSubOnlyVodResolver;
+        this.twitchClipService = twitchClipService;
+        this.appUpdateService = appUpdateService;
         this.browseService = browseService;
         this.recentThumbnailRefreshInterval = recentThumbnailRefreshInterval ?? DefaultRecentThumbnailRefreshInterval;
         this.followedChannelsRefreshInterval = followedChannelsRefreshInterval ?? DefaultFollowedChannelsRefreshInterval;
@@ -216,7 +215,21 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.twitchVodSearchDebounceInterval = twitchVodSearchDebounceInterval ?? DefaultTwitchVodSearchDebounceInterval;
         this.browseCategorySearchDebounceInterval = browseCategorySearchDebounceInterval ?? DefaultBrowseCategorySearchDebounceInterval;
         this.logger = logger;
+        backgroundOperationController = new BackgroundOperationController(logger);
         this.dispatch = dispatch;
+        this.tryDispatch = tryDispatch;
+        this.openBrowser = openBrowser ?? OpenExternalBrowser;
+        this.requestShutdown = requestShutdown;
+        inactivePlaybackPolicyController = new TabPlaybackPolicyController(
+            this.dispatch,
+            () => disposed,
+            ApplyInactivePlaybackPolicyPassAsync,
+            backgroundOperationController.Track,
+            exception => this.logger.Write(
+                AppLogLevel.Warning,
+                "UI",
+                "Failed to apply playback visibility policy.",
+                exception));
         selectedQuality = settings.DefaultQuality;
         kickFollowedChannelsText = FormatKickFollowedChannelsText(settings.FollowedChannels.KickChannelSlugs);
 
@@ -254,16 +267,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StopSelectedCommand = new AsyncRelayCommand(StopSelectedAsync, () => SelectedTab is not null);
         PauseSelectedCommand = new AsyncRelayCommand(PauseSelectedAsync, () => SelectedTab is not null);
         CloseSelectedCommand = new AsyncRelayCommand(CloseSelectedAsync, () => SelectedTab is not null);
+        CreateClipCommand = new AsyncRelayCommand(CreateClipAsync, CanCreateClip);
         SaveSettingsCommand = new AsyncRelayCommand(SaveSettingsAsync);
         AuthorizeTwitchCommand = new AsyncRelayCommand(AuthorizeTwitchAsync);
         ClearTwitchTokenCommand = new AsyncRelayCommand(ClearTwitchTokenAsync, HasTwitchToken);
         AuthorizeKickCommand = new AsyncRelayCommand(AuthorizeKickAsync);
         ClearKickTokenCommand = new AsyncRelayCommand(ClearKickTokenAsync, HasKickToken);
+        UpdateAppCommand = new AsyncRelayCommand(UpdateAppAsync, () => appUpdateService is not null);
         ToggleSettingsCommand = new RelayCommand(() => IsSettingsOpen = !IsSettingsOpen);
         ShowGeneralSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.General);
         ShowPlaybackSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Playback);
         ShowAccountsSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Accounts);
         ShowChatSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Chat);
+        ShowHotkeysSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Hotkeys);
         ShowAdvancedSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Advanced);
         ToggleMultiStreamCommand = new RelayCommand(ToggleMultiStream);
         ToggleReplaySeekBarCommand = new RelayCommand(ToggleReplaySeekBar);
@@ -279,7 +295,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         BrowseCategories.CollectionChanged += BrowseCategoriesOnCollectionChanged;
         BrowseStreams.CollectionChanged += BrowseStreamsOnCollectionChanged;
         Settings.PropertyChanged += SettingsOnPropertyChanged;
-        Settings.Chat.PropertyChanged += ChatSettingsOnPropertyChanged;
+        ObserveChatSettings(Settings.Chat);
         ObserveFollowedChannelsSettings(Settings.FollowedChannels);
     }
 
@@ -288,13 +304,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<TabStripItemViewModel> TabStripItems { get; } = [];
     public ObservableCollection<StreamTabViewModel> VideoTabs { get; } = [];
     public ObservableCollection<StreamSearchResultViewModel> StreamSearchResults { get; } = [];
-    public ObservableCollection<FollowedChannelViewModel> LiveFollowedChannels { get; } = [];
+    public ObservableCollection<LiveStreamCardViewModel> LiveFollowedChannels { get; } = [];
     public ObservableCollection<VodViewModel> TwitchVods { get; } = [];
     public ObservableCollection<RecentStreamViewModel> RecentStreams { get; } = [];
     public ObservableCollection<BrowseCategoryViewModel> BrowseCategories { get; } = [];
-    public ObservableCollection<BrowseLiveStreamViewModel> BrowseStreams { get; } = [];
+    public ObservableCollection<LiveStreamCardViewModel> BrowseStreams { get; } = [];
     public IReadOnlyList<ChatLayout> ChatLayoutOptions { get; } = Enum.GetValues<ChatLayout>();
     public IReadOnlyList<QualityOption> QualityOptions { get; } = QualityOption.Defaults;
+    public IReadOnlyList<VideoRendererModeOption> VideoRendererOptions { get; } = VideoRendererModeOption.All;
     public IReadOnlyList<WindowCloseBehaviorOption> CloseBehaviorOptions { get; } = WindowCloseBehaviorOption.All;
     public IReadOnlyList<AppThemeOption> ThemeOptions { get; } = AppThemeOption.All;
     public ObservableCollection<string> AppLogLines { get; } = [];
@@ -325,16 +342,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand StopSelectedCommand { get; }
     public AsyncRelayCommand PauseSelectedCommand { get; }
     public AsyncRelayCommand CloseSelectedCommand { get; }
+    public AsyncRelayCommand CreateClipCommand { get; }
     public AsyncRelayCommand SaveSettingsCommand { get; }
     public AsyncRelayCommand AuthorizeTwitchCommand { get; }
     public AsyncRelayCommand ClearTwitchTokenCommand { get; }
     public AsyncRelayCommand AuthorizeKickCommand { get; }
     public AsyncRelayCommand ClearKickTokenCommand { get; }
+    public AsyncRelayCommand UpdateAppCommand { get; }
     public RelayCommand ToggleSettingsCommand { get; }
     public RelayCommand ShowGeneralSettingsCommand { get; }
     public RelayCommand ShowPlaybackSettingsCommand { get; }
     public RelayCommand ShowAccountsSettingsCommand { get; }
     public RelayCommand ShowChatSettingsCommand { get; }
+    public RelayCommand ShowHotkeysSettingsCommand { get; }
     public RelayCommand ShowAdvancedSettingsCommand { get; }
     public RelayCommand ToggleMultiStreamCommand { get; }
     public RelayCommand ToggleReplaySeekBarCommand { get; }
@@ -343,6 +363,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public RelayCommand MoveTabRightCommand { get; }
 
     internal int InactivePlaybackPolicyApplyPassCount => Volatile.Read(ref inactivePlaybackPolicyApplyPassCount);
+    internal Task InactivePlaybackPolicyIdleTask => inactivePlaybackPolicyController.IdleTask;
 
     public StreamTabViewModel? SelectedTab
     {
@@ -385,6 +406,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(SelectedVlcOverlayFontSize));
             OnPropertyChanged(nameof(IsSelectedTabDetached));
             OnPropertyChanged(nameof(IsReplaySeekBarVisible));
+            OnPropertyChanged(nameof(ClipButtonToolTip));
             RaiseChatVisibilityProperties();
             RaiseCommandStates();
             ApplySelectedTabSelection();
@@ -422,7 +444,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref newStreamText, value ?? ""))
             {
-                streamSearchGeneration++;
+                streamSearchController.AdvanceGeneration();
                 CancelStreamSearchDebounce();
                 CancelActiveStreamSearch();
                 IsStreamSearchRunning = false;
@@ -446,7 +468,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref twitchVodSearchText, value ?? ""))
             {
-                twitchVodSearchGeneration++;
+                vodBrowseController.AdvanceTwitchVodGeneration();
                 CancelTwitchVodSearchDebounce();
                 CancelActiveTwitchVodSearch();
                 IsTwitchVodSearchRunning = false;
@@ -587,9 +609,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref browseCategorySearchText, value ?? ""))
             {
-                browseCategorySearchGeneration++;
-                browseCategoryViewerCountGeneration++;
-                browseStreamSearchGeneration++;
+                vodBrowseController.AdvanceBrowseCategoryGeneration();
+                vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
+                vodBrowseController.AdvanceBrowseStreamGeneration();
                 CancelBrowseCategorySearchDebounce();
                 CancelActiveBrowseCategorySearch();
                 CancelActiveBrowseCategoryViewerCountLoad();
@@ -1062,6 +1084,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         set => SetProperty(ref kickFollowedChannelsText, value ?? "");
     }
 
+    public string AppUpdateStatus
+    {
+        get => appUpdateStatus;
+        private set => SetProperty(ref appUpdateStatus, value);
+    }
+
+    public bool IsAppUpdateAvailable => appUpdateService is not null;
+
     public bool IsSettingsOpen
     {
         get => isSettingsOpen;
@@ -1090,6 +1120,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(IsPlaybackSettingsSelected));
             OnPropertyChanged(nameof(IsAccountsSettingsSelected));
             OnPropertyChanged(nameof(IsChatSettingsSelected));
+            OnPropertyChanged(nameof(IsHotkeysSettingsSelected));
             OnPropertyChanged(nameof(IsAdvancedSettingsSelected));
         }
     }
@@ -1101,6 +1132,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public bool IsAccountsSettingsSelected => SelectedSettingsCategory == SettingsCategory.Accounts;
 
     public bool IsChatSettingsSelected => SelectedSettingsCategory == SettingsCategory.Chat;
+
+    public bool IsHotkeysSettingsSelected => SelectedSettingsCategory == SettingsCategory.Hotkeys;
 
     public bool IsAdvancedSettingsSelected => SelectedSettingsCategory == SettingsCategory.Advanced;
 
@@ -1181,6 +1214,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasSelectedTab => SelectedTab is not null;
 
+    public string ClipButtonToolTip => SelectedTab?.Target switch
+    {
+        { Platform: PlatformKind.Kick } => "Kick clipping is disabled",
+        { Platform: PlatformKind.Twitch, Kind: StreamTargetKind.Live } => "Create a 30-second Twitch clip",
+        { Platform: PlatformKind.Twitch } => "Twitch clips are available for live tabs only",
+        _ => "Select a live Twitch tab to create a clip"
+    };
+
     public bool IsSelectedTabDetached => SelectedTab?.IsDetached == true;
 
     public bool IsReplaySeekBarUiVisible
@@ -1234,14 +1275,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public string SelectedKickChatroomId
     {
-        get => GetSelectedKickSetting(Settings.Chat.KickChatroomIds);
-        set => SetSelectedKickSetting(Settings.Chat.KickChatroomIds, value, nameof(SelectedKickChatroomId));
+        get => GetSelectedKickSetting(broadcaster: false);
+        set => SetSelectedKickSetting(value, nameof(SelectedKickChatroomId), broadcaster: false);
     }
 
     public string SelectedKickBroadcasterUserId
     {
-        get => GetSelectedKickSetting(Settings.Chat.KickBroadcasterUserIds);
-        set => SetSelectedKickSetting(Settings.Chat.KickBroadcasterUserIds, value, nameof(SelectedKickBroadcasterUserId));
+        get => GetSelectedKickSetting(broadcaster: true);
+        set => SetSelectedKickSetting(value, nameof(SelectedKickBroadcasterUserId), broadcaster: true);
     }
 
     public void Initialize()
@@ -1279,6 +1320,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(message))
         {
             BrowserClickStatus = message;
+        }
+    }
+
+    internal void SetStartupWarning(string message)
+    {
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            StatusMessage = message.Trim();
         }
     }
 
@@ -1358,7 +1407,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        browseStreamSearchGeneration++;
+        vodBrowseController.AdvanceBrowseStreamGeneration();
         CancelActiveBrowseStreamSearch();
         IsBrowseStreamsLoading = false;
         ClearBrowseStreams(clearSelectedCategory: true);
@@ -1403,9 +1452,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private Task RefreshFollowedChannelsAsync()
     {
-        return RefreshFollowedChannelsAsync(
+        if (disposed)
+        {
+            return Task.CompletedTask;
+        }
+
+        var refreshTask = RefreshFollowedChannelsAsync(
             followedChannelsRefreshCancellation.Token,
             skipIfRefreshRunning: false);
+        backgroundOperationController.Track(refreshTask);
+        return refreshTask;
     }
 
     private async Task RefreshFollowedChannelsAsync(
@@ -1454,9 +1510,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             LiveFollowedChannels.Clear();
             foreach (var stream in result.Streams)
             {
-                LiveFollowedChannels.Add(new FollowedChannelViewModel(
-                    stream,
-                    OpenFollowedChannelAsync,
+                LiveFollowedChannels.Add(new LiveStreamCardViewModel(
+                    LiveStreamCardData.FromFollowedStream(stream),
+                    OpenLiveStreamCardAsync,
                     thumbnailCacheVersion));
             }
 
@@ -1647,7 +1703,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         SelectedVodPlatform = platform;
-        twitchVodSearchGeneration++;
+        vodBrowseController.AdvanceTwitchVodGeneration();
         CancelTwitchVodSearchDebounce();
         CancelActiveTwitchVodSearch();
         IsTwitchVodSearchRunning = false;
@@ -1710,7 +1766,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var searchGeneration = reset ? ++twitchVodSearchGeneration : twitchVodSearchGeneration;
+        var searchGeneration = reset
+            ? vodBrowseController.AdvanceTwitchVodGeneration()
+            : vodBrowseController.CurrentTwitchVodGeneration;
         var searchCancellation = ReplaceTwitchVodSearchCancellation();
         if (reset)
         {
@@ -1822,7 +1880,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private bool IsCurrentTwitchVodSearch(int searchGeneration, string query, TwitchVodTypeFilter type, PlatformKind platform)
     {
-        return twitchVodSearchGeneration == searchGeneration &&
+        return !disposed &&
+            vodBrowseController.IsCurrentTwitchVodGeneration(searchGeneration) &&
             SelectedVodPlatform == platform &&
             SelectedTwitchVodType == type &&
             string.Equals(TwitchVodSearchText.Trim(), query, StringComparison.Ordinal);
@@ -1841,13 +1900,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ScheduleAutomaticTwitchVodSearch()
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var query = TwitchVodSearchText.Trim();
         if (string.IsNullOrWhiteSpace(query))
         {
             return;
         }
 
-        var searchGeneration = twitchVodSearchGeneration;
+        var searchGeneration = vodBrowseController.CurrentTwitchVodGeneration;
         var type = SelectedTwitchVodType;
         if (twitchVodSearchDebounceInterval <= TimeSpan.Zero)
         {
@@ -1855,15 +1919,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        lock (twitchVodSearchGate)
-        {
-            twitchVodSearchDebounceTimer?.Dispose();
-            twitchVodSearchDebounceTimer = new System.Threading.Timer(
-                _ => dispatch(() => _ = RunAutomaticTwitchVodSearchAsync(query, type, searchGeneration)),
-                null,
-                twitchVodSearchDebounceInterval,
-                Timeout.InfiniteTimeSpan);
-        }
+        vodBrowseController.ScheduleTwitchVod(
+            twitchVodSearchDebounceInterval,
+            () => dispatch(() => _ = RunAutomaticTwitchVodSearchAsync(query, type, searchGeneration)),
+            ReportDebouncedCallbackFailure);
     }
 
     private async Task RunAutomaticTwitchVodSearchAsync(
@@ -1881,43 +1940,22 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void CancelTwitchVodSearchDebounce()
     {
-        lock (twitchVodSearchGate)
-        {
-            twitchVodSearchDebounceTimer?.Dispose();
-            twitchVodSearchDebounceTimer = null;
-        }
+        vodBrowseController.CancelScheduledTwitchVod();
     }
 
     private CancellationTokenSource ReplaceTwitchVodSearchCancellation()
     {
-        lock (twitchVodSearchGate)
-        {
-            twitchVodSearchCancellation?.Cancel();
-            twitchVodSearchCancellation = new CancellationTokenSource();
-            return twitchVodSearchCancellation;
-        }
+        return vodBrowseController.BeginTwitchVodOperation(lifetimeCancellation.Token);
     }
 
     private void CancelActiveTwitchVodSearch()
     {
-        lock (twitchVodSearchGate)
-        {
-            twitchVodSearchCancellation?.Cancel();
-            twitchVodSearchCancellation = null;
-        }
+        vodBrowseController.CancelTwitchVodOperation();
     }
 
     private void DisposeTwitchVodSearchCancellation(CancellationTokenSource cancellation)
     {
-        lock (twitchVodSearchGate)
-        {
-            if (ReferenceEquals(twitchVodSearchCancellation, cancellation))
-            {
-                twitchVodSearchCancellation = null;
-            }
-        }
-
-        cancellation.Dispose();
+        vodBrowseController.CompleteTwitchVodOperation(cancellation);
     }
 
     private void RaiseTwitchVodCommandStates()
@@ -1943,9 +1981,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        browseCategorySearchGeneration++;
-        browseCategoryViewerCountGeneration++;
-        browseStreamSearchGeneration++;
+        vodBrowseController.AdvanceBrowseCategoryGeneration();
+        vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
+        vodBrowseController.AdvanceBrowseStreamGeneration();
         CancelBrowseCategorySearchDebounce();
         CancelActiveBrowseCategorySearch();
         CancelActiveBrowseCategoryViewerCountLoad();
@@ -1988,11 +2026,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var searchGeneration = reset ? ++browseCategorySearchGeneration : browseCategorySearchGeneration;
+        var searchGeneration = reset
+            ? vodBrowseController.AdvanceBrowseCategoryGeneration()
+            : vodBrowseController.CurrentBrowseCategoryGeneration;
         var searchCancellation = ReplaceBrowseCategorySearchCancellation();
         if (reset)
         {
-            browseCategoryViewerCountGeneration++;
+            vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
             CancelActiveBrowseCategoryViewerCountLoad();
             SetBrowseStreamsPageSelected(false);
             ClearBrowseCategories(clearStatus: false);
@@ -2122,7 +2162,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            viewerCountGeneration = ++browseCategoryViewerCountGeneration;
+            viewerCountGeneration = vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
             cancellation = new CancellationTokenSource();
             browseCategoryViewerCountCancellation = cancellation;
         }
@@ -2346,11 +2386,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        browseCategorySearchGeneration++;
+        vodBrowseController.AdvanceBrowseCategoryGeneration();
         CancelBrowseCategorySearchDebounce();
         CancelActiveBrowseCategorySearch();
         CancelActiveBrowseCategoryViewerCountLoad();
-        browseStreamSearchGeneration++;
+        vodBrowseController.AdvanceBrowseStreamGeneration();
         CancelActiveBrowseStreamSearch();
         SelectedBrowseCategory = category;
         SetBrowseStreamsPageSelected(true);
@@ -2385,7 +2425,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var searchGeneration = reset ? ++browseStreamSearchGeneration : browseStreamSearchGeneration;
+        var searchGeneration = reset
+            ? vodBrowseController.AdvanceBrowseStreamGeneration()
+            : vodBrowseController.CurrentBrowseStreamGeneration;
         var searchCancellation = ReplaceBrowseStreamSearchCancellation();
         if (reset)
         {
@@ -2454,11 +2496,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 continue;
             }
 
-            BrowseStreams.Add(new BrowseLiveStreamViewModel(stream, OpenBrowseStreamAsync));
+            BrowseStreams.Add(new LiveStreamCardViewModel(
+                LiveStreamCardData.FromBrowseStream(stream),
+                OpenLiveStreamCardAsync));
         }
     }
 
-    private async Task OpenBrowseStreamAsync(BrowseLiveStreamViewModel stream, bool stayOnHome)
+    private async Task OpenLiveStreamCardAsync(LiveStreamCardViewModel stream, bool stayOnHome)
     {
         try
         {
@@ -2475,13 +2519,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             IsHomeSelected = true;
             ApplyVideoLayout();
             StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "Browse", $"Failed to open {stream.Target.DisplayName} from browse.", ex);
+            var (area, origin) = stream.Source switch
+            {
+                LiveStreamCardSource.Followed => ("Followed", "home"),
+                _ => ("Browse", "browse")
+            };
+            logger.Write(AppLogLevel.Error, area, $"Failed to open {stream.Target.DisplayName} from {origin}.", ex);
         }
     }
 
     private bool IsCurrentBrowseCategorySearch(int searchGeneration, PlatformKind platform, string query)
     {
-        return browseCategorySearchGeneration == searchGeneration &&
+        return !disposed &&
+            vodBrowseController.IsCurrentBrowseCategoryGeneration(searchGeneration) &&
             SelectedBrowsePlatform == platform &&
             string.Equals(BrowseCategorySearchText.Trim(), query, StringComparison.Ordinal);
     }
@@ -2491,14 +2541,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         PlatformKind platform,
         string query)
     {
-        return browseCategoryViewerCountGeneration == viewerCountGeneration &&
+        return !disposed &&
+            vodBrowseController.IsCurrentBrowseCategoryViewerCountGeneration(viewerCountGeneration) &&
             SelectedBrowsePlatform == platform &&
             string.Equals(BrowseCategorySearchText.Trim(), query, StringComparison.Ordinal);
     }
 
     private bool IsCurrentBrowseStreamSearch(int searchGeneration, PlatformKind platform, string categoryId)
     {
-        return browseStreamSearchGeneration == searchGeneration &&
+        return !disposed &&
+            vodBrowseController.IsCurrentBrowseStreamGeneration(searchGeneration) &&
             SelectedBrowsePlatform == platform &&
             SelectedBrowseCategory is { } selectedCategory &&
             string.Equals(selectedCategory.Id, categoryId, StringComparison.OrdinalIgnoreCase);
@@ -2528,29 +2580,24 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ScheduleAutomaticBrowseCategorySearch()
     {
-        if (browseService is null)
+        if (disposed || browseService is null)
         {
             return;
         }
 
         var query = BrowseCategorySearchText.Trim();
         var platform = SelectedBrowsePlatform;
-        var searchGeneration = browseCategorySearchGeneration;
+        var searchGeneration = vodBrowseController.CurrentBrowseCategoryGeneration;
         if (browseCategorySearchDebounceInterval <= TimeSpan.Zero)
         {
             dispatch(() => _ = RunAutomaticBrowseCategorySearchAsync(query, platform, searchGeneration));
             return;
         }
 
-        lock (browseCategorySearchGate)
-        {
-            browseCategorySearchDebounceTimer?.Dispose();
-            browseCategorySearchDebounceTimer = new System.Threading.Timer(
-                _ => dispatch(() => _ = RunAutomaticBrowseCategorySearchAsync(query, platform, searchGeneration)),
-                null,
-                browseCategorySearchDebounceInterval,
-                Timeout.InfiniteTimeSpan);
-        }
+        vodBrowseController.ScheduleBrowseCategory(
+            browseCategorySearchDebounceInterval,
+            () => dispatch(() => _ = RunAutomaticBrowseCategorySearchAsync(query, platform, searchGeneration)),
+            ReportDebouncedCallbackFailure);
     }
 
     private async Task RunAutomaticBrowseCategorySearchAsync(
@@ -2568,45 +2615,27 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void CancelBrowseCategorySearchDebounce()
     {
-        lock (browseCategorySearchGate)
-        {
-            browseCategorySearchDebounceTimer?.Dispose();
-            browseCategorySearchDebounceTimer = null;
-        }
+        vodBrowseController.CancelScheduledBrowseCategory();
     }
 
     private CancellationTokenSource ReplaceBrowseCategorySearchCancellation()
     {
-        lock (browseCategorySearchGate)
-        {
-            browseCategorySearchCancellation?.Cancel();
-            browseCategorySearchCancellation = new CancellationTokenSource();
-            return browseCategorySearchCancellation;
-        }
+        return vodBrowseController.BeginBrowseCategoryOperation(lifetimeCancellation.Token);
     }
 
     private CancellationTokenSource ReplaceBrowseStreamSearchCancellation()
     {
-        lock (browseStreamSearchGate)
-        {
-            browseStreamSearchCancellation?.Cancel();
-            browseStreamSearchCancellation = new CancellationTokenSource();
-            return browseStreamSearchCancellation;
-        }
+        return vodBrowseController.BeginBrowseStreamOperation(lifetimeCancellation.Token);
     }
 
     private void CancelActiveBrowseCategorySearch()
     {
-        lock (browseCategorySearchGate)
-        {
-            browseCategorySearchCancellation?.Cancel();
-            browseCategorySearchCancellation = null;
-        }
+        vodBrowseController.CancelBrowseCategoryOperation();
     }
 
     private void CancelActiveBrowseCategoryViewerCountLoad()
     {
-        browseCategoryViewerCountGeneration++;
+        vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
         lock (browseCategoryViewerCountGate)
         {
             browseCategoryViewerCountCancellation?.Cancel();
@@ -2617,24 +2646,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void CancelActiveBrowseStreamSearch()
     {
-        lock (browseStreamSearchGate)
-        {
-            browseStreamSearchCancellation?.Cancel();
-            browseStreamSearchCancellation = null;
-        }
+        vodBrowseController.CancelBrowseStreamOperation();
     }
 
     private void DisposeBrowseCategorySearchCancellation(CancellationTokenSource cancellation)
     {
-        lock (browseCategorySearchGate)
-        {
-            if (ReferenceEquals(browseCategorySearchCancellation, cancellation))
-            {
-                browseCategorySearchCancellation = null;
-            }
-        }
-
-        cancellation.Dispose();
+        vodBrowseController.CompleteBrowseCategoryOperation(cancellation);
     }
 
     private bool DisposeBrowseCategoryViewerCountCancellation(CancellationTokenSource cancellation)
@@ -2656,15 +2673,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void DisposeBrowseStreamSearchCancellation(CancellationTokenSource cancellation)
     {
-        lock (browseStreamSearchGate)
-        {
-            if (ReferenceEquals(browseStreamSearchCancellation, cancellation))
-            {
-                browseStreamSearchCancellation = null;
-            }
-        }
-
-        cancellation.Dispose();
+        vodBrowseController.CompleteBrowseStreamOperation(cancellation);
     }
 
     private void RaiseBrowseCommandStates()
@@ -2673,27 +2682,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         RefreshBrowseCommand.RaiseCanExecuteChanged();
         LoadMoreBrowseCategoriesCommand.RaiseCanExecuteChanged();
         LoadMoreBrowseStreamsCommand.RaiseCanExecuteChanged();
-    }
-
-    private async Task OpenFollowedChannelAsync(FollowedChannelViewModel channel, bool stayOnHome)
-    {
-        try
-        {
-            if (!stayOnHome)
-            {
-                IsHomeSelected = false;
-            }
-
-            SetRecentStreamHint(channel.Target, channel.ThumbnailUrl, channel.DisplayName, channel.CategoryName);
-            await OpenCandidatesAsync([channel.Target], clearInputOnSuccess: false, selectOpenedTab: !stayOnHome);
-        }
-        catch (Exception ex)
-        {
-            IsHomeSelected = true;
-            ApplyVideoLayout();
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "Followed", $"Failed to open {channel.Target.DisplayName} from home.", ex);
-        }
     }
 
     private async Task OpenRecentStreamAsync(RecentStreamViewModel stream, bool stayOnHome)
@@ -2718,10 +2706,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task DeleteRecentStreamAsync(RecentStreamViewModel stream)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var target = stream.Target;
         try
         {
-            await recentStreamsGate.WaitAsync();
+            await recentStreamsGate.WaitAsync(lifetimeCancellation.Token);
             try
             {
                 if (!Settings.RecentStreams.Any(recentStream => IsSameRecentStream(recentStream, target)))
@@ -2732,11 +2725,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 Settings.RecentStreams = Settings.RecentStreams
                     .Where(recentStream => !IsSameRecentStream(recentStream, target))
                     .ToList();
-                recentStreamLiveStatuses.Remove(target.StateKey);
-                lock (recentStreamHintsGate)
-                {
-                    recentStreamHints.Remove(target.StateKey);
-                }
+                recentStreamController.RemoveLiveStatus(target.StateKey);
+                recentStreamController.TakeHint(target.StateKey);
 
                 RebuildRecentStreams();
                 StatusMessage = $"{target.DisplayName} removed from recent streams";
@@ -2746,6 +2736,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             {
                 recentStreamsGate.Release();
             }
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -2995,7 +2988,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (targetGroup is null)
         {
             targetGroup = [targetTab];
-            multiViewTabGroups.Add(targetGroup);
+            tabGroupingController.MultiViewGroups.Add(targetGroup);
         }
 
         foreach (var draggedTab in validDraggedTabs)
@@ -3033,7 +3026,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         RemoveTabsFromPictureInPictureGroups(validTabs, applyLayout: false);
         if (validTabs.Length > 1)
         {
-            pictureInPictureTabGroups.Add(validTabs.ToList());
+            tabGroupingController.PictureInPictureGroups.Add(validTabs.ToList());
         }
 
         ApplyVideoLayout();
@@ -3058,7 +3051,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         RemoveTabsFromPictureInPictureVisibleGroups(validTabs, applyPolicy: false);
         if (validTabs.Length > 1)
         {
-            pictureInPictureVisibleTabGroups.Add(validTabs.ToList());
+            tabGroupingController.PictureInPictureVisibleGroups.Add(validTabs.ToList());
         }
 
         ApplyVlcPluginMultiViewChatPolicyInBackground(restoreWhenAllowed: true);
@@ -3071,7 +3064,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private List<StreamTabViewModel>? GetMultiViewTabGroupList(StreamTabViewModel tab)
     {
-        foreach (var group in multiViewTabGroups)
+        foreach (var group in tabGroupingController.MultiViewGroups)
         {
             if (group.Contains(tab))
             {
@@ -3098,16 +3091,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RemoveTabsFromMultiViewGroups(IReadOnlyCollection<StreamTabViewModel> tabs, bool applyLayout)
     {
-        if (tabs.Count == 0 || multiViewTabGroups.Count == 0)
+        if (tabs.Count == 0 || tabGroupingController.MultiViewGroups.Count == 0)
         {
             return;
         }
 
         var tabsToRemove = tabs.ToHashSet();
         var changed = false;
-        for (var index = 0; index < multiViewTabGroups.Count; index++)
+        for (var index = 0; index < tabGroupingController.MultiViewGroups.Count; index++)
         {
-            var group = multiViewTabGroups[index];
+            var group = tabGroupingController.MultiViewGroups[index];
             var originalCount = group.Count;
             group.RemoveAll(tabsToRemove.Contains);
             if (group.Count != originalCount)
@@ -3117,7 +3110,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             if (group.Count <= 1)
             {
-                multiViewTabGroups.RemoveAt(index);
+                tabGroupingController.MultiViewGroups.RemoveAt(index);
                 index--;
                 changed = true;
             }
@@ -3131,19 +3124,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RemoveTabsFromPictureInPictureVisibleGroups(IReadOnlyCollection<StreamTabViewModel> tabs, bool applyPolicy)
     {
-        if (tabs.Count == 0 || pictureInPictureVisibleTabGroups.Count == 0)
+        if (tabs.Count == 0 || tabGroupingController.PictureInPictureVisibleGroups.Count == 0)
         {
             return;
         }
 
         var tabsToRemove = tabs.ToHashSet();
         var changed = false;
-        for (var index = 0; index < pictureInPictureVisibleTabGroups.Count; index++)
+        for (var index = 0; index < tabGroupingController.PictureInPictureVisibleGroups.Count; index++)
         {
-            var group = pictureInPictureVisibleTabGroups[index];
+            var group = tabGroupingController.PictureInPictureVisibleGroups[index];
             if (group.Any(tabsToRemove.Contains))
             {
-                pictureInPictureVisibleTabGroups.RemoveAt(index);
+                tabGroupingController.PictureInPictureVisibleGroups.RemoveAt(index);
                 index--;
                 changed = true;
             }
@@ -3193,7 +3186,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private IReadOnlyList<StreamTabViewModel>? GetPictureInPictureTabGroup(StreamTabViewModel tab)
     {
-        foreach (var group in pictureInPictureTabGroups)
+        foreach (var group in tabGroupingController.PictureInPictureGroups)
         {
             if (!group.Contains(tab))
             {
@@ -3211,16 +3204,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RemoveTabsFromPictureInPictureGroups(IReadOnlyCollection<StreamTabViewModel> tabs, bool applyLayout)
     {
-        if (tabs.Count == 0 || pictureInPictureTabGroups.Count == 0)
+        if (tabs.Count == 0 || tabGroupingController.PictureInPictureGroups.Count == 0)
         {
             return;
         }
 
         var tabsToRemove = tabs.ToHashSet();
         var changed = false;
-        for (var index = 0; index < pictureInPictureTabGroups.Count; index++)
+        for (var index = 0; index < tabGroupingController.PictureInPictureGroups.Count; index++)
         {
-            var group = pictureInPictureTabGroups[index];
+            var group = tabGroupingController.PictureInPictureGroups[index];
             var originalCount = group.Count;
             group.RemoveAll(tabsToRemove.Contains);
             if (group.Count != originalCount)
@@ -3230,7 +3223,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             if (group.Count <= 1)
             {
-                pictureInPictureTabGroups.RemoveAt(index);
+                tabGroupingController.PictureInPictureGroups.RemoveAt(index);
                 index--;
                 changed = true;
             }
@@ -3244,11 +3237,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public async Task OpenDetectedStreamAsync(StreamTarget target)
     {
-        target = await TryLoadTargetCategoryAsync(target);
+        if (disposed)
+        {
+            return;
+        }
 
-        await streamOpenGate.WaitAsync();
+        var enteredStreamOpenGate = false;
         try
         {
+            target = await TryLoadTargetCategoryAsync(target, lifetimeCancellation.Token);
+            await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
+            enteredStreamOpenGate = true;
+
             BrowserClickStatus = $"Detected {target.DisplayName}";
             var existing = FindTab(target);
             if (existing is not null)
@@ -3264,6 +3264,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             BrowserClickStatus = StatusMessage;
             StartTabInBackground(tab, clearInputOnSuccess: false, updateBrowserStatus: true);
         }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+        }
         catch (Exception ex)
         {
             BrowserClickStatus = ex.Message;
@@ -3272,29 +3275,48 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            streamOpenGate.Release();
+            if (enteredStreamOpenGate)
+            {
+                streamOpenGate.Release();
+            }
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        disposed = true;
+        lock (disposalGate)
+        {
+            if (disposalTask is null)
+            {
+                // Set this before starting asynchronous cleanup.  Event handlers,
+                // timers, and command callbacks can therefore only observe a
+                // live view model or a disposal-in-progress state.
+                disposed = true;
+                disposalTask = DisposeCoreAsync();
+            }
+
+            return new ValueTask(disposalTask);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        lifetimeCancellation.Cancel();
+        tabStartController.Clear();
+
+        inactivePlaybackPolicyController.Dispose();
+        streamSearchController.Dispose();
+        vodBrowseController.Dispose();
+        CancelActiveBrowseCategoryViewerCountLoad();
+        followedChannelsRefreshCancellation.Cancel();
+        recentThumbnailRefreshCancellation.Cancel();
+
         if (loggerEntryWrittenHandler is not null)
         {
             logger.EntryWritten -= loggerEntryWrittenHandler;
             loggerEntryWrittenHandler = null;
         }
 
-        CancelStreamSearchDebounce();
-        CancelActiveStreamSearch();
-        CancelTwitchVodSearchDebounce();
-        CancelActiveTwitchVodSearch();
-        CancelBrowseCategorySearchDebounce();
-        CancelActiveBrowseCategorySearch();
-        CancelActiveBrowseCategoryViewerCountLoad();
-        CancelActiveBrowseStreamSearch();
-        followedChannelsRefreshCancellation.Cancel();
-        recentThumbnailRefreshCancellation.Cancel();
         lock (followedChannelsRefreshTimerGate)
         {
             followedChannelsRefreshTimer?.Dispose();
@@ -3315,12 +3337,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         BrowseCategories.CollectionChanged -= BrowseCategoriesOnCollectionChanged;
         BrowseStreams.CollectionChanged -= BrowseStreamsOnCollectionChanged;
         Settings.PropertyChanged -= SettingsOnPropertyChanged;
-        Settings.Chat.PropertyChanged -= ChatSettingsOnPropertyChanged;
+        if (observedChatSettings is not null)
+        {
+            observedChatSettings.PropertyChanged -= ChatSettingsOnPropertyChanged;
+            observedChatSettings = null;
+        }
+
         if (observedFollowedChannelsSettings is not null)
         {
             observedFollowedChannelsSettings.PropertyChanged -= FollowedChannelsSettingsOnPropertyChanged;
             observedFollowedChannelsSettings = null;
         }
+
         if (selectedTab is not null)
         {
             selectedTab.PropertyChanged -= SelectedTabOnPropertyChanged;
@@ -3339,42 +3367,80 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         TabStripItems.Clear();
 
-        var tabDisposals = Tabs
-            .ToArray()
-            .Select(tab => tab.DisposeAsync().AsTask())
-            .ToArray();
-        if (tabDisposals.Length > 0)
+        try
         {
-            await Task.WhenAll(tabDisposals);
-        }
+            await DrainSearchOperationsAsync();
 
-        Task[] pendingDisposals;
-        lock (detachedDisposalsGate)
-        {
-            pendingDisposals = detachedDisposals.ToArray();
-        }
-
-        if (pendingDisposals.Length > 0)
-        {
-            try
+            var tabDisposals = Tabs
+                .ToArray()
+                .Select(tab => tab.DisposeAsync().AsTask())
+                .ToArray();
+            if (tabDisposals.Length > 0)
             {
-                await Task.WhenAll(pendingDisposals).WaitAsync(DetachedDisposalWaitTimeout);
+                await Task.WhenAll(tabDisposals);
             }
-            catch (TimeoutException)
+
+            await backgroundOperationController.DrainAsync(DetachedDisposalWaitTimeout);
+
+            Task[] pendingDisposals;
+            lock (detachedDisposalsGate)
             {
-                logger.Write(AppLogLevel.Warning, "UI", "Timed out waiting for already closed tabs to finish cleanup during shutdown.");
-                foreach (var pendingDisposal in pendingDisposals)
+                pendingDisposals = detachedDisposals.ToArray();
+            }
+
+            if (pendingDisposals.Length > 0)
+            {
+                try
                 {
-                    ObserveDetachedDisposal(pendingDisposal);
+                    await Task.WhenAll(pendingDisposals).WaitAsync(DetachedDisposalWaitTimeout);
+                }
+                catch (TimeoutException)
+                {
+                    logger.Write(AppLogLevel.Warning, "UI", "Timed out waiting for already closed tabs to finish cleanup during shutdown.");
+                    foreach (var pendingDisposal in pendingDisposals)
+                    {
+                        ObserveDetachedDisposal(pendingDisposal);
+                    }
                 }
             }
+        }
+        finally
+        {
+            lifetimeCancellation.Dispose();
+            recentThumbnailRefreshCancellation.Dispose();
+            followedChannelsRefreshCancellation.Dispose();
+            streamOpenGate.Dispose();
+            tabStartController.Dispose();
+            chatSettingsApplyGate.Dispose();
+            vlcPluginMultiViewChatPolicyGate.Dispose();
+            recentStreamsGate.Dispose();
+            recentThumbnailRefreshGate.Dispose();
+            followedChannelsRefreshGate.Dispose();
+            if (appUpdateService is IDisposable disposableUpdater)
+            {
+                disposableUpdater.Dispose();
+            }
+        }
+    }
+
+    private async Task DrainSearchOperationsAsync()
+    {
+        try
+        {
+            await Task.WhenAll(
+                streamSearchController.DrainAsync(DetachedDisposalWaitTimeout),
+                vodBrowseController.DrainAsync(DetachedDisposalWaitTimeout));
+        }
+        catch (TimeoutException)
+        {
+            logger.Write(AppLogLevel.Warning, "UI", "Timed out waiting for search operations during shutdown.");
         }
     }
 
     private async Task AddAndPlayAsync()
     {
         var query = NewStreamText.Trim();
-        var searchGeneration = ++streamSearchGeneration;
+        var searchGeneration = streamSearchController.AdvanceGeneration();
         CancelStreamSearchDebounce();
         await RunStreamSearchAsync(query, searchGeneration);
     }
@@ -3674,8 +3740,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private bool IsCurrentStreamSearch(int searchGeneration, string query)
     {
-        return streamSearchGeneration == searchGeneration &&
-            string.Equals(NewStreamText.Trim(), query, StringComparison.Ordinal);
+        return !disposed &&
+            streamSearchController.IsCurrent(
+                searchGeneration,
+                query,
+                () => NewStreamText,
+                () => disposed);
     }
 
     private void ClearStreamSearchResults()
@@ -3691,8 +3761,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ScheduleAutomaticStreamSearch()
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var query = NewStreamText.Trim();
-        var searchGeneration = streamSearchGeneration;
+        var searchGeneration = streamSearchController.CurrentGeneration;
         if (string.IsNullOrWhiteSpace(query))
         {
             SetStreamSearchDropdownOpen(false);
@@ -3705,15 +3780,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        lock (streamSearchGate)
-        {
-            streamSearchDebounceTimer?.Dispose();
-            streamSearchDebounceTimer = new System.Threading.Timer(
-                _ => dispatch(() => _ = RunAutomaticStreamSearchAsync(query, searchGeneration)),
-                null,
-                streamSearchDebounceInterval,
-                Timeout.InfiniteTimeSpan);
-        }
+        streamSearchController.Schedule(
+            streamSearchDebounceInterval,
+            () => dispatch(() => _ = RunAutomaticStreamSearchAsync(query, searchGeneration)),
+            ReportDebouncedCallbackFailure);
+    }
+
+    private void ReportDebouncedCallbackFailure(Exception exception)
+    {
+        logger.Write(AppLogLevel.Warning, "UI", "A debounced UI operation could not be dispatched.", exception);
     }
 
     private async Task RunAutomaticStreamSearchAsync(string query, int searchGeneration)
@@ -3728,43 +3803,22 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void CancelStreamSearchDebounce()
     {
-        lock (streamSearchGate)
-        {
-            streamSearchDebounceTimer?.Dispose();
-            streamSearchDebounceTimer = null;
-        }
+        streamSearchController.CancelScheduled();
     }
 
     private CancellationTokenSource ReplaceStreamSearchCancellation()
     {
-        lock (streamSearchGate)
-        {
-            streamSearchCancellation?.Cancel();
-            streamSearchCancellation = new CancellationTokenSource();
-            return streamSearchCancellation;
-        }
+        return streamSearchController.BeginOperation(lifetimeCancellation.Token);
     }
 
     private void CancelActiveStreamSearch()
     {
-        lock (streamSearchGate)
-        {
-            streamSearchCancellation?.Cancel();
-            streamSearchCancellation = null;
-        }
+        streamSearchController.CancelActive();
     }
 
     private void DisposeStreamSearchCancellation(CancellationTokenSource cancellation)
     {
-        lock (streamSearchGate)
-        {
-            if (ReferenceEquals(streamSearchCancellation, cancellation))
-            {
-                streamSearchCancellation = null;
-            }
-        }
-
-        cancellation.Dispose();
+        streamSearchController.Complete(cancellation);
     }
 
     private void SetStreamSearchDropdownOpen(bool value)
@@ -3838,14 +3892,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         bool clearInputOnSuccess,
         bool selectOpenedTab = true)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var candidates = await ResolvePlayableCandidatesAsync(parsedCandidates);
         if (candidates.Count == 0)
         {
             throw new InvalidOperationException("No stream target was provided.");
         }
 
-        var target = await TryLoadTargetCategoryAsync(candidates[0]);
-        await streamOpenGate.WaitAsync();
+        var target = await TryLoadTargetCategoryAsync(candidates[0], lifetimeCancellation.Token);
+        await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
         try
         {
             var existing = FindTab(target);
@@ -3876,7 +3935,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task<StreamTarget> TryLoadTargetCategoryAsync(StreamTarget target)
+    private async Task<StreamTarget> TryLoadTargetCategoryAsync(
+        StreamTarget target,
+        CancellationToken cancellationToken)
     {
         if (target.Kind != StreamTargetKind.Live ||
             (!string.IsNullOrWhiteSpace(target.CategoryName) &&
@@ -3888,7 +3949,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var metadata = await streamMetadataService.GetLiveStreamMetadataAsync(target, Settings);
+            var metadata = await streamMetadataService.GetLiveStreamMetadataAsync(
+                target,
+                Settings,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             var profileImageUrl = FirstNonEmpty(target.ProfileImageUrl, metadata.ProfileImageUrl);
             if (metadata.State != StreamMetadataState.Available)
             {
@@ -3908,6 +3973,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 CategoryName = FirstNonEmpty(target.CategoryName, metadata.CategoryName),
                 ProfileImageUrl = profileImageUrl
             };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -3971,21 +4040,23 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private StreamTabViewModel CreateTab(StreamTarget target)
     {
-        var tab = new StreamTabViewModel(
-            target,
-            SelectedQuality,
-            streamlinkService,
-            playbackFactory,
-            chatFactory,
-            logger,
-            dispatch,
-            GetSavedStreamVolume(target),
-            viewerCountService,
-            replayResolver,
-            replayChatProvider,
-            kickChatHistoryProvider: kickChatHistoryProvider,
-            kickEventSubscriptionService: kickEventSubscriptionService,
-            twitchSubOnlyVodResolver: twitchSubOnlyVodResolver);
+        var tab = new StreamTabViewModel(new StreamTabViewModelDependencies
+        {
+            Target = target,
+            Quality = SelectedQuality,
+            StreamlinkService = streamlinkService,
+            PlaybackFactory = playbackFactory,
+            ChatFactory = chatFactory,
+            Logger = logger,
+            Dispatch = dispatch,
+            InitialVolume = GetSavedStreamVolume(target),
+            ViewerCountService = viewerCountService,
+            ReplayResolver = replayResolver,
+            ReplayChatProvider = replayChatProvider,
+            KickChatHistoryProvider = kickChatHistoryProvider,
+            KickEventSubscriptionService = kickEventSubscriptionService,
+            TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver
+        });
         Tabs.Add(tab);
         return tab;
     }
@@ -4036,26 +4107,17 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        lock (recentStreamHintsGate)
-        {
-            recentStreamHints[target.StateKey] = new RecentStreamHint(
+        recentStreamController.SetHint(
+            target.StateKey,
+            new RecentStreamHint(
                 thumbnailUrl?.Trim() ?? "",
                 displayName?.Trim() ?? "",
-                categoryName?.Trim() ?? "");
-        }
+                categoryName?.Trim() ?? ""));
     }
 
     private RecentStreamHint? TakeRecentStreamHint(StreamTarget target)
     {
-        lock (recentStreamHintsGate)
-        {
-            if (!recentStreamHints.Remove(target.StateKey, out var hint))
-            {
-                return null;
-            }
-
-            return hint;
-        }
+        return recentStreamController.TakeHint(target.StateKey);
     }
 
     private void EnsureFollowedChannelsRefreshTimerStarted()
@@ -4109,7 +4171,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 var refreshTask = RefreshFollowedChannelsAsync(
                     followedChannelsRefreshCancellation.Token,
                     skipIfRefreshRunning: true);
-                _ = ReleaseFollowedChannelsAutomaticRefreshAfterAsync(refreshTask);
+                backgroundOperationController.Track(ReleaseFollowedChannelsAutomaticRefreshAfterAsync(refreshTask));
             });
         }
         catch (Exception ex)
@@ -4172,7 +4234,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            _ = RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token);
+            backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token));
         });
     }
 
@@ -4183,7 +4245,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        _ = RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token);
+        backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token));
     }
 
     private async Task RefreshRecentThumbnailsAsync(CancellationToken cancellationToken)
@@ -4326,11 +4388,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             foreach (var target in targets)
             {
-                if (!recentStreamLiveStatuses.TryGetValue(target.StateKey, out var current) ||
+                if (!recentStreamController.TryGetLiveStatus(target.StateKey, out var current) ||
                     current.State != RecentStreamLiveState.Checking)
                 {
-                    recentStreamLiveStatuses[target.StateKey] = status;
-                    changed = true;
+                    changed |= recentStreamController.SetLiveStatus(target.StateKey, status);
                 }
             }
 
@@ -4359,12 +4420,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             var status = CreateRecentStreamLiveStatus(metadata, checkedAtUtc);
-            if (!recentStreamLiveStatuses.TryGetValue(stateKey, out var current) ||
-                current != status)
-            {
-                recentStreamLiveStatuses[stateKey] = status;
-                changed = true;
-            }
+            changed |= recentStreamController.SetLiveStatus(stateKey, status);
         }
 
         return changed;
@@ -4393,6 +4449,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task RememberRecentStreamAsync(StreamTabViewModel tab)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var target = tab.Target;
         try
         {
@@ -4400,7 +4461,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             var watchedAtUtc = DateTimeOffset.UtcNow;
             var needsMetadata = false;
 
-            await recentStreamsGate.WaitAsync();
+            await recentStreamsGate.WaitAsync(lifetimeCancellation.Token);
             try
             {
                 var existing = FindRecentStream(target);
@@ -4416,10 +4477,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     .Where(stream => !IsSameRecentStream(stream, target))
                     .Prepend(recentStream)
                     .ToList();
-                recentStreamLiveStatuses[target.StateKey] = new RecentStreamLiveStatus(
+                recentStreamController.SetLiveStatus(target.StateKey, new RecentStreamLiveStatus(
                     RecentStreamLiveState.Live,
                     watchedAtUtc,
-                    "Playback started successfully.");
+                    "Playback started successfully."));
                 RebuildRecentStreams();
                 await SaveRecentStreamSettingsAsync(target);
                 needsMetadata = streamMetadataService is not null &&
@@ -4443,7 +4504,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            await recentStreamsGate.WaitAsync();
+            await recentStreamsGate.WaitAsync(lifetimeCancellation.Token);
             try
             {
                 var existing = FindRecentStream(target);
@@ -4464,7 +4525,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     .Where(stream => !IsSameRecentStream(stream, target))
                     .Prepend(recentStream)
                     .ToList();
-                recentStreamLiveStatuses[target.StateKey] = CreateRecentStreamLiveStatus(metadata, DateTimeOffset.UtcNow);
+                recentStreamController.SetLiveStatus(
+                    target.StateKey,
+                    CreateRecentStreamLiveStatus(metadata, DateTimeOffset.UtcNow));
                 RebuildRecentStreams();
                 await SaveRecentStreamSettingsAsync(target);
             }
@@ -4472,6 +4535,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             {
                 recentStreamsGate.Release();
             }
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -4604,73 +4670,97 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     }
 
     private bool IsTabStartActive(StreamTabViewModel tab)
-    {
-        lock (tabStartsGate)
-        {
-            return activeTabStarts.Contains(tab.Id);
-        }
-    }
+        => tabStartController.IsActive(tab.Id);
 
     private bool TryBeginTabStart(StreamTabViewModel tab)
-    {
-        lock (tabStartsGate)
-        {
-            return activeTabStarts.Add(tab.Id);
-        }
-    }
+        => !disposed && tabStartController.TryBegin(tab.Id);
 
     private void EndTabStart(StreamTabViewModel tab)
-    {
-        lock (tabStartsGate)
-        {
-            activeTabStarts.Remove(tab.Id);
-        }
-    }
+        => tabStartController.End(tab.Id);
 
     private void StartTabInBackground(StreamTabViewModel tab, bool clearInputOnSuccess, bool updateBrowserStatus)
     {
-        if (!TryBeginTabStart(tab))
+        if (disposed || !TryBeginTabStart(tab))
         {
             return;
         }
 
         ApplyVideoLayout();
-        dispatch(() => _ = StartTabAndUpdateStatusAsync(tab, clearInputOnSuccess, updateBrowserStatus));
-    }
-
-    private async Task StartTabAndUpdateStatusAsync(StreamTabViewModel tab, bool clearInputOnSuccess, bool updateBrowserStatus)
-    {
-        await Task.Yield();
-        var startSlotAcquired = false;
-
+        var start = () => backgroundOperationController.Track(
+            StartTabAndUpdateStatusAsync(tab, clearInputOnSuccess, updateBrowserStatus));
         try
         {
-            await tabStartConcurrency.WaitAsync();
-            startSlotAcquired = true;
-
-            await tab.StartAsync(Settings, ShouldUseStableMultiStreamStartupProfile(tab));
-            if (tab.Status == PlaybackStatus.Playing)
+            if (tryDispatch is not null)
             {
-                if (clearInputOnSuccess)
+                if (!tryDispatch(start))
                 {
-                    NewStreamText = "";
-                }
-
-                StatusMessage = $"{tab.Target.DisplayName} playing";
-                if (tab.Target.Kind == StreamTargetKind.Live)
-                {
-                    _ = RememberRecentStreamAsync(tab);
+                    EndTabStart(tab);
                 }
             }
             else
             {
-                StatusMessage = $"{tab.Target.DisplayName}: {GetStartFailure(tab)}";
+                dispatch(start);
             }
+        }
+        catch
+        {
+            EndTabStart(tab);
+            throw;
+        }
+    }
 
-            if (updateBrowserStatus)
-            {
-                BrowserClickStatus = StatusMessage;
-            }
+    private async Task StartTabAndUpdateStatusAsync(StreamTabViewModel tab, bool clearInputOnSuccess, bool updateBrowserStatus)
+    {
+        if (disposed)
+        {
+            EndTabStart(tab);
+            return;
+        }
+
+        await Task.Yield();
+        try
+        {
+            await tabStartController.RunBegunAsync(
+                tab.Id,
+                async cancellationToken =>
+                {
+                    var startResult = await tab.StartWithResultAsync(
+                        Settings,
+                        ShouldUseStableMultiStreamStartupProfile(tab),
+                        ShouldUseMultiStreamResourceProfile(tab),
+                        cancellationToken);
+                    if (disposed)
+                    {
+                        return;
+                    }
+
+                    if (startResult.Succeeded)
+                    {
+                        if (clearInputOnSuccess)
+                        {
+                            NewStreamText = "";
+                        }
+
+                        StatusMessage = $"{tab.Target.DisplayName} playing";
+                        if (tab.Target.Kind == StreamTargetKind.Live)
+                        {
+                            backgroundOperationController.Track(RememberRecentStreamAsync(tab));
+                        }
+                    }
+                    else
+                    {
+                        StatusMessage = $"{tab.Target.DisplayName}: {GetStartFailure(tab)}";
+                    }
+
+                    if (updateBrowserStatus)
+                    {
+                        BrowserClickStatus = StatusMessage;
+                    }
+                },
+                lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -4684,12 +4774,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            if (startSlotAcquired)
-            {
-                tabStartConcurrency.Release();
-            }
-
-            EndTabStart(tab);
             ApplyVlcPluginMultiViewChatPolicyInBackground(restoreWhenAllowed: true);
         }
     }
@@ -4706,6 +4790,17 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var visibleLiveTabs = GetVisibleVideoTabs()
             .Count(candidate => candidate.Target.Kind == StreamTargetKind.Live && !candidate.IsDetached);
         return visibleLiveTabs >= DenseMultiStreamStartupThreshold;
+    }
+
+    private bool ShouldUseMultiStreamResourceProfile(StreamTabViewModel tab)
+    {
+        if (tab.IsDetached || IsStreamOnlyFullscreenActive)
+        {
+            return false;
+        }
+
+        var visibleTabs = GetVisibleVideoTabs();
+        return visibleTabs.Count > 1 && visibleTabs.Contains(tab);
     }
 
     private async Task<IReadOnlyList<StreamTarget>> ResolvePlayableCandidatesAsync(IReadOnlyList<StreamTarget> candidates)
@@ -4786,6 +4881,64 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StatusMessage = $"Starting {SelectedTab.Target.DisplayName}";
         StartTabInBackground(SelectedTab, clearInputOnSuccess: false, updateBrowserStatus: false);
         await Task.CompletedTask;
+    }
+
+    private bool CanCreateClip()
+    {
+        return twitchClipService is not null &&
+            SelectedTab?.Target is { Platform: PlatformKind.Twitch, Kind: StreamTargetKind.Live };
+    }
+
+    private async Task CreateClipAsync()
+    {
+        if (SelectedTab is not { } tab)
+        {
+            return;
+        }
+
+        if (tab.Target.Platform == PlatformKind.Kick)
+        {
+            StatusMessage = "Kick clipping is disabled because no official clip API is available.";
+            return;
+        }
+
+        if (tab.Target.Kind != StreamTargetKind.Live)
+        {
+            StatusMessage = "Twitch clips are available for live tabs only.";
+            return;
+        }
+
+        if (twitchClipService is null)
+        {
+            StatusMessage = "Twitch clip service is unavailable.";
+            return;
+        }
+
+        try
+        {
+            StatusMessage = $"Creating Twitch clip for {tab.Target.DisplayName}";
+            var result = await twitchClipService.CreateLiveClipAsync(tab.Target, Settings.Chat);
+
+            try
+            {
+                openBrowser(result.ClipUri);
+                StatusMessage = $"Twitch clip opened for {tab.Target.DisplayName}";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Twitch clip created, but the browser could not be opened: {result.ClipUri}";
+                logger.Write(AppLogLevel.Warning, "TwitchClip", "Twitch clip was created but could not be opened in the browser.", ex);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Twitch clip creation was cancelled.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = ex.Message;
+            logger.Write(AppLogLevel.Warning, "TwitchClip", "Twitch clip creation failed.", ex);
+        }
     }
 
     private async Task ReloadSelectedAsync()
@@ -4922,7 +5075,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (tabsNeedingChatRestart.Count > 0)
         {
-            _ = RestartTheatreModeChatTabsAsync(tabsNeedingChatRestart.Distinct().ToArray());
+            backgroundOperationController.Track(RestartTheatreModeChatTabsAsync(tabsNeedingChatRestart.Distinct().ToArray()));
         }
     }
 
@@ -4937,7 +5090,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         RaiseChatVisibilityProperties();
-        _ = RestartTheatreModeChatTabsAsync(changedTabs);
+        backgroundOperationController.Track(RestartTheatreModeChatTabsAsync(changedTabs));
     }
 
     public void ReleaseNativeOverlayChatInputFocus()
@@ -5022,7 +5175,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 ResolveExplicitMultiViewGroup));
         }
 
-        foreach (var visibleGroup in pictureInPictureVisibleTabGroups)
+        foreach (var visibleGroup in tabGroupingController.PictureInPictureVisibleGroups)
         {
             policyTabs.AddRange(GetVlcPluginMultiViewChatPolicyTabs(
                 visibleGroup,
@@ -5298,6 +5451,40 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private async Task UpdateAppAsync()
+    {
+        if (appUpdateService is null)
+        {
+            AppUpdateStatus = "App updater is not available in this build.";
+            StatusMessage = AppUpdateStatus;
+            return;
+        }
+
+        AppUpdateStatus = "Preparing the latest verified GitHub release update...";
+        StatusMessage = AppUpdateStatus;
+
+        try
+        {
+            var result = await appUpdateService.StartLatestReleaseUpdateAsync(lifetimeCancellation.Token);
+            AppUpdateStatus = result.Message;
+            StatusMessage = result.Message;
+            logger.Write(AppLogLevel.Info, "Updater", result.Message);
+            if (result.RequestApplicationShutdown)
+            {
+                requestShutdown?.Invoke();
+            }
+        }
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppUpdateStatus = $"Update failed. {ex.Message}";
+            StatusMessage = AppUpdateStatus;
+            logger.Write(AppLogLevel.Error, "Updater", "Application update failed.", ex);
+        }
+    }
+
     private async Task AuthorizeTwitchAsync()
     {
         try
@@ -5440,13 +5627,33 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StopSelectedCommand.RaiseCanExecuteChanged();
         PauseSelectedCommand.RaiseCanExecuteChanged();
         CloseSelectedCommand.RaiseCanExecuteChanged();
+        CreateClipCommand.RaiseCanExecuteChanged();
         ToggleChatCommand.RaiseCanExecuteChanged();
         MoveTabLeftCommand.RaiseCanExecuteChanged();
         MoveTabRightCommand.RaiseCanExecuteChanged();
     }
 
+    private static void OpenExternalBrowser(Uri uri)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = uri.ToString(),
+            UseShellExecute = true
+        });
+    }
+
     private void SettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (disposed)
+        {
+            return;
+        }
+
+        if (e.PropertyName == nameof(AppSettings.Chat))
+        {
+            ObserveChatSettings(Settings.Chat, applyImmediately: true);
+        }
+
         if (e.PropertyName == nameof(AppSettings.FollowedChannels))
         {
             ObserveFollowedChannelsSettings(Settings.FollowedChannels);
@@ -5470,6 +5677,37 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             Themes.ThemeManager.ApplyTheme(Settings.Theme);
         }
+    }
+
+    private void ObserveChatSettings(ChatSettings settings, bool applyImmediately = false)
+    {
+        if (ReferenceEquals(observedChatSettings, settings))
+        {
+            return;
+        }
+
+        if (observedChatSettings is not null)
+        {
+            observedChatSettings.PropertyChanged -= ChatSettingsOnPropertyChanged;
+        }
+
+        observedChatSettings = settings;
+        observedChatSettings.PropertyChanged += ChatSettingsOnPropertyChanged;
+
+        if (!applyImmediately || disposed)
+        {
+            return;
+        }
+
+        foreach (var tab in Tabs.ToArray())
+        {
+            tab.RefreshChatOverlay(settings);
+        }
+
+        backgroundOperationController.Track(ApplyChatSettingsAsync(reconfigurePlayback: true));
+        RaiseChatVisibilityProperties();
+        ClearTwitchTokenCommand.RaiseCanExecuteChanged();
+        ClearKickTokenCommand.RaiseCanExecuteChanged();
     }
 
     private void ObserveFollowedChannelsSettings(FollowedChannelsSettings settings)
@@ -5506,6 +5744,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ChatSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (disposed || !ReferenceEquals(sender, observedChatSettings))
+        {
+            return;
+        }
+
         if (e.PropertyName == nameof(ChatSettings.Layout) &&
             Settings.Chat.Layout != ChatLayout.Overlay)
         {
@@ -5534,7 +5777,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (IsChatConnectionSetting(e.PropertyName))
         {
-            _ = ApplyChatSettingsAsync(reconfigurePlayback);
+            backgroundOperationController.Track(ApplyChatSettingsAsync(reconfigurePlayback));
         }
 
         RaiseChatVisibilityProperties();
@@ -5549,21 +5792,33 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ApplyChatSettingsAsync(bool reconfigurePlayback)
     {
-        await chatSettingsApplyGate.WaitAsync();
+        var enteredGate = false;
         try
         {
+            await chatSettingsApplyGate.WaitAsync(lifetimeCancellation.Token);
+            enteredGate = true;
+            if (disposed)
+            {
+                return;
+            }
+
             foreach (var tab in Tabs.ToArray())
             {
+                if (disposed)
+                {
+                    return;
+                }
+
                 try
                 {
                     if (reconfigurePlayback && tab.ShouldRestartPlaybackForChatOverlaySettings(Settings))
                     {
                         StatusMessage = $"Reloading {tab.Target.DisplayName} for chat layout";
-                        await tab.ReconfigurePlaybackForChatOverlaySettingsAsync(Settings);
+                        await tab.ReconfigurePlaybackForChatOverlaySettingsAsync(Settings, lifetimeCancellation.Token);
                     }
                     else
                     {
-                        await tab.RestartChatAsync(Settings);
+                        await tab.RestartChatAsync(Settings, lifetimeCancellation.Token);
                     }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -5573,25 +5828,44 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 }
             }
         }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || disposed)
+        {
+        }
         finally
         {
-            chatSettingsApplyGate.Release();
+            if (enteredGate)
+            {
+                chatSettingsApplyGate.Release();
+            }
         }
 
-        RaiseChatVisibilityProperties();
+        if (!disposed)
+        {
+            RaiseChatVisibilityProperties();
+        }
     }
 
     private async Task RestartTabChatAsync(StreamTabViewModel tab)
     {
-        await chatSettingsApplyGate.WaitAsync();
+        if (disposed)
+        {
+            return;
+        }
+
+        var enteredGate = false;
         try
         {
+            await chatSettingsApplyGate.WaitAsync(lifetimeCancellation.Token);
+            enteredGate = true;
             if (!Tabs.Contains(tab))
             {
                 return;
             }
 
             await tab.RestartChatAsync(Settings);
+        }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || disposed)
+        {
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -5600,19 +5874,37 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            chatSettingsApplyGate.Release();
+            if (enteredGate)
+            {
+                chatSettingsApplyGate.Release();
+            }
         }
 
-        RaiseChatVisibilityProperties();
+        if (!disposed)
+        {
+            RaiseChatVisibilityProperties();
+        }
     }
 
     private async Task RestartTheatreModeChatTabsAsync(IReadOnlyList<StreamTabViewModel> tabs)
     {
-        await chatSettingsApplyGate.WaitAsync();
+        if (disposed)
+        {
+            return;
+        }
+
+        var enteredGate = false;
         try
         {
+            await chatSettingsApplyGate.WaitAsync(lifetimeCancellation.Token);
+            enteredGate = true;
             foreach (var tab in tabs.Distinct().Where(Tabs.Contains))
             {
+                if (disposed)
+                {
+                    return;
+                }
+
                 try
                 {
                     await tab.RestartChatAsync(Settings);
@@ -5624,12 +5916,21 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 }
             }
         }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || disposed)
+        {
+        }
         finally
         {
-            chatSettingsApplyGate.Release();
+            if (enteredGate)
+            {
+                chatSettingsApplyGate.Release();
+            }
         }
 
-        RaiseChatVisibilityProperties();
+        if (!disposed)
+        {
+            RaiseChatVisibilityProperties();
+        }
     }
 
     private static bool IsChatConnectionSetting(string? propertyName)
@@ -5882,7 +6183,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         foreach (var stream in Settings.RecentStreams)
         {
             var target = new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName);
-            var liveStatus = recentStreamLiveStatuses.TryGetValue(target.StateKey, out var status)
+            var liveStatus = recentStreamController.TryGetLiveStatus(target.StateKey, out var status)
                 ? status
                 : RecentStreamLiveStatus.Unknown;
             RecentStreams.Add(new RecentStreamViewModel(stream, OpenRecentStreamAsync, DeleteRecentStreamAsync, liveStatus));
@@ -5904,6 +6205,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             ApplyVideoLayout();
+            ApplyInactivePlaybackPolicyInBackground();
+        }
+
+        if (sender is StreamTabViewModel busyTab &&
+            e.PropertyName == nameof(StreamTabViewModel.IsBusy) &&
+            !busyTab.IsBusy)
+        {
+            // Busy tabs are allowed to finish their current playback transition. Re-run the
+            // policy afterward in case the tab became hidden while that transition was running.
             ApplyInactivePlaybackPolicyInBackground();
         }
 
@@ -5951,15 +6261,22 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         return settings.Layout == ChatLayout.Overlay && IsVlcPluginOverlayConfigured(settings);
     }
 
-    private string GetSelectedKickSetting(Dictionary<string, string> values)
+    private string GetSelectedKickSetting(bool broadcaster)
     {
-        return SelectedTab?.Target.Platform == PlatformKind.Kick &&
-            values.TryGetValue(SelectedTab.Target.Channel, out var value)
+        if (SelectedTab?.Target.Platform != PlatformKind.Kick)
+        {
+            return "";
+        }
+
+        var found = broadcaster
+            ? Settings.Chat.TryGetKickBroadcasterUserId(SelectedTab.Target.Channel, out var value)
+            : Settings.Chat.TryGetKickChatroomId(SelectedTab.Target.Channel, out value);
+        return found
             ? value
             : "";
     }
 
-    private void SetSelectedKickSetting(Dictionary<string, string> values, string? value, string propertyName)
+    private void SetSelectedKickSetting(string? value, string propertyName, bool broadcaster)
     {
         if (SelectedTab?.Target.Platform != PlatformKind.Kick)
         {
@@ -5967,19 +6284,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         var channel = SelectedTab.Target.Channel;
-        var normalized = value?.Trim() ?? "";
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            values.Remove(channel);
-        }
-        else
-        {
-            values[channel] = normalized;
-        }
+        _ = broadcaster
+            ? Settings.Chat.SetKickBroadcasterUserId(channel, value)
+            : Settings.Chat.SetKickChatroomId(channel, value);
 
         OnPropertyChanged(propertyName);
         SelectedTab.RefreshChatOverlay(Settings.Chat);
-        _ = SelectedTab.RestartChatAsync(Settings);
+        backgroundOperationController.Track(SelectedTab.RestartChatAsync(Settings, lifetimeCancellation.Token));
         RaiseChatVisibilityProperties();
     }
 
@@ -6018,6 +6329,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyVlcPluginMultiViewChatPolicyInBackground(bool restoreWhenAllowed = false)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var policyTabs = GetCurrentVlcPluginMultiViewChatPolicyTabs();
         var changedTabs = policyTabs.Length > 0
             ? DisableVlcPluginMultiViewChats(policyTabs)
@@ -6031,7 +6347,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             .ToArray();
         if (reconfigureTabs.Length > 0)
         {
-            _ = ReconfigureVlcPluginMultiViewChatPolicyTabsAsync(reconfigureTabs);
+            backgroundOperationController.Track(ReconfigureVlcPluginMultiViewChatPolicyTabsAsync(reconfigureTabs));
         }
     }
 
@@ -6108,9 +6424,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ReconfigureVlcPluginChatTabsWithGateAsync(IReadOnlyList<StreamTabViewModel> tabs)
     {
-        await vlcPluginMultiViewChatPolicyGate.WaitAsync();
+        var enteredGate = false;
         try
         {
+            await vlcPluginMultiViewChatPolicyGate.WaitAsync(lifetimeCancellation.Token);
+            enteredGate = true;
+            if (disposed)
+            {
+                return;
+            }
+
             var reconfigureResults = await Task.WhenAll(tabs
                 .Distinct()
                 .Where(Tabs.Contains)
@@ -6126,19 +6449,28 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 logger.Write(AppLogLevel.Warning, "Chat", $"Failed to update VLC plugin chat for {tab.Target.DisplayName}.", exception);
             }
         }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || disposed)
+        {
+        }
         finally
         {
-            vlcPluginMultiViewChatPolicyGate.Release();
+            if (enteredGate)
+            {
+                vlcPluginMultiViewChatPolicyGate.Release();
+            }
         }
 
-        RaiseChatVisibilityProperties();
+        if (!disposed)
+        {
+            RaiseChatVisibilityProperties();
+        }
     }
 
     private async Task<(StreamTabViewModel Tab, Exception? Exception)> ReconfigureVlcPluginChatTabAsync(StreamTabViewModel tab)
     {
         try
         {
-            await tab.ReconfigurePlaybackForChatOverlaySettingsAsync(Settings);
+            await tab.ReconfigurePlaybackForChatOverlaySettingsAsync(Settings, lifetimeCancellation.Token);
             return (tab, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -6161,7 +6493,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (!IsStreamOnlyFullscreenActive)
         {
-            foreach (var group in multiViewTabGroups.ToArray())
+            foreach (var group in tabGroupingController.MultiViewGroups.ToArray())
             {
                 var orderedGroup = Tabs
                     .Where(group.Contains)
@@ -6177,7 +6509,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
-        foreach (var group in pictureInPictureTabGroups.ToArray())
+        foreach (var group in tabGroupingController.PictureInPictureGroups.ToArray())
         {
             var orderedGroup = Tabs
                 .Where(group.Contains)
@@ -6385,99 +6717,71 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyInactivePlaybackPolicyInBackground()
     {
-        var shouldDispatch = false;
-        lock (inactivePlaybackPolicyGate)
-        {
-            inactivePlaybackPolicyRunRequested = true;
-            if (!inactivePlaybackPolicyLoopQueued)
-            {
-                inactivePlaybackPolicyLoopQueued = true;
-                shouldDispatch = true;
-            }
-        }
-
-        if (shouldDispatch)
-        {
-            dispatch(StartInactivePlaybackPolicyLoop);
-        }
+        inactivePlaybackPolicyController.Request();
     }
 
-    private void StartInactivePlaybackPolicyLoop()
+    private async Task ApplyInactivePlaybackPolicyPassAsync(long generation)
     {
-        _ = RunInactivePlaybackPolicyLoopAsync();
-    }
+        if (disposed || !inactivePlaybackPolicyController.IsCurrent(generation))
+        {
+            return;
+        }
 
-    private async Task RunInactivePlaybackPolicyLoopAsync()
-    {
+        Interlocked.Increment(ref inactivePlaybackPolicyApplyPassCount);
         try
         {
-            while (true)
+            var tabs = Tabs.ToArray();
+            foreach (var tab in tabs)
             {
-                lock (inactivePlaybackPolicyGate)
+                if (!inactivePlaybackPolicyController.IsCurrent(generation))
                 {
-                    if (!inactivePlaybackPolicyRunRequested)
-                    {
-                        inactivePlaybackPolicyLoopQueued = false;
-                        return;
-                    }
-
-                    inactivePlaybackPolicyRunRequested = false;
+                    return;
+                }
+                if (!Tabs.Contains(tab))
+                {
+                    continue;
                 }
 
-                await Task.Yield();
-                lock (inactivePlaybackPolicyGate)
+                try
                 {
-                    if (inactivePlaybackPolicyRunRequested)
+                    if (ShouldKeepTabRunning(tab))
                     {
-                        inactivePlaybackPolicyRunRequested = false;
+                        await tab.ResumeFromTabSwitchAsync();
+                    }
+                    else
+                    {
+                        await tab.PauseForTabSwitchAsync();
                     }
                 }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.Write(AppLogLevel.Warning, "UI", $"Failed to apply playback visibility policy for {tab.Target.DisplayName}.", ex);
+                }
 
-                await ApplyInactivePlaybackPolicyPassAsync();
+                if (!inactivePlaybackPolicyController.IsCurrent(generation))
+                {
+                    return;
+                }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        finally
         {
-            logger.Write(AppLogLevel.Warning, "UI", "Failed to apply playback visibility policy.", ex);
-            lock (inactivePlaybackPolicyGate)
+            // Resume/pause operations may themselves touch audio. Only the current pass may win,
+            // and it always finishes by reasserting the user's current selection.
+            if (!disposed && inactivePlaybackPolicyController.IsCurrent(generation) &&
+                SelectedTab is { } selected && Tabs.Contains(selected))
             {
-                inactivePlaybackPolicyLoopQueued = false;
-            }
-        }
-    }
-
-    private async Task ApplyInactivePlaybackPolicyPassAsync()
-    {
-        Interlocked.Increment(ref inactivePlaybackPolicyApplyPassCount);
-        var tabs = Tabs.ToArray();
-        foreach (var tab in tabs)
-        {
-            if (!Tabs.Contains(tab))
-            {
-                continue;
-            }
-
-            try
-            {
-                if (ShouldKeepTabRunning(tab))
-                {
-                    await tab.ResumeFromTabSwitchAsync();
-                }
-                else
-                {
-                    await tab.PauseForTabSwitchAsync();
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                logger.Write(AppLogLevel.Warning, "UI", $"Failed to apply playback visibility policy for {tab.Target.DisplayName}.", ex);
+                ApplySelectedTabAudioState(selected);
             }
         }
     }
 
     private bool ShouldKeepTabRunning(StreamTabViewModel tab)
     {
-        return Settings.KeepInactiveTabsRunning || tab.IsVideoVisible || tab.IsDetached;
+        // Let a stream finish its initial resolve/start even if the user changes
+        // pages while it is still loading. Once startup completes, the normal
+        // off-grid pause policy applies without interrupting the initial handoff.
+        return Settings.KeepInactiveTabsRunning || tab.IsVideoVisible || tab.IsDetached || tab.IsBusy;
     }
 
     private void ApplySelectedTabSelection()
@@ -6566,8 +6870,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             selected.ReapplyAudio();
         }
     }
-
-    private sealed record RecentStreamHint(string ThumbnailUrl, string DisplayName, string CategoryName);
 
     private sealed record StreamCandidateProbe(
         StreamTarget Target,

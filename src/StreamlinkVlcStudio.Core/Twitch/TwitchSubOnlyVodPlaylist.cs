@@ -1,4 +1,7 @@
 using System.Text;
+using System.Text.RegularExpressions;
+using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Security;
 
 namespace StreamlinkVlcStudio.Core.Twitch;
 
@@ -8,11 +11,11 @@ namespace StreamlinkVlcStudio.Core.Twitch;
 /// used by the TwitchNoSub browser extension (https://github.com/besuper/TwitchNoSub):
 /// usher.ttvnw.net refuses sub-only VODs, but the segments on CloudFront need no token.
 /// </summary>
-public static class TwitchSubOnlyVodPlaylist
+public static partial class TwitchSubOnlyVodPlaylist
 {
     // Ordered best-first; the same renditions TwitchNoSub probes for.
     public static IReadOnlyList<string> QualityKeys { get; } =
-        ["chunked", "1080p60", "720p60", "480p30", "360p30", "160p30"];
+        Array.AsReadOnly<string>(["chunked", "1080p60", "720p60", "480p30", "360p30", "160p30"]);
 
     public static bool TryParseStoryboardLocation(
         string? seekPreviewsUrl,
@@ -24,7 +27,7 @@ public static class TwitchSubOnlyVodPlaylist
 
         if (string.IsNullOrWhiteSpace(seekPreviewsUrl) ||
             !Uri.TryCreate(seekPreviewsUrl, UriKind.Absolute, out var uri) ||
-            string.IsNullOrWhiteSpace(uri.Host))
+            !ProviderUriPolicy.IsApprovedReplayUri(uri, PlatformKind.Twitch))
         {
             return false;
         }
@@ -32,15 +35,29 @@ public static class TwitchSubOnlyVodPlaylist
         var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var storyboardIndex = Array.FindIndex(
             segments,
-            segment => segment.Contains("storyboards", StringComparison.OrdinalIgnoreCase));
+            segment => segment.Equals("storyboards", StringComparison.OrdinalIgnoreCase));
         if (storyboardIndex < 1)
         {
             return false;
         }
 
-        host = uri.Host;
-        specialId = segments[storyboardIndex - 1];
-        return specialId.Length > 0;
+        try
+        {
+            specialId = Uri.UnescapeDataString(segments[storyboardIndex - 1]);
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+
+        if (!StoryboardIdentifierPattern().IsMatch(specialId))
+        {
+            specialId = "";
+            return false;
+        }
+
+        host = uri.IdnHost.TrimEnd('.');
+        return true;
     }
 
     public static string BuildVariantPlaylistUrl(
@@ -54,17 +71,28 @@ public static class TwitchSubOnlyVodPlaylist
         string qualityKey)
     {
         var type = (broadcastType ?? "").Trim().ToLowerInvariant();
+        var normalizedHost = NormalizeHost(host);
+        var encodedSpecialId = EncodePathSegment(specialId);
+        var encodedVodId = EncodePathSegment(vodId);
+        var encodedQualityKey = EncodePathSegment(qualityKey);
         if (type == "highlight")
         {
-            return $"https://{host}/{specialId}/{qualityKey}/highlight-{vodId}.m3u8";
+            return $"https://{normalizedHost}/{encodedSpecialId}/{encodedQualityKey}/highlight-{encodedVodId}.m3u8";
         }
 
-        if (type == "upload" && nowUtc - createdAtUtc > TimeSpan.FromDays(7))
+        // Missing createdAt metadata is common for partially populated GraphQL responses.
+        // Treat it like an archive-style upload instead of subtracting DateTimeOffset.MinValue,
+        // which can overflow TimeSpan and abort the fallback before probing any variants.
+        var isOldUpload = type == "upload" &&
+            createdAtUtc > DateTimeOffset.MinValue &&
+            nowUtc >= createdAtUtc &&
+            nowUtc - createdAtUtc > TimeSpan.FromDays(7);
+        if (isOldUpload)
         {
-            return $"https://{host}/{ownerLogin}/{vodId}/{specialId}/{qualityKey}/index-dvr.m3u8";
+            return $"https://{normalizedHost}/{EncodePathSegment(ownerLogin)}/{encodedVodId}/{encodedSpecialId}/{encodedQualityKey}/index-dvr.m3u8";
         }
 
-        return $"https://{host}/{specialId}/{qualityKey}/index-dvr.m3u8";
+        return $"https://{normalizedHost}/{encodedSpecialId}/{encodedQualityKey}/index-dvr.m3u8";
     }
 
     public static string SelectQualityKey(IReadOnlyList<string> availableKeys, string? requestedQuality)
@@ -116,6 +144,10 @@ public static class TwitchSubOnlyVodPlaylist
     {
         ArgumentNullException.ThrowIfNull(playlistContent);
         ArgumentNullException.ThrowIfNull(playlistUri);
+        if (!ProviderUriPolicy.IsApprovedReplayUri(playlistUri, PlatformKind.Twitch))
+        {
+            throw new InvalidDataException("The Twitch playlist URL is not an approved HTTPS provider endpoint.");
+        }
 
         // Sub-only VODs 404 on the "-unmuted" segment names; "-muted" always exists.
         var mutedContent = playlistContent.Replace("-unmuted", "-muted", StringComparison.Ordinal);
@@ -124,6 +156,11 @@ public static class TwitchSubOnlyVodPlaylist
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i].TrimEnd('\r');
+            if (i == 0)
+            {
+                line = line.TrimStart('\uFEFF');
+            }
+
             // Skip the artificial empty entry produced by a trailing newline.
             if (line.Length == 0 && i == lines.Length - 1)
             {
@@ -158,33 +195,87 @@ public static class TwitchSubOnlyVodPlaylist
 
     private static string RewriteTagLine(string line, Uri playlistUri)
     {
-        const string marker = "URI=\"";
-        var start = line.IndexOf(marker, StringComparison.Ordinal);
-        if (start < 0)
+        const string marker = "URI=";
+        var attributeStart = FindExactAttribute(line, marker);
+        if (attributeStart < 0)
         {
             return line;
         }
 
-        start += marker.Length;
+        var quoteIndex = attributeStart + marker.Length;
+        if (quoteIndex >= line.Length || line[quoteIndex] != '"')
+        {
+            throw new InvalidDataException("The playlist contained a malformed URI attribute.");
+        }
+
+        var start = quoteIndex + 1;
         var end = line.IndexOf('"', start);
         if (end < 0)
         {
-            return line;
+            throw new InvalidDataException("The playlist contained an unterminated URI attribute.");
         }
 
         var uri = line[start..end];
         return string.Concat(line[..start], AbsolutizeUri(uri, playlistUri), line[end..]);
     }
 
-    private static string AbsolutizeUri(string uri, Uri playlistUri)
+    private static int FindExactAttribute(string line, string marker)
     {
-        if (uri.Length == 0 ||
-            uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-            uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+        var searchIndex = 0;
+        while (searchIndex < line.Length)
         {
-            return uri;
+            var index = line.IndexOf(marker, searchIndex, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                return -1;
+            }
+
+            if (index == 0 || line[index - 1] is ':' or ',')
+            {
+                return index;
+            }
+
+            searchIndex = index + marker.Length;
         }
 
-        return new Uri(playlistUri, uri).ToString();
+        return -1;
     }
+
+    private static string AbsolutizeUri(string uri, Uri playlistUri)
+    {
+        if (!ProviderUriPolicy.TryResolveReplayUri(
+                uri,
+                playlistUri,
+                PlatformKind.Twitch,
+                out var resolved))
+        {
+            throw new InvalidDataException("The playlist contained an unapproved media URI.");
+        }
+
+        return resolved.AbsoluteUri;
+    }
+
+    private static string EncodePathSegment(string? value) =>
+        Uri.EscapeDataString(value ?? "").Replace(".", "%2E", StringComparison.Ordinal);
+
+    private static string NormalizeHost(string? host)
+    {
+        var candidate = (host ?? "").Trim().TrimEnd('.');
+        if (candidate.Length == 0 ||
+            !Uri.TryCreate($"https://{candidate}/", UriKind.Absolute, out var uri) ||
+            !uri.IsDefaultPort ||
+            uri.UserInfo.Length > 0 ||
+            uri.Query.Length > 0 ||
+            uri.Fragment.Length > 0 ||
+            !string.Equals(uri.AbsolutePath, "/", StringComparison.Ordinal) ||
+            !string.Equals(uri.IdnHost, candidate, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("The playlist host is not valid.", nameof(host));
+        }
+
+        return uri.IdnHost;
+    }
+
+    [GeneratedRegex("^[A-Za-z0-9_-]{1,256}$", RegexOptions.CultureInvariant)]
+    private static partial Regex StoryboardIdentifierPattern();
 }

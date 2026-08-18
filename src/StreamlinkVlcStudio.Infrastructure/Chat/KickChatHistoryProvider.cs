@@ -1,13 +1,10 @@
-using System.Diagnostics;
 using System.Globalization;
-using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
-using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
-using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
+using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
@@ -19,9 +16,9 @@ public sealed class KickChatHistoryProvider : IKickChatHistoryProvider, IDisposa
 
     public KickChatHistoryProvider(IAppLogger logger, HttpClient? httpClient = null)
     {
-        this.httpClient = httpClient ?? new HttpClient();
+        this.httpClient = httpClient ?? HttpClientFactory.CreateDefault();
         ownsHttpClient = httpClient is null;
-        ConfigureKickHttpHeaders(this.httpClient);
+        KickHttpHeaders.Configure(this.httpClient);
         backfillService = new KickChatHistoryBackfillService(this.httpClient, logger);
     }
 
@@ -58,39 +55,26 @@ public sealed class KickChatHistoryProvider : IKickChatHistoryProvider, IDisposa
 
     public void Dispose()
     {
-        backfillService.Dispose();
         if (ownsHttpClient)
         {
             httpClient.Dispose();
         }
     }
 
-    private static void ConfigureKickHttpHeaders(HttpClient httpClient)
-    {
-        if (!httpClient.DefaultRequestHeaders.UserAgent.Any())
-        {
-            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
-        }
-
-        if (!httpClient.DefaultRequestHeaders.Accept.Any())
-        {
-            httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
-        }
-    }
 }
 
-internal sealed class KickChatHistoryBackfillService : IDisposable
+internal sealed class KickChatHistoryBackfillService
 {
     private const int KickRecentChatSeekBackfillLimit = 2_500;
-    private static readonly TimeSpan KickRecentChatBackfillTimeout = TimeSpan.FromSeconds(5);
-    private readonly HttpClient httpClient;
+    private readonly KickChatTransport transport;
     private readonly IAppLogger logger;
     private readonly SemaphoreSlim backfillGate = new(1, 1);
     private bool directBackfillBlocked;
+    private string? directBackfillBlockedKey;
 
     public KickChatHistoryBackfillService(HttpClient httpClient, IAppLogger logger)
     {
-        this.httpClient = httpClient;
+        transport = new KickChatTransport(httpClient, logger);
         this.logger = logger;
     }
 
@@ -99,58 +83,9 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         ChatSettings settings,
         CancellationToken cancellationToken)
     {
-        string? channelId = null;
-        string? chatroomId = null;
-        long? broadcasterUserId = null;
-
-        if (settings.KickChatroomIds.TryGetValue(channel, out var configured) &&
-            !string.IsNullOrWhiteSpace(configured))
-        {
-            chatroomId = configured.Trim();
-        }
-
-        try
-        {
-            var escapedChannel = Uri.EscapeDataString(channel);
-            using var request = new HttpRequestMessage(
-                HttpMethod.Get,
-                $"https://kick.com/api/v2/channels/{escapedChannel}");
-            request.Headers.Referrer = new Uri($"https://kick.com/{escapedChannel}");
-
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-            var resolved = ReadKickChannelInfo(document.RootElement);
-            channelId = resolved.ChannelId;
-            chatroomId ??= resolved.ChatroomId;
-            broadcasterUserId = resolved.BroadcasterUserId;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            var message = string.IsNullOrWhiteSpace(chatroomId)
-                ? $"Kick public channel metadata failed for {channel}."
-                : $"Kick public channel metadata failed for {channel}; using configured chatroom ID.";
-            logger.Write(AppLogLevel.Warning, "KickChat", message, ex);
-        }
-
-        if (string.IsNullOrWhiteSpace(channelId) || string.IsNullOrWhiteSpace(chatroomId))
-        {
-            var curlMetadata = await TryResolveChannelInfoWithCurlAsync(channel, cancellationToken).ConfigureAwait(false);
-            if (curlMetadata is not null)
-            {
-                channelId ??= curlMetadata.ChannelId;
-                chatroomId ??= curlMetadata.ChatroomId;
-                broadcasterUserId ??= curlMetadata.BroadcasterUserId;
-                logger.Write(AppLogLevel.Info, "KickChat", $"Resolved Kick chatroom ID for {channel} with curl fallback.");
-            }
-        }
-
-        return new KickChannelInfo(
-            NormalizeNumericId(channelId),
-            NormalizeNumericId(chatroomId),
-            broadcasterUserId);
+        return await transport
+            .ResolveChannelInfoAsync(channel, settings, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<ChatHistoryBackfillResult> BackfillRecentChatFromStartTimeAsync(
@@ -161,7 +96,7 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         DateTimeOffset throughTimestampUtc,
         CancellationToken cancellationToken)
     {
-        var candidateIds = BuildKickMessagesChannelIds(channelId, chatroomId).ToArray();
+        var candidateIds = KickChatTransport.BuildMessagesChannelIds(channelId, chatroomId).ToArray();
         if (candidateIds.Length == 0)
         {
             return new ChatHistoryBackfillResult(false, 0, false, null, null);
@@ -177,6 +112,13 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         await backfillGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var backfillKey = string.Join("|", candidateIds);
+            if (!string.Equals(directBackfillBlockedKey, backfillKey, StringComparison.Ordinal))
+            {
+                directBackfillBlockedKey = backfillKey;
+                directBackfillBlocked = false;
+            }
+
             var attempted = false;
             var hasFailure = false;
             var verifiedEmptyIds = new HashSet<string>(StringComparer.Ordinal);
@@ -355,7 +297,7 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
                 break;
             }
 
-            var cursor = NormalizeCursor(page.Cursor);
+            var cursor = KickChatTransport.NormalizeCursor(page.Cursor);
             if (string.IsNullOrWhiteSpace(cursor) ||
                 !requestedCursors.Add(cursor))
             {
@@ -469,50 +411,15 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         string? cursor,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(KickRecentChatBackfillTimeout);
-        try
-        {
-            var escapedMessagesChannelId = Uri.EscapeDataString(messagesChannelId);
-            var escapedChannel = Uri.EscapeDataString(channel);
-            var url = KickChatApi.BuildRecentMessagesUrl(escapedMessagesChannelId, cursor, startTimeUtc: null);
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Referrer = new Uri($"https://kick.com/{escapedChannel}");
-
-            using var response = await httpClient.SendAsync(request, timeout.Token).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-                {
-                    directBackfillBlocked = true;
-                }
-
-                logger.Write(
-                    AppLogLevel.Info,
-                    "KickChat",
-                    $"Kick recent chat backfill failed for {channel}: {(int)response.StatusCode} {response.ReasonPhrase}.");
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token).ConfigureAwait(false);
-            return ReadKickRecentChatPage(document.RootElement, channel);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Info, "KickChat", $"Kick recent chat backfill timed out for {channel}.");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Info, "KickChat", $"Kick recent chat backfill failed for {channel}.", ex);
-            return null;
-        }
+        var result = await transport.ReadRecentMessagesDirectAsync(
+                channel,
+                messagesChannelId,
+                cursor,
+                startTimeUtc: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+        directBackfillBlocked |= result.DirectForbidden;
+        return result.Page;
     }
 
     private async Task<KickRecentChatPage?> TryReadKickRecentMessagesFromStartTimeDirectAsync(
@@ -521,50 +428,15 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         DateTimeOffset startTimeUtc,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(KickRecentChatBackfillTimeout);
-        try
-        {
-            var escapedMessagesChannelId = Uri.EscapeDataString(messagesChannelId);
-            var escapedChannel = Uri.EscapeDataString(channel);
-            var url = KickChatApi.BuildRecentMessagesUrl(escapedMessagesChannelId, cursor: null, startTimeUtc: startTimeUtc);
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Referrer = new Uri($"https://kick.com/{escapedChannel}");
-
-            using var response = await httpClient.SendAsync(request, timeout.Token).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-                {
-                    directBackfillBlocked = true;
-                }
-
-                logger.Write(
-                    AppLogLevel.Info,
-                    "KickChat",
-                    $"Kick timestamp chat backfill failed for {channel}: {(int)response.StatusCode} {response.ReasonPhrase}.");
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token).ConfigureAwait(false);
-            return ReadKickRecentChatPage(document.RootElement, channel);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Info, "KickChat", $"Kick timestamp chat backfill timed out for {channel}.");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Info, "KickChat", $"Kick timestamp chat backfill failed for {channel}.", ex);
-            return null;
-        }
+        var result = await transport.ReadRecentMessagesDirectAsync(
+                channel,
+                messagesChannelId,
+                cursor: null,
+                startTimeUtc,
+                cancellationToken)
+            .ConfigureAwait(false);
+        directBackfillBlocked |= result.DirectForbidden;
+        return result.Page;
     }
 
     private async Task<KickRecentChatPage?> TryReadKickRecentMessagesWithCurlAsync(
@@ -573,74 +445,13 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         string? cursor,
         CancellationToken cancellationToken)
     {
-        var curlPath = ResolveCurlPath();
-        if (string.IsNullOrWhiteSpace(curlPath))
-        {
-            logger.Write(AppLogLevel.Warning, "KickChat", "curl.exe was not found; Kick recent chat backfill fallback is unavailable.");
-            return null;
-        }
-
-        var escapedChannel = Uri.EscapeDataString(channel);
-        var escapedMessagesChannelId = Uri.EscapeDataString(messagesChannelId);
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildKickRecentMessagesCurlArguments(escapedChannel, escapedMessagesChannelId, cursor))
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        try
-        {
-            using var process = new Process { StartInfo = startInfo };
-            if (!process.Start())
-            {
-                return null;
-            }
-
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(18));
-
-            try
-            {
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                await KillProcessTreeAsync(process).ConfigureAwait(false);
-                await ObserveOutputReadsAsync(stdoutTask, stderrTask).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                logger.Write(AppLogLevel.Info, "KickChat", $"curl.exe timed out loading recent Kick chat for {channel}.");
-                return null;
-            }
-
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-            {
-                logger.Write(AppLogLevel.Info, "KickChat", $"curl.exe failed loading recent Kick chat for {channel}: {stderr.Trim()}");
-                return null;
-            }
-
-            using var document = JsonDocument.Parse(stdout);
-            var page = ReadKickRecentChatPage(document.RootElement, channel);
-            logger.Write(AppLogLevel.Info, "KickChat", $"Loaded recent Kick chat for {channel} with curl fallback.");
-            return page;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Info, "KickChat", $"curl.exe recent chat fallback failed for {channel}.", ex);
-            return null;
-        }
+        return await transport.ReadRecentMessagesWithCurlAsync(
+                channel,
+                messagesChannelId,
+                cursor,
+                startTimeUtc: null,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<KickRecentChatPage?> TryReadKickRecentMessagesFromStartTimeWithCurlAsync(
@@ -649,145 +460,13 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
         DateTimeOffset startTimeUtc,
         CancellationToken cancellationToken)
     {
-        var curlPath = ResolveCurlPath();
-        if (string.IsNullOrWhiteSpace(curlPath))
-        {
-            logger.Write(AppLogLevel.Warning, "KickChat", "curl.exe was not found; Kick timestamp chat backfill fallback is unavailable.");
-            return null;
-        }
-
-        var escapedChannel = Uri.EscapeDataString(channel);
-        var escapedMessagesChannelId = Uri.EscapeDataString(messagesChannelId);
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildKickStartTimeMessagesCurlArguments(escapedChannel, escapedMessagesChannelId, startTimeUtc))
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        try
-        {
-            using var process = new Process { StartInfo = startInfo };
-            if (!process.Start())
-            {
-                return null;
-            }
-
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(18));
-
-            try
-            {
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                await KillProcessTreeAsync(process).ConfigureAwait(false);
-                await ObserveOutputReadsAsync(stdoutTask, stderrTask).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                logger.Write(AppLogLevel.Info, "KickChat", $"curl.exe timed out loading timestamp Kick chat for {channel}.");
-                return null;
-            }
-
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-            {
-                logger.Write(AppLogLevel.Info, "KickChat", $"curl.exe failed loading timestamp Kick chat for {channel}: {stderr.Trim()}");
-                return null;
-            }
-
-            using var document = JsonDocument.Parse(stdout);
-            var page = ReadKickRecentChatPage(document.RootElement, channel);
-            logger.Write(AppLogLevel.Info, "KickChat", $"Loaded timestamp Kick chat for {channel} with curl fallback.");
-            return page;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Info, "KickChat", $"curl.exe timestamp chat fallback failed for {channel}.", ex);
-            return null;
-        }
-    }
-
-    private async Task<KickChannelInfo?> TryResolveChannelInfoWithCurlAsync(
-        string channel,
-        CancellationToken cancellationToken)
-    {
-        var curlPath = ResolveCurlPath();
-        if (string.IsNullOrWhiteSpace(curlPath))
-        {
-            logger.Write(AppLogLevel.Warning, "KickChat", "curl.exe was not found; Kick chatroom metadata fallback is unavailable.");
-            return null;
-        }
-
-        var escapedChannel = Uri.EscapeDataString(channel);
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildKickMetadataCurlArguments(escapedChannel))
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        try
-        {
-            using var process = new Process { StartInfo = startInfo };
-            if (!process.Start())
-            {
-                return null;
-            }
-
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(18));
-
-            try
-            {
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                await KillProcessTreeAsync(process).ConfigureAwait(false);
-                await ObserveOutputReadsAsync(stdoutTask, stderrTask).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                logger.Write(AppLogLevel.Warning, "KickChat", $"curl.exe timed out resolving Kick metadata for {channel}.");
-                return null;
-            }
-
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-            {
-                logger.Write(AppLogLevel.Warning, "KickChat", $"curl.exe failed resolving Kick metadata for {channel}: {stderr.Trim()}");
-                return null;
-            }
-
-            using var document = JsonDocument.Parse(stdout);
-            return ReadKickChannelInfo(document.RootElement);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Warning, "KickChat", $"curl.exe metadata fallback failed for {channel}.", ex);
-            return null;
-        }
+        return await transport.ReadRecentMessagesWithCurlAsync(
+                channel,
+                messagesChannelId,
+                cursor: null,
+                startTimeUtc,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static void AddKickBackfillPageMessages(
@@ -857,186 +536,6 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
             .ToArray();
     }
 
-    private static KickRecentChatPage ReadKickRecentChatPage(JsonElement root, string channel)
-    {
-        if (!TryGetKickRecentChatMessageArray(root, out var messagesElement))
-        {
-            return new KickRecentChatPage([], ReadKickRecentChatCursor(root));
-        }
-
-        var messages = new List<ChatMessage>();
-        foreach (var item in messagesElement.EnumerateArray())
-        {
-            var message = KickPusherParser.TryParseMessageData(item, channel);
-            if (message is not null)
-            {
-                messages.Add(message);
-            }
-        }
-
-        return new KickRecentChatPage(
-            OrderKickMessages(messages).ToArray(),
-            ReadKickRecentChatCursor(root));
-    }
-
-    private static bool TryGetKickRecentChatMessageArray(JsonElement root, out JsonElement messages)
-    {
-        if (root.ValueKind == JsonValueKind.Object)
-        {
-            if (root.TryGetProperty("data", out var data))
-            {
-                if (data.ValueKind == JsonValueKind.Object &&
-                    data.TryGetProperty("messages", out messages) &&
-                    messages.ValueKind == JsonValueKind.Array)
-                {
-                    return true;
-                }
-
-                if (data.ValueKind == JsonValueKind.Array)
-                {
-                    messages = data;
-                    return true;
-                }
-            }
-
-            if (root.TryGetProperty("messages", out messages) &&
-                messages.ValueKind == JsonValueKind.Array)
-            {
-                return true;
-            }
-        }
-
-        messages = default;
-        return false;
-    }
-
-    private static string? ReadKickRecentChatCursor(JsonElement root)
-    {
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.TryGetProperty("data", out var data) &&
-            data.ValueKind == JsonValueKind.Object &&
-            TryReadNonEmptyString(data, "cursor", out var dataCursor))
-        {
-            return dataCursor;
-        }
-
-        return TryReadNonEmptyString(root, "cursor", out var rootCursor)
-            ? rootCursor
-            : null;
-    }
-
-    private static bool TryReadNonEmptyString(JsonElement element, string propertyName, out string value)
-    {
-        value = "";
-        if (!element.TryGetProperty(propertyName, out var property))
-        {
-            return false;
-        }
-
-        value = property.ValueKind == JsonValueKind.String
-            ? property.GetString() ?? ""
-            : property.ToString();
-        value = value.Trim();
-        return !string.IsNullOrWhiteSpace(value);
-    }
-
-    private static KickChannelInfo ReadKickChannelInfo(JsonElement root)
-    {
-        string? channelId = null;
-        string? chatroomId = null;
-        long? broadcasterUserId = null;
-
-        if (root.TryGetProperty("id", out var rootId))
-        {
-            channelId = rootId.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(channelId) &&
-            root.TryGetProperty("channel_id", out var channelIdProperty))
-        {
-            channelId = channelIdProperty.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(channelId) &&
-            root.TryGetProperty("data", out var data) &&
-            data.TryGetProperty("id", out var dataId))
-        {
-            channelId = dataId.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(channelId) &&
-            root.TryGetProperty("data", out data) &&
-            data.TryGetProperty("channel_id", out var dataChannelId))
-        {
-            channelId = dataChannelId.ToString();
-        }
-
-        if (root.TryGetProperty("chatroom", out var chatroom) &&
-            chatroom.TryGetProperty("id", out var id))
-        {
-            chatroomId = id.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(chatroomId) &&
-            root.TryGetProperty("data", out data) &&
-            data.TryGetProperty("chatroom", out var dataChatroom) &&
-            dataChatroom.TryGetProperty("id", out var dataChatroomId))
-        {
-            chatroomId = dataChatroomId.ToString();
-        }
-
-        if (string.IsNullOrWhiteSpace(chatroomId) &&
-            root.TryGetProperty("chatroom_id", out var chatroomIdProperty))
-        {
-            chatroomId = chatroomIdProperty.ToString();
-        }
-
-        if (root.TryGetProperty("user", out var user) &&
-            user.TryGetProperty("id", out var userId))
-        {
-            broadcasterUserId = TryGetInt64(userId);
-        }
-
-        if (broadcasterUserId is null &&
-            root.TryGetProperty("data", out data) &&
-            data.TryGetProperty("user", out var dataUser) &&
-            dataUser.TryGetProperty("id", out var dataUserId))
-        {
-            broadcasterUserId = TryGetInt64(dataUserId);
-        }
-
-        if (broadcasterUserId is null &&
-            root.TryGetProperty("broadcaster_user_id", out var broadcasterUserIdProperty))
-        {
-            broadcasterUserId = TryGetInt64(broadcasterUserIdProperty);
-        }
-
-        return new KickChannelInfo(
-            NormalizeNumericId(channelId),
-            NormalizeNumericId(chatroomId),
-            broadcasterUserId);
-    }
-
-    private static IEnumerable<string> BuildKickMessagesChannelIds(string? channelId, string chatroomId)
-    {
-        var normalizedChannelId = NormalizeNumericId(channelId);
-        if (!string.IsNullOrWhiteSpace(normalizedChannelId))
-        {
-            yield return normalizedChannelId;
-        }
-
-        var normalizedChatroomId = NormalizeNumericId(chatroomId);
-        if (!string.IsNullOrWhiteSpace(normalizedChatroomId) &&
-            !string.Equals(normalizedChatroomId, normalizedChannelId, StringComparison.Ordinal))
-        {
-            yield return normalizedChatroomId;
-        }
-    }
-
     private static string FormatBackfillTimestamp(DateTimeOffset? timestampUtc)
     {
         return timestampUtc is { } timestamp
@@ -1044,102 +543,6 @@ internal sealed class KickChatHistoryBackfillService : IDisposable
             : "none";
     }
 
-    private static string? NormalizeCursor(string? cursor)
-    {
-        return string.IsNullOrWhiteSpace(cursor) ? null : cursor.Trim();
-    }
-
-    private static string? NormalizeNumericId(string? value)
-    {
-        var normalized = NormalizeCursor(value);
-        return normalized is not null && normalized.All(char.IsDigit)
-            ? normalized
-            : null;
-    }
-
-    private static string? ResolveCurlPath()
-    {
-        var configured = Environment.GetEnvironmentVariable("STREAMLINK_KICK_CURL");
-        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured))
-        {
-            return configured;
-        }
-
-        return "curl.exe";
-    }
-
-    private static IEnumerable<string> BuildKickMetadataCurlArguments(string escapedChannel)
-    {
-        yield return "--location";
-        yield return "--silent";
-        yield return "--show-error";
-        yield return "--fail";
-        yield return "--compressed";
-        yield return "--max-time";
-        yield return "15";
-        yield return "--user-agent";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-        yield return "--header";
-        yield return "Accept: application/json,text/plain,*/*";
-        yield return "--header";
-        yield return "Accept-Language: *";
-        yield return "--referer";
-        yield return $"https://kick.com/{escapedChannel}";
-        yield return $"https://kick.com/api/v2/channels/{escapedChannel}";
-    }
-
-    private static IEnumerable<string> BuildKickRecentMessagesCurlArguments(
-        string escapedChannel,
-        string escapedMessagesChannelId,
-        string? cursor)
-    {
-        yield return "--location";
-        yield return "--silent";
-        yield return "--show-error";
-        yield return "--fail";
-        yield return "--compressed";
-        yield return "--max-time";
-        yield return "15";
-        yield return "--user-agent";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-        yield return "--header";
-        yield return "Accept: application/json,text/plain,*/*";
-        yield return "--header";
-        yield return "Accept-Language: *";
-        yield return "--referer";
-        yield return $"https://kick.com/{escapedChannel}";
-        yield return KickChatApi.BuildRecentMessagesUrl(escapedMessagesChannelId, cursor, startTimeUtc: null);
-    }
-
-    private static IEnumerable<string> BuildKickStartTimeMessagesCurlArguments(
-        string escapedChannel,
-        string escapedMessagesChannelId,
-        DateTimeOffset startTimeUtc)
-    {
-        yield return "--location";
-        yield return "--silent";
-        yield return "--show-error";
-        yield return "--fail";
-        yield return "--compressed";
-        yield return "--max-time";
-        yield return "15";
-        yield return "--user-agent";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-        yield return "--header";
-        yield return "Accept: application/json,text/plain,*/*";
-        yield return "--header";
-        yield return "Accept-Language: *";
-        yield return "--referer";
-        yield return $"https://kick.com/{escapedChannel}";
-        yield return KickChatApi.BuildRecentMessagesUrl(escapedMessagesChannelId, cursor: null, startTimeUtc: startTimeUtc);
-    }
-
-    public void Dispose()
-    {
-        backfillGate.Dispose();
-    }
 }
-
-internal sealed record KickChannelInfo(string? ChannelId, string? ChatroomId, long? BroadcasterUserId);
 
 internal sealed record KickRecentChatPage(IReadOnlyList<ChatMessage> Messages, string? Cursor);

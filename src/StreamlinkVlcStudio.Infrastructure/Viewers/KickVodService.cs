@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
@@ -6,19 +5,18 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
-using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
 public sealed class KickVodService : IKickVodService
 {
-    private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(20));
     private static readonly TimeSpan CurlTimeout = TimeSpan.FromSeconds(15);
     private readonly IAppLogger logger;
-    private readonly HttpClient httpClient;
-    private readonly Func<string, string, CancellationToken, Task<string?>> kickCurlJsonReader;
+    private readonly KickWebsiteJsonReader kickWebsiteJsonReader;
 
     public KickVodService(IAppLogger logger)
         : this(logger, SharedHttpClient)
@@ -36,8 +34,12 @@ public sealed class KickVodService : IKickVodService
         Func<string, string, CancellationToken, Task<string?>>? kickCurlJsonReader)
     {
         this.logger = logger;
-        this.httpClient = httpClient;
-        this.kickCurlJsonReader = kickCurlJsonReader ?? TryReadKickJsonWithCurlAsync;
+        kickWebsiteJsonReader = new KickWebsiteJsonReader(
+            httpClient,
+            logger,
+            "VODs",
+            CurlTimeout,
+            kickCurlJsonReader);
     }
 
     public async Task<KickVodSearchResult> SearchAsync(
@@ -55,12 +57,14 @@ public sealed class KickVodService : IKickVodService
                 "Enter a Kick channel slug.");
         }
 
-        var url = $"https://kick.com/api/v2/channels/{Uri.EscapeDataString(channel)}/videos";
+        var pageSize = NormalizePageSize(request.PageSize);
+        var url = BuildVideosUrl(channel, request.Cursor, pageSize);
         var referrer = $"https://kick.com/{Uri.EscapeDataString(channel)}";
         try
         {
-            var body = await TryReadKickJsonWithHttpClientAsync(url, referrer, cancellationToken).ConfigureAwait(false) ??
-                await kickCurlJsonReader(url, referrer, cancellationToken).ConfigureAwait(false);
+            var body = await kickWebsiteJsonReader
+                .ReadAsync(url, referrer, cancellationToken)
+                .ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(body))
             {
                 return new KickVodSearchResult(
@@ -71,7 +75,23 @@ public sealed class KickVodService : IKickVodService
             }
 
             using var document = JsonDocument.Parse(body);
-            var videos = ReadVideos(document.RootElement, channel, request.PageSize).ToArray();
+            var videos = ReadVideos(document.RootElement, channel, pageSize).ToArray();
+            if (videos.Any(video => string.IsNullOrWhiteSpace(video.ProfileImageUrl)))
+            {
+                var channelProfileImage = await TryReadKickChannelProfileImageAsync(
+                    channel,
+                    referrer,
+                    cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(channelProfileImage))
+                {
+                    videos = videos
+                        .Select(video => string.IsNullOrWhiteSpace(video.ProfileImageUrl)
+                            ? video with { ProfileImageUrl = channelProfileImage }
+                            : video)
+                        .ToArray();
+                }
+            }
+
             var message = videos.Length switch
             {
                 0 => $"No Kick VODs found for {channel}.",
@@ -81,7 +101,7 @@ public sealed class KickVodService : IKickVodService
             return new KickVodSearchResult(
                 KickVodSearchStatus.Available,
                 videos,
-                "",
+                ReadNextCursor(document.RootElement),
                 message);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -99,90 +119,34 @@ public sealed class KickVodService : IKickVodService
         }
     }
 
-    private async Task<string?> TryReadKickJsonWithHttpClientAsync(
-        string url,
+    private async Task<string> TryReadKickChannelProfileImageAsync(
+        string channel,
         string referrer,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
-        request.Headers.Accept.ParseAdd("application/json, text/plain, */*");
-        request.Headers.Referrer = new Uri(referrer);
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            logger.Write(
-                AppLogLevel.Info,
-                "VODs",
-                $"Kick VOD HTTP request returned {(int)response.StatusCode} {response.ReasonPhrase}; trying curl fallback.");
-            return null;
-        }
-
-        return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<string?> TryReadKickJsonWithCurlAsync(
-        string url,
-        string referrer,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var curlPath = ResolveCurlPath();
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildKickCurlArguments(url, referrer))
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            return null;
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(CurlTimeout);
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
-
-        string stdout;
-        string stderr;
-
+        var url = $"https://kick.com/api/v2/channels/{Uri.EscapeDataString(channel)}";
         try
         {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            stdout = await stdoutTask.ConfigureAwait(false);
-            stderr = await stderrTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
-            await ObserveOutputReadsAsync(stdoutTask, stderrTask).ConfigureAwait(false);
-            if (cancellationToken.IsCancellationRequested)
+            var body = await kickWebsiteJsonReader
+                .ReadAsync(url, referrer, cancellationToken)
+                .ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body))
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                return "";
             }
 
-            logger.Write(AppLogLevel.Warning, "VODs", "curl.exe timed out loading Kick VODs.");
-            return null;
+            using var document = JsonDocument.Parse(body);
+            return ReadProfileImageUrl(document.RootElement, default);
         }
-
-        if (process.ExitCode != 0)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Warning, "VODs", $"curl.exe failed loading Kick VODs: {stderr.Trim()}");
-            return null;
+            throw;
         }
-
-        return stdout;
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Info, "VODs", $"Kick channel profile image lookup failed for {channel}: {ex.Message}");
+            return "";
+        }
     }
 
     private static IEnumerable<KickVodItem> ReadVideos(JsonElement root, string channel, int pageSize)
@@ -191,7 +155,7 @@ public sealed class KickVodService : IKickVodService
             .Select(item => TryReadVideo(item, channel))
             .Where(item => item is not null)
             .Select(item => item!)
-            .Take(Math.Clamp(pageSize <= 0 ? 50 : pageSize, 1, 100));
+            .Take(pageSize);
 
         foreach (var video in videos)
         {
@@ -211,6 +175,11 @@ public sealed class KickVodService : IKickVodService
                 }
             }
 
+            yield break;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
             yield break;
         }
 
@@ -247,6 +216,14 @@ public sealed class KickVodService : IKickVodService
             return null;
         }
 
+        if (!Uri.TryCreate(source, UriKind.Absolute, out var sourceUri) ||
+            (sourceUri.Scheme != Uri.UriSchemeHttp && sourceUri.Scheme != Uri.UriSchemeHttps))
+        {
+            return null;
+        }
+
+        source = sourceUri.ToString();
+
         var video = item.TryGetProperty("video", out var videoElement) && videoElement.ValueKind == JsonValueKind.Object
             ? videoElement
             : default;
@@ -256,6 +233,11 @@ public sealed class KickVodService : IKickVodService
             GetOptionalString(item, "slug"),
             GetOptionalString(item, "id"));
         var id = FirstNonEmpty(GetOptionalString(item, "id"), video.ValueKind == JsonValueKind.Object ? GetOptionalString(video, "id") : "", uuid);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
         var liveStreamId = FirstNonEmpty(
             GetOptionalString(item, "live_stream_id"),
             video.ValueKind == JsonValueKind.Object ? GetOptionalString(video, "live_stream_id") : "",
@@ -277,6 +259,10 @@ public sealed class KickVodService : IKickVodService
         var createdAt = TryGetDateTimeOffset(item, "created_at") ??
             (video.ValueKind == JsonValueKind.Object ? TryGetDateTimeOffset(video, "created_at") : null);
         var duration = ReadDuration(item);
+        if (duration == TimeSpan.Zero && video.ValueKind == JsonValueKind.Object)
+        {
+            duration = ReadDuration(video);
+        }
         var views = TryGetInt32(item, "views") ??
             TryGetInt32(item, "viewer_count") ??
             (video.ValueKind == JsonValueKind.Object ? TryGetInt32(video, "views") : null);
@@ -285,6 +271,7 @@ public sealed class KickVodService : IKickVodService
             TryReadNestedString(item, "channel", "id"),
             video.ValueKind == JsonValueKind.Object ? GetOptionalString(video, "channel_id") : "",
             video.ValueKind == JsonValueKind.Object ? TryReadNestedString(video, "channel", "id") : "");
+        var profileImage = ReadProfileImageUrl(item, video);
 
         return new KickVodItem(
             id,
@@ -303,7 +290,63 @@ public sealed class KickVodService : IKickVodService
             startedAt,
             duration,
             views,
-            channelId);
+            channelId,
+            profileImage);
+    }
+
+    private static string ReadProfileImageUrl(JsonElement item, JsonElement video)
+    {
+        var data = GetObjectProperty(item, "data");
+        var profileImage = FirstNonEmpty(
+            ReadProfileImageFields(item),
+            ReadProfileImagePath(item, "user"),
+            ReadProfileImagePath(item, "channel"),
+            ReadProfileImagePath(item, "channel", "user"),
+            ReadProfileImagePath(item, "creator"),
+            ReadProfileImageFields(video),
+            ReadProfileImagePath(video, "user"),
+            ReadProfileImagePath(video, "channel"),
+            ReadProfileImagePath(video, "channel", "user"),
+            ReadProfileImageFields(data),
+            ReadProfileImagePath(data, "user"),
+            ReadProfileImagePath(data, "channel"),
+            ReadProfileImagePath(data, "channel", "user"));
+
+        return NormalizeImageUrl(profileImage);
+    }
+
+    private static string ReadProfileImageFields(JsonElement element)
+    {
+        return FirstNonEmpty(
+            GetOptionalString(element, "profile_picture"),
+            GetOptionalString(element, "profile_pic"),
+            GetOptionalString(element, "profilePic"),
+            GetOptionalString(element, "profile_image_url"));
+    }
+
+    private static string ReadProfileImagePath(JsonElement element, params string[] path)
+    {
+        var current = element;
+        foreach (var propertyName in path)
+        {
+            if (current.ValueKind != JsonValueKind.Object ||
+                !current.TryGetProperty(propertyName, out current) ||
+                current.ValueKind != JsonValueKind.Object)
+            {
+                return "";
+            }
+        }
+
+        return ReadProfileImageFields(current);
+    }
+
+    private static JsonElement GetObjectProperty(JsonElement element, string propertyName)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(propertyName, out var property) &&
+            property.ValueKind == JsonValueKind.Object
+            ? property
+            : default;
     }
 
     private static TimeSpan ReadDuration(JsonElement element)
@@ -314,13 +357,13 @@ public sealed class KickVodService : IKickVodService
         }
 
         if (element.TryGetProperty("duration_seconds", out var seconds) &&
-            TryReadDurationValue(seconds, TimeSpan.TicksPerSecond, out var duration))
+            TryGetPositiveDuration(seconds, TimeSpan.TicksPerSecond, out var duration))
         {
             return duration;
         }
 
         if (element.TryGetProperty("duration", out var milliseconds) &&
-            TryReadDurationValue(milliseconds, TimeSpan.TicksPerMillisecond, out duration))
+            TryGetPositiveDuration(milliseconds, TimeSpan.TicksPerMillisecond, out duration))
         {
             return duration;
         }
@@ -328,45 +371,43 @@ public sealed class KickVodService : IKickVodService
         return TimeSpan.Zero;
     }
 
-    private static bool TryReadDurationValue(JsonElement value, long ticksPerUnit, out TimeSpan duration)
+    private static string BuildVideosUrl(string channel, string cursor, int pageSize)
     {
-        duration = TimeSpan.Zero;
-        double numeric;
-        if (value.ValueKind == JsonValueKind.Number)
+        var query = new List<string>
         {
-            if (!value.TryGetDouble(out numeric))
-            {
-                return false;
-            }
-        }
-        else if (value.ValueKind == JsonValueKind.String)
+            $"limit={pageSize.ToString(CultureInfo.InvariantCulture)}"
+        };
+        if (!string.IsNullOrWhiteSpace(cursor))
         {
-            var text = value.GetString()?.Trim() ?? "";
-            if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out numeric))
-            {
-                if (TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out var parsed) && parsed > TimeSpan.Zero)
-                {
-                    duration = parsed;
-                    return true;
-                }
-
-                return false;
-            }
-        }
-        else
-        {
-            return false;
+            query.Add($"cursor={Uri.EscapeDataString(cursor.Trim())}");
         }
 
-        var ticks = numeric * ticksPerUnit;
-        if (!double.IsFinite(ticks) || ticks <= 0 || ticks >= TimeSpan.MaxValue.Ticks)
-        {
-            return false;
-        }
-
-        duration = TimeSpan.FromTicks(checked((long)Math.Round(ticks)));
-        return duration > TimeSpan.Zero;
+        return $"https://kick.com/api/v2/channels/{Uri.EscapeDataString(channel)}/videos?{string.Join('&', query)}";
     }
+
+    private static string ReadNextCursor(JsonElement root)
+    {
+        var cursor = FirstNonEmpty(
+            ReadPaginationCursor(root, "next_cursor"),
+            ReadPaginationCursor(root, "cursor"),
+            GetOptionalString(root, "next_cursor"),
+            GetOptionalString(root, "cursor"));
+        if (!string.IsNullOrWhiteSpace(cursor) ||
+            root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
+            data.ValueKind != JsonValueKind.Object)
+        {
+            return cursor;
+        }
+
+        return FirstNonEmpty(
+            GetOptionalString(data, "next_cursor"),
+            GetOptionalString(data, "cursor"),
+            ReadPaginationCursor(data, "next_cursor"),
+            ReadPaginationCursor(data, "cursor"));
+    }
+
+    private static int NormalizePageSize(int pageSize) => Math.Clamp(pageSize <= 0 ? 50 : pageSize, 1, 100);
 
     private static string NormalizeKickChannel(string value)
     {
@@ -398,40 +439,4 @@ public sealed class KickVodService : IKickVodService
         }
     }
 
-    private static string ResolveCurlPath()
-    {
-        var systemRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var systemCurl = string.IsNullOrWhiteSpace(systemRoot)
-            ? ""
-            : Path.Combine(systemRoot, "System32", "curl.exe");
-        if (File.Exists(systemCurl))
-        {
-            return systemCurl;
-        }
-
-        return "curl.exe";
-    }
-
-    private static IEnumerable<string> BuildKickCurlArguments(string url, string referrer)
-    {
-        yield return "-s";
-        yield return "-L";
-        yield return "--max-time";
-        yield return ((int)CurlTimeout.TotalSeconds).ToString(CultureInfo.InvariantCulture);
-        yield return "-A";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-        yield return "-H";
-        yield return "Accept: application/json, text/plain, */*";
-        yield return "-H";
-        yield return $"Referer: {referrer}";
-        yield return url;
-    }
-
-    private static HttpClient CreateHttpClient()
-    {
-        return new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(20)
-        };
-    }
 }

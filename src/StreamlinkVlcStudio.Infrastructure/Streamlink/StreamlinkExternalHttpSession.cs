@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Streamlink;
 
@@ -16,6 +17,8 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
     private readonly object disposeGate = new();
     private Uri? playbackUri;
     private Task? disposeTask;
+    private Task standardOutputPump = Task.CompletedTask;
+    private Task standardErrorPump = Task.CompletedTask;
 
     public StreamlinkExternalHttpSession(Process process, IAppLogger logger)
     {
@@ -72,6 +75,12 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
         }
     }
 
+    internal void AttachOutputPumps(Task standardOutput, Task standardError)
+    {
+        standardOutputPump = standardOutput ?? throw new ArgumentNullException(nameof(standardOutput));
+        standardErrorPump = standardError ?? throw new ArgumentNullException(nameof(standardError));
+    }
+
     public ValueTask DisposeAsync()
     {
         lock (disposeGate)
@@ -85,6 +94,7 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
         try
         {
             await StopProcessAsync().ConfigureAwait(false);
+            await ObserveOutputReadsAsync(standardOutputPump, standardErrorPump).ConfigureAwait(false);
         }
         finally
         {
@@ -96,18 +106,15 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
     {
         try
         {
+            if (process.HasExited)
+            {
+                return;
+            }
+
+            await KillProcessTreeAsync(process, StopTimeout).ConfigureAwait(false);
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
-                using var timeout = new CancellationTokenSource(StopTimeout);
-                try
-                {
-                    await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    logger.Write(AppLogLevel.Warning, "Streamlink", "Timed out waiting for the Streamlink process to exit after kill.");
-                }
+                logger.Write(AppLogLevel.Warning, "Streamlink", "Timed out waiting for the Streamlink process to exit after kill.");
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception)

@@ -4,9 +4,9 @@
         xmlns:controls="clr-namespace:StreamlinkVlcStudio.App.Wpf.Controls"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="{Binding WindowTitle}"
-        Icon="Assets/Twitch.ico"
-        Width="520"
-        Height="326"
+         Icon="/StreamlinkVlcStudio.App.Wpf;component/Assets/Twitch.ico"
+         Width="520"
+         Height="326.5"
         MinWidth="320"
         MinHeight="220"
         Background="{DynamicResource StudioBaseBrush}"
@@ -154,6 +154,7 @@
 
         <Grid x:Name="VideoHost"
               Grid.Row="1"
+              Grid.RowSpan="2"
               Background="#000000"
               ContextMenuOpening="VideoHost_ContextMenuOpening">
             <Grid.ContextMenu>
@@ -203,7 +204,8 @@
 
         <Grid x:Name="BottomResizeGrip"
               Grid.Row="2"
-              Background="#000000"
+              Background="Transparent"
+              Panel.ZIndex="10"
               MouseLeftButtonDown="BottomResizeGrip_MouseLeftButtonDown">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="36" />

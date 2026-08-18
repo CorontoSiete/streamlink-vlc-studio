@@ -5,6 +5,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 internal static partial class LibVlcNative
 {
     [LibraryImport("kernel32", EntryPoint = "SetDllDirectoryW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool SetDllDirectory(string? lpPathName);
 
@@ -52,6 +53,7 @@ internal static partial class LibVlcNative
     }
 
     [DllImport("msvcrt", EntryPoint = "_putenv_s", CallingConvention = CallingConvention.Cdecl)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     internal static extern int putenv_s(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string value);

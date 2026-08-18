@@ -3,7 +3,13 @@ obj/
 .tmp/
 .dotnet-home/
 .dotnet-sdk/
+.dependency-audit/
+.nuget/
 .tools/
+.wix/
+.audit-*/
+.codex-*
+.codex-*/
 .vs/
 artifacts/
 release/

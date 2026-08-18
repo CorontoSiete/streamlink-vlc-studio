@@ -7,6 +7,7 @@ using Microsoft.Toolkit.Uwp.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.App.Wpf.Notifications;
 
@@ -20,8 +21,11 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
     private const string ToastGroup = "followed-live";
     private const int ToastTagMaxLength = 60;
     private const int MaxThumbnailBytes = 8 * 1024 * 1024;
+    private const int MaxStoredThumbnails = 128;
+    private const long MaxStoredThumbnailBytes = 64L * 1024 * 1024;
     private static readonly TimeSpan ThumbnailTimeout = TimeSpan.FromSeconds(5);
     private static readonly HttpClient HttpClient = CreateHttpClient();
+    private static readonly SemaphoreSlim ThumbnailStorageGate = new(1, 1);
 
     private readonly IAppLogger logger;
     private readonly LiveNotificationDeliveryGate deliveryGate = new();
@@ -169,11 +173,6 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
                 return null;
             }
 
-            if (response.Content.Headers.ContentLength is > MaxThumbnailBytes)
-            {
-                return null;
-            }
-
             var extension = ResolveImageExtension(response.Content.Headers.ContentType?.MediaType);
             if (extension is null)
             {
@@ -186,11 +185,7 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
                 return null;
             }
 
-            var directory = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudio", "toast");
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, BuildThumbnailFileName(url) + extension);
-            await File.WriteAllBytesAsync(path, bytes, cancellation.Token).ConfigureAwait(false);
-            return path;
+            return await StoreThumbnailAsync(url, extension, bytes, cancellation.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -199,31 +194,12 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
         }
     }
 
-    private static async Task<byte[]?> ReadThumbnailBytesAsync(
+    // Kept as a small compatibility/reflection adapter for the dependency-free test host. The
+    // actual read is shared with every other bounded HTTP/file payload through BoundedByteReader.
+    private static Task<byte[]?> ReadThumbnailBytesAsync(
         HttpContent content,
-        CancellationToken cancellationToken)
-    {
-        await using var source = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var destination = new MemoryStream();
-        var buffer = new byte[81920];
-        while (true)
-        {
-            var bytesRead = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (bytesRead == 0)
-            {
-                break;
-            }
-
-            if (destination.Length + bytesRead > MaxThumbnailBytes)
-            {
-                return null;
-            }
-
-            await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
-        }
-
-        return destination.Length == 0 ? null : destination.ToArray();
-    }
+        CancellationToken cancellationToken) =>
+        BoundedByteReader.ReadAsync(content, MaxThumbnailBytes, cancellationToken);
 
     private static string? ResolveImageExtension(string? mediaType) => mediaType?.ToLowerInvariant() switch
     {
@@ -238,6 +214,86 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(url));
         return Convert.ToHexString(hash, 0, 8);
     }
+
+    private static async Task<string> StoreThumbnailAsync(
+        string url,
+        string extension,
+        byte[] bytes,
+        CancellationToken cancellationToken)
+    {
+        await ThumbnailStorageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudio", "toast");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, BuildThumbnailFileName(url) + extension);
+            var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken).ConfigureAwait(false);
+                File.Move(temporaryPath, path, overwrite: true);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+            PruneThumbnailStorage(directory, path);
+            return path;
+        }
+        finally
+        {
+            ThumbnailStorageGate.Release();
+        }
+    }
+
+    private static void PruneThumbnailStorage(string directory, string? retainedPath = null)
+    {
+        var files = Directory
+            .EnumerateFiles(directory, "*.*", SearchOption.TopDirectoryOnly)
+            .Where(path => IsStoredThumbnailExtension(Path.GetExtension(path)))
+            .Select(path => new FileInfo(path))
+            .OrderByDescending(file => file.LastWriteTimeUtc)
+            .ToList();
+        var totalBytes = files.Sum(file => file.Length);
+        for (var index = files.Count - 1;
+             index >= 0 && (files.Count > MaxStoredThumbnails || totalBytes > MaxStoredThumbnailBytes);
+             index--)
+        {
+            var file = files[index];
+            if (!string.IsNullOrWhiteSpace(retainedPath) &&
+                string.Equals(file.FullName, retainedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var length = file.Length;
+            try
+            {
+                file.Delete();
+                files.RemoveAt(index);
+                totalBytes -= length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    private static bool IsStoredThumbnailExtension(string extension) =>
+        extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+        extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+        extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
+
+    internal static void PruneThumbnailStorageForTest(string directory) =>
+        PruneThumbnailStorage(directory);
 
     private static string BuildTag(LiveChannelNotification notification)
     {
@@ -254,11 +310,7 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
 
     private static HttpClient CreateHttpClient()
     {
-        var client = new HttpClient
-        {
-            Timeout = ThumbnailTimeout
-        };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("StreamlinkVlcStudio/0.1");
+        var client = HttpClientFactory.Create(ThumbnailTimeout, includeUserAgent: true);
         return client;
     }
 

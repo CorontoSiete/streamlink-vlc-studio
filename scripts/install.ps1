@@ -3,30 +3,26 @@
 Installs Streamlink VLC Studio and its Windows runtime dependencies.
 
 .DESCRIPTION
-The app and Streamlink are resolved through GitHub's latest release API at
-install time, so this script does not need a hard-coded app or Streamlink
-version. VLC is resolved from VideoLAN's official latest Windows x64 installer.
+Installs only checksummed release assets and dependencies pinned in the
+checked-in dependency manifest. GitHub Actions artifacts are available only
+through the explicit developer-only mode with a trusted-main commit check.
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\StreamlinkVlcStudio"),
     [ValidatePattern("^[^/\s]+/[^/\s]+$")]
     [string]$GitHubRepository = "CorontoSiete/streamlink-vlc-studio",
-    [ValidatePattern("^[^/\s]+/[^/\s]+$")]
-    [string]$StreamlinkGitHubRepository = "streamlink/windows-builds",
     [string[]]$AppAssetPatterns = @(
-        "^StreamlinkVlcStudio-release\.zip$",
-        "^StreamlinkVlcStudio\.zip$",
-        "^StreamlinkVlcStudio\.exe$",
-        "^StreamlinkVlcStudio.*\.zip$"
+        "^StreamlinkVlcStudio-release\.zip$"
     ),
-    [string[]]$AppArtifactNamePatterns = @(
-        "^StreamlinkVlcStudio-release$",
-        "^StreamlinkVlcStudio-exe$",
-        "StreamlinkVlcStudio"
-    ),
-    [ValidateSet("Auto", "GitHub", "Local")]
+    [ValidateSet("Auto", "Release", "Artifact", "GitHub", "Local")]
     [string]$AppSource = "Auto",
+    [switch]$DeveloperArtifact,
+    [ValidatePattern("^[0-9a-fA-F]{40}$")]
+    [string]$ExpectedCommit,
+    [ValidatePattern("^\.github/workflows/[A-Za-z0-9._/-]+\.ya?ml$")]
+    [string]$ExpectedWorkflowPath = ".github/workflows/build.yml",
+    [string]$DependencyManifest,
     [switch]$SkipApp,
     [switch]$SkipStreamlink,
     [switch]$SkipVlc,
@@ -51,43 +47,56 @@ $script:ScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) 
 } else {
     Split-Path -Parent $MyInvocation.MyCommand.Path
 }
+. (Join-Path $script:ScriptDirectory "lib\common.ps1")
+. (Join-Path $script:ScriptDirectory "lib\install-state.ps1")
+. (Join-Path $script:ScriptDirectory "lib\dependency-manifest.ps1")
+. (Join-Path $script:ScriptDirectory "lib\release-contract.ps1")
+$releaseContractCandidates = @(
+    (Join-Path $script:ScriptDirectory "release-contract.json"),
+    (Join-Path $script:ScriptDirectory "..\shared\release-contract.json")
+)
+$releaseContractPath = $releaseContractCandidates |
+    ForEach-Object { [IO.Path]::GetFullPath($_) } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($releaseContractPath)) {
+    throw "Release contract was not found beside the installer or in the source tree."
+}
+$script:ReleaseContract = Read-ReleaseContract $releaseContractPath
 $script:UserAgent = "StreamlinkVlcStudioInstaller/1.0 (+https://github.com/$GitHubRepository)"
 $script:TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("StreamlinkVlcStudio-installer-" + [Guid]::NewGuid().ToString("N"))
+$script:RebootRequired = $false
+$script:MaximumDownloadBytes = 512MB
+$script:MaximumChecksumBytes = 1MB
 
-function Normalize-FullPath([string]$Path) {
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return ""
+if ([string]::Equals($AppSource, "Artifact", [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $DeveloperArtifact -or [string]::IsNullOrWhiteSpace($ExpectedCommit)) {
+        throw "AppSource Artifact is developer-only and requires both -DeveloperArtifact and -ExpectedCommit <40-hex trusted-main commit>."
     }
-
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $rootPath = [IO.Path]::GetPathRoot($fullPath)
-    if ([string]::Equals($fullPath, $rootPath, [StringComparison]::OrdinalIgnoreCase)) {
-        return $rootPath
-    }
-
-    $fullPath.TrimEnd("\", "/")
+} elseif ($DeveloperArtifact) {
+    throw "-DeveloperArtifact is valid only with -AppSource Artifact."
 }
 
-function Assert-NoReparsePointInExistingPath([string]$Path) {
-    $fullPath = Normalize-FullPath $Path
-    $rootPath = [IO.Path]::GetPathRoot($fullPath)
-    $relativePath = $fullPath.Substring($rootPath.Length).Trim([char[]]@('\', '/'))
-    if ([string]::IsNullOrWhiteSpace($relativePath)) {
-        return
-    }
-
-    $currentPath = $rootPath
-    foreach ($segment in ($relativePath -split '[\\/]')) {
-        $currentPath = Join-Path $currentPath $segment
-        if (-not (Test-Path -LiteralPath $currentPath)) {
-            break
-        }
-
-        $item = Get-Item -LiteralPath $currentPath -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "InstallDir cannot be inside a symbolic link or directory junction: $currentPath"
-        }
-    }
+$dependencyManifestCandidates = if ([string]::IsNullOrWhiteSpace($DependencyManifest)) {
+    @(
+        (Join-Path $script:ScriptDirectory "dependencies\windows-installers.json"),
+        (Join-Path $script:ScriptDirectory "..\dependencies\windows-installers.json")
+    )
+} else {
+    @($DependencyManifest)
+}
+$dependencyManifestPath = $dependencyManifestCandidates |
+    ForEach-Object { [IO.Path]::GetFullPath($_) } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($dependencyManifestPath)) {
+    throw "Locked dependency manifest was not found. Supply -DependencyManifest or use a complete release package."
+}
+$script:DependencyManifest = Read-WindowsDependencyManifest $dependencyManifestPath
+if ($script:DependencyManifest.schemaVersion -ne 1 -or
+    $null -eq $script:DependencyManifest.dependencies.streamlink -or
+    $null -eq $script:DependencyManifest.dependencies.vlc) {
+    throw "Unsupported or incomplete dependency manifest: $dependencyManifestPath"
 }
 
 function Assert-NoReparsePointInDirectoryTree([string]$Path) {
@@ -106,41 +115,12 @@ function Assert-NoReparsePointInDirectoryTree([string]$Path) {
     }
 }
 
-function Remove-DirectoryTreeSafely([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return
-    }
-
-    $item = Get-Item -LiteralPath $Path -Force
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        if ($item.PSIsContainer) {
-            [IO.Directory]::Delete($item.FullName)
-        } else {
-            [IO.File]::Delete($item.FullName)
-        }
-        return
-    }
-
-    if (-not $item.PSIsContainer) {
-        Remove-Item -LiteralPath $item.FullName -Force
-        return
-    }
-
-    Get-ChildItem -LiteralPath $item.FullName -Force | ForEach-Object {
-        if ($_.PSIsContainer -or (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-            Remove-DirectoryTreeSafely $_.FullName
-        } else {
-            Remove-Item -LiteralPath $_.FullName -Force
-        }
-    }
-    [IO.Directory]::Delete($item.FullName)
-}
-
 function Assert-SafeInstallDirectory([string]$Directory) {
-    $fullPath = Normalize-FullPath $Directory
-    if ([string]::IsNullOrWhiteSpace($fullPath)) {
+    if ([string]::IsNullOrWhiteSpace($Directory)) {
         throw "InstallDir cannot be empty."
     }
+
+    $fullPath = Get-FullPathNormalized $Directory
 
     $blockedPaths = @(
         [IO.Path]::GetPathRoot($fullPath),
@@ -151,7 +131,7 @@ function Assert-SafeInstallDirectory([string]$Directory) {
         $env:ProgramFiles,
         ${env:ProgramFiles(x86)},
         $env:windir
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Normalize-FullPath $_ }
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Get-FullPathNormalized $_ }
 
     if ($blockedPaths | Where-Object { [string]::Equals($_, $fullPath, [StringComparison]::OrdinalIgnoreCase) }) {
         throw "InstallDir must be a dedicated application subdirectory, not a drive or profile/system root: $fullPath"
@@ -177,17 +157,8 @@ function Write-Detail([string]$Message) {
 }
 
 function Get-TempDownloadPath([string]$FileName) {
-    if ([string]::IsNullOrWhiteSpace($FileName) -or
-        -not [string]::Equals([IO.Path]::GetFileName($FileName), $FileName, [StringComparison]::Ordinal) -or
-        $FileName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
-        -not [string]::Equals($FileName.TrimEnd([char[]]@(' ', '.')), $FileName, [StringComparison]::Ordinal) -or
-        $FileName -in @(".", "..")) {
+    if (-not (Test-SafeWindowsPathSegment $FileName)) {
         throw "Download file name must be a non-empty leaf name: $FileName"
-    }
-
-    $deviceName = ($FileName -split '\.', 2)[0].TrimEnd(' ')
-    if ($deviceName -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
-        throw "Download file name cannot be a reserved Windows device name: $FileName"
     }
 
     Join-Path $script:TempRoot $FileName
@@ -216,19 +187,6 @@ function Get-HttpHeaders([switch]$GitHub, [switch]$GitHubAsset) {
     return $headers
 }
 
-function Invoke-WebRequestCompat([hashtable]$Parameters) {
-    $command = Get-Command Invoke-WebRequest
-    if ($command.Parameters.ContainsKey("UseBasicParsing")) {
-        $Parameters["UseBasicParsing"] = $true
-    }
-
-    if (-not $Parameters.ContainsKey("TimeoutSec")) {
-        $Parameters["TimeoutSec"] = $HttpTimeoutSeconds
-    }
-
-    Invoke-WebRequest @Parameters
-}
-
 function Invoke-GitHubApi([string]$Uri) {
     try {
         Invoke-RestMethod -Uri $Uri -Headers (Get-HttpHeaders -GitHub) -TimeoutSec $HttpTimeoutSeconds -ErrorAction Stop
@@ -243,6 +201,10 @@ function Get-GitHubLatestRelease([string]$Repository) {
 
 function Get-GitHubArtifacts([string]$Repository) {
     Invoke-GitHubApi "https://api.github.com/repos/$Repository/actions/artifacts?per_page=100"
+}
+
+function Get-GitHubWorkflowRun([string]$Repository, [int64]$RunId) {
+    Invoke-GitHubApi "https://api.github.com/repos/$Repository/actions/runs/$RunId"
 }
 
 function Select-ReleaseAsset($Release, [string[]]$Patterns, [string]$Description) {
@@ -265,18 +227,20 @@ function Select-ReleaseAsset($Release, [string[]]$Patterns, [string]$Description
     throw "No $Description asset matched '$($Patterns -join "', '")'. Available assets: $available"
 }
 
-function Select-AppArtifact($ArtifactsResponse, [string[]]$Patterns) {
+function Select-AppArtifact($ArtifactsResponse, [string]$Commit) {
+    $expectedName = "StreamlinkVlcStudio-release-$Commit"
     $artifacts = @($ArtifactsResponse.artifacts) |
-        Where-Object { -not $_.expired } |
+        Where-Object {
+            -not $_.expired -and
+            [string]::Equals([string]$_.name, $expectedName, [StringComparison]::Ordinal) -and
+            $_.workflow_run.head_branch -eq "main" -and
+            [string]::Equals([string]$_.workflow_run.head_sha, $Commit, [StringComparison]::OrdinalIgnoreCase)
+        } |
         Sort-Object created_at -Descending
 
-    foreach ($pattern in $Patterns) {
-        $artifact = $artifacts |
-            Where-Object { $_.name -match $pattern } |
-            Select-Object -First 1
-        if ($null -ne $artifact) {
-            return $artifact
-        }
+    $artifact = $artifacts | Select-Object -First 1
+    if ($null -ne $artifact) {
+        return $artifact
     }
 
     $available = ($artifacts | ForEach-Object { $_.name }) -join ", "
@@ -284,22 +248,61 @@ function Select-AppArtifact($ArtifactsResponse, [string[]]$Patterns) {
         $available = "(none)"
     }
 
-    throw "No non-expired Streamlink VLC Studio GitHub Actions artifact matched '$($Patterns -join "', '")'. Available artifacts: $available"
+    throw "No non-expired trusted-main artifact named '$expectedName' for commit $Commit was found. Available artifacts: $available"
 }
 
-function Save-GitHubAsset($Asset, [string]$DestinationPath) {
+function Get-BoundedDownloadLength($Value, [string]$Description, [long]$MaximumBytes) {
+    [long]$length = 0
+    if (-not [long]::TryParse(
+            ([string]$Value),
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$length) -or
+        $length -le 0 -or
+        $length -gt $MaximumBytes) {
+        throw "$Description must declare an integer size from 1 through $MaximumBytes bytes."
+    }
+
+    $length
+}
+
+function Save-GitHubAsset($Asset, [string]$DestinationPath, [long]$MaximumBytes = $script:MaximumDownloadBytes) {
     Write-Detail "Downloading $($Asset.name)"
-    Save-GitHubDownloadUrl $Asset.url $DestinationPath
+    $expectedBytes = Get-BoundedDownloadLength $Asset.size "GitHub asset '$($Asset.name)'" $MaximumBytes
+    Save-GitHubDownloadUrl $Asset.url $DestinationPath $expectedBytes $expectedBytes
 }
 
-function Save-GitHubDownloadUrl([string]$Uri, [string]$DestinationPath) {
-    $parameters = @{
-        Uri = $Uri
-        OutFile = $DestinationPath
-        Headers = (Get-HttpHeaders -GitHubAsset)
-        ErrorAction = "Stop"
+function Save-BoundedDownload(
+    [string]$Uri,
+    [string]$DestinationPath,
+    [hashtable]$Headers,
+    [long]$MaximumBytes = $script:MaximumDownloadBytes,
+    [long]$ExpectedBytes = 0) {
+    [uri]$downloadUri = $null
+    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$downloadUri) -or
+        -not [string]::Equals($downloadUri.Scheme, [Uri]::UriSchemeHttps, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Download URL must be absolute HTTPS: $Uri"
     }
-    Invoke-WebRequestCompat $parameters | Out-Null
+
+    $validationScript = $null
+    if ($ExpectedBytes -gt 0) {
+        $expectedLength = $ExpectedBytes
+        $sourceUri = $Uri
+        $validationScript = {
+            param([string]$Path)
+            if ((Get-Item -LiteralPath $Path -Force).Length -ne $expectedLength) {
+                throw "Download size mismatch for $sourceUri. Expected $expectedLength bytes."
+            }
+        }.GetNewClosure()
+    }
+
+    Save-HttpFileAtomically `
+        -Uri $downloadUri `
+        -DestinationPath $DestinationPath `
+        -Headers $Headers `
+        -TimeoutSeconds $HttpTimeoutSeconds `
+        -MaximumBytes $MaximumBytes `
+        -ValidationScript $validationScript | Out-Null
 
     if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf) -or
         (Get-Item -LiteralPath $DestinationPath).Length -eq 0) {
@@ -307,76 +310,90 @@ function Save-GitHubDownloadUrl([string]$Uri, [string]$DestinationPath) {
     }
 }
 
-function Save-Uri([string]$Uri, [string]$DestinationPath) {
+function Save-GitHubDownloadUrl(
+    [string]$Uri,
+    [string]$DestinationPath,
+    [long]$MaximumBytes = $script:MaximumDownloadBytes,
+    [long]$ExpectedBytes = 0) {
+    Save-BoundedDownload `
+        $Uri `
+        $DestinationPath `
+        (Get-HttpHeaders -GitHubAsset) `
+        $MaximumBytes `
+        $ExpectedBytes
+}
+
+function Read-ChecksumManifest([string]$Path) {
+    $checksums = @{}
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        if ($line -notmatch '^(?<hash>[0-9a-fA-F]{64}) \*(?<name>[^\\/]+)$') {
+            throw "Malformed SHA256SUMS line: $line"
+        }
+        $name = $Matches.name
+        if ($checksums.ContainsKey($name)) {
+            throw "Duplicate checksum entry: $name"
+        }
+        $checksums[$name] = $Matches.hash.ToLowerInvariant()
+    }
+    if ($checksums.Count -eq 0) {
+        throw "Checksum manifest is empty: $Path"
+    }
+    $checksums
+}
+
+function Assert-FileChecksum([string]$Path, [hashtable]$Checksums) {
+    $name = [IO.Path]::GetFileName($Path)
+    if (-not $Checksums.ContainsKey($name)) {
+        throw "Release checksum manifest does not contain '$name'."
+    }
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not [string]::Equals($actual, [string]$Checksums[$name], [StringComparison]::Ordinal)) {
+        throw "Release checksum mismatch for '$name'. Expected $($Checksums[$name]), found $actual."
+    }
+    Write-Detail "Verified SHA-256 $actual for $name"
+}
+
+function Save-Uri(
+    [string]$Uri,
+    [string]$DestinationPath,
+    [long]$MaximumBytes = $script:MaximumDownloadBytes,
+    [long]$ExpectedBytes = 0) {
     Write-Detail "Downloading $Uri"
-    $parameters = @{
-        Uri = $Uri
-        OutFile = $DestinationPath
-        Headers = (Get-HttpHeaders)
-        ErrorAction = "Stop"
-    }
-    Invoke-WebRequestCompat $parameters | Out-Null
-
-    if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf) -or
-        (Get-Item -LiteralPath $DestinationPath).Length -eq 0) {
-        throw "Download failed or produced an empty file: $DestinationPath"
-    }
-}
-
-function Get-WebContent([string]$Uri) {
-    $parameters = @{
-        Uri = $Uri
-        Headers = (Get-HttpHeaders)
-        ErrorAction = "Stop"
-    }
-    (Invoke-WebRequestCompat $parameters).Content
-}
-
-function Normalize-Version([string]$Version) {
-    if ([string]::IsNullOrWhiteSpace($Version)) {
-        return ""
-    }
-
-    $normalized = $Version.Trim()
-    if ($normalized.StartsWith("v", [StringComparison]::OrdinalIgnoreCase)) {
-        $normalized = $normalized.Substring(1)
-    }
-
-    $normalized
-}
-
-function Test-VersionMatch([string]$InstalledVersion, [string]$TargetVersion) {
-    $installed = Normalize-Version $InstalledVersion
-    $target = Normalize-Version $TargetVersion
-    if ([string]::IsNullOrWhiteSpace($installed) -or [string]::IsNullOrWhiteSpace($target)) {
-        return $false
-    }
-
-    [string]::Equals($installed, $target, [StringComparison]::OrdinalIgnoreCase) -or
-        $installed.StartsWith($target + ".", [StringComparison]::OrdinalIgnoreCase)
-}
-
-function Get-StreamlinkVersionFromWindowsBuildTag([string]$TagName) {
-    $normalized = Normalize-Version $TagName
-    if ($normalized -match "^([0-9]+(?:\.[0-9]+)+)") {
-        return $Matches[1]
-    }
-
-    $normalized
+    Save-BoundedDownload $Uri $DestinationPath (Get-HttpHeaders) $MaximumBytes $ExpectedBytes
 }
 
 function Normalize-PathCandidate([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return $null
     }
-
-    $Path.Trim().Trim('"')
+    $candidate = $Path.Trim()
+    if ($candidate.Length -ge 2 -and $candidate[0] -eq '"' -and $candidate[$candidate.Length - 1] -eq '"') {
+        $candidate = $candidate.Substring(1, $candidate.Length - 2)
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate) -or
+        $candidate.Contains('"') -or
+        $candidate.IndexOfAny([char[]](0..31)) -ge 0 -or
+        -not [IO.Path]::IsPathRooted($candidate)) {
+        return $null
+    }
+    try {
+        [IO.Path]::GetFullPath($candidate)
+    } catch {
+        $null
+    }
 }
 
 function Find-OnPath([string]$FileName) {
     foreach ($directory in ($env:PATH -split [IO.Path]::PathSeparator)) {
         $candidateDirectory = Normalize-PathCandidate $directory
         if ([string]::IsNullOrWhiteSpace($candidateDirectory)) {
+            continue
+        }
+
+        if (-not (Test-Path -LiteralPath $candidateDirectory -PathType Container)) {
             continue
         }
 
@@ -389,7 +406,7 @@ function Find-OnPath([string]$FileName) {
     $null
 }
 
-function Find-Streamlink {
+function Get-StreamlinkCandidatePaths {
     $candidatePaths = @(
         (Normalize-PathCandidate $env:STREAMLINK_PATH),
         (Find-OnPath "streamlink.exe"),
@@ -400,11 +417,13 @@ function Find-Streamlink {
     foreach ($candidate in $candidatePaths) {
         if (-not [string]::IsNullOrWhiteSpace($candidate) -and
             (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            return [IO.Path]::GetFullPath($candidate)
+            [IO.Path]::GetFullPath($candidate)
         }
     }
+}
 
-    $null
+function Find-Streamlink {
+    @(Get-StreamlinkCandidatePaths) | Select-Object -First 1
 }
 
 function Get-StreamlinkVersion([string]$StreamlinkPath) {
@@ -425,7 +444,7 @@ function Get-StreamlinkVersion([string]$StreamlinkPath) {
     ""
 }
 
-function Find-VlcDirectory {
+function Get-VlcCandidateDirectories {
     $programFilesX86 = ${env:ProgramFiles(x86)}
     $candidateDirectories = @(
         (Normalize-PathCandidate $env:VLC_PLUGIN_PATH),
@@ -443,17 +462,20 @@ function Find-VlcDirectory {
         }
 
         if (Test-Path -LiteralPath (Join-Path $directory "libvlc.dll") -PathType Leaf) {
-            return [IO.Path]::GetFullPath($directory)
+            [IO.Path]::GetFullPath($directory)
+            continue
         }
 
         $parent = Split-Path -Parent $directory
         if (-not [string]::IsNullOrWhiteSpace($parent) -and
             (Test-Path -LiteralPath (Join-Path $parent "libvlc.dll") -PathType Leaf)) {
-            return [IO.Path]::GetFullPath($parent)
+            [IO.Path]::GetFullPath($parent)
         }
     }
+}
 
-    $null
+function Find-VlcDirectory {
+    @(Get-VlcCandidateDirectories | Select-Object -Unique) | Select-Object -First 1
 }
 
 function Get-VlcVersion([string]$VlcDirectory) {
@@ -479,44 +501,43 @@ function Get-VlcVersion([string]$VlcDirectory) {
     ""
 }
 
-function Get-LatestVlcInstallerInfo {
-    $baseUri = "https://get.videolan.org/vlc/last/win64/"
-    $content = Get-WebContent $baseUri
-    $matches = [regex]::Matches($content, 'href="(?<name>vlc-(?<version>[0-9][^"]*)-win64\.exe)"')
-    if ($matches.Count -eq 0) {
-        throw "Could not find a VLC win64 installer at $baseUri"
-    }
-
-    $fileName = $matches[0].Groups["name"].Value
-    [pscustomobject]@{
-        Version = $matches[0].Groups["version"].Value
-        FileName = $fileName
-        Uri = ([Uri]::new([Uri]$baseUri, $fileName)).AbsoluteUri
-    }
+function Assert-DownloadedDependency([string]$Path, $Dependency) {
+    $result = Assert-PinnedInstallerDependency -Path $Path -Dependency $Dependency
+    Write-Detail "Verified $($Dependency.fileName): $($Dependency.version), SHA-256 $($result.Sha256), Authenticode $($result.Authenticode)"
 }
 
 function Start-Installer([string]$FilePath, [string[]]$ArgumentList, [string]$Name) {
     Write-Detail "Running $Name installer"
     $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
+    if ($process.ExitCode -notin @(0, 1641, 3010)) {
         throw "$Name installer failed with exit code $($process.ExitCode). Installer path: $FilePath"
+    }
+    if ($process.ExitCode -in @(1641, 3010)) {
+        $script:RebootRequired = $true
+        Write-Detail "$Name completed successfully and requested a reboot (exit code $($process.ExitCode))."
     }
 }
 
 function Stop-AppIfNeeded {
-    $running = @(Get-Process -Name "StreamlinkVlcStudio", "StreamlinkVlcStudio.App.Wpf" -ErrorAction SilentlyContinue)
+    $installRoot = [IO.Path]::GetFullPath($InstallDir)
+    $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -in @("StreamlinkVlcStudio.exe", "StreamlinkVlcStudio.App.Wpf.exe", "vlc_chat_overlay.exe") -and
+            -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+            (Test-PathIsSameOrUnderDirectory ([IO.Path]::GetFullPath($_.ExecutablePath)) $installRoot)
+        })
     if ($running.Count -eq 0) {
         return
     }
 
     if (-not $ForceStopApp) {
-        $names = ($running | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ", "
+        $names = ($running | ForEach-Object { "$($_.Name)($($_.ProcessId))" }) -join ", "
         throw "Streamlink VLC Studio is running: $names. Close it and rerun the installer, or rerun with -ForceStopApp."
     }
 
     Write-Detail "Stopping running app process before update"
-    $ids = @($running | ForEach-Object { $_.Id })
-    $running | Stop-Process -Force
+    $ids = @($running | ForEach-Object { [int]$_.ProcessId })
+    $ids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     try {
         Wait-Process -Id $ids -Timeout 10 -ErrorAction SilentlyContinue
     } catch {
@@ -539,43 +560,115 @@ function Copy-DirectoryContents([string]$SourceDirectory, [string]$DestinationDi
     }
 }
 
-function Test-PathIsSameOrUnderDirectory([string]$ChildPath, [string]$ParentPath) {
-    $childFull = [IO.Path]::GetFullPath($ChildPath).TrimEnd("\", "/")
-    $parentFull = [IO.Path]::GetFullPath($ParentPath).TrimEnd("\", "/")
-    [string]::Equals($childFull, $parentFull, [StringComparison]::OrdinalIgnoreCase) -or
-        $childFull.StartsWith($parentFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+function Assert-AppPayload([string]$PayloadRoot) {
+    Assert-ReleasePayload -PayloadRoot $PayloadRoot -Contract $script:ReleaseContract
 }
 
-function Resolve-AppPayloadRoot([string]$ExtractDirectory, [int]$NestedArchiveDepth = 0) {
-    if (Test-Path -LiteralPath (Join-Path $ExtractDirectory "StreamlinkVlcStudio.exe") -PathType Leaf) {
-        return $ExtractDirectory
+function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescription) {
+    $source = [IO.Path]::GetFullPath($PayloadRoot).TrimEnd([char[]]@('\', '/'))
+    $destination = [IO.Path]::GetFullPath($InstallDir).TrimEnd([char[]]@('\', '/'))
+    Assert-AppPayload $source
+
+    if ([string]::Equals($source, $destination, [StringComparison]::OrdinalIgnoreCase)) {
+        Assert-OwnedOrEmptyInstallDestination $destination | Out-Null
+        Write-Detail "Using owned app in place at $destination"
+        return (Join-Path $destination "StreamlinkVlcStudio.exe")
+    }
+    if ((Test-PathIsSameOrUnderDirectory $destination $source) -or
+        (Test-PathIsSameOrUnderDirectory $source $destination)) {
+        throw "App payload and InstallDir cannot contain one another. Source: $source Destination: $destination"
     }
 
-    foreach ($directory in (Get-ChildItem -LiteralPath $ExtractDirectory -Directory)) {
-        if (Test-Path -LiteralPath (Join-Path $directory.FullName "StreamlinkVlcStudio.exe") -PathType Leaf) {
-            return $directory.FullName
+    $existingState = Assert-OwnedOrEmptyInstallDestination $destination
+    $parent = Split-Path -Parent $destination
+    Assert-NoReparsePointInExistingPath $parent
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    Assert-NoReparsePointInExistingPath $parent
+    $leaf = Split-Path -Leaf $destination
+    $operationId = [Guid]::NewGuid().ToString("N")
+    $stage = Join-Path $parent (".$leaf.stage-$operationId")
+    $backup = Join-Path $parent (".$leaf.backup-$operationId")
+    Assert-UnderDirectory -ChildPath $stage -ParentPath $parent
+    Assert-UnderDirectory -ChildPath $backup -ParentPath $parent
+
+    $movedExisting = $false
+    $installedStage = $false
+    try {
+        New-Item -ItemType Directory -Path $stage | Out-Null
+        Copy-DirectoryContents $source $stage
+        Assert-AppPayload $stage
+        $managedPaths = @(Get-ChildItem -LiteralPath $stage -File -Recurse -Force | ForEach-Object {
+            Get-InstallRelativePath $stage $_.FullName
+        } | Where-Object { $_ -notin @($script:InstallOwnerFileName, $script:InstallManifestFileName) })
+
+        if ($null -ne $existingState) {
+            Copy-UnmanagedInstallFiles `
+                -ExistingDirectory $destination `
+                -StagingDirectory $stage `
+                -ExistingState $existingState
+        }
+        $installId = if ($null -ne $existingState) { [string]$existingState.Owner.installId } else { [Guid]::NewGuid().ToString("D") }
+        Write-InstallOwnershipState -Directory $stage -InstallId $installId -ManagedRelativePaths $managedPaths | Out-Null
+        Read-InstallOwnershipState $stage | Out-Null
+
+        Stop-AppIfNeeded
+        if (Test-Path -LiteralPath $destination -PathType Container) {
+            [IO.Directory]::Move($destination, $backup)
+            $movedExisting = $true
+        }
+        [IO.Directory]::Move($stage, $destination)
+        $installedStage = $true
+    } catch {
+        $failure = $_
+        if ($movedExisting -and -not (Test-Path -LiteralPath $destination) -and
+            (Test-Path -LiteralPath $backup -PathType Container)) {
+            [IO.Directory]::Move($backup, $destination)
+            $movedExisting = $false
+        }
+        throw "Atomic app installation failed; the previous installation was restored when possible. $($failure.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $stage -PathType Container) {
+            Remove-DirectoryTreeSafely $stage
         }
     }
 
-    $exe = Get-ChildItem -LiteralPath $ExtractDirectory -Recurse -Filter "StreamlinkVlcStudio.exe" -File |
-        Select-Object -First 1
-    if ($null -ne $exe) {
-        return (Split-Path -Parent $exe.FullName)
+    if ($installedStage -and (Test-Path -LiteralPath $backup -PathType Container)) {
+        try {
+            Remove-DirectoryTreeSafely $backup
+        } catch {
+            Write-Warning "The upgrade succeeded, but its rollback backup could not be removed: $backup"
+        }
+    }
+
+    $appExe = Join-Path $destination "StreamlinkVlcStudio.exe"
+    Write-Detail "App installed from $SourceDescription to $destination"
+    $appExe
+}
+
+function Resolve-AppPayloadRoot([string]$ExtractDirectory, [int]$NestedArchiveDepth = 0) {
+    $payloadRoot = Resolve-ReleasePayloadRoot `
+        -ExtractedRoot $ExtractDirectory `
+        -Contract $script:ReleaseContract `
+        -AllowNone
+    if (-not [string]::IsNullOrWhiteSpace($payloadRoot)) {
+        return $payloadRoot
     }
 
     # GitHub Actions wraps uploaded files in an artifact archive. The current CI
     # artifact contains the distributable release zip rather than a loose app exe.
     if ($NestedArchiveDepth -eq 0) {
-        $nestedReleaseZip = Get-ChildItem -LiteralPath $ExtractDirectory -Recurse -File |
+        $nestedReleaseZips = @(Get-ChildItem -LiteralPath $ExtractDirectory -Force -Recurse -File |
             Where-Object {
                 $_.Name -eq "StreamlinkVlcStudio-release.zip" -or
                     $_.Name -eq "StreamlinkVlcStudio.zip"
-            } |
-            Select-Object -First 1
-        if ($null -ne $nestedReleaseZip) {
+            })
+        if ($nestedReleaseZips.Count -gt 1) {
+            throw "The app package contains multiple nested release archives; refusing to guess."
+        }
+        if ($nestedReleaseZips.Count -eq 1) {
+            $nestedReleaseZip = $nestedReleaseZips[0]
             $nestedExtractDirectory = Join-Path $ExtractDirectory ("nested-release-" + [Guid]::NewGuid().ToString("N"))
-            New-Item -ItemType Directory -Path $nestedExtractDirectory -Force | Out-Null
-            Expand-Archive -LiteralPath $nestedReleaseZip.FullName -DestinationPath $nestedExtractDirectory -Force
+            Expand-ValidatedZipArchive $nestedReleaseZip.FullName $nestedExtractDirectory
             return Resolve-AppPayloadRoot $nestedExtractDirectory ($NestedArchiveDepth + 1)
         }
     }
@@ -606,52 +699,21 @@ function Install-AppFromLocalPayload {
         throw "No local StreamlinkVlcStudio.exe was found beside install.ps1. Run from the extracted release zip, publish a GitHub release, or rerun with -SkipApp to install dependencies only."
     }
 
-    $installDirFull = [IO.Path]::GetFullPath($InstallDir)
-    $payloadRootFull = [IO.Path]::GetFullPath($payloadRoot)
-    New-Item -ItemType Directory -Path $installDirFull -Force | Out-Null
-    Stop-AppIfNeeded
-    if ([string]::Equals($payloadRootFull.TrimEnd("\", "/"), $installDirFull.TrimEnd("\", "/"), [StringComparison]::OrdinalIgnoreCase)) {
-        Write-Detail "Using app in place at $installDirFull"
-    } elseif (Test-PathIsSameOrUnderDirectory $installDirFull $payloadRootFull) {
-        throw "InstallDir cannot be inside the local package folder because that would recursively copy the package into itself. Choose a folder outside '$payloadRootFull', or run from the final app folder with -InstallDir '$payloadRootFull'."
-    } else {
-        Copy-DirectoryContents $payloadRootFull $installDirFull
-    }
-
-    $appExe = Join-Path $installDirFull "StreamlinkVlcStudio.exe"
-    if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-        throw "Installed app executable missing: $appExe"
-    }
-
-    Write-Detail "App installed from local package to $installDirFull"
-    $appExe
+    Install-AppPayloadAtomically $payloadRoot "local package"
 }
 
 function Install-AppFromPackageFile([string]$PackagePath, [string]$SourceDescription) {
-    $installDirFull = [IO.Path]::GetFullPath($InstallDir)
-    New-Item -ItemType Directory -Path $installDirFull -Force | Out-Null
-    Stop-AppIfNeeded
-
     $extension = [IO.Path]::GetExtension($PackagePath)
     if ([string]::Equals($extension, ".zip", [StringComparison]::OrdinalIgnoreCase)) {
         $extractDirectory = Join-Path $script:TempRoot ("app-" + [Guid]::NewGuid().ToString("N"))
-        New-Item -ItemType Directory -Path $extractDirectory -Force | Out-Null
-        Expand-Archive -LiteralPath $PackagePath -DestinationPath $extractDirectory -Force
+        Expand-ValidatedZipArchive $PackagePath $extractDirectory
         $payloadRoot = Resolve-AppPayloadRoot $extractDirectory
-        Copy-DirectoryContents $payloadRoot $installDirFull
+        return Install-AppPayloadAtomically $payloadRoot $SourceDescription
     } elseif ([string]::Equals($extension, ".exe", [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -LiteralPath $PackagePath -Destination (Join-Path $installDirFull "StreamlinkVlcStudio.exe") -Force
+        throw "Loose executable app packages are not accepted; use a checksummed complete release zip."
     } else {
         throw "Unsupported app package type: $PackagePath"
     }
-
-    $appExe = Join-Path $installDirFull "StreamlinkVlcStudio.exe"
-    if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-        throw "Installed app executable missing: $appExe"
-    }
-
-    Write-Detail "App installed from $SourceDescription to $installDirFull"
-    $appExe
 }
 
 function Install-AppFromGitHubRelease {
@@ -662,11 +724,21 @@ function Install-AppFromGitHubRelease {
         throw "Could not read the latest GitHub release for $GitHubRepository. Original error: $($_.Exception.Message)"
     }
 
+    if ($release.draft -or $release.prerelease) {
+        throw "Latest GitHub release is not a final published release: $($release.tag_name)"
+    }
     $asset = Select-ReleaseAsset $release $AppAssetPatterns "Streamlink VLC Studio app"
+    $checksumAsset = Select-ReleaseAsset $release @("^SHA256SUMS\.txt$") "release checksum manifest"
     $downloadPath = Get-TempDownloadPath $asset.name
+    $checksumPath = Get-TempDownloadPath ("release-" + [Guid]::NewGuid().ToString("N") + "-SHA256SUMS.txt")
 
     New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
     Save-GitHubAsset $asset $downloadPath
+    Save-GitHubAsset $checksumAsset $checksumPath $script:MaximumChecksumBytes
+    if ((Get-Item -LiteralPath $checksumPath).Length -gt 1MB) {
+        throw "Release checksum manifest is unexpectedly large."
+    }
+    Assert-FileChecksum $downloadPath (Read-ChecksumManifest $checksumPath)
     Install-AppFromPackageFile $downloadPath "GitHub release $($release.tag_name)"
 }
 
@@ -678,29 +750,34 @@ function Install-AppFromGitHubArtifact {
         throw "Could not read GitHub Actions artifacts for $GitHubRepository. Original error: $($_.Exception.Message)"
     }
 
-    $artifact = Select-AppArtifact $artifactsResponse $AppArtifactNamePatterns
+    $artifact = Select-AppArtifact $artifactsResponse $ExpectedCommit
+    $run = Get-GitHubWorkflowRun $GitHubRepository ([int64]$artifact.workflow_run.id)
+    if ($run.status -ne "completed" -or $run.conclusion -ne "success" -or
+        $run.head_branch -ne "main" -or
+        -not [string]::Equals([string]$run.head_sha, $ExpectedCommit, [StringComparison]::OrdinalIgnoreCase) -or
+        $run.event -notin @("push", "workflow_dispatch") -or
+        -not [string]::Equals([string]$run.path, $ExpectedWorkflowPath, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$run.repository.full_name, $GitHubRepository, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Artifact run $($run.id) is not a successful trusted-main run of $ExpectedWorkflowPath for expected commit $ExpectedCommit."
+    }
     $downloadPath = Get-TempDownloadPath ($artifact.name + ".zip")
 
     New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
     Write-Detail "Downloading artifact $($artifact.name)"
-    Save-GitHubDownloadUrl $artifact.archive_download_url $downloadPath
-    Install-AppFromPackageFile $downloadPath "GitHub Actions artifact $($artifact.name)"
-}
-
-function Install-AppFromGitHub {
-    $releaseError = $null
-    try {
-        return Install-AppFromGitHubRelease
-    } catch {
-        $releaseError = $_.Exception.Message
-        Write-Detail "GitHub release app install failed; trying latest Actions artifact. $releaseError"
+    $artifactBytes = Get-BoundedDownloadLength `
+        $artifact.size_in_bytes `
+        "GitHub artifact '$($artifact.name)'" `
+        $script:MaximumDownloadBytes
+    Save-GitHubDownloadUrl $artifact.archive_download_url $downloadPath $artifactBytes $artifactBytes
+    $artifactExtract = Join-Path $script:TempRoot ("artifact-" + [Guid]::NewGuid().ToString("N"))
+    Expand-ValidatedZipArchive $downloadPath $artifactExtract
+    $checksumMatches = @(Get-ChildItem -LiteralPath $artifactExtract -Recurse -File -Filter "SHA256SUMS.txt")
+    $releaseMatches = @(Get-ChildItem -LiteralPath $artifactExtract -Recurse -File -Filter "StreamlinkVlcStudio-release.zip")
+    if ($checksumMatches.Count -ne 1 -or $releaseMatches.Count -ne 1) {
+        throw "Trusted developer artifact must contain exactly one release zip and one SHA256SUMS.txt."
     }
-
-    try {
-        return Install-AppFromGitHubArtifact
-    } catch {
-        throw "Could not install the app from GitHub release or GitHub Actions artifacts. Release error: $releaseError Artifact error: $($_.Exception.Message) Make sure $GitHubRepository is public, or set GITHUB_TOKEN to a token with repo/actions read access for a private repository."
-    }
+    Assert-FileChecksum $releaseMatches[0].FullName (Read-ChecksumManifest $checksumMatches[0].FullName)
+    Install-AppFromPackageFile $releaseMatches[0].FullName "trusted-main artifact $($artifact.name) for $ExpectedCommit"
 }
 
 function Install-App {
@@ -708,12 +785,16 @@ function Install-App {
         return Install-AppFromLocalPayload
     }
 
-    if ([string]::Equals($AppSource, "GitHub", [StringComparison]::OrdinalIgnoreCase)) {
-        return Install-AppFromGitHub
+    if ([string]::Equals($AppSource, "Artifact", [StringComparison]::OrdinalIgnoreCase)) {
+        return Install-AppFromGitHubArtifact
+    }
+
+    if ($AppSource -in @("Release", "GitHub")) {
+        return Install-AppFromGitHubRelease
     }
 
     try {
-        return Install-AppFromGitHub
+        return Install-AppFromGitHubRelease
     } catch {
         $githubError = $_.Exception.Message
         $localPayloadRoot = Find-LocalAppPayloadRoot
@@ -726,66 +807,95 @@ function Install-App {
     }
 }
 
-function Ensure-LatestStreamlink {
+function Ensure-LockedStreamlink {
     Write-Step "Checking Streamlink"
-    $release = Get-GitHubLatestRelease $StreamlinkGitHubRepository
-    $targetVersion = Get-StreamlinkVersionFromWindowsBuildTag $release.tag_name
-    $currentPath = Find-Streamlink
-    $currentVersion = if ($currentPath) { Get-StreamlinkVersion $currentPath } else { "" }
+    $dependency = $script:DependencyManifest.dependencies.streamlink
+    $targetVersion = [string]$dependency.version
+    $current = Select-CompatibleDependencyCandidate `
+        -CandidatePaths @(Get-StreamlinkCandidatePaths) `
+        -MinimumVersion $targetVersion `
+        -VersionReader { param($path) Get-StreamlinkVersion $path } `
+        -Description "Streamlink" `
+        -AllowNone
+    $currentPath = if ($null -ne $current) { [string]$current.Path } else { "" }
+    $currentVersion = if ($null -ne $current) { [string]$current.ReportedVersion } else { "" }
+    $currentComparable = if ($null -ne $current) { $current.ParsedVersion } else { $null }
+    $targetComparable = ConvertTo-DependencyVersion $targetVersion
 
-    if (-not $ForceDependencyUpdate -and
-        $currentPath -and
-        (Test-VersionMatch $currentVersion $targetVersion)) {
-        Write-Detail "Streamlink $currentVersion found at $currentPath"
+    if (-not $ForceDependencyUpdate -and $currentPath -and $null -ne $currentComparable -and
+        $null -ne $targetComparable -and $currentComparable -ge $targetComparable) {
+        $state = if ($currentComparable -gt $targetComparable) { "newer than locked $targetVersion" } else { "matches locked $targetVersion" }
+        Write-Detail "Streamlink $currentVersion ($state) found at $currentPath"
         return $currentPath
     }
+    if ($ForceDependencyUpdate -and $currentPath -and $null -ne $currentComparable -and
+        $null -ne $targetComparable -and $currentComparable -gt $targetComparable) {
+        Write-Detail "ForceDependencyUpdate explicitly permits downgrade from Streamlink $currentVersion to $targetVersion."
+    }
 
-    $asset = Select-ReleaseAsset $release @(
-        "streamlink.*(x86_64|amd64|win64|windows).*\.exe$",
-        "streamlink.*\.exe$"
-    ) "Streamlink Windows installer"
-
-    $downloadPath = Get-TempDownloadPath $asset.name
+    $downloadPath = Get-TempDownloadPath ([string]$dependency.fileName)
     New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
-    Save-GitHubAsset $asset $downloadPath
+    $expectedBytes = Get-BoundedDownloadLength `
+        $dependency.length `
+        "Streamlink dependency" `
+        $script:MaximumDownloadBytes
+    Save-Uri ([string]$dependency.url) $downloadPath $expectedBytes $expectedBytes
+    Assert-DownloadedDependency $downloadPath $dependency
     Start-Installer $downloadPath @("/S") "Streamlink"
 
-    $installedPath = Find-Streamlink
-    if (-not $installedPath) {
-        throw "Streamlink installer completed, but streamlink.exe was not found."
-    }
-
-    $installedVersion = Get-StreamlinkVersion $installedPath
-    Write-Detail "Streamlink $installedVersion ready at $installedPath"
-    $installedPath
+    $installed = Select-CompatibleDependencyCandidate `
+        -CandidatePaths @(Get-StreamlinkCandidatePaths) `
+        -MinimumVersion $targetVersion `
+        -VersionReader { param($path) Get-StreamlinkVersion $path } `
+        -Description "Streamlink"
+    Write-Detail "Streamlink $($installed.ReportedVersion) ready at $($installed.Path)"
+    $installed.Path
 }
 
-function Ensure-LatestVlc {
+function Ensure-LockedVlc {
     Write-Step "Checking VLC"
-    $latest = Get-LatestVlcInstallerInfo
-    $currentDirectory = Find-VlcDirectory
-    $currentVersion = if ($currentDirectory) { Get-VlcVersion $currentDirectory } else { "" }
+    $dependency = $script:DependencyManifest.dependencies.vlc
+    $targetVersion = [string]$dependency.version
+    $current = Select-CompatibleDependencyCandidate `
+        -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
+        -MinimumVersion $targetVersion `
+        -VersionReader { param($path) Get-VlcVersion $path } `
+        -Description "VLC" `
+        -AllowNone
+    $currentDirectory = if ($null -ne $current) { [string]$current.Path } else { "" }
+    $currentVersion = if ($null -ne $current) { [string]$current.ReportedVersion } else { "" }
+    $currentComparable = if ($null -ne $current) { $current.ParsedVersion } else { $null }
+    $targetComparable = ConvertTo-DependencyVersion $targetVersion
 
-    if (-not $ForceDependencyUpdate -and
-        $currentDirectory -and
-        (Test-VersionMatch $currentVersion $latest.Version)) {
-        Write-Detail "VLC $currentVersion found at $currentDirectory"
+    if (-not $ForceDependencyUpdate -and $currentDirectory -and $null -ne $currentComparable -and
+        $null -ne $targetComparable -and $currentComparable -ge $targetComparable) {
+        $state = if ($currentComparable -gt $targetComparable) { "newer than locked $targetVersion" } else { "matches locked $targetVersion" }
+        Write-Detail "VLC $currentVersion ($state) found at $currentDirectory"
         return $currentDirectory
     }
-
-    $downloadPath = Get-TempDownloadPath $latest.FileName
-    New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
-    Save-Uri $latest.Uri $downloadPath
-    Start-Installer $downloadPath @("/S") "VLC"
-
-    $installedDirectory = Find-VlcDirectory
-    if (-not $installedDirectory) {
-        throw "VLC installer completed, but libvlc.dll was not found."
+    if ($ForceDependencyUpdate -and $currentDirectory -and $null -ne $currentComparable -and
+        $null -ne $targetComparable -and $currentComparable -gt $targetComparable) {
+        Write-Detail "ForceDependencyUpdate explicitly permits downgrade from VLC $currentVersion to $targetVersion."
     }
 
-    $installedVersion = Get-VlcVersion $installedDirectory
-    Write-Detail "VLC $installedVersion ready at $installedDirectory"
-    $installedDirectory
+    $downloadPath = Get-TempDownloadPath ([string]$dependency.fileName)
+    New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
+    $expectedBytes = Get-BoundedDownloadLength `
+        $dependency.length `
+        "VLC dependency" `
+        $script:MaximumDownloadBytes
+    Save-Uri ([string]$dependency.url) $downloadPath $expectedBytes $expectedBytes
+    Assert-DownloadedDependency $downloadPath $dependency
+    $msiArguments = @("/i", ('"' + $downloadPath + '"'), "/qn", "/norestart")
+    Start-Installer (Join-Path $env:SystemRoot "System32\msiexec.exe") $msiArguments "VLC"
+
+    $installed = Select-CompatibleDependencyCandidate `
+        -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
+        -MinimumVersion $targetVersion `
+        -VersionReader { param($path) Get-VlcVersion $path } `
+        -Description "VLC"
+    Write-Detail "VLC $($installed.ReportedVersion) ready at $($installed.Path)"
+    $installed.Path
 }
 
 function Set-ObjectProperty([object]$Target, [string]$Name, $Value) {
@@ -811,12 +921,16 @@ function Update-AppSettings([string]$StreamlinkPath, [string]$VlcDirectory) {
     if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
         try {
             $loaded = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
-            if ($null -ne $loaded) {
-                $settings = $loaded
+            if ($loaded -isnot [pscustomobject]) {
+                throw "Settings JSON must contain an object at the document root."
             }
+            $settings = $loaded
         } catch {
-            $backupPath = Join-Path $settingsDirectory ("settings.json.invalid-" + [DateTimeOffset]::UtcNow.ToString("yyyyMMddHHmmss"))
-            Move-Item -LiteralPath $settingsPath -Destination $backupPath -Force
+            $backupPath = Join-Path $settingsDirectory (
+                "settings.json.invalid-{0}-{1}" -f
+                    [DateTimeOffset]::UtcNow.ToString("yyyyMMddHHmmssfff"),
+                    [Guid]::NewGuid().ToString("N"))
+            Move-Item -LiteralPath $settingsPath -Destination $backupPath
             Write-Detail "Existing settings JSON was invalid and was moved to $backupPath"
         }
     }
@@ -960,8 +1074,8 @@ try {
         Install-App
     }
 
-    $streamlinkPath = if ($SkipStreamlink) { Find-Streamlink } else { Ensure-LatestStreamlink }
-    $vlcDirectory = if ($SkipVlc) { Find-VlcDirectory } else { Ensure-LatestVlc }
+    $streamlinkPath = if ($SkipStreamlink) { Find-Streamlink } else { Ensure-LockedStreamlink }
+    $vlcDirectory = if ($SkipVlc) { Find-VlcDirectory } else { Ensure-LockedVlc }
 
     Update-AppSettings $streamlinkPath $vlcDirectory
     New-StartMenuShortcut $appExe
@@ -976,6 +1090,9 @@ try {
     }
     if (-not [string]::IsNullOrWhiteSpace($vlcDirectory)) {
         Write-Detail "VLC: $vlcDirectory"
+    }
+    if ($script:RebootRequired) {
+        Write-Detail "A dependency installer requested a reboot to complete installation."
     }
 
     if ($Launch -and -not [string]::IsNullOrWhiteSpace($appExe)) {

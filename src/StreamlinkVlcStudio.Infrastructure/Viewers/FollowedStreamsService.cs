@@ -8,6 +8,7 @@ using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
@@ -16,20 +17,34 @@ namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 public sealed class FollowedStreamsService : IFollowedStreamsService
 {
     private const int TwitchPageSize = 100;
+    private const int MaxTwitchPages = 100;
     private const int KickSlugLimit = 50;
-    private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(
+        TimeSpan.FromSeconds(12),
+        includeUserAgent: true,
+        acceptJson: true);
     private readonly IAppLogger logger;
     private readonly HttpClient httpClient;
+    private readonly IKickTokenProvider kickTokenProvider;
 
     public FollowedStreamsService(IAppLogger logger)
-        : this(logger, SharedHttpClient)
+        : this(logger, SharedHttpClient, KickTokenProvider.Shared)
     {
     }
 
     public FollowedStreamsService(IAppLogger logger, HttpClient httpClient)
+        : this(logger, httpClient, KickTokenProvider.Shared)
+    {
+    }
+
+    internal FollowedStreamsService(
+        IAppLogger logger,
+        HttpClient httpClient,
+        IKickTokenProvider kickTokenProvider)
     {
         this.logger = logger;
         this.httpClient = httpClient;
+        this.kickTokenProvider = kickTokenProvider;
     }
 
     public async Task<FollowedLiveStreamsResult> GetLiveFollowedStreamsAsync(
@@ -40,21 +55,29 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         var messages = new List<string>();
         var succeededPlatforms = new List<PlatformKind>();
 
-        await AppendPlatformResultAsync(
-            streams,
-            messages,
-            succeededPlatforms,
-            PlatformKind.Twitch,
-            () => GetTwitchFollowedStreamsAsync(settings.Chat, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
+        var twitchLoad = GetTwitchFollowedStreamsAsync(settings.Chat, cancellationToken);
+        var kickLoad = GetKickFollowedStreamsAsync(settings, cancellationToken);
+        var observedLoads = await Task.WhenAll(
+            ObservePlatformResultAsync(PlatformKind.Twitch, twitchLoad, cancellationToken),
+            ObservePlatformResultAsync(PlatformKind.Kick, kickLoad, cancellationToken))
+            .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        await AppendPlatformResultAsync(
-            streams,
-            messages,
-            succeededPlatforms,
-            PlatformKind.Kick,
-            () => GetKickFollowedStreamsAsync(settings, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
+        foreach (var observed in observedLoads)
+        {
+            if (observed.Result is not { } result)
+            {
+                messages.Add(observed.FailureMessage);
+                continue;
+            }
+
+            streams.AddRange(result.Streams);
+            messages.AddRange(result.Messages);
+            if (result.Succeeded)
+            {
+                succeededPlatforms.Add(observed.Platform);
+            }
+        }
 
         var ordered = streams
             .OrderByDescending(stream => stream.ViewerCount ?? -1)
@@ -65,28 +88,26 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         return new FollowedLiveStreamsResult(ordered, messages, succeededPlatforms);
     }
 
-    private async Task AppendPlatformResultAsync(
-        List<FollowedLiveStream> streams,
-        List<string> messages,
-        List<PlatformKind> succeededPlatforms,
+    private async Task<ObservedPlatformLoad> ObservePlatformResultAsync(
         PlatformKind platform,
-        Func<Task<PlatformFollowedStreamsResult>> loadAsync,
+        Task<PlatformFollowedStreamsResult> loadTask,
         CancellationToken cancellationToken)
     {
         try
         {
-            var result = await loadAsync().ConfigureAwait(false);
-            streams.AddRange(result.Streams);
-            messages.AddRange(result.Messages);
-            if (result.Succeeded)
-            {
-                succeededPlatforms.Add(platform);
-            }
+            return new ObservedPlatformLoad(
+                platform,
+                await loadTask.ConfigureAwait(false),
+                "");
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(AppLogLevel.Warning, "Followed", $"{platform} followed streams could not be loaded.", ex);
-            messages.Add($"{platform}: {ex.Message}");
+            return new ObservedPlatformLoad(platform, null, $"{platform}: {ex.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            return new ObservedPlatformLoad(platform, null, "");
         }
     }
 
@@ -94,7 +115,6 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         ChatSettings settings,
         CancellationToken cancellationToken)
     {
-        var messages = new List<string>();
         var streams = new List<FollowedLiveStream>();
         var token = TwitchOAuthService.NormalizeOAuthToken(settings.TwitchOAuthToken);
         if (string.IsNullOrWhiteSpace(token))
@@ -121,9 +141,8 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 "Twitch: reconnect Twitch to grant user:read:follows.");
         }
 
-        var clientId = string.IsNullOrWhiteSpace(settings.TwitchClientId)
-            ? tokenInfo.ClientId
-            : settings.TwitchClientId.Trim();
+        var clientId = tokenInfo.ClientId.Trim();
+        TwitchClientIdResolver.WarnIfConfiguredMismatch(settings, clientId, logger, "Followed");
         if (string.IsNullOrWhiteSpace(clientId))
         {
             return PlatformFollowedStreamsResult.NotConfigured(
@@ -132,21 +151,29 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
         var after = "";
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        var pageCount = 0;
         do
         {
+            if (++pageCount > MaxTwitchPages)
+            {
+                const string message = "Twitch: followed streams pagination exceeded the safety limit.";
+                logger.Write(AppLogLevel.Warning, "Followed", message);
+                return new PlatformFollowedStreamsResult(streams, [message]);
+            }
+
             var url = BuildTwitchFollowedStreamsUrl(tokenInfo.UserId, after);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Headers.TryAddWithoutValidation("Client-Id", clientId);
 
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 logger.Write(
                     AppLogLevel.Warning,
                     "Followed",
-                    $"Twitch followed streams request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                    $"Twitch followed streams request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
                 return new PlatformFollowedStreamsResult(
                     streams,
                     ["Twitch: followed streams unavailable. Check Twitch Client ID and OAuth token."]);
@@ -172,7 +199,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             clientId,
             cancellationToken).ConfigureAwait(false);
 
-        return new PlatformFollowedStreamsResult(streams, messages, Succeeded: true);
+        return new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
     }
 
     private async Task<PlatformFollowedStreamsResult> GetKickFollowedStreamsAsync(
@@ -186,7 +213,9 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 "Kick: add followed channel slugs in Settings.");
         }
 
-        var accessToken = await ResolveKickAccessTokenAsync(settings.Chat, cancellationToken).ConfigureAwait(false);
+        var accessToken = await kickTokenProvider
+            .ResolveAsync(settings.Chat, logger, cancellationToken)
+            .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(accessToken))
         {
             return PlatformFollowedStreamsResult.NotConfigured(
@@ -202,14 +231,14 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 logger.Write(
                     AppLogLevel.Warning,
                     "Followed",
-                    $"Kick channels request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                    $"Kick channels request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
                 return new PlatformFollowedStreamsResult(
                     streams,
                     ["Kick: live followed channels unavailable. Check Kick API credentials."]);
@@ -309,20 +338,10 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         }
     }
 
-    private async Task<string?> ResolveKickAccessTokenAsync(ChatSettings settings, CancellationToken cancellationToken)
-    {
-        var appToken = await KickOAuthService.TryGetAppAccessTokenAsync(settings, logger, cancellationToken).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(appToken))
-        {
-            return appToken;
-        }
-
-        return await KickOAuthService.GetUsableAccessTokenAsync(settings, logger, cancellationToken).ConfigureAwait(false);
-    }
-
     private static IEnumerable<FollowedLiveStream> ReadTwitchStreams(JsonElement root)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             yield break;
@@ -343,7 +362,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
             var title = GetOptionalString(item, "title");
             var category = GetOptionalString(item, "game_name");
-            var thumbnail = NormalizeTwitchThumbnailUrl(GetOptionalString(item, "thumbnail_url"));
+            var thumbnail = NormalizeImageUrl(GetOptionalString(item, "thumbnail_url"), "440", "248");
 
             yield return new FollowedLiveStream(
                 PlatformKind.Twitch,
@@ -364,7 +383,8 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         JsonElement root,
         IDictionary<string, string>? broadcasterUserIds = null)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             yield break;
@@ -372,10 +392,14 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
         foreach (var item in data.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             var slug = GetOptionalString(item, "slug").Trim();
             if (string.IsNullOrWhiteSpace(slug) ||
                 !item.TryGetProperty("stream", out var stream) ||
-                stream.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ||
                 stream.ValueKind != JsonValueKind.Object)
             {
                 continue;
@@ -419,7 +443,9 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 TryGetBool(stream, "is_mature"),
                 GetOptionalString(stream, "language"),
                 target.Url,
-                FirstNonEmpty(GetOptionalString(item, "profile_picture"), GetOptionalString(item, "profile_pic")));
+                NormalizeImageUrl(FirstNonEmpty(
+                    GetOptionalString(item, "profile_picture"),
+                    GetOptionalString(item, "profile_pic"))));
         }
     }
 
@@ -445,27 +471,11 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         return $"https://api.kick.com/public/v1/channels?{query}";
     }
 
-    private static string NormalizeTwitchThumbnailUrl(string url)
-    {
-        return string.IsNullOrWhiteSpace(url)
-            ? ""
-            : url.Replace("{width}", "440", StringComparison.OrdinalIgnoreCase)
-                .Replace("{height}", "248", StringComparison.OrdinalIgnoreCase);
-    }
-
     private static string GetKickThumbnailUrl(JsonElement channel, JsonElement stream)
     {
         return NormalizeImageUrl(FirstNonEmpty(
             GetOptionalString(stream, "thumbnail"),
             GetOptionalString(channel, "thumbnail")));
-    }
-
-    private static string NormalizeImageUrl(string url)
-    {
-        var trimmed = url.Trim();
-        return trimmed.StartsWith("//", StringComparison.Ordinal)
-            ? "https:" + trimmed
-            : trimmed;
     }
 
     private static IReadOnlyList<string> NormalizeKickSlugs(IEnumerable<string> values)
@@ -535,43 +545,6 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         return null;
     }
 
-    private static string ExtractApiMessage(string responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return "";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            foreach (var propertyName in new[] { "message", "error_description", "error" })
-            {
-                var value = GetOptionalString(document.RootElement, propertyName);
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value;
-                }
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return responseBody.Length <= 240 ? responseBody : responseBody[..240];
-    }
-
-    private static HttpClient CreateHttpClient()
-    {
-        var client = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(12)
-        };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("StreamlinkVlcStudio/0.1");
-        client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
-        return client;
-    }
-
     private sealed record PlatformFollowedStreamsResult(
         IReadOnlyList<FollowedLiveStream> Streams,
         IReadOnlyList<string> Messages,
@@ -582,4 +555,9 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             return new PlatformFollowedStreamsResult([], [message]);
         }
     }
+
+    private sealed record ObservedPlatformLoad(
+        PlatformKind Platform,
+        PlatformFollowedStreamsResult? Result,
+        string FailureMessage);
 }

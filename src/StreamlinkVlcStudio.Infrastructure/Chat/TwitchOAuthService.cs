@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Infrastructure.Chat.OAuthTokenHelpers;
 
@@ -15,7 +16,8 @@ public static class TwitchOAuthService
     private const string AuthorizationEndpoint = "https://id.twitch.tv/oauth2/authorize";
     private static readonly TimeSpan AuthorizationTimeout = TimeSpan.FromMinutes(4);
     public const string ManagePredictionsScope = "channel:manage:predictions";
-    private static readonly string[] RequiredScopes = ["chat:read", "chat:edit", "user:read:follows", ManagePredictionsScope];
+    public const string CreateClipsScope = "clips:edit";
+    private static readonly string[] RequiredScopes = ["chat:read", "chat:edit", "user:read:follows", ManagePredictionsScope, CreateClipsScope];
 
     public static async Task<TwitchOAuthTokenResult> AuthorizeUserTokenAsync(
         ChatSettings settings,
@@ -59,6 +61,11 @@ public static class TwitchOAuthService
             missingScopes.Add(ManagePredictionsScope);
         }
 
+        if (!tokenInfo.CanCreateClips)
+        {
+            missingScopes.Add(CreateClipsScope);
+        }
+
         if (missingScopes.Count > 0)
         {
             throw new InvalidOperationException(
@@ -95,7 +102,7 @@ public static class TwitchOAuthService
         string token,
         CancellationToken cancellationToken = default)
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = HttpClientFactory.CreateDefault();
         return await ValidateTokenAsync(httpClient, token, cancellationToken);
     }
 
@@ -113,14 +120,14 @@ public static class TwitchOAuthService
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://id.twitch.tv/oauth2/validate");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", normalizedToken);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException("The Twitch OAuth token is invalid, expired, revoked, or is not an OAuth access token. A Client ID alone cannot send chat.");
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
+        using var document = JsonDocument.Parse(responseBody);
         var root = document.RootElement;
 
         var login = GetRequiredString(root, "login", "Twitch token validation did not return a login name.")
@@ -129,8 +136,8 @@ public static class TwitchOAuthService
         var userId = GetRequiredString(root, "user_id", "Twitch token validation did not return a user ID.")
             .Trim();
         var clientId = GetOptionalString(root, "client_id");
-        var scopes = ReadScopes(root);
-        var expiresAt = TryGetExpiresAt(root);
+        var scopes = OAuthTokenHelpers.ReadScopes(root, "scopes");
+        var expiresAt = OAuthTokenHelpers.TryGetExpiresAt(root, "expires_in");
 
         return new TwitchTokenInfo(
             login,
@@ -141,7 +148,8 @@ public static class TwitchOAuthService
             scopes.Contains("chat:read"),
             scopes.Contains("chat:edit") || scopes.Contains("chat:write"),
             scopes.Contains("user:read:follows"),
-            scopes.Contains(ManagePredictionsScope));
+            scopes.Contains(ManagePredictionsScope),
+            scopes.Contains(CreateClipsScope));
     }
 
     public static string NormalizeOAuthToken(string token)
@@ -172,71 +180,21 @@ public static class TwitchOAuthService
         string expectedState,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(AuthorizationTimeout);
-        using var registration = timeout.Token.Register(() =>
-        {
-            try
-            {
-                listener.Stop();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-        });
-
-        while (true)
-        {
-            HttpListenerContext context;
-            try
-            {
-                context = await listener.GetContextAsync();
-            }
-            catch (Exception ex) when (timeout.IsCancellationRequested &&
-                ex is HttpListenerException or ObjectDisposedException or InvalidOperationException)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                throw new TimeoutException("Timed out waiting for Twitch authorization.");
-            }
-
-            var path = context.Request.Url?.AbsolutePath ?? "/";
-            var query = ParseQueryString(context.Request.Url?.Query ?? "");
-
-            if (query.TryGetValue("error", out var error))
-            {
-                var errorDescription = query.TryGetValue("error_description", out var description) && !string.IsNullOrWhiteSpace(description)
-                    ? description
-                    : error;
-                await WriteBrowserMessageAsync(context.Response, 400, $"Twitch authorization failed: {errorDescription}");
-                throw new InvalidOperationException($"Twitch authorization failed: {errorDescription}");
-            }
-
-            if (string.Equals(path, "/twitch-oauth-token", StringComparison.OrdinalIgnoreCase))
-            {
-                var responseText = "Twitch authorization finished. You can close this window.";
-                var statusCode = 200;
-
-                try
-                {
-                    return ParseBrowserToken(query, expectedState);
-                }
-                catch (Exception ex)
-                {
-                    responseText = ex.Message;
-                    statusCode = 400;
-                    throw;
-                }
-                finally
-                {
-                    await WriteBrowserMessageAsync(context.Response, statusCode, responseText);
-                }
-            }
-
-            await WriteFragmentCapturePageAsync(context.Response);
-        }
+        return await LoopbackOAuthReceiver.WaitForResultAsync(
+                listener,
+                "Twitch",
+                "/twitch-oauth-token",
+                expectedState,
+                AuthorizationTimeout,
+                query => ParseBrowserToken(query, expectedState),
+                cancellationToken,
+                TryHandleFragmentCaptureRequestAsync)
+            .ConfigureAwait(false);
     }
 
-    private static TwitchBrowserToken ParseBrowserToken(Dictionary<string, string> query, string expectedState)
+    private static TwitchBrowserToken ParseBrowserToken(
+        IReadOnlyDictionary<string, string> query,
+        string expectedState)
     {
         if (!query.TryGetValue("state", out var returnedState) ||
             !string.Equals(returnedState, expectedState, StringComparison.Ordinal))
@@ -256,10 +214,14 @@ public static class TwitchOAuthService
             ReadScopes(query));
     }
 
-    private static async Task WriteFragmentCapturePageAsync(HttpListenerResponse response)
+    private static async Task<bool> TryHandleFragmentCaptureRequestAsync(HttpListenerContext context)
     {
-        response.StatusCode = 200;
-        response.ContentType = "text/html; charset=utf-8";
+        if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.Ordinal) ||
+            !string.Equals(context.Request.Url?.AbsolutePath, "/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         var html = """
         <!doctype html>
         <html>
@@ -289,42 +251,37 @@ public static class TwitchOAuthService
         </html>
         """;
         var bytes = Encoding.UTF8.GetBytes(html);
-        response.ContentLength64 = bytes.Length;
-        await response.OutputStream.WriteAsync(bytes);
-        response.Close();
+        var response = context.Response;
+        try
+        {
+            response.StatusCode = 200;
+            response.ContentType = "text/html; charset=utf-8";
+            response.Headers[HttpResponseHeader.CacheControl] = "no-store";
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            response.ContentLength64 = bytes.Length;
+            await response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpListenerException or IOException or ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            try
+            {
+                response.Close();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        return true;
     }
 
-    private static async Task WriteBrowserMessageAsync(HttpListenerResponse response, int statusCode, string message)
+    private static DateTimeOffset? TryGetExpiresAt(IReadOnlyDictionary<string, string> query)
     {
-        response.StatusCode = statusCode;
-        response.ContentType = "text/html; charset=utf-8";
-        var html = $"""
-        <!doctype html>
-        <html>
-        <head><meta charset="utf-8"><title>Twitch Authorization</title></head>
-        <body style="font-family:Segoe UI,Arial,sans-serif;margin:32px;">
-        <h1>Twitch Authorization</h1>
-        <p>{WebUtility.HtmlEncode(message)}</p>
-        </body>
-        </html>
-        """;
-        var bytes = Encoding.UTF8.GetBytes(html);
-        response.ContentLength64 = bytes.Length;
-        await response.OutputStream.WriteAsync(bytes);
-        response.Close();
-    }
-
-    private static DateTimeOffset? TryGetExpiresAt(JsonElement root)
-    {
-        return root.TryGetProperty("expires_in", out var expiresInProperty)
-            ? OAuthTokenHelpers.TryGetExpiresAt(expiresInProperty)
-            : null;
-    }
-
-    private static DateTimeOffset? TryGetExpiresAt(Dictionary<string, string> query)
-    {
-        return query.TryGetValue("expires_in", out var expiresIn) && long.TryParse(expiresIn, out var seconds) && seconds > 0
-            ? DateTimeOffset.UtcNow.AddSeconds(seconds)
+        return query.TryGetValue("expires_in", out var expiresIn)
+            ? OAuthTokenHelpers.TryGetExpiresAt(expiresIn)
             : null;
     }
 
@@ -338,28 +295,7 @@ public static class TwitchOAuthService
         return value.Trim();
     }
 
-    private static HashSet<string> ReadScopes(JsonElement root)
-    {
-        var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!root.TryGetProperty("scopes", out var scopesProperty) ||
-            scopesProperty.ValueKind != JsonValueKind.Array)
-        {
-            return scopes;
-        }
-
-        foreach (var item in scopesProperty.EnumerateArray())
-        {
-            var scope = item.GetString();
-            if (!string.IsNullOrWhiteSpace(scope))
-            {
-                scopes.Add(scope);
-            }
-        }
-
-        return scopes;
-    }
-
-    private static HashSet<string> ReadScopes(Dictionary<string, string> query)
+    private static HashSet<string> ReadScopes(IReadOnlyDictionary<string, string> query)
     {
         var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!query.TryGetValue("scope", out var scopeValue))
@@ -391,7 +327,8 @@ public sealed record TwitchTokenInfo(
     bool CanReadChat,
     bool CanWriteChat,
     bool CanReadFollows,
-    bool CanManagePredictions);
+    bool CanManagePredictions,
+    bool CanCreateClips);
 
 public sealed record TwitchOAuthTokenResult(
     string AccessToken,

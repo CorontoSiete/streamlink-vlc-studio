@@ -1,12 +1,12 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Infrastructure.Chat.OAuthTokenHelpers;
 
@@ -57,7 +57,7 @@ public static class KickOAuthService
         var clientSecret = RequireSetting(settings.KickClientSecret, "Kick Client Secret");
         var refreshToken = RequireSetting(settings.KickRefreshToken, "Kick refresh token");
 
-        using var httpClient = new HttpClient();
+        using var httpClient = HttpClientFactory.CreateDefault();
         using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
         request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
@@ -147,36 +147,35 @@ public static class KickOAuthService
             return null;
         }
 
-        using var httpClient = new HttpClient();
+        using var httpClient = HttpClientFactory.CreateDefault();
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.kick.com/public/v1/users");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             return null;
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (!document.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
+        using var document = JsonDocument.Parse(responseBody);
+        if (!TryGetArray(document.RootElement, "data", out var data))
         {
             return null;
         }
 
         foreach (var item in data.EnumerateArray())
         {
-            if (item.TryGetProperty("name", out var name) &&
-                !string.IsNullOrWhiteSpace(name.GetString()))
+            var name = GetOptionalString(item, "name");
+            if (!string.IsNullOrWhiteSpace(name))
             {
-                return name.GetString();
+                return name;
             }
 
-            if (item.TryGetProperty("username", out var username) &&
-                !string.IsNullOrWhiteSpace(username.GetString()))
+            var username = GetOptionalString(item, "username");
+            if (!string.IsNullOrWhiteSpace(username))
             {
-                return username.GetString();
+                return username;
             }
         }
 
@@ -248,7 +247,7 @@ public static class KickOAuthService
             return null;
         }
 
-        var cacheKey = Fingerprint($"{clientId}\0{clientSecret}");
+        var cacheKey = OAuthTokenHelpers.CreateCredentialFingerprint(clientId, clientSecret);
         await AppAccessTokenGate.WaitAsync(cancellationToken);
         try
         {
@@ -259,7 +258,7 @@ public static class KickOAuthService
                 return appAccessTokenCache.AccessToken;
             }
 
-            using var httpClient = new HttpClient();
+            using var httpClient = HttpClientFactory.CreateDefault();
             using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
             request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -268,11 +267,11 @@ public static class KickOAuthService
                 ["client_secret"] = clientSecret
             });
 
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                logger?.Write(AppLogLevel.Warning, "KickOAuth", $"Kick app token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ExtractApiMessage(responseBody)}");
+                logger?.Write(AppLogLevel.Warning, "KickOAuth", $"Kick app token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
                 return null;
             }
 
@@ -284,7 +283,7 @@ public static class KickOAuthService
                 return null;
             }
 
-            var expiresAt = TryGetExpiresAt(document.RootElement) ?? DateTimeOffset.UtcNow.Add(AppAccessTokenFallbackLifetime);
+            var expiresAt = OAuthTokenHelpers.TryGetExpiresAt(document.RootElement, "expires_in") ?? DateTimeOffset.UtcNow.Add(AppAccessTokenFallbackLifetime);
             appAccessTokenCache = new KickAppAccessTokenCache(cacheKey, accessToken, expiresAt);
             return accessToken;
         }
@@ -304,29 +303,34 @@ public static class KickOAuthService
         string token,
         CancellationToken cancellationToken)
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = HttpClientFactory.CreateDefault();
         var url = $"https://api.kick.com/public/v1/channels?slug={Uri.EscapeDataString(channel)}";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", NormalizeBearerToken(token));
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             return null;
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (!document.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
+        using var document = JsonDocument.Parse(responseBody);
+        if (!TryGetArray(document.RootElement, "data", out var data))
         {
             return null;
         }
 
         foreach (var item in data.EnumerateArray())
         {
-            if (item.TryGetProperty("slug", out var slug) &&
-                !string.Equals(slug.GetString(), channel, StringComparison.OrdinalIgnoreCase))
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var slug = GetOptionalString(item, "slug");
+            if (!string.IsNullOrWhiteSpace(slug) &&
+                !string.Equals(slug, channel, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -347,7 +351,7 @@ public static class KickOAuthService
         string codeVerifier,
         CancellationToken cancellationToken)
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = HttpClientFactory.CreateDefault();
         using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
         request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
@@ -368,11 +372,11 @@ public static class KickOAuthService
         string? fallbackRefreshToken,
         CancellationToken cancellationToken)
     {
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Kick OAuth token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ExtractApiMessage(responseBody)}");
+            throw new InvalidOperationException($"Kick OAuth token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
         }
 
         using var document = JsonDocument.Parse(responseBody);
@@ -381,7 +385,7 @@ public static class KickOAuthService
         var tokenType = GetOptionalString(root, "token_type");
         var refreshToken = GetOptionalString(root, "refresh_token");
         var scopes = ReadScopes(root);
-        var expiresAt = TryGetExpiresAt(root);
+        var expiresAt = OAuthTokenHelpers.TryGetExpiresAt(root, "expires_in");
 
         if (!scopes.Contains("chat:write"))
         {
@@ -421,85 +425,23 @@ public static class KickOAuthService
         string expectedState,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(AuthorizationTimeout);
-        using var registration = timeout.Token.Register(() =>
-        {
-            try
-            {
-                listener.Stop();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-        });
+        return await LoopbackOAuthReceiver.WaitForResultAsync(
+                listener,
+                "Kick",
+                "/",
+                expectedState,
+                AuthorizationTimeout,
+                query =>
+                {
+                    if (!query.TryGetValue("code", out var code) || string.IsNullOrWhiteSpace(code))
+                    {
+                        throw new InvalidOperationException("Kick authorization did not return an authorization code.");
+                    }
 
-        HttpListenerContext context;
-        try
-        {
-            context = await listener.GetContextAsync();
-        }
-        catch (Exception ex) when (timeout.IsCancellationRequested &&
-            ex is HttpListenerException or ObjectDisposedException or InvalidOperationException)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new TimeoutException("Timed out waiting for Kick authorization.");
-        }
-
-        var query = ParseQueryString(context.Request.Url?.Query ?? "");
-        var responseText = "Kick authorization finished. You can close this window.";
-        var statusCode = 200;
-
-        try
-        {
-            if (query.TryGetValue("error", out var error))
-            {
-                throw new InvalidOperationException($"Kick authorization failed: {error}");
-            }
-
-            if (!query.TryGetValue("state", out var returnedState) ||
-                !string.Equals(returnedState, expectedState, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Kick authorization returned an invalid state value.");
-            }
-
-            if (!query.TryGetValue("code", out var code) || string.IsNullOrWhiteSpace(code))
-            {
-                throw new InvalidOperationException("Kick authorization did not return an authorization code.");
-            }
-
-            return code;
-        }
-        catch (Exception ex)
-        {
-            responseText = ex.Message;
-            statusCode = 400;
-            throw;
-        }
-        finally
-        {
-            await WriteBrowserResponseAsync(context.Response, statusCode, responseText);
-        }
-    }
-
-    private static async Task WriteBrowserResponseAsync(HttpListenerResponse response, int statusCode, string message)
-    {
-        response.StatusCode = statusCode;
-        response.ContentType = "text/html; charset=utf-8";
-        var html = $"""
-        <!doctype html>
-        <html>
-        <head><meta charset="utf-8"><title>Kick Authorization</title></head>
-        <body style="font-family:Segoe UI,Arial,sans-serif;margin:32px;">
-        <h1>Kick Authorization</h1>
-        <p>{WebUtility.HtmlEncode(message)}</p>
-        </body>
-        </html>
-        """;
-        var bytes = Encoding.UTF8.GetBytes(html);
-        response.ContentLength64 = bytes.Length;
-        await response.OutputStream.WriteAsync(bytes);
-        response.Close();
+                    return code;
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static bool ShouldRefresh(ChatSettings settings)
@@ -516,50 +458,6 @@ public static class KickOAuthService
         }
 
         return value.Trim();
-    }
-
-    private static string Fingerprint(string value)
-    {
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
-    }
-
-    private static DateTimeOffset? TryGetExpiresAt(JsonElement root)
-    {
-        return root.TryGetProperty("expires_in", out var expiresInProperty)
-            ? OAuthTokenHelpers.TryGetExpiresAt(expiresInProperty)
-            : null;
-    }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return "";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            if (document.RootElement.TryGetProperty("message", out var message))
-            {
-                return message.GetString() ?? "";
-            }
-
-            if (document.RootElement.TryGetProperty("error_description", out var errorDescription))
-            {
-                return errorDescription.GetString() ?? "";
-            }
-
-            if (document.RootElement.TryGetProperty("error", out var error))
-            {
-                return error.GetString() ?? "";
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return responseBody.Length <= 240 ? responseBody : responseBody[..240];
     }
 
     private sealed record KickAppAccessTokenCache(

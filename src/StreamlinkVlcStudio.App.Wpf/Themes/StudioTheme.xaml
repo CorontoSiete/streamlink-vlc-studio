@@ -3,7 +3,6 @@
     <!-- Shared layout values (theme-independent) -->
     <CornerRadius x:Key="StudioCornerSmall">10</CornerRadius>
     <CornerRadius x:Key="StudioCornerMedium">14</CornerRadius>
-    <CornerRadius x:Key="StudioCornerLarge">20</CornerRadius>
     <Thickness x:Key="StudioControlPadding">16,10</Thickness>
     <Thickness x:Key="StudioCardPadding">20</Thickness>
 
@@ -72,24 +71,6 @@
         <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
         <Setter Property="Foreground" Value="#FFFFFFFF" />
-    </Style>
-
-    <Style x:Key="StudioIconButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource StudioButtonStyle}">
-        <Setter Property="Width" Value="36" />
-        <Setter Property="Height" Value="36" />
-        <Setter Property="MinHeight" Value="0" />
-        <Setter Property="Padding" Value="0" />
-        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-        <Setter Property="FontSize" Value="14" />
-    </Style>
-
-    <Style x:Key="StudioNavigationButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource StudioButtonStyle}">
-        <Setter Property="MinHeight" Value="34" />
-        <Setter Property="Padding" Value="14,6" />
-        <Setter Property="Margin" Value="0,0,6,0" />
-        <Setter Property="Background" Value="Transparent" />
-        <Setter Property="BorderBrush" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
     </Style>
 
     <Style x:Key="StudioTextBoxStyle" TargetType="{x:Type TextBox}">
@@ -167,6 +148,22 @@
         </Setter>
     </Style>
 
+    <Style x:Key="StudioComboBoxToggleButtonStyle" TargetType="{x:Type ToggleButton}">
+        <Setter Property="OverridesDefaultStyle" Value="True" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ToggleButton}">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="StudioComboBoxStyle" TargetType="{x:Type ComboBox}">
         <Setter Property="FontFamily" Value="Segoe UI" />
         <Setter Property="FontSize" Value="13" />
@@ -205,7 +202,8 @@
                                   Fill="{DynamicResource StudioTextMutedBrush}"
                                   Data="M0,0 L8,0 L4,5 Z" />
                         </Grid>
-                        <ToggleButton Background="Transparent"
+                        <ToggleButton Style="{StaticResource StudioComboBoxToggleButtonStyle}"
+                                      Background="Transparent"
                                       BorderThickness="0"
                                       Focusable="False"
                                       IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" />
@@ -525,9 +523,4 @@
         <Setter Property="Padding" Value="24" />
     </Style>
 
-    <Style x:Key="StudioLoadingStateStyle" TargetType="{x:Type TextBlock}">
-        <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
-        <Setter Property="FontSize" Value="12" />
-        <Setter Property="FontWeight" Value="SemiBold" />
-    </Style>
 </ResourceDictionary>

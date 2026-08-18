@@ -23,10 +23,13 @@ public partial class VolumeOverlay : UserControl
 
     private DispatcherTimer? hideTimer;
     private UIElement? lastTarget;
+    private Window? ownerWindow;
 
     public VolumeOverlay()
     {
         InitializeComponent();
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     /// <summary>
@@ -95,6 +98,57 @@ public partial class VolumeOverlay : UserControl
     {
         hideTimer?.Stop();
         Popup.IsOpen = false;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        var window = Window.GetWindow(this);
+        if (ReferenceEquals(window, ownerWindow))
+        {
+            return;
+        }
+
+        DetachOwnerWindow();
+        ownerWindow = window;
+        if (ownerWindow is not null)
+        {
+            ownerWindow.Closed += OnOwnerWindowClosed;
+        }
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        ReleasePopup();
+        DetachOwnerWindow();
+    }
+
+    private void OnOwnerWindowClosed(object? sender, EventArgs e)
+    {
+        ReleasePopup();
+        DetachOwnerWindow();
+    }
+
+    private void ReleasePopup()
+    {
+        if (hideTimer is not null)
+        {
+            hideTimer.Stop();
+            hideTimer.Tick -= OnHideTimerTick;
+            hideTimer = null;
+        }
+
+        Popup.IsOpen = false;
+        Popup.PlacementTarget = null;
+        lastTarget = null;
+    }
+
+    private void DetachOwnerWindow()
+    {
+        if (ownerWindow is not null)
+        {
+            ownerWindow.Closed -= OnOwnerWindowClosed;
+            ownerWindow = null;
+        }
     }
 
     // Segoe MDL2 Assets volume glyphs, built from code points to stay encoding-safe in source.

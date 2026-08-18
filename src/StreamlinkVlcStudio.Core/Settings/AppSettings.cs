@@ -1,7 +1,6 @@
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
+using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Core.Settings;
 
@@ -12,7 +11,8 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private PlatformKind defaultPlatform = PlatformKind.Twitch;
     private string defaultQuality = "best";
     private bool lowLatency = true;
-    private bool keepInactiveTabsRunning = true;
+    private bool keepInactiveTabsRunning;
+    private VideoRendererMode videoRendererMode = VideoRendererMode.Automatic;
     private bool multiStreamEnabled;
     private bool keepHomeCardRightGap = true;
     private bool setupCompleted;
@@ -21,6 +21,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private string customStreamlinkArguments = "";
     private ChatSettings chat = new();
     private ReplaySettings replay = new();
+    private HotkeySettings hotkeys = new();
     private FollowedChannelsSettings followedChannels = new();
     private List<RecentStreamSettings> recentStreams = [];
     private Dictionary<string, int> streamVolumes = new(StringComparer.OrdinalIgnoreCase);
@@ -62,6 +63,14 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => keepInactiveTabsRunning;
         set => SetProperty(ref keepInactiveTabsRunning, value);
+    }
+
+    public VideoRendererMode VideoRendererMode
+    {
+        get => videoRendererMode;
+        set => SetProperty(
+            ref videoRendererMode,
+            Enum.IsDefined(value) ? value : VideoRendererMode.Automatic);
     }
 
     public bool MultiStreamEnabled
@@ -110,6 +119,12 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => replay;
         set => SetProperty(ref replay, value ?? new());
+    }
+
+    public HotkeySettings Hotkeys
+    {
+        get => hotkeys;
+        set => SetProperty(ref hotkeys, value ?? new());
     }
 
     public FollowedChannelsSettings FollowedChannels
@@ -262,14 +277,6 @@ public sealed class AppSettings : NotifyPropertyChangedObject
         return recentStreams;
     }
 
-    private static string NormalizeImageUrl(string? url)
-    {
-        var trimmed = (url ?? "").Trim();
-        return trimmed.StartsWith("//", StringComparison.Ordinal)
-            ? "https:" + trimmed
-            : trimmed;
-    }
-
     private static PictureInPictureWindowLocation? NormalizePictureInPictureWindowLocation(PictureInPictureWindowLocation? location)
     {
         if (location is null ||
@@ -279,23 +286,21 @@ public sealed class AppSettings : NotifyPropertyChangedObject
             return null;
         }
 
-        if (!double.IsFinite(location.Width) || location.Width < 0)
+        var width = double.IsFinite(location.Width) && location.Width >= 0
+            ? location.Width
+            : 0;
+        var height = double.IsFinite(location.Height) && location.Height >= 0
+            ? location.Height
+            : 0;
+        var fullscreenMode = Enum.IsDefined(location.FullscreenMode)
+            ? location.FullscreenMode
+            : PictureInPictureFullscreenMode.StreamOnly;
+        return new PictureInPictureWindowLocation(location.Left, location.Top, width, height)
         {
-            location.Width = 0;
-        }
-
-        if (!double.IsFinite(location.Height) || location.Height < 0)
-        {
-            location.Height = 0;
-        }
-
-        if (!Enum.IsDefined(location.FullscreenMode))
-        {
-            location.FullscreenMode = PictureInPictureFullscreenMode.StreamOnly;
-        }
-
-        location.FullscreenScreen = NormalizePictureInPictureFullscreenScreen(location.FullscreenScreen);
-        return location;
+            IsFullscreen = location.IsFullscreen,
+            FullscreenMode = fullscreenMode,
+            FullscreenScreen = NormalizePictureInPictureFullscreenScreen(location.FullscreenScreen)
+        };
     }
 
     private static PictureInPictureFullscreenScreen? NormalizePictureInPictureFullscreenScreen(
@@ -312,386 +317,11 @@ public sealed class AppSettings : NotifyPropertyChangedObject
             return null;
         }
 
-        screen.DeviceName = screen.DeviceName?.Trim() ?? "";
-        return screen;
-    }
-}
-
-public sealed class PictureInPictureWindowLocation
-{
-    public PictureInPictureWindowLocation()
-    {
-    }
-
-    public PictureInPictureWindowLocation(double left, double top, double width = 0, double height = 0)
-    {
-        Left = left;
-        Top = top;
-        Width = width;
-        Height = height;
-    }
-
-    public double Left { get; set; }
-
-    public double Top { get; set; }
-
-    public double Width { get; set; }
-
-    public double Height { get; set; }
-
-    public bool IsFullscreen { get; set; }
-
-    public PictureInPictureFullscreenMode FullscreenMode { get; set; } = PictureInPictureFullscreenMode.StreamOnly;
-
-    public PictureInPictureFullscreenScreen? FullscreenScreen { get; set; }
-}
-
-public enum PictureInPictureFullscreenMode
-{
-    StreamOnly,
-    MultiView
-}
-
-public sealed class PictureInPictureFullscreenScreen
-{
-    public PictureInPictureFullscreenScreen()
-    {
-    }
-
-    public PictureInPictureFullscreenScreen(string deviceName, double left, double top, double width, double height)
-    {
-        DeviceName = deviceName;
-        Left = left;
-        Top = top;
-        Width = width;
-        Height = height;
-    }
-
-    public string DeviceName { get; set; } = "";
-
-    public double Left { get; set; }
-
-    public double Top { get; set; }
-
-    public double Width { get; set; }
-
-    public double Height { get; set; }
-}
-
-public sealed class ChatSettings : NotifyPropertyChangedObject
-{
-    public const double DefaultOpacity = 0.92;
-    public const double MinimumFontSize = 8;
-    public const double MaximumFontSize = 36;
-    public const double DefaultFontSize = 13;
-    public const double DefaultVlcOverlayFontSize = 15;
-    public const double DefaultDockWidth = 340;
-    public const double MinimumDockWidth = 220;
-    public const double MaximumDockWidth = 1920;
-
-    private ChatLayout layout = ChatLayout.Overlay;
-    private bool connectAutomatically = true;
-    private double opacity = DefaultOpacity;
-    private double fontSize = DefaultFontSize;
-    private double vlcOverlayFontSize = DefaultVlcOverlayFontSize;
-    private double dockWidth = DefaultDockWidth;
-    private string vlcOverlayDirectory = "";
-    private string twitchUsername = "";
-    private string twitchOAuthToken = "";
-    private DateTimeOffset? twitchTokenExpiresAtUtc;
-    private string twitchClientId = "";
-    private List<string> twitchTokenScopes = [];
-    private string kickUsername = "";
-    private string kickOAuthToken = "";
-    private string kickRefreshToken = "";
-    private DateTimeOffset? kickTokenExpiresAtUtc;
-    private string kickClientId = "";
-    private string kickClientSecret = "";
-    private bool kickSendAsBot;
-    private bool kickWebhookListenerEnabled;
-    private int kickWebhookListenerPort = 39180;
-    private Dictionary<string, string> kickChatroomIds = new(StringComparer.OrdinalIgnoreCase);
-    private Dictionary<string, string> kickBroadcasterUserIds = new(StringComparer.OrdinalIgnoreCase);
-
-    public ChatLayout Layout
-    {
-        get => layout;
-        set => SetProperty(ref layout, Enum.IsDefined(value) ? value : ChatLayout.Overlay);
-    }
-
-    public bool ConnectAutomatically
-    {
-        get => connectAutomatically;
-        set => SetProperty(ref connectAutomatically, value);
-    }
-
-    public double Opacity
-    {
-        get => opacity;
-        set => SetProperty(ref opacity, double.IsFinite(value) ? Math.Clamp(value, 0, 1) : DefaultOpacity);
-    }
-
-    public double FontSize
-    {
-        get => fontSize;
-        set => SetProperty(ref fontSize, NormalizeFontSize(value, DefaultFontSize));
-    }
-
-    public double VlcOverlayFontSize
-    {
-        get => vlcOverlayFontSize;
-        set => SetProperty(ref vlcOverlayFontSize, NormalizeFontSize(value, DefaultVlcOverlayFontSize));
-    }
-
-    public double DockWidth
-    {
-        get => dockWidth;
-        set => SetProperty(ref dockWidth, NormalizeDockWidth(value));
-    }
-
-    public string VlcOverlayDirectory
-    {
-        get => vlcOverlayDirectory;
-        set => SetProperty(ref vlcOverlayDirectory, value ?? "");
-    }
-
-    public string TwitchUsername
-    {
-        get => twitchUsername;
-        set => SetProperty(ref twitchUsername, value ?? "");
-    }
-
-    public string TwitchOAuthToken
-    {
-        get => twitchOAuthToken;
-        set => SetProperty(ref twitchOAuthToken, value ?? "");
-    }
-
-    public DateTimeOffset? TwitchTokenExpiresAtUtc
-    {
-        get => twitchTokenExpiresAtUtc;
-        set => SetProperty(ref twitchTokenExpiresAtUtc, value);
-    }
-
-    public string TwitchClientId
-    {
-        get => twitchClientId;
-        set => SetProperty(ref twitchClientId, value ?? "");
-    }
-
-    public List<string> TwitchTokenScopes
-    {
-        get => twitchTokenScopes;
-        set => SetProperty(ref twitchTokenScopes, NormalizeTokenScopes(value));
-    }
-
-    public string KickUsername
-    {
-        get => kickUsername;
-        set => SetProperty(ref kickUsername, value ?? "");
-    }
-
-    public string KickOAuthToken
-    {
-        get => kickOAuthToken;
-        set => SetProperty(ref kickOAuthToken, value ?? "");
-    }
-
-    public string KickRefreshToken
-    {
-        get => kickRefreshToken;
-        set => SetProperty(ref kickRefreshToken, value ?? "");
-    }
-
-    public DateTimeOffset? KickTokenExpiresAtUtc
-    {
-        get => kickTokenExpiresAtUtc;
-        set => SetProperty(ref kickTokenExpiresAtUtc, value);
-    }
-
-    public string KickClientId
-    {
-        get => kickClientId;
-        set => SetProperty(ref kickClientId, value ?? "");
-    }
-
-    public string KickClientSecret
-    {
-        get => kickClientSecret;
-        set => SetProperty(ref kickClientSecret, value ?? "");
-    }
-
-    public bool KickSendAsBot
-    {
-        get => kickSendAsBot;
-        set => SetProperty(ref kickSendAsBot, value);
-    }
-
-    public bool KickWebhookListenerEnabled
-    {
-        get => kickWebhookListenerEnabled;
-        set => SetProperty(ref kickWebhookListenerEnabled, value);
-    }
-
-    public int KickWebhookListenerPort
-    {
-        get => kickWebhookListenerPort;
-        set => SetProperty(ref kickWebhookListenerPort, value <= 0 ? 39180 : Math.Clamp(value, 1024, 65535));
-    }
-
-    public Dictionary<string, string> KickChatroomIds
-    {
-        get => kickChatroomIds;
-        set => SetProperty(ref kickChatroomIds, NormalizeStringDictionary(value));
-    }
-
-    public Dictionary<string, string> KickBroadcasterUserIds
-    {
-        get => kickBroadcasterUserIds;
-        set => SetProperty(ref kickBroadcasterUserIds, NormalizeStringDictionary(value));
-    }
-
-    public static double NormalizeFontSize(double value, double fallback)
-    {
-        return double.IsFinite(value)
-            ? Math.Clamp(value, MinimumFontSize, MaximumFontSize)
-            : fallback;
-    }
-
-    public static double NormalizeDockWidth(double value)
-    {
-        return double.IsFinite(value)
-            ? Math.Clamp(value, MinimumDockWidth, MaximumDockWidth)
-            : DefaultDockWidth;
-    }
-
-    private static List<string> NormalizeTokenScopes(IEnumerable<string>? scopes)
-    {
-        if (scopes is null)
-        {
-            return [];
-        }
-
-        return scopes
-            .Where(scope => !string.IsNullOrWhiteSpace(scope))
-            .Select(scope => scope.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(scope => scope, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static Dictionary<string, string> NormalizeStringDictionary(
-        IReadOnlyDictionary<string, string>? values)
-    {
-        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (values is null)
-        {
-            return normalized;
-        }
-
-        foreach (var pair in values)
-        {
-            if (!string.IsNullOrWhiteSpace(pair.Key))
-            {
-                normalized[pair.Key.Trim()] = pair.Value?.Trim() ?? "";
-            }
-        }
-
-        return normalized;
-    }
-}
-
-public sealed class FollowedChannelsSettings : NotifyPropertyChangedObject
-{
-    private List<string> kickChannelSlugs = [];
-    private bool notifyWhenLive = true;
-
-    public List<string> KickChannelSlugs
-    {
-        get => kickChannelSlugs;
-        set => SetProperty(ref kickChannelSlugs, NormalizeChannelSlugs(value));
-    }
-
-    public bool NotifyWhenLive
-    {
-        get => notifyWhenLive;
-        set => SetProperty(ref notifyWhenLive, value);
-    }
-
-    private static List<string> NormalizeChannelSlugs(IEnumerable<string>? values)
-    {
-        if (values is null)
-        {
-            return [];
-        }
-
-        var slugs = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var value in values)
-        {
-            var slug = StreamInputParser.NormalizeChannel(value ?? "");
-            if (string.IsNullOrWhiteSpace(slug) || !seen.Add(slug))
-            {
-                continue;
-            }
-
-            slugs.Add(slug);
-        }
-
-        return slugs;
-    }
-}
-
-public sealed class ReplaySettings : NotifyPropertyChangedObject
-{
-    private bool enabled = true;
-    private bool attemptPrivateKickReplayResolution = true;
-
-    public bool Enabled
-    {
-        get => enabled;
-        set => SetProperty(ref enabled, value);
-    }
-
-    public bool AttemptPrivateKickReplayResolution
-    {
-        get => attemptPrivateKickReplayResolution;
-        set => SetProperty(ref attemptPrivateKickReplayResolution, value);
-    }
-}
-
-public sealed class RecentStreamSettings
-{
-    public PlatformKind Platform { get; set; }
-
-    public string Channel { get; set; } = "";
-
-    public string Url { get; set; } = "";
-
-    public string DisplayName { get; set; } = "";
-
-    public string CategoryName { get; set; } = "";
-
-    public string ThumbnailUrl { get; set; } = "";
-
-    public string LastQuality { get; set; } = "";
-
-    public DateTimeOffset LastWatchedAtUtc { get; set; }
-}
-
-public abstract class NotifyPropertyChangedObject : INotifyPropertyChanged
-{
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-        {
-            return false;
-        }
-
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-        return true;
+        return new PictureInPictureFullscreenScreen(
+            screen.DeviceName?.Trim() ?? "",
+            screen.Left,
+            screen.Top,
+            screen.Width,
+            screen.Height);
     }
 }

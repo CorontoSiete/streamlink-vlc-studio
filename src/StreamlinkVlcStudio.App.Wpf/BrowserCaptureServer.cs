@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Sockets;
-using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using StreamlinkVlcStudio.Core.Logging;
+using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
@@ -32,7 +34,7 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
     {
         this.handleUrlAsync = handleUrlAsync;
         this.logger = logger;
-        requestedPort = port;
+        requestedPort = port is < 0 or > 65_535 ? Port : port;
     }
 
     public int ListenerPort { get; private set; } = Port;
@@ -186,14 +188,27 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
 
             var stream = client.GetStream();
-            var request = await ReadHttpRequestAsync(stream, timeout.Token).ConfigureAwait(false);
-            if (request is null)
+            var readResult = await LocalHttpRequestReader.ReadWithStatusAsync(
+                    stream,
+                    MaxRequestBytes,
+                    timeout.Token)
+                .ConfigureAwait(false);
+            if (!readResult.IsSuccess)
             {
-                await WriteResponseAsync(stream, 400, "Bad Request", "text/plain", "Bad request.", timeout.Token).ConfigureAwait(false);
+                await WriteResponseAsync(
+                        stream,
+                        readResult.StatusCode,
+                        readResult.ReasonPhrase,
+                        "text/plain",
+                        readResult.Message,
+                        timeout.Token)
+                    .ConfigureAwait(false);
                 return;
             }
 
-            if (!TryGetAllowedCorsOrigin(request.Origin, out var allowedCorsOrigin))
+            var request = readResult.Request!;
+
+            if (!TryGetAllowedCorsOrigin(request.GetOptionalHeader("Origin"), out var allowedCorsOrigin))
             {
                 await WriteResponseAsync(stream, 403, "Forbidden", "text/plain", "Forbidden origin.", timeout.Token).ConfigureAwait(false);
                 return;
@@ -217,9 +232,23 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
                 return;
             }
 
-            if (!TryReadCaptureUrl(request.Body, out var captureUrl))
+            if (!TryReadCaptureUrl(Encoding.UTF8.GetString(request.Body), out var captureUrl, out var parseError))
             {
-                await WriteResponseAsync(stream, 400, "Bad Request", "text/plain", "Missing URL.", timeout.Token, allowedCorsOrigin).ConfigureAwait(false);
+                await WriteResponseAsync(stream, 400, "Bad Request", "text/plain", parseError, timeout.Token, allowedCorsOrigin).ConfigureAwait(false);
+                return;
+            }
+
+            if (!TryValidateCaptureUrl(captureUrl, out var validationError))
+            {
+                await WriteResponseAsync(
+                        stream,
+                        400,
+                        "Bad Request",
+                        "text/plain",
+                        validationError,
+                        timeout.Token,
+                        allowedCorsOrigin)
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -251,103 +280,6 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
                 logger.Write(AppLogLevel.Warning, "BrowserCapture", "Browser capture handler failed.", ex);
             }
         }));
-    }
-
-    private static async Task<HttpRequest?> ReadHttpRequestAsync(NetworkStream stream, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[MaxRequestBytes];
-        var totalRead = 0;
-        var headerEnd = -1;
-
-        while (totalRead < buffer.Length && headerEnd < 0)
-        {
-            var read = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-            {
-                return null;
-            }
-
-            totalRead += read;
-            headerEnd = FindHeaderEnd(buffer.AsSpan(0, totalRead));
-        }
-
-        if (headerEnd < 0)
-        {
-            return null;
-        }
-
-        var headerText = Encoding.ASCII.GetString(buffer, 0, headerEnd);
-        var headerLines = headerText.Split("\r\n", StringSplitOptions.None);
-        var requestLine = headerLines.FirstOrDefault()?.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-        if (requestLine is not { Length: >= 2 })
-        {
-            return null;
-        }
-
-        var contentLength = 0;
-        string? origin = null;
-        var originHeaderSeen = false;
-        foreach (var line in headerLines.Skip(1))
-        {
-            var separator = line.IndexOf(':', StringComparison.Ordinal);
-            if (separator <= 0)
-            {
-                continue;
-            }
-
-            if (line[..separator].Equals("Content-Length", StringComparison.OrdinalIgnoreCase) &&
-                int.TryParse(line[(separator + 1)..].Trim(), out var parsedLength))
-            {
-                contentLength = parsedLength;
-            }
-            else if (line[..separator].Equals("Origin", StringComparison.OrdinalIgnoreCase))
-            {
-                if (originHeaderSeen)
-                {
-                    return null;
-                }
-
-                originHeaderSeen = true;
-                origin = line[(separator + 1)..].Trim();
-            }
-        }
-
-        if (contentLength < 0 || headerEnd + 4 + contentLength > MaxRequestBytes)
-        {
-            return null;
-        }
-
-        while (totalRead < headerEnd + 4 + contentLength)
-        {
-            var read = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-            {
-                return null;
-            }
-
-            totalRead += read;
-        }
-
-        var bodyOffset = headerEnd + 4;
-        var body = Encoding.UTF8.GetString(buffer, bodyOffset, contentLength);
-        var path = requestLine[1].Split('?', 2)[0];
-        return new HttpRequest(requestLine[0], path, body, origin);
-    }
-
-    private static int FindHeaderEnd(ReadOnlySpan<byte> bytes)
-    {
-        for (var index = 0; index <= bytes.Length - 4; index++)
-        {
-            if (bytes[index] == '\r' &&
-                bytes[index + 1] == '\n' &&
-                bytes[index + 2] == '\r' &&
-                bytes[index + 3] == '\n')
-            {
-                return index;
-            }
-        }
-
-        return -1;
     }
 
     private static async Task WriteResponseAsync(
@@ -388,7 +320,25 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
 
     public static bool TryReadCaptureUrl(string body, out string url)
     {
+        // Preserve the existing helper's trimming behavior for callers that use it directly.
+        return TryReadCaptureUrlCore(body, out url, out _, trimUrl: true);
+    }
+
+    private static bool TryReadCaptureUrl(string body, out string url, out string error)
+    {
+        // Network requests are validated against the exact JSON value so whitespace-wrapped
+        // values cannot bypass the canonical URL requirement.
+        return TryReadCaptureUrlCore(body, out url, out error, trimUrl: false);
+    }
+
+    private static bool TryReadCaptureUrlCore(
+        string body,
+        out string url,
+        out string error,
+        bool trimUrl)
+    {
         url = "";
+        error = "Missing URL.";
         try
         {
             var capture = JsonSerializer.Deserialize<BrowserCaptureRequest>(body, JsonOptions);
@@ -397,13 +347,29 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
                 return false;
             }
 
-            url = capture.Url.Trim();
+            url = trimUrl ? capture.Url.Trim() : capture.Url;
             return true;
         }
         catch (JsonException)
         {
+            error = "Malformed JSON request.";
             return false;
         }
+    }
+
+    internal static bool TryValidateCaptureUrl(string url, out string error)
+    {
+        error = "The URL must be a canonical Twitch or Kick live-channel URL.";
+        if (string.IsNullOrWhiteSpace(url) ||
+            !StreamInputParser.TryParsePlatformUrl(url, out var target) ||
+            target is null ||
+            target.Kind != StreamTargetKind.Live ||
+            !string.Equals(target.Url, url, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     internal static bool IsAllowedRequestOrigin(string? origin)
@@ -440,5 +406,4 @@ public sealed class BrowserCaptureServer : IAsyncDisposable
 
     private sealed record BrowserCaptureRequest([property: JsonPropertyName("url")] string? Url);
 
-    private sealed record HttpRequest(string Method, string Path, string Body, string? Origin);
 }

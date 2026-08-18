@@ -8,18 +8,23 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.10240.0</SupportedOSPlatformVersion>
+    <!-- This direct override is intentional: the WPF toast dependency otherwise restores vulnerable 4.7.0. -->
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Override the vulnerable version inherited through the toast package in this project graph. -->
-    <PackageReference Include="System.Drawing.Common" Version="10.0.10" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.10" PrivateAssets="all" />
   </ItemGroup>
 
-  <Target Name="RunDependencyFreeTests" BeforeTargets="VSTest" DependsOnTargets="Build">
+  <PropertyGroup>
+    <!-- The test command's no-build option sets VSTestNoBuild; avoid rebuilding the WPF project so that
+         an explicit no-build run cannot race another build and corrupt generated BAML output. -->
+    <DependencyFreeTestBuildTarget Condition="'$(VSTestNoBuild)' != 'true'">Build</DependencyFreeTestBuildTarget>
+  </PropertyGroup>
+
+  <Target Name="RunDependencyFreeTests" BeforeTargets="VSTest" DependsOnTargets="$(DependencyFreeTestBuildTarget)">
     <PropertyGroup>
       <!-- Reuse the host that launched MSBuild. Merely finding a repo-local host does not
            mean that host contains the target framework's runtime. -->

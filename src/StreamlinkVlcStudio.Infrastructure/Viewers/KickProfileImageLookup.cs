@@ -1,7 +1,9 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Core.Json;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
@@ -34,8 +36,8 @@ internal static class KickProfileImageLookup
                 "Bearer",
                 KickOAuthService.NormalizeBearerToken(accessToken));
 
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 throw new HttpRequestException(
@@ -63,11 +65,4 @@ internal static class KickProfileImageLookup
         return profileImages;
     }
 
-    private static string NormalizeImageUrl(string url)
-    {
-        var trimmed = url.Trim();
-        return trimmed.StartsWith("//", StringComparison.Ordinal)
-            ? "https:" + trimmed
-            : trimmed;
-    }
 }

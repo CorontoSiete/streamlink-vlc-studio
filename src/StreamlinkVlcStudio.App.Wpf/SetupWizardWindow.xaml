@@ -13,7 +13,8 @@
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         Loaded="SetupWizardWindowLoaded"
-        Closing="SetupWizardWindowClosing">
+        Closing="SetupWizardWindowClosing"
+        Closed="SetupWizardWindowClosed">
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -144,7 +145,7 @@
                         <TextBox Text="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=PropertyChanged}"
                                  Margin="0,0,0,12"
                                  ToolTip="Paste the Client ID from your Twitch developer app." />
-                        <TextBlock Text="The app requests these scopes: chat:read, chat:edit, user:read:follows, channel:manage:predictions."
+                        <TextBlock Text="The app requests these scopes: chat:read, chat:edit, user:read:follows, channel:manage:predictions, clips:edit."
                                    TextWrapping="Wrap"
                                    Foreground="{DynamicResource StudioTextMutedBrush}"
                                    Margin="0,0,0,12" />

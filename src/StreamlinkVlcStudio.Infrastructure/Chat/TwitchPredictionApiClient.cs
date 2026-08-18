@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
@@ -38,15 +39,16 @@ public sealed class TwitchPredictionApiClient
             $"https://api.twitch.tv/helix/users?login={Uri.EscapeDataString(login.Trim())}",
             accessToken,
             clientId);
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw CreateApiException("Resolve Twitch channel", response, responseBody);
         }
 
         using var document = JsonDocument.Parse(responseBody);
-        if (!document.RootElement.TryGetProperty("data", out var data) ||
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -54,6 +56,11 @@ public sealed class TwitchPredictionApiClient
 
         foreach (var item in data.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             return new TwitchUserInfo(
                 TwitchPredictionJson.GetOptionalString(item, "id"),
                 TwitchPredictionJson.GetOptionalString(item, "login"),
@@ -75,8 +82,8 @@ public sealed class TwitchPredictionApiClient
             $"https://api.twitch.tv/helix/predictions?broadcaster_id={Uri.EscapeDataString(broadcasterId)}&first=1",
             accessToken,
             clientId);
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw CreateApiException("Get Twitch prediction", response, responseBody);
@@ -179,8 +186,8 @@ public sealed class TwitchPredictionApiClient
             clientId);
         request.Content = CreateJsonContent(payload);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
             return;
@@ -290,8 +297,8 @@ public sealed class TwitchPredictionApiClient
     {
         using var request = CreateRequest(method, url, accessToken, clientId);
         request.Content = CreateJsonContent(payload);
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw CreateApiException(operation, response, responseBody);
@@ -323,41 +330,11 @@ public sealed class TwitchPredictionApiClient
 
     private static InvalidOperationException CreateApiException(string operation, HttpResponseMessage response, string responseBody)
     {
-        var message = ExtractApiMessage(responseBody);
+        var message = ApiErrorMessage.Extract(responseBody).Trim();
         var detail = string.IsNullOrWhiteSpace(message)
             ? $"{(int)response.StatusCode} {response.ReasonPhrase}"
             : $"{(int)response.StatusCode} {response.ReasonPhrase}. {message}";
         return new InvalidOperationException($"{operation} failed: {detail}");
-    }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return "";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            var root = document.RootElement;
-            if (root.TryGetProperty("message", out var message) &&
-                message.ValueKind == JsonValueKind.String)
-            {
-                return message.GetString() ?? "";
-            }
-
-            if (root.TryGetProperty("error", out var error) &&
-                error.ValueKind == JsonValueKind.String)
-            {
-                return error.GetString() ?? "";
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return responseBody.Trim();
     }
 
     private static void RequireNonEmpty(string value, string name)

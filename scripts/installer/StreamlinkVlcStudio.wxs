@@ -8,10 +8,14 @@
     UpgradeCode="85EC9B91-312C-4B8E-A293-57D749B10C4B"
     Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Streamlink VLC Studio is already installed." />
+    <Launch
+      Condition="Installed OR VersionNT64 &gt;= 603"
+      Message="Streamlink VLC Studio requires 64-bit Windows 10 or later." />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="DISABLEADVTSHORTCUTS" Value="1" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)License.rtf" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Streamlink VLC Studio" />

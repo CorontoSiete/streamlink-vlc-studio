@@ -33,6 +33,7 @@ using StreamlinkVlcStudio.Infrastructure.Replay;
 using StreamlinkVlcStudio.Infrastructure.Settings;
 using StreamlinkVlcStudio.Infrastructure.Streamlink;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
+using StreamlinkVlcStudio.Infrastructure.Updates;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 using StreamlinkVlcStudio.Infrastructure.Viewers;
 using StreamlinkVlcStudio.App.Wpf.Themes;
@@ -50,12 +51,10 @@ public partial class MainWindow : Window
         Theatre
     }
 
-    private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
     private const int WmLeftButtonDoubleClick = 0x0203;
     private const int WmMouseMove = 0x0200;
     private const int WmRightButtonUp = 0x0205;
-    private const int WmMouseWheel = 0x020A;
     private const int WmGetMinMaxInfo = 0x0024;
     private const int WmAppTrayIcon = 0x8001;
     private const int SmCxDoubleClick = 36;
@@ -66,7 +65,6 @@ public partial class MainWindow : Window
     private const int VkControl = 0x11;
     private const int VkLeftControl = 0xA2;
     private const int VkRightControl = 0xA3;
-    private const uint GaRoot = 2;
     private const int TrayCommandOpen = 1001;
     private const int TrayCommandExit = 1002;
     private const uint TrayIconId = 1;
@@ -81,24 +79,18 @@ public partial class MainWindow : Window
     private const uint TpmReturnCommand = 0x00000100;
     private const int IdiApplication = 32512;
     private const double ChatBottomFollowTolerance = 2;
+    private static readonly HotkeySettings DefaultHotkeys = new();
     private const double ChatPixelsPerWheelNotch = 54;
     private const double TabPixelsPerWheelNotch = 96;
     private const double TitleBarChromeCaptionHeight = 36;
-    private const double HomeAutoScrollDeadZonePixels = 8;
-    private const double HomeAutoScrollPixelsPerSecondPerPixel = 18;
-    private const double HomeAutoScrollMaxPixelsPerSecond = 2600;
     private const double BrowseCategoryLoadMoreBottomThreshold = 120;
     private const double TabDetachOuterMargin = 10;
     private const double DetachedWindowDefaultWidth = 520;
     private const double DetachedWindowTitleBarHeight = 34;
-    private const double DetachedWindowBottomResizeGripHeight = 10;
     private const double DetachedWindowCascadeOffset = 36;
     private const double DetachedWindowCascadeDuplicateTolerance = 24;
     private const int DetachedWindowCascadeAttempts = 12;
     private static readonly Thickness WindowChromeResizeBorderThickness = new(6);
-    private const uint OverlayEventMagic = 0x564C4F56;
-    private const uint OverlayEventVersion = 1;
-    private const uint OverlayEventScroll = 1;
     private const int DefaultOverlayChatX = 24;
     private const int DefaultOverlayChatY = 24;
     private const int DefaultOverlayChatHeight = 292;
@@ -132,10 +124,13 @@ public partial class MainWindow : Window
     private readonly Dictionary<StreamTabViewModel, bool> fullscreenDockedChatPanelVisibility = [];
     private readonly Dictionary<StreamTabViewModel, VideoSurface> videoSurfaces = [];
     private readonly Dictionary<StreamTabViewModel, DetachedVideoWindow> detachedWindows = [];
+    private readonly IWindowHitTester windowHitTester;
     private MainViewModel? viewModel;
     private ISettingsService? settingsService;
     private IAppLogger? appLogger;
     private KickOfficialChatReplayStore? kickOfficialChatReplayStore;
+    private ReplayChatProvider? replayChatProvider;
+    private KickChatHistoryProvider? kickChatHistoryProvider;
     private BrowserCaptureServer? browserCaptureServer;
     private KickWebhookChatServer? kickWebhookChatServer;
     private KickEventSubscriptionService? kickEventSubscriptionService;
@@ -206,8 +201,14 @@ public partial class MainWindow : Window
     private ChatLayout? previousChatLayout;
 
     public MainWindow(bool setupRequested = false)
+        : this(setupRequested, NativeWindowHitTester.Instance)
+    {
+    }
+
+    internal MainWindow(bool setupRequested, IWindowHitTester windowHitTester)
     {
         this.setupRequested = setupRequested;
+        this.windowHitTester = windowHitTester ?? throw new ArgumentNullException(nameof(windowHitTester));
         InitializeComponent();
         ApplyWindowChromeHitTestState();
         ((INotifyCollectionChanged)DockedChatListBox.Items).CollectionChanged += DockedChatItemsOnCollectionChanged;
@@ -258,7 +259,7 @@ public partial class MainWindow : Window
         InitializeTrayIcon();
         InstallMouseWheelHook();
         StartVideoReorderPolling();
-        if (fullscreen)
+        if (ShouldMarkTaskbarFullscreen())
         {
             MarkTaskbarFullscreen();
         }
@@ -268,10 +269,10 @@ public partial class MainWindow : Window
     {
         if (msg == WmGetMinMaxInfo)
         {
-            ApplyMonitorMaxInfo(hwnd, lParam, useFullMonitor: fullscreen);
+            ApplyMonitorMaxInfo(hwnd, lParam, useFullMonitor: fullscreen && fullscreenMode != FullscreenMode.Theatre);
             handled = true;
         }
-        else if (msg == WmTaskbarCreated && fullscreen)
+        else if (msg == WmTaskbarCreated && ShouldMarkTaskbarFullscreen())
         {
             MarkTaskbarFullscreen(force: true);
         }
@@ -315,7 +316,7 @@ public partial class MainWindow : Window
     {
         ApplyWindowChromeHitTestState();
         UpdateMaximizeRestoreButton();
-        if (fullscreen)
+        if (ShouldMarkTaskbarFullscreen())
         {
             MarkTaskbarFullscreen();
         }
@@ -323,7 +324,7 @@ public partial class MainWindow : Window
 
     private void MainWindowActivated(object? sender, EventArgs e)
     {
-        if (fullscreen)
+        if (ShouldMarkTaskbarFullscreen())
         {
             MarkTaskbarFullscreen();
         }
@@ -331,39 +332,76 @@ public partial class MainWindow : Window
 
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (homeAutoScrollViewer is not null && e.Key == Key.Escape)
+        if (Keyboard.FocusedElement is HotkeyRecorderButton { IsCapturingInput: true })
+        {
+            return;
+        }
+
+        var hotkeys = viewModel?.Settings.Hotkeys ?? DefaultHotkeys;
+        var key = HotkeyGesture.GetEventKey(e);
+        var modifiers = Keyboard.Modifiers;
+        var dismissShortcutPressed = HotkeyBindingPolicy.Matches(
+            hotkeys,
+            AppHotkeyAction.DismissFullscreenOrAutoScroll,
+            key,
+            modifiers);
+        var dismissShortcutSuppressed = HotkeyBindingPolicy.ShouldSuppressForTextInput(
+            hotkeys,
+            AppHotkeyAction.DismissFullscreenOrAutoScroll,
+            Keyboard.FocusedElement);
+
+        if (homeAutoScrollViewer is not null && dismissShortcutPressed && !dismissShortcutSuppressed)
         {
             ClearHomeAutoScroll();
             e.Handled = true;
             return;
         }
 
-        if (fullscreen && e.Key == Key.Escape)
+        if (fullscreen && dismissShortcutPressed && !dismissShortcutSuppressed)
         {
             ExitFullscreenMode();
             e.Handled = true;
             return;
         }
 
-        if (ReplaySeekBarShortcutKeyPolicy.ShouldHandle(e.Key, Keyboard.Modifiers))
+        if (ReplaySeekBarShortcutKeyPolicy.ShouldHandle(key, modifiers, hotkeys) &&
+            !HotkeyBindingPolicy.ShouldSuppressForTextInput(
+                hotkeys,
+                AppHotkeyAction.ToggleReplaySeekBar,
+                Keyboard.FocusedElement))
         {
             TryExecuteReplaySeekBarShortcut(viewModel);
             e.Handled = true;
             return;
         }
 
-        if (!TabNavigationKeyPolicy.ShouldHandle(
-            e.Key,
-            Keyboard.Modifiers,
-            fullscreen,
-            fullscreenMode != FullscreenMode.None,
-            viewModel?.IsSettingsOpen == true,
-            Keyboard.FocusedElement))
+        var tabAction = HotkeyBindingPolicy.Matches(
+            hotkeys,
+            AppHotkeyAction.PreviousTab,
+            key,
+            modifiers)
+            ? AppHotkeyAction.PreviousTab
+            : HotkeyBindingPolicy.Matches(
+                hotkeys,
+                AppHotkeyAction.NextTab,
+                key,
+                modifiers)
+                ? AppHotkeyAction.NextTab
+                : (AppHotkeyAction?)null;
+        if (tabAction is null ||
+            HotkeyBindingPolicy.ShouldSuppressForTextInput(
+                hotkeys,
+                tabAction.Value,
+                Keyboard.FocusedElement) ||
+            !TabNavigationKeyPolicy.CanNavigate(
+                fullscreen,
+                fullscreenMode != FullscreenMode.None,
+                viewModel?.IsSettingsOpen == true))
         {
             return;
         }
 
-        var direction = TabNavigationKeyPolicy.DirectionFor(e.Key);
+        var direction = tabAction == AppHotkeyAction.PreviousTab ? -1 : 1;
         if (viewModel?.SelectAdjacentTab(direction) == true)
         {
             if (fullscreen)
@@ -385,6 +423,36 @@ public partial class MainWindow : Window
 
         command.Execute(null);
         return true;
+    }
+
+    private void HotkeyRecorder_GestureChanging(object? sender, HotkeyGestureChangingEventArgs e)
+    {
+        if (sender is not HotkeyRecorderButton { Tag: string actionName } recorder ||
+            !Enum.TryParse(actionName, ignoreCase: false, out AppHotkeyAction action) ||
+            !Enum.IsDefined(action))
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        var currentViewModel = viewModel ?? recorder.DataContext as MainViewModel;
+        if (currentViewModel is null)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        _ = HotkeyBindingPolicy.SwapConflictingBinding(
+            currentViewModel.Settings.Hotkeys,
+            action,
+            e.PreviousGesture,
+            e.NewGesture);
+    }
+
+    private void ResetHotkeysButton_Click(object sender, RoutedEventArgs e)
+    {
+        var currentViewModel = viewModel ?? (sender as FrameworkElement)?.DataContext as MainViewModel;
+        currentViewModel?.Settings.Hotkeys.ResetToDefaults();
     }
 
     private void MainWindowPreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -704,27 +772,10 @@ public partial class MainWindow : Window
     }
 
     internal static bool ShouldContinueHomeAutoScroll(MouseButtonState middleButtonState)
-    {
-        return middleButtonState == MouseButtonState.Pressed;
-    }
+        => HomeAutoScrollController.ShouldContinue(middleButtonState);
 
     internal static double GetHomeAutoScrollVelocity(double anchorY, double currentY)
-    {
-        if (!double.IsFinite(anchorY) || !double.IsFinite(currentY))
-        {
-            return 0;
-        }
-
-        var distance = currentY - anchorY;
-        var magnitude = Math.Abs(distance);
-        if (magnitude <= HomeAutoScrollDeadZonePixels)
-        {
-            return 0;
-        }
-
-        var velocity = (magnitude - HomeAutoScrollDeadZonePixels) * HomeAutoScrollPixelsPerSecondPerPixel;
-        return Math.Sign(distance) * Math.Min(velocity, HomeAutoScrollMaxPixelsPerSecond);
-    }
+        => HomeAutoScrollController.GetVelocity(anchorY, currentY);
 
     internal static double GetHomeAutoScrollVerticalOffset(
         double currentVerticalOffset,
@@ -732,42 +783,18 @@ public partial class MainWindow : Window
         double currentY,
         double scrollableHeight,
         double elapsedSeconds)
-    {
-        var maxOffset = double.IsFinite(scrollableHeight)
-            ? Math.Max(0, scrollableHeight)
-            : 0;
-
-        if (!double.IsFinite(currentVerticalOffset) || !double.IsFinite(elapsedSeconds) || elapsedSeconds <= 0)
-        {
-            return double.IsFinite(currentVerticalOffset)
-                ? Math.Clamp(currentVerticalOffset, 0, maxOffset)
-                : 0;
-        }
-
-        var targetOffset = currentVerticalOffset + GetHomeAutoScrollVelocity(anchorY, currentY) * elapsedSeconds;
-        return Math.Clamp(targetOffset, 0, maxOffset);
-    }
+        => HomeAutoScrollController.GetVerticalOffset(
+            currentVerticalOffset,
+            anchorY,
+            currentY,
+            scrollableHeight,
+            elapsedSeconds);
 
     internal static bool IsHomeContentScrollNearBottom(
         double verticalOffset,
         double scrollableHeight,
         double bottomThreshold)
-    {
-        if (!double.IsFinite(verticalOffset) ||
-            !double.IsFinite(scrollableHeight) ||
-            !double.IsFinite(bottomThreshold) ||
-            bottomThreshold < 0)
-        {
-            return false;
-        }
-
-        if (scrollableHeight <= 0)
-        {
-            return true;
-        }
-
-        return Math.Max(0, verticalOffset) >= Math.Max(0, scrollableHeight - bottomThreshold);
-    }
+        => HomeAutoScrollController.IsNearBottom(verticalOffset, scrollableHeight, bottomThreshold);
 
     internal static bool TryHandleHomeStreamOpenAndStayOnHomeCommand(DependencyObject? source)
     {
@@ -829,8 +856,14 @@ public partial class MainWindow : Window
 
     private async Task InitializeMainWindowAsync(IAppLogger logger)
     {
-        settingsService = new JsonSettingsService();
-        var settings = await settingsService.LoadAsync();
+        var jsonSettingsService = new JsonSettingsService();
+        settingsService = jsonSettingsService;
+        var settings = await jsonSettingsService.LoadAsync();
+        var settingsLoadWarning = jsonSettingsService.LastLoadWarning;
+        if (!string.IsNullOrWhiteSpace(settingsLoadWarning))
+        {
+            logger.Write(AppLogLevel.Warning, "Settings", settingsLoadWarning);
+        }
         if (shutdownStarted)
         {
             return;
@@ -846,47 +879,61 @@ public partial class MainWindow : Window
         var chatFactory = new ChatClientFactory(settings, logger);
         var viewerCountService = new ViewerCountService(logger);
         var replayResolver = new ReplayResolver(logger, streamlinkService);
-        var kickOfficialChatReplayStore = new KickOfficialChatReplayStore();
+        var kickOfficialChatReplayStore = new KickOfficialChatReplayStore(logger);
         this.kickOfficialChatReplayStore = kickOfficialChatReplayStore;
         var replayChatProvider = new ReplayChatProvider(kickOfficialChatReplayStore, logger);
+        this.replayChatProvider = replayChatProvider;
         var kickChatHistoryProvider = new KickChatHistoryProvider(logger);
+        this.kickChatHistoryProvider = kickChatHistoryProvider;
         var followedStreamsService = new FollowedStreamsService(logger);
         var streamMetadataService = new StreamMetadataService(logger);
         var streamSearchService = new StreamSearchService(logger, streamlinkService);
         var twitchVodService = new TwitchVodService(logger);
         var twitchSubOnlyVodResolver = new TwitchSubOnlyVodResolver(logger);
+        var twitchClipService = new TwitchClipService();
         var kickVodService = new KickVodService(logger);
         kickEventSubscriptionService = new KickEventSubscriptionService(
             logger,
             settingsPersister: (_, cancellationToken) => settingsService.SaveAsync(settings, cancellationToken));
         var browseService = new BrowseService(logger);
         var liveNotificationService = new ToastLiveNotificationService(logger);
+        var appUpdateService = new GitHubReleaseAppUpdateService(logger);
         this.liveNotificationService = liveNotificationService;
         liveNotificationService.Activated += OnLiveNotificationActivated;
 
-        viewModel = new MainViewModel(
-            settings,
-            settingsService,
-            streamlinkService,
-            playbackFactory,
-            chatFactory,
-            logger,
-            DispatchToUi,
-            viewerCountService,
-            followedStreamsService,
-            streamMetadataService,
-            replayResolver,
-            replayChatProvider,
-            twitchVodService: twitchVodService,
-            browseService: browseService,
-            kickChatHistoryProvider: kickChatHistoryProvider,
-            streamSearchService: streamSearchService,
-            kickVodService: kickVodService,
-            kickEventSubscriptionService: kickEventSubscriptionService,
-            liveNotificationService: liveNotificationService,
-            twitchSubOnlyVodResolver: twitchSubOnlyVodResolver);
+        viewModel = new MainViewModel(new MainViewModelDependencies
+        {
+            Settings = settings,
+            SettingsService = settingsService,
+            StreamlinkService = streamlinkService,
+            PlaybackFactory = playbackFactory,
+            ChatFactory = chatFactory,
+            Logger = logger,
+            Dispatch = DispatchToUi,
+            ViewerCountService = viewerCountService,
+            FollowedStreamsService = followedStreamsService,
+            StreamMetadataService = streamMetadataService,
+            ReplayResolver = replayResolver,
+            ReplayChatProvider = replayChatProvider,
+            TwitchVodService = twitchVodService,
+            BrowseService = browseService,
+            KickChatHistoryProvider = kickChatHistoryProvider,
+            StreamSearchService = streamSearchService,
+            KickVodService = kickVodService,
+            KickEventSubscriptionService = kickEventSubscriptionService,
+            LiveNotificationService = liveNotificationService,
+            TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver,
+            TwitchClipService = twitchClipService,
+            AppUpdateService = appUpdateService,
+            RequestShutdown = RequestApplicationExit,
+            TryDispatch = TryDispatchToUi
+        });
 
         viewModel.Initialize();
+        if (!string.IsNullOrWhiteSpace(settingsLoadWarning))
+        {
+            viewModel.SetStartupWarning(settingsLoadWarning);
+        }
         viewModel.Tabs.CollectionChanged += ViewModelTabsCollectionChanged;
         settings.Chat.PropertyChanged += ChatSettingsOnPropertyChanged;
         DataContext = viewModel;
@@ -1068,8 +1115,7 @@ public partial class MainWindow : Window
                 viewModel.Tabs.CollectionChanged -= ViewModelTabsCollectionChanged;
 
                 await viewModel.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
-                kickEventSubscriptionService?.Dispose();
-                kickEventSubscriptionService = null;
+                await DisposeKickEventSubscriptionServiceAsync().WaitAsync(ShutdownTimeout);
                 if (settingsService is not null)
                 {
                     await settingsService.SaveAsync(viewModel.Settings).WaitAsync(ShutdownTimeout);
@@ -1083,6 +1129,8 @@ public partial class MainWindow : Window
         }
         finally
         {
+            DisposeReplayProviders();
+            await DisposeAppLoggerAsync();
             closeConfirmed = true;
             // Null-conditional: test hosts close this window on a bare STA dispatcher
             // without a WPF Application instance.
@@ -1108,8 +1156,12 @@ public partial class MainWindow : Window
         ClearHomeAutoScroll();
         UninstallMouseWheelHook();
         StopVideoReorderPolling();
-        kickEventSubscriptionService?.Dispose();
+        var subscriptionService = kickEventSubscriptionService;
         kickEventSubscriptionService = null;
+        if (subscriptionService is not null)
+        {
+            _ = subscriptionService.DisposeAsync();
+        }
         if (liveNotificationService is not null)
         {
             liveNotificationService.Activated -= OnLiveNotificationActivated;
@@ -1117,7 +1169,59 @@ public partial class MainWindow : Window
             liveNotificationService = null;
         }
 
+        DisposeReplayProviders();
+
         DisposeTrayIcon();
+    }
+
+    private async Task DisposeAppLoggerAsync()
+    {
+        var logger = appLogger;
+        appLogger = null;
+        try
+        {
+            if (logger is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
+            }
+            else if (logger is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+        catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
+        {
+            // Shutdown must remain bounded even if the filesystem is no longer writable.
+        }
+    }
+
+    private async Task DisposeKickEventSubscriptionServiceAsync()
+    {
+        var service = kickEventSubscriptionService;
+        kickEventSubscriptionService = null;
+        if (service is not null)
+        {
+            await service.DisposeAsync();
+        }
+    }
+
+    private void DisposeReplayProviders()
+    {
+        replayChatProvider = null;
+
+        var historyProvider = kickChatHistoryProvider;
+        kickChatHistoryProvider = null;
+        if (historyProvider is not null)
+        {
+            try
+            {
+                historyProvider.Dispose();
+            }
+            catch (Exception ex)
+            {
+                appLogger?.Write(AppLogLevel.Warning, "Shutdown", "Failed to dispose Kick chat history provider.", ex);
+            }
+        }
     }
 
     private void OnLiveNotificationActivated(NotificationActivation activation)
@@ -1150,20 +1254,29 @@ public partial class MainWindow : Window
 
     private void DispatchToUi(Action action)
     {
+        _ = TryDispatchToUi(action);
+    }
+
+    private bool TryDispatchToUi(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
         if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
         {
-            return;
+            return false;
         }
 
         try
         {
             _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, action);
+            return true;
         }
         catch (InvalidOperationException)
         {
+            return false;
         }
         catch (TaskCanceledException)
         {
+            return false;
         }
     }
 
@@ -2394,7 +2507,7 @@ public partial class MainWindow : Window
     {
         return viewModel?.Settings.StreamPictureInPictureTopBarVisibility.TryGetValue(
             tab.Target.StateKey,
-            out var showTopBar) != true || showTopBar;
+            out var showTopBar) == true && showTopBar;
     }
 
     private void DetachedWindowOnTopBarVisibilityChanged(StreamTabViewModel tab, bool showTopBar)
@@ -2431,19 +2544,28 @@ public partial class MainWindow : Window
         var aspectRatio = double.IsFinite(window.ContentAspectRatio) && window.ContentAspectRatio > 0.2
             ? window.ContentAspectRatio
             : 16.0 / 9.0;
+        var titleBarHeight = window.IsTopBarShown ? DetachedWindowTitleBarHeight : 0;
         var width = Math.Min(DetachedWindowDefaultWidth, Math.Max(window.MinWidth, workingArea.Width));
         var height = Math.Max(
             window.MinHeight,
-            DetachedWindowTitleBarHeight + DetachedWindowBottomResizeGripHeight + width / aspectRatio);
+            titleBarHeight + width / aspectRatio);
         if (height > workingArea.Height)
         {
             height = workingArea.Height;
             width = Math.Max(
                 window.MinWidth,
-                (height - DetachedWindowTitleBarHeight - DetachedWindowBottomResizeGripHeight) * aspectRatio);
+                (height - titleBarHeight) * aspectRatio);
         }
 
-        return new Size(width, height);
+        return PictureInPictureWindowSizing.FitWindowSize(
+            new Size(width, height),
+            aspectRatio,
+            leftInset: 0,
+            topInset: titleBarHeight,
+            rightInset: 0,
+            bottomInset: 0,
+            window.MinWidth,
+            window.MinHeight);
     }
 
     private static bool TryGetSavedDetachedWindowSize(
@@ -2461,9 +2583,22 @@ public partial class MainWindow : Window
 
         var maxWidth = Math.Max(window.MinWidth, workingArea.Width);
         var maxHeight = Math.Max(window.MinHeight, workingArea.Height);
-        size = new Size(
+        var requestedSize = new Size(
             ClampWindowCoordinate(savedLocation.Width, window.MinWidth, maxWidth),
             ClampWindowCoordinate(savedLocation.Height, window.MinHeight, maxHeight));
+        var aspectRatio = double.IsFinite(window.ContentAspectRatio) && window.ContentAspectRatio > 0.2
+            ? window.ContentAspectRatio
+            : 16.0 / 9.0;
+        var titleBarHeight = window.IsTopBarShown ? DetachedWindowTitleBarHeight : 0;
+        size = PictureInPictureWindowSizing.FitWindowSize(
+            requestedSize,
+            aspectRatio,
+            leftInset: 0,
+            topInset: titleBarHeight,
+            rightInset: 0,
+            bottomInset: 0,
+            window.MinWidth,
+            window.MinHeight);
         return true;
     }
 
@@ -4054,11 +4189,9 @@ public partial class MainWindow : Window
             using var pipe = new NamedPipeClientStream(".", $"{tab.NativeOverlayPipeName}_events", PipeDirection.Out);
             pipe.Connect(10);
 
-            Span<byte> buffer = stackalloc byte[16];
-            BinaryPrimitives.WriteUInt32LittleEndian(buffer[..4], OverlayEventMagic);
-            BinaryPrimitives.WriteUInt32LittleEndian(buffer[4..8], OverlayEventVersion);
-            BinaryPrimitives.WriteUInt32LittleEndian(buffer[8..12], OverlayEventScroll);
-            BinaryPrimitives.WriteInt32LittleEndian(buffer[12..16], notches);
+            var buffer = NativeOverlayProtocolCodec.BuildEventMessage(
+                NativeOverlayProtocolCodec.ScrollEventType,
+                notches);
             pipe.Write(buffer);
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or UnauthorizedAccessException)
@@ -4352,7 +4485,6 @@ public partial class MainWindow : Window
 
         TitleBar.Visibility = Visibility.Collapsed;
         TopControlsBar.Visibility = Visibility.Collapsed;
-        VideoStatusOverlay.Visibility = Visibility.Collapsed;
         TitleRow.Height = new GridLength(0);
         TopControlsRow.Height = new GridLength(0);
         WindowStyle = WindowStyle.None;
@@ -4361,14 +4493,13 @@ public partial class MainWindow : Window
         ApplyWindowChromeHitTestState();
         Topmost = false;
         WindowState = WindowState.Normal;
-        ApplyWindowBounds(GetCurrentMonitorBounds(useWorkingArea: false));
-        MarkTaskbarFullscreen();
         Activate();
     }
 
     private void ApplyFullscreenMode(FullscreenMode mode)
     {
         fullscreenMode = mode;
+        ApplyFullscreenWindowBounds(mode);
         if (viewModel is not null)
         {
             var isVideoFullscreen = mode is FullscreenMode.StreamOnly or FullscreenMode.MultiView;
@@ -4409,6 +4540,17 @@ public partial class MainWindow : Window
         QueueDockedChatScrollToBottom(force: true);
     }
 
+    private void ApplyFullscreenWindowBounds(FullscreenMode mode)
+    {
+        if (!fullscreen)
+        {
+            return;
+        }
+
+        ApplyWindowBounds(GetCurrentMonitorBounds(useWorkingArea: mode == FullscreenMode.Theatre));
+        MarkTaskbarFullscreen();
+    }
+
     private void ExitFullscreenMode()
     {
         ClearTaskbarFullscreen();
@@ -4426,7 +4568,6 @@ public partial class MainWindow : Window
         TopControlsRow.Height = previousTopControlsRowHeight;
         TitleBar.Visibility = Visibility.Visible;
         TopControlsBar.Visibility = Visibility.Visible;
-        VideoStatusOverlay.ClearValue(UIElement.VisibilityProperty);
         WindowStyle = previousWindowStyle;
         ResizeMode = previousResizeMode;
         fullscreenMode = FullscreenMode.None;
@@ -4480,6 +4621,11 @@ public partial class MainWindow : Window
         {
             taskbarFullscreenWindowHandle = handle;
         }
+    }
+
+    private bool ShouldMarkTaskbarFullscreen()
+    {
+        return fullscreen;
     }
 
     private void ClearTaskbarFullscreen()
@@ -4635,15 +4781,12 @@ public partial class MainWindow : Window
             return false;
         }
 
-        var pointWindow = WindowFromPoint(screenPoint);
-        if (pointWindow == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        return pointWindow == windowHandle ||
-            IsChild(windowHandle, pointWindow) ||
-            GetAncestor(pointWindow, GaRoot) == windowHandle;
+        return WindowHitTestPolicy.IsPointInWindow(
+            windowHitTester,
+            windowHandle,
+            screenPoint.X,
+            screenPoint.Y,
+            includeOwnedPopups: false);
     }
 
     private void CaptureFullscreenChatState()
@@ -5126,16 +5269,6 @@ public partial class MainWindow : Window
 
     [LibraryImport("user32", EntryPoint = "RegisterWindowMessageW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int RegisterWindowMessage(string message);
-
-    [LibraryImport("user32")]
-    private static partial IntPtr WindowFromPoint(NativePoint point);
-
-    [LibraryImport("user32")]
-    private static partial IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
-
-    [LibraryImport("user32")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool IsChild(IntPtr hWndParent, IntPtr hWnd);
 
     [LibraryImport("user32")]
     private static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);

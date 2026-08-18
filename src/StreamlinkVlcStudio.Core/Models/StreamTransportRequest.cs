@@ -5,4 +5,5 @@ public sealed record StreamTransportRequest(
     string Quality,
     string StreamlinkPath,
     bool LowLatency,
-    IReadOnlyList<string> CustomArguments);
+    IReadOnlyList<string> CustomArguments,
+    bool IsMultiStream = false);

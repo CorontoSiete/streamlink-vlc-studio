@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "payload": {
+    "executable": "StreamlinkVlcStudio.exe",
+    "requiredFiles": [
+      "StreamlinkVlcStudio.exe",
+      "Uninstall.exe",
+      "README.md",
+      "install.txt",
+      "THIRD-PARTY-NOTICES.md",
+      "install.ps1",
+      ".streamlink-vlc-studio-owner.json",
+      ".streamlink-vlc-studio-files.json",
+      "release-contract.json",
+      "native-overlay-provenance.json",
+      "dependencies/windows-installers.json",
+      "lib/common.ps1",
+      "lib/install-state.ps1",
+      "lib/dependency-manifest.ps1",
+      "lib/release-contract.ps1",
+      "browser-extension/manifest.json",
+      "browser-extension/background.js",
+      "browser-extension/platform-routes.generated.js",
+      "browser-extension/content-core.js",
+      "browser-extension/content.js",
+      "browser-extension/README.md",
+      "vlc-overlay/build/libmyoverlay_plugin.dll",
+      "vlc-overlay/build/vlc_chat_overlay.exe"
+    ],
+    "browserExtensionRuntime": [
+      "manifest.json",
+      "background.js",
+      "platform-routes.generated.js",
+      "content-core.js",
+      "content.js"
+    ]
+  },
+  "outputs": {
+    "bootstrapper": "artifacts/StreamlinkVlcStudio-Setup.exe",
+    "msi": "artifacts/StreamlinkVlcStudio-Setup.msi",
+    "releaseZip": "artifacts/package/StreamlinkVlcStudio-release.zip",
+    "sbom": "artifacts/package/StreamlinkVlcStudio.spdx.json",
+    "metadata": "artifacts/RELEASE-METADATA.json",
+    "checksums": "artifacts/SHA256SUMS.txt"
+  },
+  "releaseSet": [
+    { "name": "StreamlinkVlcStudio-Setup.exe", "output": "bootstrapper", "checksummed": true },
+    { "name": "StreamlinkVlcStudio-Setup.msi", "output": "msi", "checksummed": true },
+    { "name": "StreamlinkVlcStudio-release.zip", "output": "releaseZip", "checksummed": true },
+    { "name": "StreamlinkVlcStudio.spdx.json", "output": "sbom", "checksummed": true },
+    { "name": "RELEASE-METADATA.json", "output": "metadata", "checksummed": true },
+    { "name": "SHA256SUMS.txt", "output": "checksums", "checksummed": false }
+  ]
+}

@@ -1,20 +1,23 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
-public sealed class KickEventSubscriptionService : IKickEventSubscriptionService, IDisposable
+public sealed class KickEventSubscriptionService : IKickEventSubscriptionService, IAsyncDisposable
 {
     private const string SubscriptionsEndpoint = "https://api.kick.com/public/v1/events/subscriptions";
-    private const string ChatMessageSentEventName = "chat.message.sent";
+    private const string ChatMessageSentEventName = KickEventNameValidator.ChatMessageSent;
     private const int ChatMessageSentEventVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -27,6 +30,12 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
     private readonly Func<string, ChatSettings, IAppLogger?, CancellationToken, Task<long?>> broadcasterUserIdResolver;
     private readonly Func<ChatSettings, CancellationToken, Task>? settingsPersister;
     private readonly bool ownsHttpClient;
+    private readonly ConcurrentDictionary<string, Lazy<Task<KickEventSubscriptionEnsureResult>>> inFlight =
+        new(StringComparer.Ordinal);
+    private readonly object lifetimeGate = new();
+    private readonly CancellationTokenSource lifetimeCancellation = new();
+    private Task? disposalTask;
+    private int disposed;
 
     public KickEventSubscriptionService(
         IAppLogger logger,
@@ -36,7 +45,7 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
         Func<ChatSettings, CancellationToken, Task>? settingsPersister = null)
     {
         this.logger = logger;
-        this.httpClient = httpClient ?? new HttpClient();
+        this.httpClient = httpClient ?? HttpClientFactory.CreateDefault();
         this.appAccessTokenProvider = appAccessTokenProvider ?? KickOAuthService.TryGetAppAccessTokenAsync;
         this.broadcasterUserIdResolver = broadcasterUserIdResolver ?? KickOAuthService.TryResolveBroadcasterUserIdAsync;
         this.settingsPersister = settingsPersister;
@@ -47,6 +56,42 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
         StreamTarget target,
         ChatSettings settings,
         CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string key;
+        Lazy<Task<KickEventSubscriptionEnsureResult>> lazy;
+        Task<KickEventSubscriptionEnsureResult> operation;
+        lock (lifetimeGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+            key = CreateSingleFlightKey(target, settings);
+            lazy = inFlight.GetOrAdd(
+                key,
+                _ => new Lazy<Task<KickEventSubscriptionEnsureResult>>(
+                    () => EnsureChatMessageSentSubscriptionCoreAsync(
+                        target,
+                        settings,
+                        lifetimeCancellation.Token),
+                    LazyThreadSafetyMode.ExecutionAndPublication));
+            operation = lazy.Value;
+        }
+        _ = operation.ContinueWith(
+            completed =>
+            {
+                _ = completed.Exception;
+                ((ICollection<KeyValuePair<string, Lazy<Task<KickEventSubscriptionEnsureResult>>>>)inFlight)
+                    .Remove(new KeyValuePair<string, Lazy<Task<KickEventSubscriptionEnsureResult>>>(key, lazy));
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<KickEventSubscriptionEnsureResult> EnsureChatMessageSentSubscriptionCoreAsync(
+        StreamTarget target,
+        ChatSettings settings,
+        CancellationToken cancellationToken)
     {
         if (target.Platform != PlatformKind.Kick)
         {
@@ -116,12 +161,61 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
         return created;
     }
 
-    public void Dispose()
+    public ValueTask DisposeAsync()
     {
-        if (ownsHttpClient)
+        lock (lifetimeGate)
         {
-            httpClient.Dispose();
+            disposalTask ??= DisposeCoreAsync();
+            return new ValueTask(disposalTask);
         }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        Task[] operations;
+        lock (lifetimeGate)
+        {
+            Interlocked.Exchange(ref disposed, 1);
+            lifetimeCancellation.Cancel();
+            operations = inFlight.Values
+                .Where(lazy => lazy.IsValueCreated)
+                .Select(lazy => (Task)lazy.Value)
+                .ToArray();
+        }
+
+        try
+        {
+            await Task.WhenAll(operations).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Every admitted operation has observed the shared shutdown cancellation. Disposal
+            // drains those tasks but does not turn their expected cancellation/failure into a
+            // second shutdown failure.
+        }
+        finally
+        {
+            inFlight.Clear();
+            if (ownsHttpClient)
+            {
+                httpClient.Dispose();
+            }
+
+            lifetimeCancellation.Dispose();
+        }
+    }
+
+    private static string CreateSingleFlightKey(StreamTarget target, ChatSettings settings)
+    {
+        var channel = target.Channel.Trim().ToLowerInvariant();
+        settings.TryGetKickBroadcasterUserId(target.Channel, out var configuredBroadcasterId);
+        return OAuthTokenHelpers.CreateCredentialFingerprint(
+            ((int)target.Platform).ToString(CultureInfo.InvariantCulture),
+            channel,
+            target.BroadcasterId.Trim(),
+            configuredBroadcasterId?.Trim() ?? "",
+            settings.KickClientId.Trim(),
+            settings.KickClientSecret.Trim());
     }
 
     private async Task<ExistingSubscriptionResult> TryGetExistingSubscriptionAsync(
@@ -132,12 +226,12 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
         var url = $"{SubscriptionsEndpoint}?broadcaster_user_id={broadcasterUserId.ToString(CultureInfo.InvariantCulture)}";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", KickOAuthService.NormalizeBearerToken(appToken));
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             return ExistingSubscriptionResult.Unavailable(
-                $"Kick event subscription lookup failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ExtractApiMessage(responseBody)}");
+                $"Kick event subscription lookup failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
         }
 
         try
@@ -195,13 +289,13 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", KickOAuthService.NormalizeBearerToken(appToken));
         request.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             return new KickEventSubscriptionEnsureResult(
                 KickEventSubscriptionEnsureStatus.Unavailable,
-                $"Kick event subscription create failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ExtractApiMessage(responseBody)}",
+                $"Kick event subscription create failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}",
                 BroadcasterUserId: broadcasterUserId);
         }
 
@@ -259,13 +353,14 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
     private static long? TryReadBroadcasterUserId(string value)
     {
         return long.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            && parsed > 0
             ? parsed
             : null;
     }
 
     private static long? TryReadConfiguredBroadcasterUserId(ChatSettings settings, string channel)
     {
-        return settings.KickBroadcasterUserIds.TryGetValue(channel, out var configured)
+        return settings.TryGetKickBroadcasterUserId(channel, out var configured)
             ? TryReadBroadcasterUserId(configured)
             : null;
     }
@@ -277,10 +372,10 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
         CancellationToken cancellationToken)
     {
         var normalizedBroadcasterUserId = broadcasterUserId.ToString(CultureInfo.InvariantCulture);
-        var alreadyConfigured = settings.KickBroadcasterUserIds.TryGetValue(channel, out var configured) &&
+        var alreadyConfigured = settings.TryGetKickBroadcasterUserId(channel, out var configured) &&
             string.Equals(configured?.Trim(), normalizedBroadcasterUserId, StringComparison.Ordinal);
 
-        settings.KickBroadcasterUserIds[channel] = normalizedBroadcasterUserId;
+        settings.SetKickBroadcasterUserId(channel, normalizedBroadcasterUserId);
         if (alreadyConfigured || settingsPersister is null)
         {
             return;
@@ -298,36 +393,6 @@ public sealed class KickEventSubscriptionService : IKickEventSubscriptionService
                 $"Persisting Kick broadcaster user ID for {channel} failed.",
                 ex);
         }
-    }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return "";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            var root = document.RootElement;
-            var message = GetOptionalString(root, "message");
-            if (!string.IsNullOrWhiteSpace(message))
-            {
-                return message;
-            }
-
-            var error = GetOptionalString(root, "error");
-            if (!string.IsNullOrWhiteSpace(error))
-            {
-                return error;
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return responseBody.Length <= 240 ? responseBody : responseBody[..240];
     }
 
     private sealed record ExistingSubscriptionResult(bool IsAvailable, string SubscriptionId, string Message)

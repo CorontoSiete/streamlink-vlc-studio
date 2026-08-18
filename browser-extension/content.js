@@ -2,10 +2,12 @@ const {
   channelFromUrl,
   captureStatusFromResponse,
   findChannelPointClaimElements,
+  isTwitchChannelRoute,
   isTwitchHost
 } = globalThis.StreamlinkVlcStudioContentCore;
 
 const CHANNEL_POINT_SCAN_INTERVAL_MS = 15000;
+const CHANNEL_POINT_ROUTE_CHECK_INTERVAL_MS = 1000;
 const CHANNEL_POINT_MUTATION_DELAY_MS = 250;
 const CHANNEL_POINT_CLICK_COOLDOWN_MS = 1500;
 const CAPTURE_STATUS_ELEMENT_ID = "streamlink-vlc-studio-capture-status";
@@ -144,7 +146,13 @@ function sendStreamCapture(streamUrl) {
 document.addEventListener(
   "click",
   (event) => {
-    if (event.defaultPrevented || event.button !== 0) {
+    if (!event.isTrusted ||
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.altKey) {
       return;
     }
 
@@ -167,15 +175,21 @@ document.addEventListener(
 
 const twitchChannelPointAutoClaim = (() => {
   let observer = null;
-  let intervalId = 0;
+  let fallbackScanIntervalId = 0;
+  let routeCheckIntervalId = 0;
   let scheduledScanId = 0;
   let lastClickAt = 0;
+  let started = false;
+  let active = false;
+  let awaitingDocumentElement = false;
+  const pendingScanRoots = new Set();
 
   function canRunOnCurrentPage() {
-    return isTwitchHost(window.location.hostname);
+    return isTwitchHost(window.location.hostname)
+      && isTwitchChannelRoute(window.location.href);
   }
 
-  function claimVisibleBonus() {
+  function claimVisibleBonus(root = document) {
     if (!canRunOnCurrentPage()) {
       return false;
     }
@@ -185,7 +199,7 @@ const twitchChannelPointAutoClaim = (() => {
       return false;
     }
 
-    const claimButtons = findChannelPointClaimElements(document);
+    const claimButtons = findChannelPointClaimElements(root);
     if (claimButtons.length === 0) {
       return false;
     }
@@ -195,15 +209,70 @@ const twitchChannelPointAutoClaim = (() => {
     return true;
   }
 
-  function scheduleScan(delayMs = CHANNEL_POINT_MUTATION_DELAY_MS) {
+  function isScannableRoot(root) {
+    return root === document
+      || (root && typeof root.querySelectorAll === "function");
+  }
+
+  function enqueueScanRoot(root) {
+    if (isScannableRoot(root)) {
+      pendingScanRoots.add(root);
+    } else if (isScannableRoot(root?.parentElement)) {
+      pendingScanRoots.add(root.parentElement);
+    }
+  }
+
+  function runScheduledScan() {
+    scheduledScanId = 0;
+    if (!active || !canRunOnCurrentPage()) {
+      refreshRoute();
+      return;
+    }
+
+    const roots = [...pendingScanRoots];
+    pendingScanRoots.clear();
+    for (const root of roots) {
+      if (claimVisibleBonus(root)) {
+        break;
+      }
+    }
+  }
+
+  function scheduleScan(root, delayMs = CHANNEL_POINT_MUTATION_DELAY_MS) {
+    if (root !== undefined) {
+      enqueueScanRoot(root);
+    }
+
+    if (pendingScanRoots.size === 0) {
+      return;
+    }
+
     if (scheduledScanId !== 0) {
       return;
     }
 
-    scheduledScanId = window.setTimeout(() => {
-      scheduledScanId = 0;
-      claimVisibleBonus();
-    }, delayMs);
+    scheduledScanId = window.setTimeout(runScheduledScan, delayMs);
+  }
+
+  function handleMutations(mutations) {
+    refreshRoute();
+    if (!active) {
+      return;
+    }
+
+    for (const mutation of mutations) {
+      if (mutation.type === "childList") {
+        for (const node of mutation.addedNodes || []) {
+          enqueueScanRoot(node);
+        }
+      } else if (mutation.type === "attributes") {
+        enqueueScanRoot(mutation.target);
+      }
+    }
+
+    if (pendingScanRoots.size > 0) {
+      scheduleScan(undefined, CHANNEL_POINT_MUTATION_DELAY_MS);
+    }
   }
 
   function startObserver() {
@@ -211,7 +280,7 @@ const twitchChannelPointAutoClaim = (() => {
       return Boolean(observer);
     }
 
-    observer = new MutationObserver(() => scheduleScan());
+    observer = new MutationObserver(handleMutations);
     observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["aria-label", "aria-disabled", "class", "disabled", "role", "style", "title"],
@@ -222,26 +291,128 @@ const twitchChannelPointAutoClaim = (() => {
     return true;
   }
 
-  function start() {
-    if (!canRunOnCurrentPage()) {
+  function startFallbackScan() {
+    if (fallbackScanIntervalId === 0) {
+      fallbackScanIntervalId = window.setInterval(
+        () => scheduleScan(document, 0),
+        CHANNEL_POINT_SCAN_INTERVAL_MS);
+    }
+  }
+
+  function onDocumentReady() {
+    awaitingDocumentElement = false;
+    if (!started || !canRunOnCurrentPage()) {
       return;
     }
 
+    activate();
+  }
+
+  function activate() {
+    if (active && observer) {
+      return;
+    }
+
+    active = true;
     if (!startObserver()) {
-      document.addEventListener("DOMContentLoaded", start, { once: true });
+      if (!awaitingDocumentElement) {
+        awaitingDocumentElement = true;
+        document.addEventListener("DOMContentLoaded", onDocumentReady, { once: true });
+      }
+
+      return;
     }
 
-    scheduleScan(0);
+    awaitingDocumentElement = false;
+    scheduleScan(document, 0);
+    startFallbackScan();
+  }
 
-    if (intervalId === 0) {
-      intervalId = window.setInterval(() => scheduleScan(0), CHANNEL_POINT_SCAN_INTERVAL_MS);
+  function deactivate() {
+    active = false;
+    pendingScanRoots.clear();
+    observer?.disconnect();
+    observer = null;
+
+    if (scheduledScanId !== 0) {
+      window.clearTimeout(scheduledScanId);
+      scheduledScanId = 0;
     }
+
+    if (fallbackScanIntervalId !== 0) {
+      window.clearInterval(fallbackScanIntervalId);
+      fallbackScanIntervalId = 0;
+    }
+
+    if (awaitingDocumentElement) {
+      document.removeEventListener("DOMContentLoaded", onDocumentReady);
+      awaitingDocumentElement = false;
+    }
+  }
+
+  function refreshRoute() {
+    if (!started) {
+      return false;
+    }
+
+    if (canRunOnCurrentPage()) {
+      activate();
+      return true;
+    }
+
+    deactivate();
+    return false;
+  }
+
+  function handlePageHide(event) {
+    stop();
+    if (event.persisted === true) {
+      window.addEventListener("pageshow", start, { once: true });
+    }
+  }
+
+  function start() {
+    window.removeEventListener("pageshow", start);
+    if (started) {
+      return;
+    }
+
+    started = true;
+    window.addEventListener("popstate", refreshRoute);
+    window.addEventListener("hashchange", refreshRoute);
+    window.addEventListener("pagehide", handlePageHide, { once: true });
+    routeCheckIntervalId = window.setInterval(
+      refreshRoute,
+      CHANNEL_POINT_ROUTE_CHECK_INTERVAL_MS);
+    refreshRoute();
+  }
+
+  function stop() {
+    window.removeEventListener("pageshow", start);
+    if (!started) {
+      return;
+    }
+
+    started = false;
+    deactivate();
+    if (routeCheckIntervalId !== 0) {
+      window.clearInterval(routeCheckIntervalId);
+      routeCheckIntervalId = 0;
+    }
+
+    window.removeEventListener("popstate", refreshRoute);
+    window.removeEventListener("hashchange", refreshRoute);
+    window.removeEventListener("pagehide", handlePageHide);
   }
 
   return {
     claimVisibleBonus,
-    start
+    isActive: () => active,
+    refreshRoute,
+    start,
+    stop
   };
 })();
 
+globalThis.StreamlinkVlcStudioContentController = twitchChannelPointAutoClaim;
 twitchChannelPointAutoClaim.start();

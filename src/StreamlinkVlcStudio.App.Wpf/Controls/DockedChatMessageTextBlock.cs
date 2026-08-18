@@ -11,6 +11,7 @@ using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 using StreamlinkVlcStudio.App.Wpf.Chat;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Parsing;
 using IoMemoryStream = System.IO.MemoryStream;
 using WpfImage = System.Windows.Controls.Image;
 
@@ -49,7 +50,11 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     private static readonly FontFamily EmojiFallbackFontFamily = new("Segoe UI Emoji");
     private static readonly Lazy<SKTypeface?> EmojiTypeface = new(CreateEmojiTypeface);
     private static readonly object EmojiImageCacheLock = new();
-    private static readonly Dictionary<EmojiImageCacheKey, ImageSource?> EmojiImageCache = [];
+    private const int MaximumEmojiImageCacheEntries = 512;
+    private const long MaximumEmojiImageCacheBytes = 32L * 1024 * 1024;
+    private static readonly Dictionary<EmojiImageCacheKey, EmojiImageCacheEntry> EmojiImageCache = [];
+    private static readonly LinkedList<EmojiImageCacheKey> EmojiImageCacheLru = [];
+    private static long emojiImageCacheBytes;
     private static readonly Geometry BadgeCrownGeometry = CreateFrozenGeometry("M3,18 L21,18 L19,8 L15,12 L12,5 L9,12 L5,8 Z M5,20 H19 V22 H5 Z");
     private static readonly Geometry BadgeShieldGeometry = CreateFrozenGeometry("M12,2 L20,5.5 V11.5 C20,16.8 16.6,20.2 12,22 C7.4,20.2 4,16.8 4,11.5 V5.5 Z");
     private static readonly Geometry BadgeCameraGeometry = CreateFrozenGeometry("M4,6 H15 C16.1,6 17,6.9 17,8 V10.2 L22,7 V17 L17,13.8 V16 C17,17.1 16.1,18 15,18 H4 C2.9,18 2,17.1 2,16 V8 C2,6.9 2.9,6 4,6 Z");
@@ -376,7 +381,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             : null;
         if (emotes is not { Length: > 0 })
         {
-            AppendTextSegment(body, allowCatalogEmotes: allowEmotes, bodyBrush);
+            AppendTextSegment(message, body, allowCatalogEmotes: allowEmotes, bodyBrush);
             return;
         }
 
@@ -390,16 +395,16 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
             if (emote.StartIndex > cursor)
             {
-                AppendTextSegment(body[cursor..emote.StartIndex], allowCatalogEmotes: true, bodyBrush);
+                AppendTextSegment(message, body[cursor..emote.StartIndex], allowCatalogEmotes: true, bodyBrush);
             }
 
-            AppendEmoteOrText(emote, bodyBrush);
+            AppendEmoteOrText(message, emote, bodyBrush);
             cursor = emote.EndIndex;
         }
 
         if (cursor < body.Length)
         {
-            AppendTextSegment(body[cursor..], allowCatalogEmotes: true, bodyBrush);
+            AppendTextSegment(message, body[cursor..], allowCatalogEmotes: true, bodyBrush);
         }
     }
 
@@ -420,6 +425,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         if (emotes is not { Length: > 0 })
         {
             AppendNativeOverlayTextSegment(
+                message,
                 body,
                 allowCatalogEmotes: allowEmotes,
                 bodyBrush,
@@ -438,6 +444,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             if (emote.StartIndex > cursor)
             {
                 AppendNativeOverlayTextSegment(
+                    message,
                     body[cursor..emote.StartIndex],
                     allowCatalogEmotes: true,
                     bodyBrush,
@@ -450,13 +457,14 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             }
 
             pendingSpace = false;
-            AppendEmoteOrText(emote, bodyBrush);
+            AppendEmoteOrText(message, emote, bodyBrush);
             cursor = emote.EndIndex;
         }
 
         if (cursor < body.Length)
         {
             AppendNativeOverlayTextSegment(
+                message,
                 body[cursor..],
                 allowCatalogEmotes: true,
                 bodyBrush,
@@ -465,6 +473,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     }
 
     private void AppendNativeOverlayTextSegment(
+        ChatMessage message,
         string text,
         bool allowCatalogEmotes,
         Brush bodyBrush,
@@ -498,7 +507,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
             var token = text[tokenStart..index];
             if (allowCatalogEmotes &&
-                DockedChatEmoteCatalog.Shared.TryGet(token, out var catalogEmote))
+                DockedChatEmoteCatalog.Shared.TryGet(message, token, out var catalogEmote))
             {
                 AppendImage(catalogEmote);
             }
@@ -509,7 +518,11 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         }
     }
 
-    private void AppendTextSegment(string text, bool allowCatalogEmotes, Brush bodyBrush)
+    private void AppendTextSegment(
+        ChatMessage message,
+        string text,
+        bool allowCatalogEmotes,
+        Brush bodyBrush)
     {
         var index = 0;
         while (index < text.Length)
@@ -533,7 +546,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
             var token = text[tokenStart..index];
             if (allowCatalogEmotes &&
-                DockedChatEmoteCatalog.Shared.TryGet(token, out var catalogEmote))
+                DockedChatEmoteCatalog.Shared.TryGet(message, token, out var catalogEmote))
             {
                 AppendImage(catalogEmote);
             }
@@ -544,7 +557,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         }
     }
 
-    private void AppendEmoteOrText(ChatEmote emote, Brush bodyBrush)
+    private void AppendEmoteOrText(ChatMessage message, ChatEmote emote, Brush bodyBrush)
     {
         if (!string.IsNullOrWhiteSpace(emote.ImageUrl) &&
             Uri.TryCreate(emote.ImageUrl, UriKind.Absolute, out var directUri) &&
@@ -554,7 +567,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             return;
         }
 
-        if (DockedChatEmoteCatalog.Shared.TryGet(emote.Code, out var catalogEmote))
+        if (DockedChatEmoteCatalog.Shared.TryGet(message, emote.Code, out var catalogEmote))
         {
             AppendImage(catalogEmote);
             return;
@@ -763,25 +776,30 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     {
         var enumerator = StringInfo.GetTextElementEnumerator(text);
         var segmentText = new StringBuilder();
-        bool? segmentUsesEmojiImage = null;
 
         while (enumerator.MoveNext())
         {
             var textElement = enumerator.GetTextElement();
-            var useEmojiImage = UsesEmojiImage(textElement);
-            if (segmentUsesEmojiImage is not null && segmentUsesEmojiImage.Value != useEmojiImage)
+            if (UsesEmojiImage(textElement))
             {
-                yield return new TextRunSegment(segmentText.ToString(), segmentUsesEmojiImage.Value);
-                segmentText.Clear();
+                if (segmentText.Length > 0)
+                {
+                    yield return new TextRunSegment(segmentText.ToString(), UseEmojiImage: false);
+                    segmentText.Clear();
+                }
+
+                // Render/cache one Unicode grapheme at a time. Adjacent emoji can have
+                // different shaping bounds, and caching their concatenation grows without reuse.
+                yield return new TextRunSegment(textElement, UseEmojiImage: true);
+                continue;
             }
 
             segmentText.Append(textElement);
-            segmentUsesEmojiImage = useEmojiImage;
         }
 
-        if (segmentText.Length > 0 && segmentUsesEmojiImage is not null)
+        if (segmentText.Length > 0)
         {
-            yield return new TextRunSegment(segmentText.ToString(), segmentUsesEmojiImage.Value);
+            yield return new TextRunSegment(segmentText.ToString(), UseEmojiImage: false);
         }
     }
 
@@ -831,20 +849,92 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         {
             if (EmojiImageCache.TryGetValue(key, out var cached))
             {
-                return cached;
+                TouchEmojiCacheEntryLocked(cached);
+                return cached.Image;
             }
         }
 
         var rendered = RenderEmojiImageSource(text, pixelSize);
         lock (EmojiImageCacheLock)
         {
-            if (!EmojiImageCache.ContainsKey(key))
+            if (EmojiImageCache.TryGetValue(key, out var cached))
             {
-                EmojiImageCache[key] = rendered;
+                TouchEmojiCacheEntryLocked(cached);
+                return cached.Image;
             }
 
-            return EmojiImageCache[key];
+            AddEmojiCacheEntryLocked(key, rendered);
+            return rendered;
         }
+    }
+
+    internal static IReadOnlyList<(string Text, bool UseEmojiImage)> SegmentTextForTest(string text) =>
+        EnumerateTextRunSegments(text)
+            .Select(segment => (segment.Text, segment.UseEmojiImage))
+            .ToArray();
+
+    internal static int EmojiImageCacheCountForTest
+    {
+        get
+        {
+            lock (EmojiImageCacheLock)
+            {
+                return EmojiImageCache.Count;
+            }
+        }
+    }
+
+    internal static void AddEmojiImageCacheEntryForTest(string text, int pixelSize)
+    {
+        lock (EmojiImageCacheLock)
+        {
+            var key = new EmojiImageCacheKey(text, pixelSize);
+            if (!EmojiImageCache.ContainsKey(key))
+            {
+                AddEmojiCacheEntryLocked(key, image: null);
+            }
+        }
+    }
+
+    internal static void ClearEmojiImageCacheForTest()
+    {
+        lock (EmojiImageCacheLock)
+        {
+            EmojiImageCache.Clear();
+            EmojiImageCacheLru.Clear();
+            emojiImageCacheBytes = 0;
+        }
+    }
+
+    private static void AddEmojiCacheEntryLocked(EmojiImageCacheKey key, ImageSource? image)
+    {
+        var estimatedBytes = image is BitmapSource bitmap
+            ? Math.Max(0L, (long)bitmap.PixelWidth * bitmap.PixelHeight * 4)
+            : 0L;
+        var node = EmojiImageCacheLru.AddLast(key);
+        EmojiImageCache[key] = new EmojiImageCacheEntry(image, estimatedBytes, node);
+        emojiImageCacheBytes += estimatedBytes;
+        while (EmojiImageCache.Count > MaximumEmojiImageCacheEntries ||
+            emojiImageCacheBytes > MaximumEmojiImageCacheBytes)
+        {
+            var oldest = EmojiImageCacheLru.First;
+            if (oldest is null)
+            {
+                break;
+            }
+
+            EmojiImageCacheLru.RemoveFirst();
+            if (EmojiImageCache.Remove(oldest.Value, out var removed))
+            {
+                emojiImageCacheBytes -= removed.EstimatedBytes;
+            }
+        }
+    }
+
+    private static void TouchEmojiCacheEntryLocked(EmojiImageCacheEntry entry)
+    {
+        EmojiImageCacheLru.Remove(entry.LruNode);
+        EmojiImageCacheLru.AddLast(entry.LruNode);
     }
 
     private static ImageSource? RenderEmojiImageSource(string text, int pixelSize)
@@ -1104,7 +1194,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
     private static BadgeVisual? ResolveBadgeVisual(ChatBadge badge, bool allowDefaultVisual)
     {
-        var id = NormalizeBadgeStyleId(badge.Id);
+        var id = KickBadgeIdNormalizer.Normalize(badge.Id);
         if (id.Length == 0)
         {
             return null;
@@ -1120,7 +1210,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
     private static bool IsKickGiftBadge(ChatBadge badge)
     {
-        var id = NormalizeBadgeStyleId(badge.Id);
+        var id = KickBadgeIdNormalizer.Normalize(badge.Id);
         if (id is "sub_gifter" or "sub_gift_leader")
         {
             return true;
@@ -1130,40 +1220,6 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         return !string.IsNullOrWhiteSpace(title) &&
             title.Contains("gift", StringComparison.OrdinalIgnoreCase) &&
             title.Contains("sub", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeBadgeStyleId(string? id)
-    {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            return "";
-        }
-
-        var normalized = id.Trim().ToLowerInvariant().Replace('-', '_');
-        return normalized switch
-        {
-            "channel_host" => "broadcaster",
-            "creator" => "broadcaster",
-            "gift_sub" => "sub_gifter",
-            "gift_subs" => "sub_gifter",
-            "gift_subscriber" => "sub_gifter",
-            "gift_subscription" => "sub_gifter",
-            "gifted_sub" => "sub_gifter",
-            "gifted_subs" => "sub_gifter",
-            "gifted_subscriber" => "sub_gifter",
-            "gifted_subscription" => "sub_gifter",
-            "gifter" => "sub_gifter",
-            "subgifter" => "sub_gifter",
-            "sub_gift" => "sub_gifter",
-            "sub_gifter_badge" => "sub_gifter",
-            "sub_gifts" => "sub_gifter",
-            "subscriber_gifter" => "sub_gifter",
-            "subscription" => "subscriber",
-            "subscription_gift" => "sub_gifter",
-            "subscription_gifts" => "sub_gifter",
-            "sub" => "subscriber",
-            _ => normalized
-        };
     }
 
     private static Brush CreateFrozenBrush(string color)
@@ -1187,4 +1243,8 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     private sealed record BadgeVisual(Geometry Geometry, Brush Background);
     private sealed record TextRunSegment(string Text, bool UseEmojiImage);
     private sealed record EmojiImageCacheKey(string Text, int PixelSize);
+    private sealed record EmojiImageCacheEntry(
+        ImageSource? Image,
+        long EstimatedBytes,
+        LinkedListNode<EmojiImageCacheKey> LruNode);
 }

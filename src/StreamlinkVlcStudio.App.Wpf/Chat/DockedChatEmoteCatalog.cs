@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
@@ -8,23 +9,46 @@ namespace StreamlinkVlcStudio.App.Wpf.Chat;
 internal sealed class DockedChatEmoteCatalog
 {
     private const int MaxJsonBytes = 4 * 1024 * 1024;
+    private const int MaxMessageSuppliedEmotes = 4_096;
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
 
     private readonly object sync = new();
     private readonly Dictionary<string, DockedChatEmoteImage> emotes = new(StringComparer.Ordinal);
-    private readonly HashSet<string> channelLoadsStarted = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> catalogScopeByEmoteKey = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> emoteKeysByCatalogScope = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, LinkedListNode<string>> messageEmoteNodes = new(StringComparer.Ordinal);
+    private readonly LinkedList<string> messageEmoteLru = [];
+    private readonly CatalogLoadCoordinator loadCoordinator;
     private int catalogChangedQueued;
-    private bool globalLoadStarted;
 
     public static DockedChatEmoteCatalog Shared { get; } = new();
 
+    internal DockedChatEmoteCatalog()
+    {
+        loadCoordinator = new CatalogLoadCoordinator(scopeEvicted: EvictCatalogScope);
+    }
+
     public event EventHandler? CatalogChanged;
 
-    public bool TryGet(string code, out DockedChatEmoteImage emote)
+    public bool TryGet(ChatMessage message, string code, out DockedChatEmoteImage emote)
     {
         lock (sync)
         {
-            return emotes.TryGetValue(code, out emote!);
+            var channelKey = MakeEmoteKey(message.Platform, message.Channel, code);
+            if (emotes.TryGetValue(channelKey, out emote!))
+            {
+                TouchMessageEmoteLocked(channelKey);
+                return true;
+            }
+
+            var globalKey = MakeEmoteKey(message.Platform, "", code);
+            if (emotes.TryGetValue(globalKey, out emote!))
+            {
+                TouchMessageEmoteLocked(globalKey);
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -37,7 +61,13 @@ internal sealed class DockedChatEmoteCatalog
             {
                 if (!string.IsNullOrWhiteSpace(emote.ImageUrl))
                 {
-                    changed |= AddEmote(emote.Code, emote.ImageUrl, 28, 28);
+                    changed |= AddMessageEmote(
+                        message.Platform,
+                        message.Channel,
+                        emote.Code,
+                        emote.ImageUrl,
+                        28,
+                        28);
                 }
             }
 
@@ -61,17 +91,11 @@ internal sealed class DockedChatEmoteCatalog
 
     public void EnsureGlobalLoaded()
     {
-        lock (sync)
-        {
-            if (globalLoadStarted)
-            {
-                return;
-            }
-
-            globalLoadStarted = true;
-        }
-
-        _ = Task.Run(LoadGlobalAsync);
+        loadCoordinator.Ensure(
+            "twitch:global",
+            LoadGlobalAsync,
+            QueueCatalogChanged,
+            preserveFromEviction: true);
     }
 
     private void EnsureTwitchChannelLoaded(string roomId, string channel)
@@ -82,44 +106,83 @@ internal sealed class DockedChatEmoteCatalog
             return;
         }
 
-        lock (sync)
-        {
-            if (!channelLoadsStarted.Add($"{normalizedRoomId}|{channel}"))
-            {
-                return;
-            }
-        }
-
-        _ = Task.Run(() => LoadTwitchChannelAsync(normalizedRoomId, channel));
+        var normalizedChannel = channel.Trim().ToLowerInvariant();
+        loadCoordinator.Ensure(
+            $"twitch:{normalizedRoomId}:{normalizedChannel}",
+            () => LoadTwitchChannelAsync(normalizedRoomId, normalizedChannel),
+            QueueCatalogChanged);
     }
 
-    private async Task LoadGlobalAsync()
+    private async Task<CatalogLoadResult> LoadGlobalAsync()
     {
-        var changed = AddBuiltinFallbacks();
-        changed |= await LoadBttvAsync("https://api.betterttv.net/3/cached/emotes/global").ConfigureAwait(false);
-        changed |= await LoadFfzAsync("https://api.frankerfacez.com/v1/set/global").ConfigureAwait(false);
-        changed |= await LoadSevenTvAsync("https://7tv.io/v3/emote-sets/global").ConfigureAwait(false);
-        changed |= await LoadTwitchFallbackAsync("https://emotes.crippled.dev/v1/global/twitch").ConfigureAwait(false);
-
-        if (changed)
-        {
-            QueueCatalogChanged();
-        }
+        const string scope = "twitch:global";
+        var changed = AddBuiltinFallbacks(PlatformKind.Twitch, "", scope);
+        var succeeded = false;
+        var result = await LoadBttvAsync(
+            "https://api.betterttv.net/3/cached/emotes/global",
+            PlatformKind.Twitch,
+            "",
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        result = await LoadFfzAsync(
+            "https://api.frankerfacez.com/v1/set/global",
+            PlatformKind.Twitch,
+            "",
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        result = await LoadSevenTvAsync(
+            "https://7tv.io/v3/emote-sets/global",
+            PlatformKind.Twitch,
+            "",
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        result = await LoadTwitchFallbackAsync(
+            "https://emotes.crippled.dev/v1/global/twitch",
+            PlatformKind.Twitch,
+            "",
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        return new CatalogLoadResult(succeeded, changed);
     }
 
-    private async Task LoadTwitchChannelAsync(string roomId, string channel)
+    private async Task<CatalogLoadResult> LoadTwitchChannelAsync(string roomId, string channel)
     {
         var escapedRoomId = Uri.EscapeDataString(roomId);
         var escapedChannel = Uri.EscapeDataString(channel);
-        var changed = await LoadBttvAsync($"https://api.betterttv.net/3/cached/users/twitch/{escapedRoomId}").ConfigureAwait(false);
-        changed |= await LoadFfzAsync($"https://api.frankerfacez.com/v1/room/id/{escapedRoomId}").ConfigureAwait(false);
-        changed |= await LoadSevenTvAsync($"https://7tv.io/v3/users/twitch/{escapedRoomId}").ConfigureAwait(false);
-        changed |= await LoadTwitchFallbackAsync($"https://emotes.crippled.dev/v1/channel/{escapedChannel}/twitch").ConfigureAwait(false);
-
-        if (changed)
-        {
-            QueueCatalogChanged();
-        }
+        var scope = $"twitch:{roomId}:{channel}";
+        var result = await LoadBttvAsync(
+            $"https://api.betterttv.net/3/cached/users/twitch/{escapedRoomId}",
+            PlatformKind.Twitch,
+            channel,
+            scope).ConfigureAwait(false);
+        var succeeded = result.Succeeded;
+        var changed = result.Changed;
+        result = await LoadFfzAsync(
+            $"https://api.frankerfacez.com/v1/room/id/{escapedRoomId}",
+            PlatformKind.Twitch,
+            channel,
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        result = await LoadSevenTvAsync(
+            $"https://7tv.io/v3/users/twitch/{escapedRoomId}",
+            PlatformKind.Twitch,
+            channel,
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        result = await LoadTwitchFallbackAsync(
+            $"https://emotes.crippled.dev/v1/channel/{escapedChannel}/twitch",
+            PlatformKind.Twitch,
+            channel,
+            scope).ConfigureAwait(false);
+        succeeded |= result.Succeeded;
+        changed |= result.Changed;
+        return new CatalogLoadResult(succeeded, changed);
     }
 
     private void QueueCatalogChanged()
@@ -132,16 +195,20 @@ internal sealed class DockedChatEmoteCatalog
         _ = Task.Run(() =>
         {
             Interlocked.Exchange(ref catalogChangedQueued, 0);
-            CatalogChanged?.Invoke(this, EventArgs.Empty);
+            CatalogLoadCoordinator.RaiseSafely(CatalogChanged, this);
         });
     }
 
-    private async Task<bool> LoadBttvAsync(string url)
+    private async Task<CatalogLoadResult> LoadBttvAsync(
+        string url,
+        PlatformKind platform,
+        string channel,
+        string scope)
     {
         using var document = await TryGetJsonAsync(url).ConfigureAwait(false);
         if (document is null)
         {
-            return false;
+            return CatalogLoadResult.Failed();
         }
 
         var changed = false;
@@ -159,22 +226,29 @@ internal sealed class DockedChatEmoteCatalog
                     ? parsedImageType
                     : "png";
 
-            changed |= AddEmote(
+            changed |= AddCatalogEmote(
+                platform,
+                channel,
                 code,
                 $"https://cdn.betterttv.net/emote/{Uri.EscapeDataString(id)}/2x.{imageType}",
                 TryGetInt32(item, "width") ?? 0,
-                TryGetInt32(item, "height") ?? 0);
+                TryGetInt32(item, "height") ?? 0,
+                scope);
         }
 
-        return changed;
+        return CatalogLoadResult.Successful(changed);
     }
 
-    private async Task<bool> LoadFfzAsync(string url)
+    private async Task<CatalogLoadResult> LoadFfzAsync(
+        string url,
+        PlatformKind platform,
+        string channel,
+        string scope)
     {
         using var document = await TryGetJsonAsync(url).ConfigureAwait(false);
         if (document is null)
         {
-            return false;
+            return CatalogLoadResult.Failed();
         }
 
         var changed = false;
@@ -189,22 +263,29 @@ internal sealed class DockedChatEmoteCatalog
                 continue;
             }
 
-            changed |= AddEmote(
+            changed |= AddCatalogEmote(
+                platform,
+                channel,
                 code,
                 imageUrl,
                 TryGetInt32(item, "width") ?? 0,
-                TryGetInt32(item, "height") ?? 0);
+                TryGetInt32(item, "height") ?? 0,
+                scope);
         }
 
-        return changed;
+        return CatalogLoadResult.Successful(changed);
     }
 
-    private async Task<bool> LoadSevenTvAsync(string url)
+    private async Task<CatalogLoadResult> LoadSevenTvAsync(
+        string url,
+        PlatformKind platform,
+        string channel,
+        string scope)
     {
         using var document = await TryGetJsonAsync(url).ConfigureAwait(false);
         if (document is null)
         {
-            return false;
+            return CatalogLoadResult.Failed();
         }
 
         var changed = false;
@@ -218,18 +299,29 @@ internal sealed class DockedChatEmoteCatalog
                 continue;
             }
 
-            changed |= AddEmote(code, $"{baseUrl.TrimEnd('/')}/{fileName}", width, height);
+            changed |= AddCatalogEmote(
+                platform,
+                channel,
+                code,
+                $"{baseUrl.TrimEnd('/')}/{fileName}",
+                width,
+                height,
+                scope);
         }
 
-        return changed;
+        return CatalogLoadResult.Successful(changed);
     }
 
-    private async Task<bool> LoadTwitchFallbackAsync(string url)
+    private async Task<CatalogLoadResult> LoadTwitchFallbackAsync(
+        string url,
+        PlatformKind platform,
+        string channel,
+        string scope)
     {
         using var document = await TryGetJsonAsync(url).ConfigureAwait(false);
         if (document is null)
         {
-            return false;
+            return CatalogLoadResult.Failed();
         }
 
         var changed = false;
@@ -243,25 +335,58 @@ internal sealed class DockedChatEmoteCatalog
                 continue;
             }
 
-            changed |= AddEmote(code, imageUrl, 28, 28);
+            changed |= AddCatalogEmote(platform, channel, code, imageUrl, 28, 28, scope);
         }
 
-        return changed;
+        return CatalogLoadResult.Successful(changed);
     }
 
-    private bool AddBuiltinFallbacks()
+    private bool AddBuiltinFallbacks(PlatformKind platform, string channel, string scope)
     {
         var changed = false;
-        changed |= AddEmote("RespectfullyNo", "https://cdn.7tv.app/emote/01K65KFQ64QEPPWVW055JMNBWY/2x.gif", 32, 32);
-        changed |= AddEmote("RespectfullyNO", "https://cdn.7tv.app/emote/01K7SRC7DHWSB0AGB81DM10T26/2x.gif", 32, 32);
-        changed |= AddEmote("respectfullyno", "https://cdn.7tv.app/emote/01K6N6FWRAEPB4BBNNFYV1G5MJ/2x.gif", 32, 32);
-        changed |= AddEmote("Uppies", "https://cdn.betterttv.net/emote/61818ec01f8ff7628e6c1e0b/2x.gif", 28, 28);
-        changed |= AddEmote("Yo", "https://cdn.7tv.app/emote/01GKFRT59000047SF1NR3YD3WA/2x.gif", 32, 32);
-        changed |= AddEmote("nickmercsW", "https://static-cdn.jtvnw.net/emoticons/v2/emotesv2_61905b27c9b649e8af5c92e1a5c3cd64/static/light/2.0", 28, 28);
+        changed |= AddCatalogEmote(platform, channel, "RespectfullyNo", "https://cdn.7tv.app/emote/01K65KFQ64QEPPWVW055JMNBWY/2x.gif", 32, 32, scope);
+        changed |= AddCatalogEmote(platform, channel, "RespectfullyNO", "https://cdn.7tv.app/emote/01K7SRC7DHWSB0AGB81DM10T26/2x.gif", 32, 32, scope);
+        changed |= AddCatalogEmote(platform, channel, "respectfullyno", "https://cdn.7tv.app/emote/01K6N6FWRAEPB4BBNNFYV1G5MJ/2x.gif", 32, 32, scope);
+        changed |= AddCatalogEmote(platform, channel, "Uppies", "https://cdn.betterttv.net/emote/61818ec01f8ff7628e6c1e0b/2x.gif", 28, 28, scope);
+        changed |= AddCatalogEmote(platform, channel, "Yo", "https://cdn.7tv.app/emote/01GKFRT59000047SF1NR3YD3WA/2x.gif", 32, 32, scope);
+        changed |= AddCatalogEmote(platform, channel, "nickmercsW", "https://static-cdn.jtvnw.net/emoticons/v2/emotesv2_61905b27c9b649e8af5c92e1a5c3cd64/static/light/2.0", 28, 28, scope);
         return changed;
     }
 
-    private bool AddEmote(string code, string imageUrl, int width, int height)
+    internal bool AddEmote(
+        PlatformKind platform,
+        string channel,
+        string code,
+        string imageUrl,
+        int width,
+        int height) => AddEmoteCore(platform, channel, code, imageUrl, width, height, null, false);
+
+    private bool AddMessageEmote(
+        PlatformKind platform,
+        string channel,
+        string code,
+        string imageUrl,
+        int width,
+        int height) => AddEmoteCore(platform, channel, code, imageUrl, width, height, null, true);
+
+    private bool AddCatalogEmote(
+        PlatformKind platform,
+        string channel,
+        string code,
+        string imageUrl,
+        int width,
+        int height,
+        string scope) => AddEmoteCore(platform, channel, code, imageUrl, width, height, scope, false);
+
+    private bool AddEmoteCore(
+        PlatformKind platform,
+        string channel,
+        string code,
+        string imageUrl,
+        int width,
+        int height,
+        string? catalogScope,
+        bool messageSupplied)
     {
         if (string.IsNullOrWhiteSpace(code) ||
             code.Length >= 96 ||
@@ -272,17 +397,134 @@ internal sealed class DockedChatEmoteCatalog
         }
 
         var emote = new DockedChatEmoteImage(code, PreferSharperEmoteUrl(normalizedUrl), width, height);
+        var key = MakeEmoteKey(platform, channel, code);
         lock (sync)
         {
-            if (emotes.TryGetValue(code, out var existing) && existing.Equals(emote))
+            var changed = !emotes.TryGetValue(key, out var existing) || !existing.Equals(emote);
+            emotes[key] = emote;
+            if (messageSupplied)
             {
-                return false;
+                UntrackCatalogEmoteLocked(key);
+                TouchOrAddMessageEmoteLocked(key);
+            }
+            else
+            {
+                RemoveMessageEmoteTrackingLocked(key);
+                UntrackCatalogEmoteLocked(key);
+                if (catalogScope is not null)
+                {
+                    catalogScopeByEmoteKey[key] = catalogScope;
+                    if (!emoteKeysByCatalogScope.TryGetValue(catalogScope, out var keys))
+                    {
+                        keys = new HashSet<string>(StringComparer.Ordinal);
+                        emoteKeysByCatalogScope[catalogScope] = keys;
+                    }
+
+                    keys.Add(key);
+                }
             }
 
-            emotes[code] = emote;
-            return true;
+            return changed;
         }
     }
+
+    internal int MessageSuppliedEmoteCountForTest
+    {
+        get
+        {
+            lock (sync)
+            {
+                return messageEmoteNodes.Count;
+            }
+        }
+    }
+
+    private void EvictCatalogScope(string scope)
+    {
+        var changed = false;
+        lock (sync)
+        {
+            if (!emoteKeysByCatalogScope.Remove(scope, out var keys))
+            {
+                return;
+            }
+
+            foreach (var key in keys)
+            {
+                if (catalogScopeByEmoteKey.TryGetValue(key, out var owner) &&
+                    string.Equals(owner, scope, StringComparison.OrdinalIgnoreCase))
+                {
+                    catalogScopeByEmoteKey.Remove(key);
+                    changed |= emotes.Remove(key);
+                }
+            }
+        }
+
+        if (changed)
+        {
+            QueueCatalogChanged();
+        }
+    }
+
+    private void TouchOrAddMessageEmoteLocked(string key)
+    {
+        if (messageEmoteNodes.TryGetValue(key, out var existing))
+        {
+            messageEmoteLru.Remove(existing);
+            messageEmoteLru.AddLast(existing);
+        }
+        else
+        {
+            messageEmoteNodes[key] = messageEmoteLru.AddLast(key);
+        }
+
+        while (messageEmoteNodes.Count > MaxMessageSuppliedEmotes)
+        {
+            var oldest = messageEmoteLru.First!;
+            messageEmoteLru.RemoveFirst();
+            messageEmoteNodes.Remove(oldest.Value);
+            emotes.Remove(oldest.Value);
+        }
+    }
+
+    private void TouchMessageEmoteLocked(string key)
+    {
+        if (messageEmoteNodes.TryGetValue(key, out var node))
+        {
+            messageEmoteLru.Remove(node);
+            messageEmoteLru.AddLast(node);
+        }
+    }
+
+    private void RemoveMessageEmoteTrackingLocked(string key)
+    {
+        if (messageEmoteNodes.Remove(key, out var node))
+        {
+            messageEmoteLru.Remove(node);
+        }
+    }
+
+    private void UntrackCatalogEmoteLocked(string key)
+    {
+        if (!catalogScopeByEmoteKey.Remove(key, out var scope) ||
+            !emoteKeysByCatalogScope.TryGetValue(scope, out var keys))
+        {
+            return;
+        }
+
+        keys.Remove(key);
+        if (keys.Count == 0)
+        {
+            emoteKeysByCatalogScope.Remove(scope);
+        }
+    }
+
+    private static string MakeEmoteKey(PlatformKind platform, string? channel, string code) =>
+        string.Join(
+            '|',
+            platform.ToString(),
+            (channel ?? "").Trim().ToLowerInvariant(),
+            code.Trim());
 
     private static async Task<JsonDocument?> TryGetJsonAsync(string url)
     {
@@ -294,8 +536,8 @@ internal sealed class DockedChatEmoteCatalog
                 return null;
             }
 
-            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            if (bytes.Length > MaxJsonBytes)
+            var bytes = await BoundedByteReader.ReadAsync(response.Content, MaxJsonBytes).ConfigureAwait(false);
+            if (bytes is null)
             {
                 return null;
             }
@@ -310,11 +552,10 @@ internal sealed class DockedChatEmoteCatalog
 
     private static HttpClient CreateHttpClient()
     {
-        var client = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(8)
-        };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("StreamlinkVlcStudio/0.1");
+        var client = HttpClientFactory.Create(
+            TimeSpan.FromSeconds(8),
+            includeUserAgent: true,
+            acceptJson: true);
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
         return client;
     }

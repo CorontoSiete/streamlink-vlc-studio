@@ -2,6 +2,7 @@
   <PropertyGroup>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile Condition="'$(MSBuildProjectName)' == 'StreamlinkVlcStudio.App.Wpf' Or '$(MSBuildProjectName)' == 'StreamlinkVlcStudio.Tests'">true</RestorePackagesWithLockFile>
     <!--
       Surface dead-code / redundancy IDE style rules configured in .editorconfig
       (IDE0051, IDE0052, ...) during `dotnet build`, so CI catches them.

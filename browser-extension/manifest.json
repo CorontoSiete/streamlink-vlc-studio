@@ -4,11 +4,6 @@
   "version": "0.2.2",
   "description": "Opens clicked streams in Twitch & Kick player and auto-claims Twitch channel point bonuses.",
   "host_permissions": [
-    "https://www.twitch.tv/*",
-    "https://m.twitch.tv/*",
-    "https://kick.com/*",
-    "https://m.kick.com/*",
-    "https://www.kick.com/*",
     "http://127.0.0.1:39179/*"
   ],
   "background": {
@@ -17,6 +12,7 @@
   "content_scripts": [
     {
       "matches": [
+        "https://twitch.tv/*",
         "https://www.twitch.tv/*",
         "https://m.twitch.tv/*",
         "https://kick.com/*",
@@ -24,6 +20,7 @@
         "https://www.kick.com/*"
       ],
       "js": [
+        "platform-routes.generated.js",
         "content-core.js",
         "content.js"
       ],

@@ -5,9 +5,7 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+    <TargetFramework>net10.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <BundledVlcOverlayRoot Condition="'$(BundledVlcOverlayRoot)' == ''">$(MSBuildProjectDirectory)\Vlc\BundledOverlay</BundledVlcOverlayRoot>
     <RequireBundledVlcOverlay Condition="'$(RequireBundledVlcOverlay)' == ''">true</RequireBundledVlcOverlay>
@@ -25,6 +23,10 @@
   <Target Name="ValidateBundledVlcOverlay" BeforeTargets="CoreCompile" Condition="'$(RequireBundledVlcOverlay)' == 'true'">
     <Error Condition="!Exists('$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll')" Text="Bundled VLC overlay plugin missing: $(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll" />
     <Error Condition="!Exists('$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe')" Text="Bundled VLC overlay controller missing: $(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe" />
+    <Exec
+      Condition="'$(OS)' == 'Windows_NT' and '$(BundledVlcOverlayRoot)' == '$(MSBuildProjectDirectory)\Vlc\BundledOverlay'"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\verify-native-dependencies.ps1&quot; -RepositoryRoot &quot;$(MSBuildThisFileDirectory)..\..&quot;"
+      ConsoleToMSBuild="true" />
   </Target>
 
 </Project>

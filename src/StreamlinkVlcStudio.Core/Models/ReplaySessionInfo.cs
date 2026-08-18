@@ -19,10 +19,13 @@ public sealed record ReplaySessionInfo(
         !string.IsNullOrWhiteSpace(ReplayId) &&
         Duration > TimeSpan.Zero;
 
-    public string GetStreamlinkQuality(string requestedQuality) =>
-        string.IsNullOrWhiteSpace(StreamlinkQuality)
+    public string GetStreamlinkQuality(string requestedQuality)
+    {
+        var quality = string.IsNullOrWhiteSpace(StreamlinkQuality)
             ? requestedQuality
             : StreamlinkQuality;
+        return quality?.Trim() ?? "";
+    }
 
     public static ReplaySessionInfo Unavailable(
         PlatformKind platform,

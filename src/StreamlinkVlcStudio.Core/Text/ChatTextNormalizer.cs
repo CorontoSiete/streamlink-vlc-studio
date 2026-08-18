@@ -4,19 +4,33 @@ namespace StreamlinkVlcStudio.Core.Text;
 
 public static class ChatTextNormalizer
 {
+    private const int MaximumBadgeTitleTextElements = 128;
+
     public static string NormalizeSingleLine(string? value, int maxTextElements = int.MaxValue)
     {
-        var normalized = (value ?? "")
-            .Replace('\r', ' ')
-            .Replace('\n', ' ')
-            .Trim();
+        var input = value ?? "";
+        var builder = new System.Text.StringBuilder(input.Length);
+        foreach (var character in input)
+        {
+            builder.Append(char.IsControl(character) ? ' ' : character);
+        }
+
+        var normalized = builder.ToString().Trim();
 
         return maxTextElements == int.MaxValue
             ? normalized
             : TruncateTextElements(normalized, maxTextElements);
     }
 
-    public static string TruncateTextElements(string value, int maxTextElements)
+    public static string NormalizeBadgeTitle(string? value, string? fallback = null)
+    {
+        var normalized = NormalizeSingleLine(value, MaximumBadgeTitleTextElements);
+        return normalized.Length > 0
+            ? normalized
+            : NormalizeSingleLine(fallback, MaximumBadgeTitleTextElements);
+    }
+
+    private static string TruncateTextElements(string value, int maxTextElements)
     {
         if (string.IsNullOrEmpty(value) || maxTextElements < 0)
         {

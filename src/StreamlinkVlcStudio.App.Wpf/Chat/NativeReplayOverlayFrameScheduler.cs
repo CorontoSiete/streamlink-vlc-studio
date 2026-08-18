@@ -16,22 +16,44 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
     private readonly IAppLogger logger;
     private readonly Action<NativeReplayOverlayFrameResult> frameRendered;
     private readonly object gate = new();
-    private readonly Thread renderThread;
     private readonly Dispatcher dispatcher;
+    private readonly Task threadExited;
     private NativeReplayOverlayFrameRequest? pendingRequest;
     private bool renderQueued;
     private bool disposed;
+    private Task? disposalTask;
+    private NativeReplayOverlayFrameRenderContext? renderContext;
 
-    public NativeReplayOverlayFrameScheduler(
+    private NativeReplayOverlayFrameScheduler(
         IAppLogger logger,
-        Action<NativeReplayOverlayFrameResult> frameRendered)
+        Action<NativeReplayOverlayFrameResult> frameRendered,
+        Dispatcher dispatcher,
+        Task threadExited)
     {
         this.logger = logger;
         this.frameRendered = frameRendered;
+        this.dispatcher = dispatcher;
+        this.threadExited = threadExited;
+    }
 
-        var dispatcherReady = new TaskCompletionSource<Dispatcher>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        renderThread = new Thread(() => RunDispatcher(dispatcherReady))
+    internal static async Task<NativeReplayOverlayFrameScheduler> CreateAsync(
+        IAppLogger logger,
+        Action<NativeReplayOverlayFrameResult> frameRendered,
+        CancellationToken cancellationToken = default,
+        TimeSpan? startupTimeout = null,
+        Action? beforeDispatcherInitialization = null,
+        Action? dispatcherStopped = null)
+    {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(frameRendered);
+        var timeout = startupTimeout ?? ShutdownTimeout;
+        if (timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startupTimeout));
+        }
+
+        var startup = new DispatcherStartupState(dispatcherStopped);
+        var renderThread = new Thread(() => RunDispatcher(startup, beforeDispatcherInitialization))
         {
             IsBackground = true,
             Name = "Streamlink VLC Studio replay overlay renderer"
@@ -39,10 +61,22 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         renderThread.SetApartmentState(ApartmentState.STA);
         renderThread.Start();
 
-        dispatcher = dispatcherReady.Task
-            .WaitAsync(ShutdownTimeout)
-            .GetAwaiter()
-            .GetResult();
+        try
+        {
+            var dispatcher = await startup.DispatcherReady.Task
+                .WaitAsync(timeout, cancellationToken)
+                .ConfigureAwait(false);
+            return new NativeReplayOverlayFrameScheduler(
+                logger,
+                frameRendered,
+                dispatcher,
+                startup.ThreadExited.Task);
+        }
+        catch
+        {
+            startup.RequestShutdown();
+            throw;
+        }
     }
 
     public void QueueRender(NativeReplayOverlayFrameRequest request)
@@ -89,10 +123,20 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
     {
         lock (gate)
         {
+            if (disposalTask is not null)
+            {
+                return new ValueTask(disposalTask);
+            }
+
             disposed = true;
             pendingRequest = null;
+            disposalTask = DisposeCoreAsync();
+            return new ValueTask(disposalTask);
         }
+    }
 
+    private async Task DisposeCoreAsync()
+    {
         try
         {
             if (!dispatcher.HasShutdownStarted)
@@ -104,27 +148,41 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         {
         }
 
-        if (!renderThread.Join(ShutdownTimeout))
+        try
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Timed out stopping the native VLC replay overlay renderer.");
+            await threadExited.WaitAsync(ShutdownTimeout).ConfigureAwait(false);
         }
-
-        return ValueTask.CompletedTask;
+        catch (TimeoutException)
+        {
+            SafeLog(AppLogLevel.Warning, "Timed out stopping the native VLC replay overlay renderer.");
+        }
     }
 
-    private static void RunDispatcher(TaskCompletionSource<Dispatcher> dispatcherReady)
+    private static void RunDispatcher(
+        DispatcherStartupState startup,
+        Action? beforeDispatcherInitialization)
     {
         try
         {
+            beforeDispatcherInitialization?.Invoke();
             var currentDispatcher = Dispatcher.CurrentDispatcher;
             SynchronizationContext.SetSynchronizationContext(
                 new DispatcherSynchronizationContext(currentDispatcher));
-            dispatcherReady.TrySetResult(currentDispatcher);
+            startup.DispatcherReady.TrySetResult(currentDispatcher);
+            if (startup.ShutdownRequested)
+            {
+                currentDispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
+            }
+
             Dispatcher.Run();
         }
         catch (Exception ex)
         {
-            dispatcherReady.TrySetException(ex);
+            startup.DispatcherReady.TrySetException(ex);
+        }
+        finally
+        {
+            startup.SignalStopped();
         }
     }
 
@@ -156,6 +214,8 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
             var renderedSelection = NativeReplayOverlayRenderedSelection.Empty;
             try
             {
+                renderContext ??= new NativeReplayOverlayFrameRenderContext();
+                renderContext.EnsureContentVersion(request.RenderContentVersion);
                 var renderedFrame = NativeOverlayChatFrameRenderer.TryBuildFrame(
                     request.Messages,
                     request.Settings,
@@ -166,7 +226,8 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
                     out width,
                     out height,
                     request.MessageOffset,
-                    request.ImageCachePinOwner);
+                    request.ImageCachePinOwner,
+                    renderContext);
                 frame = renderedFrame?.Frame;
                 hasAnimatedContent = renderedFrame?.HasAnimatedContent == true;
                 hasPendingImageLoads = renderedFrame?.HasPendingImageLoads == true;
@@ -177,15 +238,14 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
             catch (Exception ex)
             {
                 exception = ex;
-                logger.Write(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay rendering failed.", ex);
+                SafeLog(AppLogLevel.Warning, "Native VLC replay overlay rendering failed.", ex);
             }
 
             stopwatch.Stop();
             if (exception is null && stopwatch.Elapsed >= SlowRenderThreshold)
             {
-                logger.Write(
+                SafeLog(
                     AppLogLevel.Debug,
-                    "ChatOverlay",
                     $"Native VLC replay overlay render took {stopwatch.Elapsed.TotalMilliseconds:0} ms for {request.Messages.Count} messages at {width}x{height}.");
             }
 
@@ -208,7 +268,7 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay render callback failed.", ex);
+                SafeLog(AppLogLevel.Warning, "Native VLC replay overlay render callback failed.", ex);
             }
 
             lock (gate)
@@ -219,6 +279,65 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
                     return;
                 }
             }
+        }
+    }
+
+    private void SafeLog(AppLogLevel level, string message, Exception? exception = null)
+    {
+        try
+        {
+            logger.Write(level, "ChatOverlay", message, exception);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private sealed class DispatcherStartupState(Action? dispatcherStopped)
+    {
+        private int shutdownRequested;
+
+        internal TaskCompletionSource<Dispatcher> DispatcherReady { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ThreadExited { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal bool ShutdownRequested => Volatile.Read(ref shutdownRequested) != 0;
+
+        internal void RequestShutdown()
+        {
+            Interlocked.Exchange(ref shutdownRequested, 1);
+            _ = DispatcherReady.Task.ContinueWith(
+                static task =>
+                {
+                    try
+                    {
+                        if (!task.Result.HasShutdownStarted)
+                        {
+                            task.Result.BeginInvokeShutdown(DispatcherPriority.Send);
+                        }
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        internal void SignalStopped()
+        {
+            try
+            {
+                dispatcherStopped?.Invoke();
+            }
+            catch (Exception)
+            {
+            }
+
+            ThreadExited.TrySetResult();
         }
     }
 }
@@ -235,7 +354,8 @@ internal sealed record NativeReplayOverlayFrameRequest(
     int MessageOffset = 0,
     string ScrollSessionKey = "",
     TimeSpan AnimationClock = default,
-    object? ImageCachePinOwner = null);
+    object? ImageCachePinOwner = null,
+    long RenderContentVersion = 0);
 
 internal sealed record NativeReplayOverlayFrameResult(
     NativeReplayOverlayFrameRequest Request,

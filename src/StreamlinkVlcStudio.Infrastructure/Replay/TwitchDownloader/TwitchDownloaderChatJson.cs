@@ -89,6 +89,19 @@ public sealed class TwitchDownloaderCommenter
 public sealed class TwitchDownloaderFragment
 {
     public string? text { get; set; }
+
+    public TwitchDownloaderEmoticonFragment? emoticon { get; set; }
+
+    public TwitchDownloaderEmoticonFragment? emote { get; set; }
+}
+
+public sealed class TwitchDownloaderEmoticonFragment
+{
+    public string? emoticon_id { get; set; }
+
+    public string? emoticonId { get; set; }
+
+    public string? id { get; set; }
 }
 
 public sealed class TwitchDownloaderUserBadge

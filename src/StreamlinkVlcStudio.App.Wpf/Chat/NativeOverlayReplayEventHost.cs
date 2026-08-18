@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
@@ -12,13 +11,6 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private static readonly TimeSpan DefaultResizeDebounceDelay = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan PipeBusyRetryDelay = TimeSpan.FromMilliseconds(50);
 
-    private const uint NativeOverlayMagic = 0x564C4F56u;
-    private const uint NativeOverlayVersion = 1u;
-    private const uint NativeOverlayScrollEventType = 1u;
-    private const uint NativeOverlayScrollPositionEventType = 2u;
-    private const uint NativeOverlayResizeEventType = 3u;
-    private const int NativeOverlayEventMessageSize = 16;
-    private const int NativeOverlayMaximumScrollNotches = 273;
     private const int ErrorPipeBusy = 231;
 
     private readonly IAppLogger logger;
@@ -27,6 +19,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private readonly Func<int> getVideoHeight;
     private readonly Action<int>? replayScrolled;
     private readonly Action<int>? replayScrollPositionChanged;
+    private readonly Action<string, long>? resizeTempWritten;
     private readonly TimeSpan resizeDebounceDelay;
     private readonly object gate = new();
     private CancellationTokenSource? cancellation;
@@ -42,6 +35,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private bool resizePersistenceSuspended = true;
     private long resizePersistenceGeneration;
     private long resizeSessionId;
+    private long resizeSequence;
 
     public NativeOverlayReplayEventHost(
         IAppLogger logger,
@@ -50,7 +44,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         Func<int> getVideoHeight,
         TimeSpan? resizeDebounceDelay = null,
         Action<int>? replayScrolled = null,
-        Action<int>? replayScrollPositionChanged = null)
+        Action<int>? replayScrollPositionChanged = null,
+        Action<string, long>? resizeTempWritten = null)
     {
         this.logger = logger;
         this.dispatch = dispatch;
@@ -58,6 +53,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         this.getVideoHeight = getVideoHeight;
         this.replayScrolled = replayScrolled;
         this.replayScrollPositionChanged = replayScrollPositionChanged;
+        this.resizeTempWritten = resizeTempWritten;
         this.resizeDebounceDelay = resizeDebounceDelay ?? DefaultResizeDebounceDelay;
         if (this.resizeDebounceDelay < TimeSpan.Zero)
         {
@@ -303,7 +299,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         long activeResizeSessionId,
         CancellationToken cancellationToken)
     {
-        var buffer = new byte[NativeOverlayEventMessageSize];
+        var buffer = new byte[NativeOverlayProtocolCodec.EventMessageSize];
         while (!cancellationToken.IsCancellationRequested && pipe.IsConnected)
         {
             var read = await ReadExactlyOrEndAsync(pipe, buffer, cancellationToken).ConfigureAwait(false);
@@ -344,17 +340,15 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         string activePositionStatePath,
         long activeResizeSessionId)
     {
-        if (BinaryPrimitives.ReadUInt32LittleEndian(message[..4]) != NativeOverlayMagic ||
-            BinaryPrimitives.ReadUInt32LittleEndian(message.Slice(4, 4)) != NativeOverlayVersion)
+        if (!NativeOverlayProtocolCodec.TryReadEvent(message, out var eventType, out var value))
         {
             return;
         }
 
-        var eventType = BinaryPrimitives.ReadUInt32LittleEndian(message.Slice(8, 4));
-        if (eventType == NativeOverlayScrollEventType)
+        if (eventType == NativeOverlayProtocolCodec.ScrollEventType)
         {
-            var notches = BinaryPrimitives.ReadInt32LittleEndian(message.Slice(12, 4));
-            if (notches == 0 || Math.Abs((long)notches) > NativeOverlayMaximumScrollNotches)
+            var notches = value;
+            if (notches == 0 || Math.Abs((long)notches) > NativeOverlayProtocolCodec.MaximumScrollNotches)
             {
                 return;
             }
@@ -369,9 +363,9 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             return;
         }
 
-        if (eventType == NativeOverlayScrollPositionEventType)
+        if (eventType == NativeOverlayProtocolCodec.ScrollPositionEventType)
         {
-            var messageOffset = BinaryPrimitives.ReadInt32LittleEndian(message.Slice(12, 4));
+            var messageOffset = value;
             if (messageOffset < 0)
             {
                 return;
@@ -387,12 +381,12 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             return;
         }
 
-        if (eventType != NativeOverlayResizeEventType)
+        if (eventType != NativeOverlayProtocolCodec.ResizeEventType)
         {
             return;
         }
 
-        var packedSize = BinaryPrimitives.ReadUInt32LittleEndian(message.Slice(12, 4));
+        var packedSize = unchecked((uint)value);
         var sourceWidth = (int)((packedSize >> 16) & 0xFFFFu);
         var sourceHeight = (int)(packedSize & 0xFFFFu);
         if (sourceWidth <= 0 || sourceHeight <= 0)
@@ -431,9 +425,11 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             }
 
             persistenceGeneration = resizePersistenceGeneration;
+            var sequence = NextResizeSequenceLocked();
             pendingResizeFlush = new ResizeFlush(
                 activeResizeSessionId,
                 persistenceGeneration,
+                sequence,
                 activePositionStatePath,
                 referenceWidth,
                 referenceHeight);
@@ -444,6 +440,27 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     }
 
     private void FlushPendingResize(object? state)
+    {
+        try
+        {
+            FlushPendingResizeCore();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // System.Threading.Timer propagates callback exceptions to the process. Resize
+            // persistence is best-effort UI state, so a callback or dispatcher failure must not
+            // terminate playback (and logging failures must not escape this catch either).
+            try
+            {
+                logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not flush native VLC replay overlay size.", ex);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void FlushPendingResizeCore()
     {
         ResizeFlush flush;
         lock (gate)
@@ -461,14 +478,58 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             {
                 return;
             }
+        }
 
-            if (!TrySaveResizeFlush(flush))
+        // Create the candidate beside the target without holding the lifecycle lock. Publication
+        // itself is atomic and occurs only after session/generation/sequence revalidation.
+        if (!TryWriteResizeTemp(flush, out var temporaryPath))
+        {
+            return;
+        }
+
+        var published = false;
+        Exception? publishException = null;
+        try
+        {
+            resizeTempWritten?.Invoke(temporaryPath, flush.Sequence);
+            lock (gate)
             {
-                return;
-            }
+                if (!IsResizePersistenceActiveLocked(
+                        flush.PositionStatePath,
+                        flush.SessionId,
+                        flush.PersistenceGeneration) ||
+                    flush.Sequence != resizeSequence)
+                {
+                    return;
+                }
 
-            lastResizeFlush = flush;
-            hasLastResizeFlush = true;
+                try
+                {
+                    AtomicReplaceResizeFile(temporaryPath, $"{flush.PositionStatePath}.size");
+                    lastResizeFlush = flush;
+                    hasLastResizeFlush = true;
+                    published = true;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+                {
+                    publishException = ex;
+                }
+            }
+        }
+        finally
+        {
+            TryDeleteResizeTemp(temporaryPath);
+        }
+
+        if (publishException is not null)
+        {
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not publish native VLC replay overlay size.", publishException);
+            return;
+        }
+
+        if (!published)
+        {
+            return;
         }
 
         dispatch(() =>
@@ -480,12 +541,14 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         });
     }
 
-    private bool TrySaveResizeFlush(ResizeFlush flush)
+    private bool TryWriteResizeTemp(ResizeFlush flush, out string temporaryPath)
     {
+        var targetPath = $"{flush.PositionStatePath}.size";
+        temporaryPath = $"{targetPath}.{flush.SessionId}.{flush.Sequence}.{Guid.NewGuid():N}.tmp";
         try
         {
             File.WriteAllText(
-                $"{flush.PositionStatePath}.size",
+                temporaryPath,
                 string.Format(
                     CultureInfo.InvariantCulture,
                     "reference {0} {1}",
@@ -496,7 +559,47 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
             logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not save native VLC replay overlay size.", ex);
+            TryDeleteResizeTemp(temporaryPath);
             return false;
+        }
+    }
+
+    private static void AtomicReplaceResizeFile(string temporaryPath, string targetPath)
+    {
+        if (File.Exists(targetPath))
+        {
+            File.Replace(temporaryPath, targetPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+        }
+        else
+        {
+            File.Move(temporaryPath, targetPath);
+        }
+    }
+
+    private static void TryDeleteResizeTemp(string temporaryPath)
+    {
+        try
+        {
+            File.Delete(temporaryPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+        }
+    }
+
+    internal void QueueResizeFlushForTest(int referenceWidth, int referenceHeight)
+    {
+        string? activePath;
+        long activeSession;
+        lock (gate)
+        {
+            activePath = positionStatePath;
+            activeSession = resizeSessionId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(activePath))
+        {
+            QueueResizeFlush(activePath, activeSession, referenceWidth, referenceHeight);
         }
     }
 
@@ -546,6 +649,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         lastResizeFlush = default;
         hasPendingResizeFlush = false;
         hasLastResizeFlush = false;
+        NextResizeSequenceLocked();
         return timer;
     }
 
@@ -559,9 +663,20 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         return resizeSessionId;
     }
 
+    private long NextResizeSequenceLocked()
+    {
+        unchecked
+        {
+            resizeSequence++;
+        }
+
+        return resizeSequence;
+    }
+
     private readonly record struct ResizeFlush(
         long SessionId,
         long PersistenceGeneration,
+        long Sequence,
         string PositionStatePath,
         int ReferenceWidth,
         int ReferenceHeight);

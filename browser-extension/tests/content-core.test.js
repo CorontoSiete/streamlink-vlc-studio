@@ -13,8 +13,10 @@ function loadCore() {
   context.globalThis = context;
   vm.createContext(context);
 
-  const source = fs.readFileSync(path.join(__dirname, "..", "content-core.js"), "utf8");
-  vm.runInContext(source, context, { filename: "content-core.js" });
+  for (const script of ["platform-routes.generated.js", "content-core.js"]) {
+    const source = fs.readFileSync(path.join(__dirname, "..", script), "utf8");
+    vm.runInContext(source, context, { filename: script });
+  }
 
   return context.StreamlinkVlcStudioContentCore;
 }
@@ -23,9 +25,16 @@ function loadBackground(overrides = {}) {
   let messageListener = null;
   const context = {
     AbortController,
+    URL,
     clearTimeout: overrides.clearTimeout || clearTimeout,
     fetch: overrides.fetch || (() => Promise.reject(new Error("fetch was not configured"))),
     setTimeout: overrides.setTimeout || setTimeout,
+    importScripts: (...scripts) => {
+      for (const script of scripts) {
+        const source = fs.readFileSync(path.join(__dirname, "..", script), "utf8");
+        vm.runInContext(source, context, { filename: script });
+      }
+    },
     chrome: {
       runtime: {
         onMessage: {
@@ -52,6 +61,8 @@ class FakeElement {
     this.disabled = options.disabled === true;
     this.isConnected = options.isConnected !== false;
     this.textContent = options.textContent || "";
+    this.clickCount = 0;
+    this.queryCount = 0;
     this.visible = options.visible !== false;
     this.style = {
       display: this.visible ? "block" : "none",
@@ -68,6 +79,10 @@ class FakeElement {
   append(child) {
     child.parentElement = this;
     this.children.push(child);
+  }
+
+  click() {
+    this.clickCount += 1;
   }
 
   getAttribute(name) {
@@ -95,6 +110,7 @@ class FakeElement {
   }
 
   querySelectorAll(selector) {
+    this.queryCount += 1;
     const matches = [];
     const visit = element => {
       for (const child of element.children) {
@@ -178,6 +194,23 @@ test("background ignores unrelated messages", () => {
   assert.equal(listener({ type: "capture-stream", url: 123 }, {}, () => {}), false);
 });
 
+test("background rejects invalid and non-canonical channel URLs", async () => {
+  const listener = loadBackground();
+
+  for (const url of [
+    "https://www.twitch.tv/videos/123456",
+    "https://www.twitch.tv/xqc?from=home",
+    "https://example.com/xqc",
+    " https://www.twitch.tv/xqc"
+  ]) {
+    const response = await new Promise(resolve => {
+      assert.equal(listener({ type: "capture-stream", url }, {}, resolve), true);
+    });
+    assert.equal(response.ok, false);
+    assert.equal(response.status, 400);
+  }
+});
+
 test("normalizes Twitch and Kick channel links for capture", () => {
   assert.equal(
     core.channelFromUrl("https://www.twitch.tv/xqc?some=value", "https://www.twitch.tv/"),
@@ -212,6 +245,7 @@ test("normalizes scheme-less Twitch and Kick channel links", () => {
 test("identifies capture feedback platform names", () => {
   assert.equal(core.platformNameFromUrl("https://www.twitch.tv/xqc"), "Twitch");
   assert.equal(core.platformNameFromUrl("https://kick.com/xqc"), "Kick");
+  assert.equal(core.platformNameFromUrl("ftp://www.twitch.tv/xqc"), "stream");
   assert.equal(core.platformNameFromUrl("not a url"), "stream");
 });
 
@@ -235,16 +269,52 @@ test("reports rejected stream capture feedback with HTTP status", () => {
 
 test("rejects non-channel Twitch and Kick links", () => {
   assert.equal(core.channelFromUrl("", "https://www.twitch.tv/xqc"), null);
+  assert.equal(core.channelFromUrl("ftp://www.twitch.tv/xqc", "https://www.twitch.tv/"), null);
+  assert.equal(core.channelFromUrl("javascript://twitch.tv/xqc", "https://www.twitch.tv/"), null);
   assert.equal(core.channelFromUrl("https://www.twitch.tv/videos/123456", "https://www.twitch.tv/"), null);
   assert.equal(core.channelFromUrl("https://www.twitch.tv/directory", "https://www.twitch.tv/"), null);
   assert.equal(core.channelFromUrl("https://www.twitch.tv/login", "https://www.twitch.tv/"), null);
   assert.equal(core.channelFromUrl("https://www.twitch.tv/signup", "https://www.twitch.tv/"), null);
+  assert.equal(core.channelFromUrl("https://www.twitch.tv/creatorcamp", "https://www.twitch.tv/"), null);
   assert.equal(core.channelFromUrl("https://www.twitch.tv/xqc/videos", "https://www.twitch.tv/"), null);
   assert.equal(core.channelFromUrl("https://kick.com/search", "https://kick.com/"), null);
   assert.equal(core.channelFromUrl("https://kick.com/login", "https://kick.com/"), null);
   assert.equal(core.channelFromUrl("https://kick.com/register", "https://kick.com/"), null);
+  assert.equal(core.channelFromUrl("https://kick.com/browse", "https://kick.com/"), null);
   assert.equal(core.channelFromUrl("https://kick.com/xqc/clips", "https://kick.com/"), null);
   assert.equal(core.channelFromUrl("https://example.com/xqc", "https://www.twitch.tv/"), null);
+});
+
+test("generated browser routes exactly match the shared route policy", () => {
+  const shared = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "..", "shared", "platform-routes.json"),
+    "utf8"));
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.createContext(context);
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "platform-routes.generated.js"),
+    "utf8");
+  vm.runInContext(source, context, { filename: "platform-routes.generated.js" });
+
+  assert.deepEqual(Array.from(context.StreamlinkVlcStudioPlatformRoutes.twitch), shared.twitch);
+  assert.deepEqual(Array.from(context.StreamlinkVlcStudioPlatformRoutes.kick), shared.kick);
+});
+
+test("manifest limits background host access to the loopback capture endpoint", () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "manifest.json"),
+    "utf8"));
+
+  assert.deepEqual(manifest.host_permissions, ["http://127.0.0.1:39179/*"]);
+  assert.deepEqual(manifest.content_scripts[0].matches, [
+    "https://twitch.tv/*",
+    "https://www.twitch.tv/*",
+    "https://m.twitch.tv/*",
+    "https://kick.com/*",
+    "https://m.kick.com/*",
+    "https://www.kick.com/*"
+  ]);
 });
 
 test("identifies the visible Twitch channel point bonus button", () => {
@@ -274,12 +344,16 @@ test("does not claim disabled, hidden, or unrelated buttons", () => {
   const drop = new FakeElement("button", {
     attributes: { "aria-label": "Claim Drop" }
   });
+  const prefixSpoof = new FakeElement("button", {
+    attributes: { "aria-label": "Claim Bonus and subscribe" }
+  });
 
   assert.equal(core.isChannelPointClaimElement(disabled), false);
   assert.equal(core.isChannelPointClaimElement(ariaDisabled), false);
   assert.equal(core.isChannelPointClaimElement(hidden), false);
   assert.equal(core.isChannelPointClaimElement(transparentParent.children[0]), false);
   assert.equal(core.isChannelPointClaimElement(drop), false);
+  assert.equal(core.isChannelPointClaimElement(prefixSpoof), false);
 });
 
 test("finds claimable button descendants without returning unrelated controls", () => {
@@ -300,4 +374,233 @@ test("finds claimable button descendants without returning unrelated controls", 
   assert.equal(results.length, 2);
   assert.equal(results[0], claimButton);
   assert.equal(results[1], roleButton);
+});
+
+function loadShippedContentController(initialUrl) {
+  const timeoutCallbacks = new Map();
+  const intervalCallbacks = new Map();
+  const windowListeners = new Map();
+  const documentListeners = new Map();
+  const observers = [];
+  const sentMessages = [];
+  let nextTimerId = 1;
+
+  class FakeAnchor {
+    constructor(href) {
+      this.href = href;
+    }
+  }
+
+  class FakeMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observers.push(this);
+    }
+
+    observe(target, options) {
+      this.target = target;
+      this.options = options;
+    }
+
+    disconnect() {
+      this.disconnected = true;
+    }
+  }
+
+  const documentElement = new FakeElement("html");
+  const document = {
+    documentElement,
+    addEventListener(name, callback) {
+      documentListeners.set(name, callback);
+    },
+    removeEventListener(name, callback) {
+      if (documentListeners.get(name) === callback) {
+        documentListeners.delete(name);
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      return documentElement.querySelectorAll(selector);
+    }
+  };
+  const parsedInitialUrl = new URL(initialUrl);
+  const context = {
+    URL,
+    Date,
+    MutationObserver: FakeMutationObserver,
+    HTMLAnchorElement: FakeAnchor,
+    chrome: {
+      runtime: {
+        lastError: null,
+        sendMessage(message) {
+          sentMessages.push(message);
+        }
+      }
+    },
+    document,
+    location: {
+      href: parsedInitialUrl.href,
+      hostname: parsedInitialUrl.hostname
+    },
+    getComputedStyle: element => element.style,
+    requestAnimationFrame: callback => callback(),
+    setTimeout(callback) {
+      const id = nextTimerId++;
+      timeoutCallbacks.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      timeoutCallbacks.delete(id);
+    },
+    setInterval(callback) {
+      const id = nextTimerId++;
+      intervalCallbacks.set(id, callback);
+      return id;
+    },
+    clearInterval(id) {
+      intervalCallbacks.delete(id);
+    },
+    addEventListener(name, callback) {
+      windowListeners.set(name, callback);
+    },
+    removeEventListener(name, callback) {
+      if (windowListeners.get(name) === callback) {
+        windowListeners.delete(name);
+      }
+    }
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  for (const script of ["platform-routes.generated.js", "content-core.js", "content.js"]) {
+    const source = fs.readFileSync(path.join(__dirname, "..", script), "utf8");
+    vm.runInContext(source, context, { filename: script });
+  }
+
+  return {
+    controller: context.StreamlinkVlcStudioContentController,
+    documentElement,
+    observers,
+    sentMessages,
+    runTimeouts() {
+      const callbacks = [...timeoutCallbacks.values()];
+      timeoutCallbacks.clear();
+      for (const callback of callbacks) {
+        callback();
+      }
+    },
+    navigate(url) {
+      const parsed = new URL(url);
+      context.location.href = parsed.href;
+      context.location.hostname = parsed.hostname;
+      context.StreamlinkVlcStudioContentController.refreshRoute();
+    },
+    dispatchWindowEvent(name, event = {}) {
+      windowListeners.get(name)?.(event);
+    },
+    dispatchDocumentEvent(name, event) {
+      documentListeners.get(name)?.(event);
+    },
+    createAnchor(href) {
+      return new FakeAnchor(href);
+    }
+  };
+}
+
+test("shipped controller scans added subtrees and tears down across SPA routes", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/xqc");
+  assert.equal(runtime.controller.isActive(), true);
+  assert.equal(runtime.observers.length, 1);
+  runtime.runTimeouts();
+
+  const documentQueryCount = runtime.documentElement.queryCount;
+  const claim = new FakeElement("button", {
+    attributes: { "aria-label": "Claim Bonus" }
+  });
+  const addedSubtree = new FakeElement("section", { children: [claim] });
+  runtime.observers[0].callback([{
+    type: "childList",
+    target: runtime.documentElement,
+    addedNodes: [addedSubtree]
+  }]);
+  runtime.runTimeouts();
+
+  assert.equal(claim.clickCount, 1);
+  assert.equal(addedSubtree.queryCount, 1);
+  assert.equal(runtime.documentElement.queryCount, documentQueryCount);
+
+  const firstObserver = runtime.observers[0];
+  runtime.navigate("https://www.twitch.tv/directory");
+  assert.equal(runtime.controller.isActive(), false);
+  assert.equal(firstObserver.disconnected, true);
+
+  runtime.navigate("https://www.twitch.tv/summit1g");
+  assert.equal(runtime.controller.isActive(), true);
+  assert.equal(runtime.observers.length, 2);
+
+  runtime.controller.stop();
+  assert.equal(runtime.controller.isActive(), false);
+  assert.equal(runtime.observers[1].disconnected, true);
+});
+
+test("shipped controller resumes after a back-forward cache restore", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/xqc");
+  const firstObserver = runtime.observers[0];
+
+  runtime.dispatchWindowEvent("pagehide", { persisted: true });
+  assert.equal(runtime.controller.isActive(), false);
+  assert.equal(firstObserver.disconnected, true);
+
+  runtime.dispatchWindowEvent("pageshow", { persisted: true });
+  assert.equal(runtime.controller.isActive(), true);
+  assert.equal(runtime.observers.length, 2);
+});
+
+test("shipped capture handler ignores synthetic clicks", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/directory");
+  const anchor = runtime.createAnchor("https://www.twitch.tv/xqc");
+  runtime.dispatchDocumentEvent("click", {
+    isTrusted: false,
+    defaultPrevented: false,
+    button: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    composedPath: () => [anchor]
+  });
+
+  assert.equal(runtime.sentMessages.length, 0);
+});
+
+test("shipped capture handler accepts a trusted unmodified channel click", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/directory");
+  const anchor = runtime.createAnchor("https://www.twitch.tv/xqc?from=home");
+  let prevented = false;
+  let propagationStopped = false;
+  runtime.dispatchDocumentEvent("click", {
+    isTrusted: true,
+    defaultPrevented: false,
+    button: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    composedPath: () => [anchor],
+    preventDefault() {
+      prevented = true;
+    },
+    stopImmediatePropagation() {
+      propagationStopped = true;
+    }
+  });
+
+  assert.equal(runtime.sentMessages.length, 1);
+  assert.equal(runtime.sentMessages[0].type, "capture-stream");
+  assert.equal(runtime.sentMessages[0].url, "https://www.twitch.tv/xqc");
+  assert.equal(prevented, true);
+  assert.equal(propagationStopped, true);
 });

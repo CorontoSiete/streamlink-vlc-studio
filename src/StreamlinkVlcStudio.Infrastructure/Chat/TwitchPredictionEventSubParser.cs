@@ -7,6 +7,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 public sealed class TwitchPredictionEventSubParser
 {
     private const int MaxSeenMessageIds = 512;
+    private const int MaxMessageIdLength = 256;
     private readonly Queue<string> seenMessageIds = [];
     private readonly HashSet<string> seenMessageIdSet = new(StringComparer.Ordinal);
 
@@ -29,6 +30,11 @@ public sealed class TwitchPredictionEventSubParser
             }
 
             var messageId = TwitchPredictionJson.GetOptionalString(metadata, "message_id");
+            if (messageId.Length > MaxMessageIdLength)
+            {
+                return false;
+            }
+
             var messageType = TwitchPredictionJson.GetOptionalString(metadata, "message_type");
             var duplicate = !string.IsNullOrWhiteSpace(messageId) && IsDuplicate(messageId);
             var payload = root.TryGetProperty("payload", out var payloadElement) && payloadElement.ValueKind == JsonValueKind.Object

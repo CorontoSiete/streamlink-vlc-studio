@@ -1,33 +1,40 @@
 using System.Globalization;
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using StreamlinkVlcStudio.Core.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
-using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Replay;
 
 public sealed partial class ReplayResolver : IReplayResolver
 {
-    private const string TwitchGraphQlEndpoint = "https://gql.twitch.tv/gql";
     // Public Twitch web Client-ID used by the installed Twitch VOD Downloader extension as its fallback.
     private const string TwitchVodDownloaderClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private const string TwitchLiveDvrReplayIdPrefix = "live-dvr-";
     private const int TwitchGraphQlArchiveLimit = 100;
-    private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(
+        TimeSpan.FromSeconds(12),
+        includeUserAgent: true,
+        acceptJson: true,
+        allowAutoRedirect: false);
     private static readonly TimeSpan TwitchVodStartTolerance = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan KickFallbackDuration = TimeSpan.FromHours(12);
+    private static readonly TimeSpan TwitchDvrDiscoveryTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan TwitchDvrRequestTimeout = TimeSpan.FromSeconds(5);
+    private const int TwitchDvrMaximumConcurrency = 8;
     private static readonly int[] TwitchLiveDvrStartSecondOffsets = [0, 1, -1];
     private static readonly string[] TwitchDvrCloudFrontServers =
     [
@@ -64,17 +71,53 @@ public sealed partial class ReplayResolver : IReplayResolver
     private readonly IAppLogger logger;
     private readonly IStreamlinkService streamlinkService;
     private readonly HttpClient httpClient;
+    private readonly ReplayUrlSecurityValidator replayUrlValidator;
+    private readonly IKickTokenProvider kickTokenProvider;
+    private readonly TwitchGraphQlTransport twitchGraphQlTransport;
+    private readonly KickWebsiteJsonReader kickWebsiteReader;
 
     public ReplayResolver(IAppLogger logger, IStreamlinkService streamlinkService)
         : this(logger, streamlinkService, SharedHttpClient)
     {
     }
 
-    public ReplayResolver(IAppLogger logger, IStreamlinkService streamlinkService, HttpClient httpClient)
+    internal ReplayResolver(IAppLogger logger, IStreamlinkService streamlinkService, HttpClient httpClient)
+        : this(logger, streamlinkService, httpClient, ReplayUrlSecurityValidator.Shared)
+    {
+    }
+
+    internal ReplayResolver(
+        IAppLogger logger,
+        IStreamlinkService streamlinkService,
+        HttpClient httpClient,
+        ReplayUrlSecurityValidator replayUrlValidator)
+        : this(
+            logger,
+            streamlinkService,
+            httpClient,
+            replayUrlValidator,
+            KickTokenProvider.Shared)
+    {
+    }
+
+    internal ReplayResolver(
+        IAppLogger logger,
+        IStreamlinkService streamlinkService,
+        HttpClient httpClient,
+        ReplayUrlSecurityValidator replayUrlValidator,
+        IKickTokenProvider kickTokenProvider)
     {
         this.logger = logger;
         this.streamlinkService = streamlinkService;
         this.httpClient = httpClient;
+        this.replayUrlValidator = replayUrlValidator;
+        this.kickTokenProvider = kickTokenProvider;
+        twitchGraphQlTransport = new TwitchGraphQlTransport(httpClient);
+        kickWebsiteReader = new KickWebsiteJsonReader(
+            httpClient,
+            logger,
+            "Replay",
+            TimeSpan.FromSeconds(18));
     }
 
     public Task<ReplaySessionInfo> ResolveCurrentReplayAsync(
@@ -116,7 +159,14 @@ public sealed partial class ReplayResolver : IReplayResolver
                 "Twitch replay lookup requires a Twitch OAuth token.");
         }
 
-        var clientId = await ResolveTwitchClientIdAsync(settings, token, cancellationToken).ConfigureAwait(false);
+        var clientId = await TwitchClientIdResolver.ResolveAsync(
+            settings,
+            httpClient,
+            token,
+            logger,
+            "Replay",
+            "Could not resolve Twitch Client ID from the OAuth token.",
+            cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(clientId))
         {
             return ReplaySessionInfo.Unavailable(
@@ -208,14 +258,14 @@ public sealed partial class ReplayResolver : IReplayResolver
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Headers.TryAddWithoutValidation("Client-Id", clientId);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             logger.Write(
                 AppLogLevel.Warning,
                 "Replay",
-                $"Twitch live stream lookup failed for {target.DisplayName}: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                $"Twitch live stream lookup failed for {target.DisplayName}: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
             throw new InvalidOperationException("Twitch replay lookup failed. Check the Twitch Client ID and OAuth token.");
         }
 
@@ -234,14 +284,14 @@ public sealed partial class ReplayResolver : IReplayResolver
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Headers.TryAddWithoutValidation("Client-Id", clientId);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             logger.Write(
                 AppLogLevel.Warning,
                 "Replay",
-                $"Twitch VOD lookup failed for user {userId}: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                $"Twitch VOD lookup failed for user {userId}: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
             throw new InvalidOperationException("Twitch archive VOD lookup failed. Check the Twitch Client ID and OAuth token.");
         }
 
@@ -253,36 +303,30 @@ public sealed partial class ReplayResolver : IReplayResolver
         string channel,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, TwitchGraphQlEndpoint);
-        request.Headers.Accept.ParseAdd("*/*");
-        request.Headers.AcceptLanguage.ParseAdd("en-US");
-        request.Headers.Referrer = new Uri("https://www.twitch.tv/");
-        request.Headers.TryAddWithoutValidation("Client-Id", TwitchVodDownloaderClientId);
-        request.Headers.TryAddWithoutValidation("X-Device-Id", CreateTwitchGraphQlDeviceId());
-        request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
-        request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-        request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-site");
-        request.Content = new StringContent(
-            BuildTwitchGraphQlArchiveVideosPayload(channel),
-            Encoding.UTF8,
-            "text/plain");
-
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        JsonDocument document;
+        try
+        {
+            document = await twitchGraphQlTransport.SendAsync(
+                BuildTwitchGraphQlArchiveVideosPayload(channel),
+                TwitchVodDownloaderClientId,
+                CreateTwitchGraphQlDeviceId(),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (TwitchGraphQlHttpException ex)
         {
             throw new InvalidOperationException(
-                $"Twitch GraphQL returned {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}".Trim());
+                $"Twitch GraphQL returned {(int)ex.StatusCode} {ex.ReasonPhrase}. {ApiErrorMessage.Extract(ex.ResponseBody)}".Trim(),
+                ex);
         }
-
-        using var document = JsonDocument.Parse(responseBody);
-        var graphQlError = ExtractTwitchGraphQlError(document.RootElement);
-        if (!string.IsNullOrWhiteSpace(graphQlError))
+        catch (TwitchGraphQlRejectedException ex)
         {
-            throw new InvalidOperationException($"Twitch GraphQL rejected archive lookup: {graphQlError}");
+            throw new InvalidOperationException($"Twitch GraphQL rejected archive lookup: {ex.GraphQlMessage}", ex);
         }
 
-        return ReadTwitchGraphQlVodCandidates(document.RootElement);
+        using (document)
+        {
+            return ReadTwitchGraphQlVodCandidates(document.RootElement);
+        }
     }
 
     private static ReplaySessionInfo BuildTwitchVodReplaySession(
@@ -327,17 +371,69 @@ public sealed partial class ReplayResolver : IReplayResolver
         IReadOnlyList<TwitchDvrPathCandidate> pathCandidates,
         CancellationToken cancellationToken)
     {
-        foreach (var url in BuildTwitchDvrPlaylistUrls(pathCandidates))
+        var urls = BuildTwitchDvrPlaylistUrls(pathCandidates)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (urls.Length == 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var result = await ValidateTwitchDvrPlaylistAsync(url, cancellationToken).ConfigureAwait(false);
-            if (result is not null)
+            return null;
+        }
+
+        using var overallTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        overallTimeout.CancelAfter(TwitchDvrDiscoveryTimeout);
+        using var stopWorkers = CancellationTokenSource.CreateLinkedTokenSource(overallTimeout.Token);
+        TwitchDvrProbeResult? winner = null;
+        var nextIndex = -1;
+
+        async Task ProbeWorkerAsync()
+        {
+            while (!stopWorkers.IsCancellationRequested)
             {
-                return result;
+                var index = Interlocked.Increment(ref nextIndex);
+                if (index >= urls.Length)
+                {
+                    return;
+                }
+
+                using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(stopWorkers.Token);
+                requestTimeout.CancelAfter(TwitchDvrRequestTimeout);
+                TwitchDvrProbeResult? result;
+                try
+                {
+                    result = await ValidateTwitchDvrPlaylistAsync(urls[index], requestTimeout.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    if (overallTimeout.IsCancellationRequested || stopWorkers.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    continue;
+                }
+
+                if (result is not null && Interlocked.CompareExchange(ref winner, result, null) is null)
+                {
+                    stopWorkers.Cancel();
+                    return;
+                }
             }
         }
 
-        return null;
+        var workers = Enumerable.Range(0, Math.Min(TwitchDvrMaximumConcurrency, urls.Length))
+            .Select(_ => ProbeWorkerAsync())
+            .ToArray();
+        try
+        {
+            await Task.WhenAll(workers).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return winner;
     }
 
     private async Task<TwitchDvrProbeResult?> ProbeCurrentTwitchLiveDvrAsync(
@@ -365,15 +461,23 @@ public sealed partial class ReplayResolver : IReplayResolver
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Accept.ParseAdd("application/vnd.apple.mpegurl");
-            request.Headers.Accept.ParseAdd("application/x-mpegURL");
-            request.Headers.Accept.ParseAdd("text/plain");
-            request.Headers.Accept.ParseAdd("*/*");
-            request.Headers.Referrer = new Uri("https://www.twitch.tv/");
-
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await ValidatedReplayHttpClient.SendGetAsync(
+                httpClient,
+                replayUrlValidator,
+                new Uri(url),
+                PlatformKind.Twitch,
+                static requestUri =>
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+                    request.Headers.Accept.ParseAdd("application/vnd.apple.mpegurl");
+                    request.Headers.Accept.ParseAdd("application/x-mpegURL");
+                    request.Headers.Accept.ParseAdd("text/plain");
+                    request.Headers.Accept.ParseAdd("*/*");
+                    request.Headers.Referrer = new Uri("https://www.twitch.tv/");
+                    return request;
+                },
+                cancellationToken).ConfigureAwait(false);
+            var responseBody = await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode ||
                 !IsValidTwitchDvrPlaylist(responseBody))
             {
@@ -390,33 +494,15 @@ public sealed partial class ReplayResolver : IReplayResolver
         }
     }
 
-    private async Task<string?> ResolveTwitchClientIdAsync(
-        ChatSettings settings,
-        string token,
-        CancellationToken cancellationToken)
-    {
-        var configured = settings.TwitchClientId.Trim();
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return configured;
-        }
-
-        return await TwitchClientIdCache.GetOrResolveAsync(
-            httpClient,
-            token,
-            logger,
-            "Replay",
-            "Could not resolve Twitch Client ID from the OAuth token.",
-            cancellationToken).ConfigureAwait(false);
-    }
-
     private async Task<ReplaySessionInfo> ResolveKickReplayAsync(
         StreamTarget target,
         string quality,
         AppSettings settings,
         CancellationToken cancellationToken)
     {
-        var accessToken = await ResolveKickAccessTokenAsync(settings.Chat, cancellationToken).ConfigureAwait(false);
+        var accessToken = await kickTokenProvider
+            .ResolveAsync(settings.Chat, logger, cancellationToken)
+            .ConfigureAwait(false);
         KickLiveStreamInfo? liveStream = null;
         if (!string.IsNullOrWhiteSpace(accessToken))
         {
@@ -455,6 +541,14 @@ public sealed partial class ReplayResolver : IReplayResolver
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
+                if (!Uri.TryCreate(candidate.Url, UriKind.Absolute, out var candidateUri))
+                {
+                    continue;
+                }
+
+                await replayUrlValidator
+                    .ValidateAsync(candidateUri, PlatformKind.Kick, cancellationToken)
+                    .ConfigureAwait(false);
                 var request = new StreamTransportRequest(
                     new StreamTarget(target.Platform, target.Channel, candidate.Url),
                     replayQuality,
@@ -468,9 +562,7 @@ public sealed partial class ReplayResolver : IReplayResolver
                     candidate.Url,
                     candidate.Id,
                     liveStream.StartedAtUtc,
-                    candidate.Duration > TimeSpan.Zero
-                        ? candidate.Duration
-                        : liveStream.StartedAtUtc is { } startedAt ? DateTimeOffset.UtcNow - startedAt : KickFallbackDuration,
+                    ResolveKickReplayDuration(candidate, liveStream),
                     true,
                     "",
                     replayQuality);
@@ -488,15 +580,28 @@ public sealed partial class ReplayResolver : IReplayResolver
             liveStream.StartedAtUtc);
     }
 
-    private async Task<string?> ResolveKickAccessTokenAsync(ChatSettings settings, CancellationToken cancellationToken)
+    private static TimeSpan ResolveKickReplayDuration(
+        KickReplayCandidate candidate,
+        KickLiveStreamInfo liveStream)
     {
-        var appToken = await KickOAuthService.TryGetAppAccessTokenAsync(settings, logger, cancellationToken).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(appToken))
+        if (candidate.Duration > TimeSpan.Zero)
         {
-            return appToken;
+            return candidate.Duration;
         }
 
-        return await KickOAuthService.GetUsableAccessTokenAsync(settings, logger, cancellationToken).ConfigureAwait(false);
+        if (liveStream.StartedAtUtc is { } startedAtUtc)
+        {
+            var elapsed = DateTimeOffset.UtcNow - startedAtUtc;
+            if (elapsed > TimeSpan.Zero)
+            {
+                return elapsed;
+            }
+        }
+
+        // A future or missing start timestamp is not a usable duration. Keep the
+        // replay seekbar available with the same conservative fallback used when
+        // Kick omits timing metadata entirely.
+        return KickFallbackDuration;
     }
 
     private async Task<KickLiveStreamInfo?> GetKickLiveStreamAsync(
@@ -508,14 +613,14 @@ public sealed partial class ReplayResolver : IReplayResolver
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             logger.Write(
                 AppLogLevel.Warning,
                 "Replay",
-                $"Kick live stream lookup failed for {target.DisplayName}: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                $"Kick live stream lookup failed for {target.DisplayName}: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
             throw new InvalidOperationException("Kick replay lookup failed. Check Kick API credentials.");
         }
 
@@ -588,137 +693,18 @@ public sealed partial class ReplayResolver : IReplayResolver
         bool expectsJson,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            ApplyKickWebsiteHeaders(request, channel, expectsJson);
-
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(body))
-            {
-                return body;
-            }
-
-            logger.Write(
-                AppLogLevel.Info,
-                "Replay",
-                $"Kick website replay probe returned {(int)response.StatusCode} {response.ReasonPhrase} for {url}. {ExtractApiMessage(body)}");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Info, "Replay", $"Kick website replay probe failed for {url}. {ex.Message}");
-        }
-
-        return await GetKickWebsiteProbeBodyWithCurlAsync(url, channel, expectsJson, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<string?> GetKickWebsiteProbeBodyWithCurlAsync(
-        string url,
-        string channel,
-        bool expectsJson,
-        CancellationToken cancellationToken)
-    {
-        var curlPath = ResolveCurlPath();
-        if (string.IsNullOrWhiteSpace(curlPath))
-        {
-            logger.Write(AppLogLevel.Info, "Replay", "curl.exe was not found; Kick website replay probe fallback is unavailable.");
-            return null;
-        }
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildKickWebsiteCurlArguments(url, channel, expectsJson))
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        try
-        {
-            if (!process.Start())
-            {
-                return null;
-            }
-        }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
-        {
-            logger.Write(AppLogLevel.Info, "Replay", $"curl.exe could not start for Kick replay probe {url}. {ex.Message}");
-            return null;
-        }
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(18));
-
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
-            await ObserveOutputReadsAsync(stdoutTask, stderrTask).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            logger.Write(AppLogLevel.Info, "Replay", $"curl.exe timed out probing Kick replay metadata for {url}.");
-            return null;
-        }
-
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(stdout))
-        {
-            return stdout;
-        }
-
-        logger.Write(AppLogLevel.Info, "Replay", $"curl.exe failed probing Kick replay metadata for {url}: {stderr.Trim()}");
-        return null;
-    }
-
-    private static void ApplyKickWebsiteHeaders(HttpRequestMessage request, string channel, bool expectsJson)
-    {
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36");
-        request.Headers.Accept.ParseAdd(expectsJson
-            ? "application/json, text/plain, */*"
-            : "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8");
-        request.Headers.AcceptLanguage.ParseAdd("*");
-        request.Headers.Referrer = new Uri($"https://kick.com/{Uri.EscapeDataString(channel)}");
-    }
-
-    private static IEnumerable<string> BuildKickWebsiteCurlArguments(string url, string channel, bool expectsJson)
-    {
-        yield return "--location";
-        yield return "--silent";
-        yield return "--show-error";
-        yield return "--fail";
-        yield return "--compressed";
-        yield return "--max-time";
-        yield return "15";
-        yield return "--user-agent";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-        yield return "--header";
-        yield return expectsJson
-            ? "Accept: application/json,text/plain,*/*"
-            : "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-        yield return "--header";
-        yield return "Accept-Language: *";
-        yield return "--referer";
-        yield return $"https://kick.com/{Uri.EscapeDataString(channel)}";
-        yield return url;
+        return await kickWebsiteReader.ReadAsync(
+                url,
+                $"https://kick.com/{Uri.EscapeDataString(channel)}",
+                cancellationToken,
+                expectsJson ? KickWebsitePayloadKind.Json : KickWebsitePayloadKind.Html)
+            .ConfigureAwait(false);
     }
 
     public static TwitchLiveStreamInfo? ReadTwitchLiveStream(JsonElement root, string channel)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -726,8 +712,14 @@ public sealed partial class ReplayResolver : IReplayResolver
 
         foreach (var item in data.EnumerateArray())
         {
-            if (item.TryGetProperty("user_login", out var login) &&
-                !string.Equals(login.GetString(), channel, StringComparison.OrdinalIgnoreCase))
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var login = GetOptionalString(item, "user_login");
+            if (!string.IsNullOrWhiteSpace(login) &&
+                !string.Equals(login, channel, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -749,7 +741,8 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static IReadOnlyList<TwitchVodInfo> ReadTwitchArchiveVods(JsonElement root)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             return [];
@@ -758,6 +751,11 @@ public sealed partial class ReplayResolver : IReplayResolver
         var vods = new List<TwitchVodInfo>();
         foreach (var item in data.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             var id = GetOptionalString(item, "id");
             if (string.IsNullOrWhiteSpace(id))
             {
@@ -873,34 +871,7 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static bool TryParseTwitchDuration(string value, out TimeSpan duration)
     {
-        duration = TimeSpan.Zero;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        var match = TwitchDurationPattern().Match(value.Trim());
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        if (!TryParseOptionalDurationPart(match.Groups["h"].Value, out var hours) ||
-            !TryParseOptionalDurationPart(match.Groups["m"].Value, out var minutes) ||
-            !TryParseOptionalDurationPart(match.Groups["s"].Value, out var seconds))
-        {
-            return false;
-        }
-
-        if (hours == 0 && minutes == 0 && seconds == 0)
-        {
-            return false;
-        }
-
-        return TryCreatePositiveDuration(
-            (hours * 3600d) + (minutes * 60d) + seconds,
-            TimeSpan.TicksPerSecond,
-            out duration);
+        return DurationValues.TryParseHmsDuration(value, out duration);
     }
 
     public static bool TryReadTwitchDvrTotalSeconds(string playlist, out TimeSpan duration)
@@ -919,7 +890,7 @@ public sealed partial class ReplayResolver : IReplayResolver
             return false;
         }
 
-        return TryCreatePositiveDuration(seconds, TimeSpan.TicksPerSecond, out duration);
+        return DurationValues.TryCreatePositive(seconds, TimeSpan.TicksPerSecond, out duration);
     }
 
     public static bool IsValidTwitchDvrPlaylist(string playlist)
@@ -992,32 +963,9 @@ public sealed partial class ReplayResolver : IReplayResolver
     private static bool TryReadTwitchLengthSeconds(JsonElement node, out TimeSpan duration)
     {
         duration = TimeSpan.Zero;
-        if (!node.TryGetProperty("lengthSeconds", out var property))
-        {
-            return false;
-        }
-
-        double seconds;
-        if (property.ValueKind == JsonValueKind.Number)
-        {
-            if (!property.TryGetDouble(out seconds))
-            {
-                return false;
-            }
-        }
-        else if (property.ValueKind == JsonValueKind.String)
-        {
-            if (!double.TryParse(property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out seconds))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
-        }
-
-        return TryCreatePositiveDuration(seconds, TimeSpan.TicksPerSecond, out duration);
+        return node.ValueKind == JsonValueKind.Object &&
+            node.TryGetProperty("lengthSeconds", out var property) &&
+            TryGetPositiveDuration(property, TimeSpan.TicksPerSecond, out duration);
     }
 
     private static IReadOnlyList<string> ReadTwitchGraphQlPreviewUrls(JsonElement node)
@@ -1143,35 +1091,6 @@ public sealed partial class ReplayResolver : IReplayResolver
         return JsonSerializer.Serialize(payload);
     }
 
-    private static string ExtractTwitchGraphQlError(JsonElement root)
-    {
-        if (root.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in root.EnumerateArray())
-            {
-                var error = ExtractTwitchGraphQlError(item);
-                if (!string.IsNullOrWhiteSpace(error))
-                {
-                    return error;
-                }
-            }
-
-            return "";
-        }
-
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("errors", out var errors) ||
-            errors.ValueKind != JsonValueKind.Array)
-        {
-            return "";
-        }
-
-        return errors
-            .EnumerateArray()
-            .Select(error => GetOptionalString(error, "message"))
-            .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message)) ?? "";
-    }
-
     private static string NormalizeTwitchChannelLogin(string channel) =>
         channel.Trim().ToLowerInvariant();
 
@@ -1186,7 +1105,8 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static KickLiveStreamInfo? ReadKickLiveStream(JsonElement root, string channel)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -1194,20 +1114,25 @@ public sealed partial class ReplayResolver : IReplayResolver
 
         foreach (var item in data.EnumerateArray())
         {
-            if (item.TryGetProperty("slug", out var slug) &&
-                !string.Equals(slug.GetString(), channel, StringComparison.OrdinalIgnoreCase))
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var slug = GetOptionalString(item, "slug");
+            if (!string.IsNullOrWhiteSpace(slug) &&
+                !string.Equals(slug, channel, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
             if (!item.TryGetProperty("stream", out var stream) ||
-                stream.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                stream.ValueKind != JsonValueKind.Object)
             {
                 return null;
             }
 
-            if (stream.ValueKind != JsonValueKind.Object ||
-                TryGetBool(stream, "is_live") == false)
+            if (TryGetBool(stream, "is_live") == false)
             {
                 return null;
             }
@@ -1230,14 +1155,19 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static KickLiveStreamInfo? ReadKickWebsiteLiveStream(JsonElement root, string channel)
     {
-        if (root.TryGetProperty("slug", out var slug) &&
-            !string.Equals(slug.GetString(), channel, StringComparison.OrdinalIgnoreCase))
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var slug = GetOptionalString(root, "slug");
+        if (!string.IsNullOrWhiteSpace(slug) &&
+            !string.Equals(slug, channel, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
         if (!root.TryGetProperty("livestream", out var livestream) ||
-            livestream.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ||
             livestream.ValueKind != JsonValueKind.Object ||
             TryGetBool(livestream, "is_live") == false)
         {
@@ -1296,7 +1226,9 @@ public sealed partial class ReplayResolver : IReplayResolver
         }
 
         return candidates
-            .Where(candidate => Uri.TryCreate(candidate.Url, UriKind.Absolute, out _))
+            .Where(candidate =>
+                Uri.TryCreate(candidate.Url, UriKind.Absolute, out var uri) &&
+                ReplayUrlSecurityValidator.TryValidateProviderUri(uri, PlatformKind.Kick))
             .GroupBy(candidate => candidate.Url, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToArray();
@@ -1464,9 +1396,15 @@ public sealed partial class ReplayResolver : IReplayResolver
     private static bool TryReadKickDuration(JsonElement element, out TimeSpan duration)
     {
         duration = TimeSpan.Zero;
-        if (element.TryGetProperty("duration_seconds", out var secondsProperty))
+        if (element.ValueKind != JsonValueKind.Object)
         {
-            return TryReadDurationValue(secondsProperty, TimeSpan.TicksPerSecond, out duration);
+            return false;
+        }
+
+        if (element.TryGetProperty("duration_seconds", out var secondsProperty) &&
+            TryGetPositiveDuration(secondsProperty, TimeSpan.TicksPerSecond, out duration))
+        {
+            return true;
         }
 
         if (!element.TryGetProperty("duration", out var property))
@@ -1474,35 +1412,7 @@ public sealed partial class ReplayResolver : IReplayResolver
             return false;
         }
 
-        return TryReadDurationValue(property, TimeSpan.TicksPerMillisecond, out duration);
-    }
-
-    private static bool TryReadDurationValue(
-        JsonElement property,
-        long ticksPerUnit,
-        out TimeSpan duration)
-    {
-        duration = TimeSpan.Zero;
-        if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var value))
-        {
-            return TryCreatePositiveDuration(value, ticksPerUnit, out duration);
-        }
-
-        if (property.ValueKind == JsonValueKind.String)
-        {
-            var text = property.GetString();
-            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-            {
-                return TryCreatePositiveDuration(value, ticksPerUnit, out duration);
-            }
-
-            if (TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out duration))
-            {
-                return duration > TimeSpan.Zero;
-            }
-        }
-
-        return false;
+        return TryGetPositiveDuration(property, TimeSpan.TicksPerMillisecond, out duration);
     }
 
     private static bool IsLikelyKickReplayUrl(string url)
@@ -1541,40 +1451,11 @@ public sealed partial class ReplayResolver : IReplayResolver
         }
     }
 
-    private static bool TryGetDateTimeOffset(JsonElement element, string propertyName, out DateTimeOffset value)
-    {
-        value = default;
-        if (!element.TryGetProperty(propertyName, out var property) ||
-            property.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        return DateTimeOffset.TryParse(
-            property.GetString(),
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-            out value);
-    }
-
     // Twitch GraphQL replay chat messages are rebuilt by concatenating fragment text verbatim,
-    // so this reader must NOT trim (trimming drops the spaces between fragments). Intentionally
-    // shadows the shared JsonElementReader.GetOptionalString for this file.
+    // so this reader must NOT trim (trimming drops the spaces between fragments).
     private static string GetOptionalString(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var property))
-        {
-            return "";
-        }
-
-        return property.ValueKind switch
-        {
-            JsonValueKind.String => property.GetString() ?? "",
-            JsonValueKind.Number => property.ToString(),
-            JsonValueKind.True => "true",
-            JsonValueKind.False => "false",
-            _ => ""
-        };
+        return JsonElementReader.GetOptionalString(element, propertyName, trimStrings: false);
     }
 
     private static string GetNestedOptionalString(JsonElement element, string objectPropertyName, string propertyName)
@@ -1586,42 +1467,6 @@ public sealed partial class ReplayResolver : IReplayResolver
         }
 
         return GetOptionalString(nested, propertyName);
-    }
-
-    private static bool TryParseOptionalDurationPart(string value, out double parsed)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            parsed = 0;
-            return true;
-        }
-
-        return double.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed) &&
-            double.IsFinite(parsed);
-    }
-
-    private static bool TryCreatePositiveDuration(double value, long ticksPerUnit, out TimeSpan duration)
-    {
-        duration = TimeSpan.Zero;
-        if (!double.IsFinite(value) || value <= 0)
-        {
-            return false;
-        }
-
-        var ticks = value * ticksPerUnit;
-        if (!double.IsFinite(ticks) || ticks >= long.MaxValue)
-        {
-            return false;
-        }
-
-        var roundedTicks = (long)Math.Round(ticks, MidpointRounding.AwayFromZero);
-        if (roundedTicks <= 0)
-        {
-            return false;
-        }
-
-        duration = TimeSpan.FromTicks(roundedTicks);
-        return true;
     }
 
     private static string UnescapeJsonUrl(string value) =>
@@ -1639,63 +1484,6 @@ public sealed partial class ReplayResolver : IReplayResolver
             _ => normalized
         };
     }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return "";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            if (document.RootElement.TryGetProperty("message", out var message))
-            {
-                return message.GetString() ?? "";
-            }
-
-            if (document.RootElement.TryGetProperty("error_description", out var errorDescription))
-            {
-                return errorDescription.GetString() ?? "";
-            }
-
-            if (document.RootElement.TryGetProperty("error", out var error))
-            {
-                return error.GetString() ?? "";
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return responseBody.Length <= 240 ? responseBody : responseBody[..240];
-    }
-
-    private static HttpClient CreateHttpClient()
-    {
-        var client = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(12)
-        };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("StreamlinkVlcStudio/0.1");
-        client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
-        return client;
-    }
-
-    private static string? ResolveCurlPath()
-    {
-        var configured = Environment.GetEnvironmentVariable("STREAMLINK_KICK_CURL");
-        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured))
-        {
-            return configured;
-        }
-
-        return "curl.exe";
-    }
-
-    [GeneratedRegex(@"^(?:(?<h>\d+)h)?(?:(?<m>\d+)m)?(?:(?<s>\d+)s)?$", RegexOptions.CultureInvariant)]
-    private static partial Regex TwitchDurationPattern();
 
     [GeneratedRegex(@"(?<hash>[A-Za-z0-9]{20})_(?<channel>[_A-Za-z0-9]+)_(?<streamId>\d+)_(?<startSeconds>\d+)", RegexOptions.CultureInvariant)]
     private static partial Regex TwitchDvrPathPattern();

@@ -6,10 +6,11 @@ param(
     [string]$ReleaseZip,
     [string]$SetupFileName = "StreamlinkVlcStudio-Setup.msi",
     [string]$BootstrapperFileName = "StreamlinkVlcStudio-Setup.exe",
-    [ValidatePattern("^[^/\s]+/[^/\s]+$")]
-    [string]$StreamlinkGitHubRepository = "streamlink/windows-builds",
-    [string]$VlcDownloadRoot = "https://get.videolan.org/vlc/last/win64/",
-    [string]$ProductVersion = "1.0.0",
+    [string]$DependencyManifest,
+    [ValidateRange(5, 600)]
+    [int]$HttpTimeoutSeconds = 60,
+    [Parameter(Mandatory = $true)]
+    [string]$ProductVersion,
     [string]$WixVersion = "6.0.2",
     [switch]$Quiet
 )
@@ -19,6 +20,14 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
 . (Join-Path $scriptRoot "lib\common.ps1")
+. (Join-Path $scriptRoot "lib\dependency-manifest.ps1")
+. (Join-Path $scriptRoot "lib\release-contract.ps1")
+$releaseContract = Read-ReleaseContract (Join-Path $repoRoot "shared\release-contract.json")
+
+& (Join-Path $scriptRoot "generate-browser-route-policy.ps1") -RepositoryRoot $repoRoot -Check
+if (-not $?) {
+    throw "Generated browser route policy validation failed."
+}
 
 function Test-ThreePartProductVersion([string]$Version) {
     if ($Version -notmatch "^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$") {
@@ -26,7 +35,13 @@ function Test-ThreePartProductVersion([string]$Version) {
     }
 
     foreach ($name in @("major", "minor", "patch")) {
-        if ([int64]$Matches[$name] -gt 255) {
+        [int]$part = 0
+        if (-not [int]::TryParse(
+                $Matches[$name],
+                [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$part) -or
+            $part -gt 255) {
             return $false
         }
     }
@@ -53,8 +68,7 @@ function Ensure-WixTool {
         & $dotnetCommand.Source tool install `
             --tool-path $toolDirectory `
             wix `
-            --version $Version `
-            --ignore-failed-sources | Out-Host
+            --version $Version | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "WiX tool installation failed with exit code $LASTEXITCODE."
         }
@@ -64,8 +78,8 @@ function Ensure-WixTool {
         throw "WiX executable was not created: $wixPath"
     }
 
-    $installedVersion = (& $wixPath --version 2>$null | Select-Object -First 1)
-    if ($installedVersion -notmatch [regex]::Escape($Version)) {
+    $installedVersion = [string](& $wixPath --version 2>$null | Select-Object -First 1)
+    if ((ConvertTo-DependencyVersion $installedVersion) -ne (ConvertTo-DependencyVersion $Version)) {
         throw "WiX version mismatch. Expected $Version, found '$installedVersion'."
     }
 
@@ -76,7 +90,11 @@ function Ensure-WixTool {
     )
     foreach ($extension in $requiredExtensions) {
         $extensionList = (& $wixPath extension list 2>$null | Out-String)
-        if ($extensionList -match ([regex]::Escape($extension) + "\s+" + [regex]::Escape($Version))) {
+        $installedExtensionVersion = @(
+            [regex]::Matches($extensionList, '(?m)^\s*' + [regex]::Escape($extension) + '\s+(?<version>\d+(?:\.\d+){1,3})\s*$') |
+                ForEach-Object { ConvertTo-DependencyVersion $_.Groups['version'].Value }
+        ) | Where-Object { $_ -eq (ConvertTo-DependencyVersion $Version) } | Select-Object -First 1
+        if ($null -ne $installedExtensionVersion) {
             continue
         }
 
@@ -94,148 +112,74 @@ function Save-DependencyFile {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
         [Parameter(Mandatory = $true)][string]$DestinationPath,
-        [int64]$ExpectedLength = 0,
-        [string]$ExpectedSha256)
+        [Parameter(Mandatory = $true)]$Dependency)
 
     Write-Info "Downloading $Uri..."
     $headers = @{
         "User-Agent" = "StreamlinkVlcStudioInstallerBuilder/1.0 (+https://github.com/CorontoSiete/streamlink-vlc-studio)"
     }
-    Invoke-WebRequest `
+    $dependencyToValidate = $Dependency
+    $result = Save-HttpFileAtomically `
         -Uri $Uri `
+        -DestinationPath $DestinationPath `
         -Headers $headers `
-        -OutFile $DestinationPath `
-        -UseBasicParsing `
-        -ErrorAction Stop
-
-    if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
-        throw "Dependency download did not create a file: $DestinationPath"
-    }
-
-    $item = Get-Item -LiteralPath $DestinationPath
-    if ($item.Length -eq 0) {
-        throw "Dependency download produced an empty file: $DestinationPath"
-    }
-
-    if ($ExpectedLength -gt 0 -and $item.Length -ne $ExpectedLength) {
-        throw "Dependency download size mismatch for $DestinationPath. Expected $ExpectedLength bytes, found $($item.Length) bytes."
-    }
-
-    $hash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256) -and
-        -not [string]::Equals($hash, $ExpectedSha256.Trim().ToLowerInvariant(), [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Dependency SHA-256 mismatch for $DestinationPath. Expected $ExpectedSha256, found $hash."
-    }
-
-    Write-Info "Downloaded $([System.IO.Path]::GetFileName($DestinationPath)) ($($item.Length) bytes, SHA-256 $hash)."
-}
-
-function Get-LatestStreamlinkInstallerInfo {
-    $apiUri = "https://api.github.com/repos/$StreamlinkGitHubRepository/releases/latest"
-    $headers = @{
-        "Accept" = "application/vnd.github+json"
-        "X-GitHub-Api-Version" = "2022-11-28"
-        "User-Agent" = "StreamlinkVlcStudioInstallerBuilder/1.0 (+https://github.com/CorontoSiete/streamlink-vlc-studio)"
-    }
-
-    try {
-        $release = Invoke-RestMethod -Uri $apiUri -Headers $headers -ErrorAction Stop
-    } catch {
-        throw "Could not read the latest Streamlink Windows release from $apiUri. $($_.Exception.Message)"
-    }
-
-    $assets = @(@($release.assets) | Where-Object {
-        $_.name -match "(?i)^streamlink-\d+(?:\.\d+)+-\d+-py\d+-x86_64\.exe$"
-    })
-    if ($assets.Count -ne 1) {
-        $available = (@($release.assets) | ForEach-Object { $_.name }) -join ", "
-        throw "Expected exactly one official x86_64 Streamlink installer in release '$($release.tag_name)', found $($assets.Count). Available assets: $available"
-    }
-
-    $asset = $assets[0]
-    [pscustomobject]@{
-        Version = [string]$release.tag_name
-        FileName = [string]$asset.name
-        Uri = [string]$asset.browser_download_url
-        Length = [int64]$asset.size
-        Sha256 = if ([string]$asset.digest -match "(?i)^sha256:(?<hash>[0-9a-f]{64})$") { $Matches["hash"] } else { "" }
-    }
-}
-
-function Get-LatestVlcMsiInfo {
-    $content = Invoke-WebRequest `
-        -Uri $VlcDownloadRoot `
-        -Headers @{ "User-Agent" = "StreamlinkVlcStudioInstallerBuilder/1.0" } `
-        -UseBasicParsing `
-        -ErrorAction Stop
-    $matches = [regex]::Matches(
-        $content.Content,
-        'href="(?<name>vlc-(?<version>\d+(?:\.\d+)+)-win64\.msi)"',
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    if ($matches.Count -eq 0) {
-        throw "Could not find an official VLC win64 MSI at $VlcDownloadRoot"
-    }
-
-    $candidates = @($matches | ForEach-Object {
-        [pscustomobject]@{
-            Version = [version]$_.Groups["version"].Value
-            FileName = $_.Groups["name"].Value
+        -TimeoutSeconds $HttpTimeoutSeconds `
+        -MaximumBytes ([long]$Dependency.length) `
+        -ValidationScript {
+            param($DownloadedPath)
+            Assert-PinnedInstallerDependency -Path $DownloadedPath -Dependency $dependencyToValidate
         }
-    } | Sort-Object Version -Descending)
-    $selected = $candidates[0]
-    [pscustomobject]@{
-        Version = $selected.Version.ToString()
-        FileName = $selected.FileName
-        Uri = ([System.Uri]::new(([System.Uri]$VlcDownloadRoot), $selected.FileName)).AbsoluteUri
-    }
-}
 
-function Get-PayloadRoot([string]$ExtractedRoot) {
-    $directExecutable = Join-Path $ExtractedRoot "StreamlinkVlcStudio.exe"
-    if (Test-Path -LiteralPath $directExecutable -PathType Leaf) {
-        return [System.IO.Path]::GetFullPath($ExtractedRoot)
-    }
-
-    $matches = @(Get-ChildItem -LiteralPath $ExtractedRoot -Recurse -Filter "StreamlinkVlcStudio.exe" -File)
-    if ($matches.Count -eq 1) {
-        return [System.IO.Path]::GetFullPath((Split-Path -Parent $matches[0].FullName))
-    }
-
-    if ($matches.Count -eq 0) {
-        throw "Release zip does not contain StreamlinkVlcStudio.exe."
-    }
-
-    throw "Release zip contains more than one StreamlinkVlcStudio.exe; refusing to guess which payload to install."
-}
-
-function Assert-Payload([string]$PayloadRoot) {
-    $requiredFiles = @(
-        "StreamlinkVlcStudio.exe",
-        "THIRD-PARTY-NOTICES.md",
-        "browser-extension\manifest.json",
-        "browser-extension\background.js",
-        "browser-extension\content-core.js",
-        "browser-extension\content.js",
-        "vlc-overlay\build\libmyoverlay_plugin.dll",
-        "vlc-overlay\build\vlc_chat_overlay.exe"
-    )
-
-    foreach ($relativePath in $requiredFiles) {
-        $path = Join-Path $PayloadRoot $relativePath
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Release payload is missing required file: $relativePath"
-        }
-    }
-
-    $reparsePoints = @(Get-ChildItem -LiteralPath $PayloadRoot -Recurse -Force -ErrorAction Stop |
-        Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 })
-    if ($reparsePoints.Count -gt 0) {
-        throw "Release payload contains a symbolic link or junction: $($reparsePoints[0].FullName)"
-    }
+    Write-Info "Downloaded $([System.IO.Path]::GetFileName($DestinationPath)) ($($result.Length) bytes, SHA-256 $($result.Sha256))."
 }
 
 if (-not [string]::Equals($Runtime, "win-x64", [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The MSI payload is x64-only. Runtime must be win-x64, not '$Runtime'."
+}
+
+$dependencyManifestPath = if ([string]::IsNullOrWhiteSpace($DependencyManifest)) {
+    Join-Path $repoRoot "dependencies\windows-installers.json"
+} else {
+    [IO.Path]::GetFullPath($DependencyManifest)
+}
+if (-not (Test-Path -LiteralPath $dependencyManifestPath -PathType Leaf)) {
+    throw "Locked installer dependency manifest missing: $dependencyManifestPath"
+}
+$dependencyManifestData = Read-WindowsDependencyManifest $dependencyManifestPath
+if ($dependencyManifestData.schemaVersion -ne 1 -or
+    $null -eq $dependencyManifestData.dependencies.streamlink -or
+    $null -eq $dependencyManifestData.dependencies.vlc) {
+    throw "Unsupported or incomplete installer dependency manifest: $dependencyManifestPath"
+}
+
+$maximumInstallerDependencyBytes = 536870912
+$dependencyFileNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($dependencyProperty in $dependencyManifestData.dependencies.PSObject.Properties) {
+    $dependency = $dependencyProperty.Value
+    $fileName = [string]$dependency.fileName
+    $dependencyUri = $null
+    [long]$dependencyLength = 0
+    if (-not (Test-SafeWindowsPathSegment $fileName) -or
+        -not $dependencyFileNames.Add($fileName)) {
+        throw "Locked dependency fileName must be a safe, unique leaf name: $fileName"
+    }
+    if (-not [Uri]::TryCreate([string]$dependency.url, [UriKind]::Absolute, [ref]$dependencyUri) -or
+        -not [string]::Equals($dependencyUri.Scheme, [Uri]::UriSchemeHttps, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Locked dependency URL must be an absolute HTTPS URL: $($dependency.url)"
+    }
+    if (-not [long]::TryParse(
+            [Convert]::ToString($dependency.length, [Globalization.CultureInfo]::InvariantCulture),
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$dependencyLength) -or
+        $dependencyLength -le 0 -or
+        $dependencyLength -gt $maximumInstallerDependencyBytes) {
+        throw "Locked dependency length must be an integer from 1 through $maximumInstallerDependencyBytes bytes: $($dependency.length)"
+    }
+    if (([string]$dependency.sha256).Trim() -notmatch '^[0-9a-fA-F]{64}$' -or
+        [string]::IsNullOrWhiteSpace([string]$dependency.authenticode)) {
+        throw "Locked dependency integrity metadata is incomplete: $($dependencyProperty.Name)"
+    }
 }
 
 if (-not (Test-ThreePartProductVersion $ProductVersion)) {
@@ -288,14 +232,12 @@ if (-not (Test-Path -LiteralPath $releaseZipPath -PathType Leaf)) {
     throw "Release zip was not found: $releaseZipPath"
 }
 
-if ([string]::IsNullOrWhiteSpace($SetupFileName) -or
-    -not [string]::Equals([System.IO.Path]::GetFileName($SetupFileName), $SetupFileName, [System.StringComparison]::Ordinal) -or
+if (-not (Test-SafeWindowsPathSegment $SetupFileName) -or
     -not [string]::Equals([System.IO.Path]::GetExtension($SetupFileName), ".msi", [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "SetupFileName must be a leaf .msi file name, not a path: $SetupFileName"
 }
 
-if ([string]::IsNullOrWhiteSpace($BootstrapperFileName) -or
-    -not [string]::Equals([System.IO.Path]::GetFileName($BootstrapperFileName), $BootstrapperFileName, [System.StringComparison]::Ordinal) -or
+if (-not (Test-SafeWindowsPathSegment $BootstrapperFileName) -or
     -not [string]::Equals([System.IO.Path]::GetExtension($BootstrapperFileName), ".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "BootstrapperFileName must be a leaf .exe file name, not a path: $BootstrapperFileName"
 }
@@ -313,22 +255,18 @@ Remove-DirectoryIfExists $buildRoot $outputRootPath
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
 try {
+    $stagedSetupPath = Join-Path $buildRoot $SetupFileName
+    $stagedBootstrapperPath = Join-Path $buildRoot $BootstrapperFileName
     $payloadRoot = Join-Path $buildRoot "payload"
-    New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
     Write-Info "Extracting release payload..."
-    Expand-Archive -LiteralPath $releaseZipPath -DestinationPath $payloadRoot -Force
+    Expand-ValidatedZipArchive -ArchivePath $releaseZipPath -DestinationDirectory $payloadRoot
 
-    $payloadRoot = Get-PayloadRoot $payloadRoot
-    Assert-Payload $payloadRoot
+    $payloadRoot = Resolve-ReleasePayloadRoot -ExtractedRoot $payloadRoot -Contract $releaseContract
 
     $wixPath = Ensure-WixTool $WixVersion
     $wixSource = Join-Path $repoRoot "scripts\installer\StreamlinkVlcStudio.wxs"
     if (-not (Test-Path -LiteralPath $wixSource -PathType Leaf)) {
         throw "WiX source file was not found: $wixSource"
-    }
-
-    if (Test-Path -LiteralPath $setupPath -PathType Leaf) {
-        Remove-Item -LiteralPath $setupPath -Force
     }
 
     Write-Info "Building native Windows Installer package..."
@@ -339,7 +277,7 @@ try {
         "-d", ("PayloadDir=" + $payloadRoot),
         "-d", ("ProductVersion=" + $ProductVersion),
         "-pdbtype", "none",
-        "-o", $setupPath,
+        "-o", $stagedSetupPath,
         $wixSource
     )
     & $wixPath @wixArguments | Out-Host
@@ -347,13 +285,13 @@ try {
         throw "WiX MSI build failed with exit code $LASTEXITCODE."
     }
 
-    if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf) -or
-        (Get-Item -LiteralPath $setupPath).Length -eq 0) {
-        throw "MSI installer was not created: $setupPath"
+    if (-not (Test-Path -LiteralPath $stagedSetupPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $stagedSetupPath).Length -eq 0) {
+        throw "MSI installer was not created: $stagedSetupPath"
     }
 
     Write-Info "Validating MSI database..."
-    & $wixPath msi validate $setupPath | Out-Host
+    & $wixPath msi validate $stagedSetupPath | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "WiX MSI validation failed with exit code $LASTEXITCODE."
     }
@@ -361,21 +299,25 @@ try {
     $dependencyRoot = Join-Path $buildRoot "dependencies"
     New-Item -ItemType Directory -Path $dependencyRoot -Force | Out-Null
 
-    Write-Info "Resolving the official Streamlink Windows release..."
-    $streamlinkInfo = Get-LatestStreamlinkInstallerInfo
-    $streamlinkInstallerPath = Join-Path $dependencyRoot $streamlinkInfo.FileName
+    Write-Info "Downloading the locked Streamlink Windows dependency..."
+    $streamlinkInfo = $dependencyManifestData.dependencies.streamlink
+    $streamlinkMinimumVersion = ([string]$streamlinkInfo.version).Trim()
+    if ($streamlinkMinimumVersion -notmatch '^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?$') {
+        throw "The locked Streamlink version is not a valid Burn version: $streamlinkMinimumVersion"
+    }
+    $streamlinkInstallerPath = Join-Path $dependencyRoot ([string]$streamlinkInfo.fileName)
     Save-DependencyFile `
-        -Uri $streamlinkInfo.Uri `
+        -Uri $streamlinkInfo.url `
         -DestinationPath $streamlinkInstallerPath `
-        -ExpectedLength $streamlinkInfo.Length `
-        -ExpectedSha256 $streamlinkInfo.Sha256
+        -Dependency $streamlinkInfo
 
-    Write-Info "Resolving the official VLC Windows x64 MSI..."
-    $vlcInfo = Get-LatestVlcMsiInfo
-    $vlcMsiPath = Join-Path $dependencyRoot $vlcInfo.FileName
+    Write-Info "Downloading the locked VLC Windows x64 dependency..."
+    $vlcInfo = $dependencyManifestData.dependencies.vlc
+    $vlcMsiPath = Join-Path $dependencyRoot ([string]$vlcInfo.fileName)
     Save-DependencyFile `
-        -Uri $vlcInfo.Uri `
-        -DestinationPath $vlcMsiPath
+        -Uri $vlcInfo.url `
+        -DestinationPath $vlcMsiPath `
+        -Dependency $vlcInfo
 
     $bundleSource = Join-Path $repoRoot "scripts\installer\StreamlinkVlcStudio.Bundle.wxs"
     $appIcon = Join-Path $repoRoot "src\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico"
@@ -386,23 +328,20 @@ try {
         throw "Bundle icon file was not found: $appIcon"
     }
 
-    if (Test-Path -LiteralPath $bootstrapperPath -PathType Leaf) {
-        Remove-Item -LiteralPath $bootstrapperPath -Force
-    }
-
     Write-Info "Building full dependency bootstrapper..."
     $bundleArguments = @(
         "build",
         "-arch", "x64",
         "-ext", "WixToolset.BootstrapperApplications.wixext",
         "-ext", "WixToolset.Util.wixext",
-        "-d", ("AppMsi=" + $setupPath),
+        "-d", ("AppMsi=" + $stagedSetupPath),
         "-d", ("AppIcon=" + $appIcon),
         "-d", ("BundleVersion=" + $ProductVersion + ".0"),
         "-d", ("StreamlinkInstaller=" + $streamlinkInstallerPath),
+        "-d", ("StreamlinkMinimumVersion=" + $streamlinkMinimumVersion),
         "-d", ("VlcMsi=" + $vlcMsiPath),
         "-pdbtype", "none",
-        "-o", $bootstrapperPath,
+        "-o", $stagedBootstrapperPath,
         $bundleSource
     )
     & $wixPath @bundleArguments | Out-Host
@@ -410,10 +349,15 @@ try {
         throw "WiX bootstrapper build failed with exit code $LASTEXITCODE."
     }
 
-    if (-not (Test-Path -LiteralPath $bootstrapperPath -PathType Leaf) -or
-        (Get-Item -LiteralPath $bootstrapperPath).Length -eq 0) {
-        throw "Bootstrapper installer was not created: $bootstrapperPath"
+    if (-not (Test-Path -LiteralPath $stagedBootstrapperPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $stagedBootstrapperPath).Length -eq 0) {
+        throw "Bootstrapper installer was not created: $stagedBootstrapperPath"
     }
+
+    Promote-ValidatedFileSetAtomically @(
+        [pscustomobject]@{ Source = $stagedSetupPath; Destination = $setupPath },
+        [pscustomobject]@{ Source = $stagedBootstrapperPath; Destination = $bootstrapperPath }
+    )
 } finally {
     Remove-DirectoryIfExists $buildRoot $outputRootPath
 }

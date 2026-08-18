@@ -8,7 +8,9 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
@@ -18,7 +20,7 @@ public sealed class TwitchVodService : ITwitchVodService
 {
     private const string TwitchGraphQlEndpoint = "https://gql.twitch.tv/gql";
     private const string TwitchPublicClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
-    private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(20));
     private readonly IAppLogger logger;
     private readonly HttpClient httpClient;
 
@@ -60,7 +62,14 @@ public sealed class TwitchVodService : ITwitchVodService
                 "Twitch VOD search requires a Twitch OAuth token.");
         }
 
-        var clientId = await ResolveClientIdAsync(settings.Chat, token, cancellationToken).ConfigureAwait(false);
+        var clientId = await TwitchClientIdResolver.ResolveAsync(
+            settings.Chat,
+            httpClient,
+            token,
+            logger,
+            "VODs",
+            "Twitch token validation failed for VOD search.",
+            cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(clientId))
         {
             return new TwitchVodSearchResult(
@@ -90,26 +99,6 @@ public sealed class TwitchVodService : ITwitchVodService
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<string?> ResolveClientIdAsync(
-        ChatSettings settings,
-        string token,
-        CancellationToken cancellationToken)
-    {
-        var configured = settings.TwitchClientId.Trim();
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return configured;
-        }
-
-        return await TwitchClientIdCache.GetOrResolveAsync(
-            httpClient,
-            token,
-            logger,
-            "VODs",
-            "Twitch token validation failed for VOD search.",
-            cancellationToken).ConfigureAwait(false);
-    }
-
     private async Task<TwitchVodBroadcaster?> ResolveBroadcasterAsync(
         string login,
         string token,
@@ -118,14 +107,14 @@ public sealed class TwitchVodService : ITwitchVodService
     {
         var url = $"https://api.twitch.tv/helix/users?login={Uri.EscapeDataString(login)}";
         using var request = CreateTwitchRequest(url, token, clientId);
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             logger.Write(
                 AppLogLevel.Warning,
                 "VODs",
-                $"Twitch user lookup failed for {login}: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                $"Twitch user lookup failed for {login}: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody, includeBodyFallback: false)}");
             throw new InvalidOperationException("Twitch user lookup failed. Check the Twitch Client ID and OAuth token.");
         }
 
@@ -142,14 +131,14 @@ public sealed class TwitchVodService : ITwitchVodService
     {
         var url = BuildVideosUrl(broadcaster.Id, request);
         using var httpRequest = CreateTwitchRequest(url, token, clientId);
-        using var response = await httpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, httpRequest, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             logger.Write(
                 AppLogLevel.Warning,
                 "VODs",
-                $"Twitch VOD search failed for {broadcaster.Login}: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}");
+                $"Twitch VOD search failed for {broadcaster.Login}: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody, includeBodyFallback: false)}");
             return new TwitchVodSearchResult(
                 TwitchVodSearchStatus.Unavailable,
                 broadcaster,
@@ -207,14 +196,14 @@ public sealed class TwitchVodService : ITwitchVodService
                 Encoding.UTF8,
                 "application/json");
 
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 logger.Write(
                     AppLogLevel.Warning,
                     "VODs",
-                    $"Twitch VOD access lookup failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(responseBody)}".Trim());
+                    $"Twitch VOD access lookup failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody, includeBodyFallback: false)}".Trim());
                 return videos;
             }
 
@@ -225,7 +214,7 @@ public sealed class TwitchVodService : ITwitchVodService
                 logger.Write(
                     AppLogLevel.Warning,
                     "VODs",
-                    $"Twitch VOD access lookup returned no data. {ExtractGraphQlError(root)}".Trim());
+                    $"Twitch VOD access lookup returned no data. {GraphQlErrorReader.Extract(root)}".Trim());
                 return videos;
             }
 
@@ -246,7 +235,7 @@ public sealed class TwitchVodService : ITwitchVodService
                 logger.Write(
                     AppLogLevel.Warning,
                     "VODs",
-                    $"Twitch did not return usable access metadata for {unknownCount} of {videos.Length} VODs. {ExtractGraphQlError(root)}".Trim());
+                    $"Twitch did not return usable access metadata for {unknownCount} of {videos.Length} VODs. {GraphQlErrorReader.Extract(root)}".Trim());
             }
 
             return classified;
@@ -344,21 +333,6 @@ public sealed class TwitchVodService : ITwitchVodService
         _ => ""
     };
 
-    private static string ExtractGraphQlError(JsonElement root)
-    {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("errors", out var errors) ||
-            errors.ValueKind != JsonValueKind.Array)
-        {
-            return "";
-        }
-
-        return errors
-            .EnumerateArray()
-            .Select(error => GetOptionalString(error, "message"))
-            .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message)) ?? "";
-    }
-
     private static string CreateDeviceId() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
@@ -372,7 +346,8 @@ public sealed class TwitchVodService : ITwitchVodService
 
     private static TwitchVodBroadcaster? ReadBroadcaster(JsonElement root)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -380,6 +355,11 @@ public sealed class TwitchVodService : ITwitchVodService
 
         foreach (var item in data.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             var id = GetOptionalString(item, "id");
             var login = GetOptionalString(item, "login").Trim();
             if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(login))
@@ -391,7 +371,8 @@ public sealed class TwitchVodService : ITwitchVodService
             return new TwitchVodBroadcaster(
                 id,
                 login,
-                string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim());
+                string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim(),
+                GetOptionalString(item, "profile_image_url"));
         }
 
         return null;
@@ -399,7 +380,8 @@ public sealed class TwitchVodService : ITwitchVodService
 
     private static IEnumerable<TwitchVodItem> ReadVideos(JsonElement root, TwitchVodBroadcaster broadcaster)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             yield break;
@@ -407,6 +389,11 @@ public sealed class TwitchVodService : ITwitchVodService
 
         foreach (var item in data.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             var id = GetOptionalString(item, "id");
             var url = GetOptionalString(item, "url");
             if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(url))
@@ -416,7 +403,7 @@ public sealed class TwitchVodService : ITwitchVodService
 
             var login = FirstNonEmpty(GetOptionalString(item, "user_login"), broadcaster.Login);
             var displayName = FirstNonEmpty(GetOptionalString(item, "user_name"), broadcaster.DisplayName, login);
-            _ = TryParseTwitchDuration(GetOptionalString(item, "duration"), out var duration);
+            _ = DurationValues.TryParseHmsDuration(GetOptionalString(item, "duration"), out var duration);
             var type = ReadVideoType(GetOptionalString(item, "type"));
 
             yield return new TwitchVodItem(
@@ -428,12 +415,13 @@ public sealed class TwitchVodService : ITwitchVodService
                 GetOptionalString(item, "title"),
                 GetOptionalString(item, "description"),
                 url,
-                NormalizeTwitchVodThumbnailUrl(GetOptionalString(item, "thumbnail_url")),
+                NormalizeImageUrl(GetOptionalString(item, "thumbnail_url"), "320", "180"),
                 TryGetDateTimeOffset(item, "created_at"),
                 TryGetDateTimeOffset(item, "published_at"),
                 duration,
                 TryGetInt32(item, "view_count"),
-                type);
+                type,
+                ProfileImageUrl: broadcaster.ProfileImageUrl);
         }
     }
 
@@ -500,89 +488,4 @@ public sealed class TwitchVodService : ITwitchVodService
         }
     }
 
-    private static string NormalizeTwitchVodThumbnailUrl(string url)
-    {
-        var normalized = (url ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return "";
-        }
-
-        return normalized
-            .Replace("%{width}", "320", StringComparison.OrdinalIgnoreCase)
-            .Replace("%{height}", "180", StringComparison.OrdinalIgnoreCase)
-            .Replace("{width}", "320", StringComparison.OrdinalIgnoreCase)
-            .Replace("{height}", "180", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool TryParseTwitchDuration(string value, out TimeSpan duration)
-    {
-        duration = TimeSpan.Zero;
-        var text = (value ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return false;
-        }
-
-        var index = 0;
-        long totalSeconds = 0;
-        while (index < text.Length)
-        {
-            var start = index;
-            while (index < text.Length && char.IsDigit(text[index]))
-            {
-                index++;
-            }
-
-            if (start == index ||
-                index >= text.Length ||
-                !long.TryParse(text[start..index], NumberStyles.None, CultureInfo.InvariantCulture, out var number))
-            {
-                return false;
-            }
-
-            var unit = text[index++];
-            long multiplier = unit switch
-            {
-                'h' => 60 * 60,
-                'm' => 60,
-                's' => 1,
-                _ => 0
-            };
-            if (multiplier == 0 ||
-                number > long.MaxValue / multiplier ||
-                totalSeconds > TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerSecond - (number * multiplier))
-            {
-                return false;
-            }
-
-            totalSeconds += number * multiplier;
-        }
-
-        duration = TimeSpan.FromTicks(totalSeconds * TimeSpan.TicksPerSecond);
-        return duration > TimeSpan.Zero;
-    }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            var root = document.RootElement;
-            var message = GetOptionalString(root, "message");
-            return string.IsNullOrWhiteSpace(message) ? "" : message;
-        }
-        catch (JsonException)
-        {
-            return "";
-        }
-    }
-
-    private static HttpClient CreateHttpClient()
-    {
-        return new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(20)
-        };
-    }
 }

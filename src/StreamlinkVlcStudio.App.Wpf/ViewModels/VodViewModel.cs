@@ -50,7 +50,8 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
                     twitch.Id,
                     Title,
                     twitch.BroadcasterId,
-                    twitch.Duration);
+                    twitch.Duration,
+                    ProfileImageUrl: twitch.ProfileImageUrl);
             }
 
             var kick = kickVod!;
@@ -65,7 +66,8 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
                 kick.Duration,
                 kick.StartedAtUtc,
                 kick.ChannelId,
-                kick.CategoryName);
+                kick.CategoryName,
+                kick.ProfileImageUrl);
         }
     }
 
@@ -108,6 +110,10 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
     }
 
     public string ThumbnailUrl => twitchVod?.ThumbnailUrl ?? kickVod?.ThumbnailUrl ?? "";
+
+    public string ProfileImageUrl => twitchVod?.ProfileImageUrl ?? kickVod?.ProfileImageUrl ?? "";
+
+    public bool HasProfileImage => !string.IsNullOrWhiteSpace(ProfileImageUrl);
 
     public bool HasThumbnail => !string.IsNullOrWhiteSpace(ThumbnailUrl);
 

@@ -69,48 +69,6 @@ function Test-PathContainsReparsePoint([string]$Path) {
     $false
 }
 
-function Remove-ReparsePoint([string]$Path) {
-    $item = Get-Item -LiteralPath $Path -Force
-    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
-        throw "Path is not a symbolic link or directory junction: $Path"
-    }
-
-    # Windows PowerShell 5.1 can throw a NullReferenceException when
-    # Remove-Item unlinks a directory junction. These APIs remove only the link.
-    if ($item.PSIsContainer) {
-        [System.IO.Directory]::Delete($item.FullName)
-    } else {
-        [System.IO.File]::Delete($item.FullName)
-    }
-}
-
-function Remove-DirectoryTreeSafely([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return
-    }
-
-    $item = Get-Item -LiteralPath $Path -Force
-    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        Remove-ReparsePoint $item.FullName
-        return
-    }
-
-    if (-not $item.PSIsContainer) {
-        Remove-Item -LiteralPath $item.FullName -Force
-        return
-    }
-
-    Get-ChildItem -LiteralPath $item.FullName -Force | ForEach-Object {
-        if ($_.PSIsContainer -or
-            (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
-            Remove-DirectoryTreeSafely $_.FullName
-        } else {
-            Remove-Item -LiteralPath $_.FullName -Force
-        }
-    }
-    [System.IO.Directory]::Delete($item.FullName)
-}
-
 function Test-SafeDeleteDirectory([string]$Directory) {
     $full = Normalize-FullPath $Directory
     if ([string]::IsNullOrWhiteSpace($full) -or -not (Test-Path -LiteralPath $full -PathType Container)) {
@@ -136,8 +94,93 @@ function Test-SafeDeleteDirectory([string]$Directory) {
         return $false
     }
 
-    (Test-Path -LiteralPath (Join-Path $full "StreamlinkVlcStudio.exe") -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $full "Uninstall.exe") -PathType Leaf)
+    (Test-Path -LiteralPath (Join-Path $full ".streamlink-vlc-studio-owner.json") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $full ".streamlink-vlc-studio-files.json") -PathType Leaf)
+}
+
+function Assert-NoReparsePointInTree([string]$Directory) {
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push((Normalize-FullPath $Directory))
+    while ($pending.Count -gt 0) {
+        foreach ($item in Get-ChildItem -LiteralPath $pending.Pop() -Force -ErrorAction Stop) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to uninstall through a symbolic link or junction: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($item.FullName)
+            }
+        }
+    }
+}
+
+function Get-ValidatedOwnershipState([string]$Directory, [switch]$VerifyManagedFiles) {
+    $root = Normalize-FullPath $Directory
+    if (-not (Test-SafeDeleteDirectory $root)) {
+        throw "Refusing to delete unsafe install directory: $root"
+    }
+    Assert-NoReparsePointInTree $root
+
+    $ownerPath = Join-Path $root ".streamlink-vlc-studio-owner.json"
+    $manifestPath = Join-Path $root ".streamlink-vlc-studio-files.json"
+    try {
+        $owner = Get-Content -LiteralPath $ownerPath -Raw | ConvertFrom-Json
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Installation ownership state is corrupt; no files or registration were removed. $($_.Exception.Message)"
+    }
+
+    if ($owner.schemaVersion -ne 1 -or $manifest.schemaVersion -ne 1 -or
+        $owner.product -ne "streamlink-vlc-studio" -or $manifest.product -ne "streamlink-vlc-studio" -or
+        [string]::IsNullOrWhiteSpace([string]$owner.installId) -or
+        $owner.installId -ne $manifest.installId) {
+        throw "Invalid Streamlink VLC Studio ownership state; no files or registration were removed."
+    }
+
+    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
+    if (-not [string]::Equals($manifestHash, [string]$owner.manifestSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Installation ownership manifest was modified; no files or registration were removed."
+    }
+
+    $rootPrefix = $root.TrimEnd([char[]]@(92, 47)) + [IO.Path]::DirectorySeparatorChar
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($manifest.files)) {
+        $relative = [string]$entry.path
+        if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or
+            $relative.IndexOf([char]0) -ge 0 -or $relative -match '(^|[\/])\.\.([\/]|$)' -or
+            -not $seen.Add($relative)) {
+            throw "Unsafe or duplicate managed path in installation manifest: $relative"
+        }
+
+        $target = [IO.Path]::GetFullPath((Join-Path $root $relative))
+        if (-not $target.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Managed path escapes the installation: $relative"
+        }
+        if (-not (Test-Path -LiteralPath $target)) {
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            throw "Managed installation path is not a file: $relative"
+        }
+
+        $item = Get-Item -LiteralPath $target -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to remove a managed reparse point: $target"
+        }
+        if ($VerifyManagedFiles) {
+            $actualHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+            if ($item.Length -ne [int64]$entry.length -or
+                -not [string]::Equals($actualHash, [string]$entry.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Managed installation file was modified; no files or registration were removed: $relative"
+            }
+        }
+    }
+
+    [pscustomobject]@{
+        Root = $root
+        OwnerPath = $ownerPath
+        ManifestPath = $manifestPath
+        Manifest = $manifest
+    }
 }
 
 function Test-PathIsSameOrUnderDirectory([string]$ChildPath, [string]$ParentPath) {
@@ -183,15 +226,21 @@ function Resolve-InstallDirectory {
     ""
 }
 
-function Stop-AppProcesses {
-    $running = @(Get-Process -Name "StreamlinkVlcStudio", "StreamlinkVlcStudio.App.Wpf", "vlc_chat_overlay" -ErrorAction SilentlyContinue)
+function Stop-AppProcesses([string]$InstallDirectory) {
+    $install = Normalize-FullPath $InstallDirectory
+    $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -in @("StreamlinkVlcStudio.exe", "StreamlinkVlcStudio.App.Wpf.exe", "vlc_chat_overlay.exe") -and
+            -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+            (Test-PathIsSameOrUnderDirectory $_.ExecutablePath $install)
+        })
     if ($running.Count -eq 0) {
         return
     }
 
     Write-Step "Stopping Streamlink VLC Studio"
-    $ids = @($running | ForEach-Object { $_.Id })
-    $running | Stop-Process -Force
+    $ids = @($running | ForEach-Object { [int]$_.ProcessId })
+    $ids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     try {
         Wait-Process -Id $ids -Timeout 10 -ErrorAction SilentlyContinue
     } catch {
@@ -230,42 +279,6 @@ function Remove-Shortcuts([string]$InstallDirectory) {
     }
 }
 
-function Remove-AppData([string]$InstallDirectory) {
-    Write-Step "Removing app data"
-    $install = Normalize-FullPath $InstallDirectory
-    $paths = @(
-        (Join-Path $env:APPDATA "StreamlinkVlcStudio"),
-        (Join-Path $env:LOCALAPPDATA "StreamlinkVlcStudio")
-    )
-
-    foreach ($path in $paths) {
-        $full = Normalize-FullPath $path
-        if (-not [string]::IsNullOrWhiteSpace($install) -and
-            (Test-PathIsSameOrUnderDirectory $install $full)) {
-            continue
-        }
-
-        if (Test-Path -LiteralPath $path -PathType Container) {
-            $parentPath = Split-Path -Parent $full
-            if (-not (Test-PathContainsReparsePoint $parentPath)) {
-                Remove-DirectoryTreeSafely $path
-            }
-        }
-    }
-
-    $tempRoot = [System.IO.Path]::GetTempPath()
-    Get-ChildItem -LiteralPath $tempRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like "StreamlinkVlcStudio-setup-*" -or $_.Name -like "StreamlinkVlcStudio-installer-*" -or $_.Name -like "StreamlinkVlcStudio-uninstall-*" } |
-        ForEach-Object {
-            try {
-                if (-not (Test-PathContainsReparsePoint (Split-Path -Parent $_.FullName))) {
-                    Remove-DirectoryTreeSafely $_.FullName
-                }
-            } catch {
-            }
-        }
-}
-
 function Remove-UninstallRegistryEntry {
     Write-Step "Removing uninstall registration"
     if (Test-Path -LiteralPath $uninstallKey) {
@@ -300,37 +313,87 @@ function Start-InstallDirectoryCleanup([string]$InstallDirectory) {
         (Get-Command Test-PathContainsReparsePoint).Definition
         '}'
         ''
-        'function Remove-ReparsePoint {'
-        (Get-Command Remove-ReparsePoint).Definition
+        'function Test-SafeDeleteDirectory {'
+        (Get-Command Test-SafeDeleteDirectory).Definition
         '}'
         ''
-        'function Remove-DirectoryTreeSafely {'
-        (Get-Command Remove-DirectoryTreeSafely).Definition
+        'function Assert-NoReparsePointInTree {'
+        (Get-Command Assert-NoReparsePointInTree).Definition
         '}'
         ''
-        '$ErrorActionPreference = "SilentlyContinue"'
+        'function Get-ValidatedOwnershipState {'
+        (Get-Command Get-ValidatedOwnershipState).Definition
+        '}'
         ''
-        'foreach ($idText in ($WaitProcessIds -split ",")) {'
-        '    $id = 0'
-        '    if ([int]::TryParse($idText, [ref]$id) -and $id -gt 0) {'
-        '        Wait-Process -Id $id -Timeout 30 -ErrorAction SilentlyContinue'
+        'function Write-Step {'
+        (Get-Command Write-Step).Definition
+        '}'
+        ''
+        'function Test-PathIsSameOrUnderDirectory {'
+        (Get-Command Test-PathIsSameOrUnderDirectory).Definition
+        '}'
+        ''
+        'function Remove-ShortcutIfTargetMatches {'
+        (Get-Command Remove-ShortcutIfTargetMatches).Definition
+        '}'
+        ''
+        'function Remove-Shortcuts {'
+        (Get-Command Remove-Shortcuts).Definition
+        '}'
+        ''
+        'function Remove-UninstallRegistryEntry {'
+        (Get-Command Remove-UninstallRegistryEntry).Definition
+        '}'
+        ''
+        '$uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamlinkVlcStudio"'
+        '$ErrorActionPreference = "Stop"'
+        ''
+        'try {'
+        '    foreach ($idText in ($WaitProcessIds -split ",")) {'
+        '        $id = 0'
+        '        if ([int]::TryParse($idText, [ref]$id) -and $id -gt 0) {'
+        '            Wait-Process -Id $id -Timeout 30 -ErrorAction SilentlyContinue'
+        '        }'
         '    }'
-        '}'
         ''
-        'for ($attempt = 0; $attempt -lt 30; $attempt++) {'
-        '    if (Test-PathContainsReparsePoint (Split-Path -Parent $InstallDirectory)) {'
-        '        break'
+        '    $state = Get-ValidatedOwnershipState $InstallDirectory -VerifyManagedFiles'
+        '    $root = $state.Root'
+        '    $ownerPath = $state.OwnerPath'
+        '    $manifestPath = $state.ManifestPath'
+        '    $manifest = $state.Manifest'
+        '    foreach ($entry in @($manifest.files)) {'
+        '        $relative = [string]$entry.path'
+        '        $target = [IO.Path]::GetFullPath((Join-Path $root $relative))'
+        '        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {'
+        '            continue'
+        '        }'
+        '        for ($attempt = 0; $attempt -lt 30 -and (Test-Path -LiteralPath $target); $attempt++) {'
+        '            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue'
+        '            if (Test-Path -LiteralPath $target) { Start-Sleep -Milliseconds 500 }'
+        '        }'
+        '        if (Test-Path -LiteralPath $target) {'
+        '            throw "Could not remove managed installation file; uninstall registration was preserved: $relative"'
+        '        }'
         '    }'
         ''
-        '    Remove-DirectoryTreeSafely $InstallDirectory'
-        '    if (-not (Test-Path -LiteralPath $InstallDirectory)) {'
-        '        break'
+        '    Remove-Item -LiteralPath $ownerPath -Force -ErrorAction SilentlyContinue'
+        '    Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue'
+        '    Get-ChildItem -LiteralPath $root -Directory -Recurse -Force -ErrorAction SilentlyContinue |'
+        '        Sort-Object { $_.FullName.Length } -Descending | ForEach-Object {'
+        '            if (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and'
+        '                @(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0) {'
+        '                [IO.Directory]::Delete($_.FullName)'
+        '            }'
+        '        }'
+        '    if ((Test-Path -LiteralPath $root -PathType Container) -and'
+        '        @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue).Count -eq 0) {'
+        '        [IO.Directory]::Delete($root)'
         '    }'
-        ''
-        '    Start-Sleep -Milliseconds 500'
+        '    Remove-Shortcuts $root'
+        '    Remove-UninstallRegistryEntry'
+        '} finally {'
+        '    Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue'
         '}'
-        ''
-        'Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue'
     ) | Set-Content -LiteralPath $cleanupScript -Encoding ASCII
 
     # Trailing separators must go: a path ending in "\" would escape the closing quote of the
@@ -340,7 +403,15 @@ function Start-InstallDirectoryCleanup([string]$InstallDirectory) {
         $cleanupScript.TrimEnd([char[]]@('\', '/')),
         $cleanupTarget,
         ($waitIds -join ",")
-    Start-Process -FilePath "powershell.exe" -ArgumentList $cleanupArguments -WindowStyle Hidden
+    $cleanupProcess = Start-Process `
+        -FilePath "powershell.exe" `
+        -ArgumentList $cleanupArguments `
+        -WindowStyle Hidden `
+        -PassThru `
+        -ErrorAction Stop
+    if ($null -eq $cleanupProcess) {
+        throw "The uninstall cleanup process could not be started. Registration was preserved."
+    }
 }
 
 $installDirectory = Resolve-InstallDirectory
@@ -348,13 +419,12 @@ if ([string]::IsNullOrWhiteSpace($installDirectory)) {
     throw "Could not resolve the Streamlink VLC Studio install directory."
 }
 
-Stop-AppProcesses
-Remove-Shortcuts $installDirectory
-Remove-AppData $installDirectory
-Remove-UninstallRegistryEntry
+$ownershipState = Get-ValidatedOwnershipState $installDirectory -VerifyManagedFiles
+$installDirectory = $ownershipState.Root
+Stop-AppProcesses $installDirectory
 Write-Step "Removing installed files"
 Start-InstallDirectoryCleanup $installDirectory
-Write-Step "Uninstall complete"
+Write-Step "Uninstall cleanup started"
 '@ | Set-Content -LiteralPath $Path -Encoding ASCII
 }
 
@@ -410,12 +480,21 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repoRoot "release\Uninstall.exe"
 }
 
+$outputLeaf = Split-Path -Leaf $OutputPath
+if (-not (Test-SafeWindowsPathSegment $outputLeaf) -or
+    -not [string]::Equals([IO.Path]::GetExtension($outputLeaf), '.exe', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputPath must end in a safe .exe file name: $OutputPath"
+}
+
 $outputPathFull = [System.IO.Path]::GetFullPath($OutputPath)
 $outputDirectory = Split-Path -Parent $outputPathFull
 Assert-NoReparsePointInExistingPath -Path $outputDirectory
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
 $buildRoot = Join-Path $outputDirectory ".uninstaller-build"
+if (Test-PathIsSameOrUnderDirectory -ChildPath $outputPathFull -ParentPath $buildRoot) {
+    throw "OutputPath cannot be inside the temporary uninstaller build directory: $outputPathFull"
+}
 Remove-DirectoryIfExists $buildRoot $outputDirectory
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
@@ -423,20 +502,20 @@ try {
     $bootstrapPath = Join-Path $buildRoot "Uninstall-StreamlinkVlcStudio-Bootstrap.ps1"
     New-UninstallBootstrapScript $bootstrapPath
 
+    $stagedOutputPath = Join-Path $buildRoot "Uninstall-built.exe"
     $sedPath = Join-Path $buildRoot "Uninstall.sed"
-    New-IExpressSed $sedPath $buildRoot $outputPathFull
-
-    if (Test-Path -LiteralPath $outputPathFull -PathType Leaf) {
-        Remove-Item -LiteralPath $outputPathFull -Force
-    }
+    New-IExpressSed $sedPath $buildRoot $stagedOutputPath
 
     Write-Info "Building uninstall executable..."
     Invoke-IExpress -SedPath $sedPath -WorkingDirectory $buildRoot
 
-    if (-not (Test-Path -LiteralPath $outputPathFull -PathType Leaf) -or
-        (Get-Item -LiteralPath $outputPathFull).Length -eq 0) {
-        throw "Uninstall executable was not created: $outputPathFull"
+    if (-not (Test-Path -LiteralPath $stagedOutputPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $stagedOutputPath).Length -eq 0) {
+        throw "Uninstall executable was not created: $stagedOutputPath"
     }
+    Promote-ValidatedFileSetAtomically @(
+        [pscustomobject]@{ Source = $stagedOutputPath; Destination = $outputPathFull }
+    )
 } finally {
     Remove-DirectoryIfExists $buildRoot $outputDirectory
 }

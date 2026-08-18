@@ -6,6 +6,8 @@ internal sealed class PictureInPictureDragCandidate
     private int startY;
 
     public bool IsActive { get; private set; }
+    public int StartScreenX => startX;
+    public int StartScreenY => startY;
 
     public void Begin(int screenX, int screenY)
     {

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "reviewedUtc": "2026-08-15T00:00:00Z",
+  "dependencies": {
+    "streamlink": {
+      "version": "8.5.0-1",
+      "fileName": "streamlink-8.5.0-1-py314-x86_64.exe",
+      "url": "https://github.com/streamlink/windows-builds/releases/download/8.5.0-1/streamlink-8.5.0-1-py314-x86_64.exe",
+      "length": 62976874,
+      "sha256": "d6a4f98c81cea16f000850165d4c70e91fe1488b160ee6ccc365fb0105efdd24",
+      "authenticode": "NotSigned",
+      "expectedPublisher": "streamlink/windows-builds GitHub release",
+      "expectedProductName": "Streamlink"
+    },
+    "vlc": {
+      "version": "3.0.23",
+      "fileName": "vlc-3.0.23-win64.msi",
+      "url": "https://ftp.osuosl.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.msi",
+      "length": 60608512,
+      "sha256": "bc4b902a480b98a4a5479327a7f210f06369a59bf727649e320faba5b4ef1f5e",
+      "authenticode": "Valid",
+      "expectedPublisher": "CN=VideoLAN, O=VideoLAN, L=Paris, C=FR",
+      "expectedSignerThumbprint": "CCF8C4F9272D8A25477AF13EC71F97A3027C7319"
+    }
+  }
+}

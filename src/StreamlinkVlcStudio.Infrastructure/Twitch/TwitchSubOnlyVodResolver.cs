@@ -4,8 +4,11 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Logging;
+using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Twitch;
+using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Replay;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
@@ -18,16 +21,18 @@ namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 /// </summary>
 public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
 {
-    private const string TwitchGraphQlEndpoint = "https://gql.twitch.tv/gql";
     // Public Twitch web Client-ID, the same one ReplayResolver uses for archive lookups.
     private const string TwitchPublicClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private const int PlaylistProbeByteLimit = 65535;
+    private static readonly TimeSpan VariantProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StalePlaylistAge = TimeSpan.FromHours(24);
     // TwitchNoSub compares createdAt against this frozen cutoff instead of "now":
     // newer uploads do not expose the index-dvr layout, so they use the archive URL
     // shape (which simply yields no variants and a clean error).
     private static readonly DateTimeOffset TwitchUploadLayoutCutoff = new(2023, 2, 10, 0, 0, 0, TimeSpan.Zero);
-    private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(
+        TimeSpan.FromSeconds(20),
+        allowAutoRedirect: false);
     private static readonly string DefaultPlaylistDirectory = Path.Combine(
         Path.GetTempPath(),
         "StreamlinkVlcStudio",
@@ -36,17 +41,30 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
     private readonly IAppLogger logger;
     private readonly HttpClient httpClient;
     private readonly string playlistDirectory;
+    private readonly ReplayUrlSecurityValidator replayUrlValidator;
+    private readonly TwitchGraphQlTransport twitchGraphQlTransport;
 
     public TwitchSubOnlyVodResolver(IAppLogger logger)
         : this(logger, SharedHttpClient, DefaultPlaylistDirectory)
     {
     }
 
-    public TwitchSubOnlyVodResolver(IAppLogger logger, HttpClient httpClient, string playlistDirectory)
+    internal TwitchSubOnlyVodResolver(IAppLogger logger, HttpClient httpClient, string playlistDirectory)
+        : this(logger, httpClient, playlistDirectory, ReplayUrlSecurityValidator.Shared)
+    {
+    }
+
+    internal TwitchSubOnlyVodResolver(
+        IAppLogger logger,
+        HttpClient httpClient,
+        string playlistDirectory,
+        ReplayUrlSecurityValidator replayUrlValidator)
     {
         this.logger = logger;
         this.httpClient = httpClient;
         this.playlistDirectory = playlistDirectory;
+        this.replayUrlValidator = replayUrlValidator;
+        twitchGraphQlTransport = new TwitchGraphQlTransport(httpClient);
         SweepStalePlaylists();
     }
 
@@ -74,7 +92,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
             cancellationToken.ThrowIfCancellationRequested();
             var url = TwitchSubOnlyVodPlaylist.BuildVariantPlaylistUrl(
                 metadata.BroadcastType,
-                metadata.CreatedAtUtc,
+                metadata.CreatedAtUtc ?? DateTimeOffset.MinValue,
                 TwitchUploadLayoutCutoff,
                 host,
                 specialId,
@@ -104,7 +122,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
         var playlistPath = Path.Combine(playlistDirectory, $"{vodId}-{selectedKey}.m3u8");
         // No Encoding.UTF8 here: it would prepend a BOM, and libVLC's HLS demuxer
         // refuses playlists that do not start with "#EXTM3U" (black screen).
-        await File.WriteAllTextAsync(playlistPath, rewritten, cancellationToken).ConfigureAwait(false);
+        await WritePlaylistAtomicallyAsync(playlistPath, rewritten, cancellationToken).ConfigureAwait(false);
         logger.Write(
             AppLogLevel.Info,
             "SubOnlyVod",
@@ -112,81 +130,145 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
         return new TwitchSubOnlyVodResolution(
             new Uri(playlistPath),
             selectedKey,
-            $"Resolved sub-only VOD via direct CloudFront playlist ({selectedKey}).");
+            $"Resolved sub-only VOD via direct CloudFront playlist ({selectedKey}).",
+            metadata.MediaDuration,
+            metadata.OwnerLogin,
+            metadata.CreatedAtUtc);
     }
 
     private async Task<TwitchVideoMetadata> FetchVideoMetadataAsync(string vodId, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, TwitchGraphQlEndpoint);
-        request.Headers.Accept.ParseAdd("*/*");
-        request.Headers.TryAddWithoutValidation("Client-Id", TwitchPublicClientId);
-        request.Headers.TryAddWithoutValidation("X-Device-Id", CreateDeviceId());
-        request.Content = new StringContent(BuildVideoQueryPayload(vodId), Encoding.UTF8, "application/json");
-
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        JsonDocument document;
+        try
+        {
+            document = await twitchGraphQlTransport.SendAsync(
+                BuildVideoQueryPayload(vodId),
+                TwitchPublicClientId,
+                CreateDeviceId(),
+                cancellationToken,
+                mediaType: "application/json").ConfigureAwait(false);
+        }
+        catch (TwitchGraphQlHttpException ex)
         {
             throw new InvalidOperationException(
-                $"Twitch GraphQL returned {(int)response.StatusCode} {response.ReasonPhrase} for VOD {vodId}. {ExtractApiMessage(body)}".Trim());
+                $"Twitch GraphQL returned {(int)ex.StatusCode} {ex.ReasonPhrase} for VOD {vodId}. {ApiErrorMessage.Extract(ex.ResponseBody, includeBodyFallback: false)}".Trim(),
+                ex);
         }
-
-        using var document = JsonDocument.Parse(body);
-        var graphQlError = ExtractGraphQlError(document.RootElement);
-        if (!string.IsNullOrWhiteSpace(graphQlError))
+        catch (TwitchGraphQlRejectedException ex)
         {
-            throw new InvalidOperationException($"Twitch GraphQL rejected the VOD lookup: {graphQlError}");
+            throw new InvalidOperationException($"Twitch GraphQL rejected the VOD lookup: {ex.GraphQlMessage}", ex);
         }
 
-        if (!document.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Object ||
-            !data.TryGetProperty("video", out var video) ||
-            video.ValueKind != JsonValueKind.Object)
+        using (document)
         {
-            throw new InvalidOperationException($"VOD {vodId} was not found or is not public.");
-        }
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Object ||
+                !data.TryGetProperty("video", out var video) ||
+                video.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException($"VOD {vodId} was not found or is not public.");
+            }
 
-        return new TwitchVideoMetadata(
-            GetOptionalString(video, "broadcastType"),
-            TryGetDateTimeOffset(video, "createdAt") ?? DateTimeOffset.MinValue,
-            GetOptionalString(video, "seekPreviewsURL"),
-            TryReadNestedString(video, "owner", "login"));
+            return new TwitchVideoMetadata(
+                GetOptionalString(video, "broadcastType"),
+                TryReadTwitchLengthSeconds(video),
+                TryGetDateTimeOffset(video, "createdAt"),
+                GetOptionalString(video, "seekPreviewsURL"),
+                TryReadNestedString(video, "owner", "login"));
+        }
     }
 
     private async Task<bool> ProbeVariantAsync(string url, CancellationToken cancellationToken)
     {
+        using var probeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        probeTimeout.CancelAfter(VariantProbeTimeout);
         try
         {
-            var content = await FetchStringAsync(url, ranged: true, cancellationToken).ConfigureAwait(false);
+            var content = await FetchStringAsync(url, ranged: true, probeTimeout.Token).ConfigureAwait(false);
             return content.TrimStart().StartsWith("#EXTM3U", StringComparison.Ordinal);
         }
         catch (HttpRequestException)
         {
             return false;
         }
-        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (IOException)
         {
-            // The shared HttpClient timed out: treat the variant as unavailable
-            // instead of aborting the remaining probes.
+            return false;
+        }
+        catch (DecoderFallbackException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A slow variant is unavailable for selection; continue probing the remaining
+            // qualities without waiting for the shared HttpClient's much longer timeout.
             return false;
         }
     }
 
     private async Task<string> FetchStringAsync(string url, bool ranged, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (ranged)
-        {
-            request.Headers.Range = new RangeHeaderValue(0, PlaylistProbeByteLimit);
-        }
+        using var response = await ValidatedReplayHttpClient.SendGetAsync(
+            httpClient,
+            replayUrlValidator,
+            new Uri(url),
+            PlatformKind.Twitch,
+            requestUri =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+                if (ranged)
+                {
+                    request.Headers.Range = new RangeHeaderValue(0, PlaylistProbeByteLimit);
+                }
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                return request;
+            },
+            cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException($"GET {url} returned {(int)response.StatusCode}.");
         }
 
-        return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        return ranged
+            ? await BoundedHttpContentReader.ReadRangeProbeAsync(response.Content, cancellationToken).ConfigureAwait(false)
+            : await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task WritePlaylistAtomicallyAsync(
+        string playlistPath,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var temporaryPath = $"{playlistPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            // Write without a BOM, then replace the destination in one filesystem
+            // operation so VLC never opens a half-written playlist.
+            await File.WriteAllTextAsync(
+                    temporaryPath,
+                    content,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            File.Move(temporaryPath, playlistPath, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    File.Delete(temporaryPath);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A completed playlist is still usable if cleanup loses a race with
+                // another resolver; stale files are swept on the next construction.
+            }
+        }
     }
 
     private void SweepStalePlaylists()
@@ -224,58 +306,30 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
     {
         var payload = new
         {
-            query = $"query {{ video(id: \"{vodId}\") {{ broadcastType, createdAt, seekPreviewsURL, owner {{ login }} }} }}"
+            query = $"query {{ video(id: \"{vodId}\") {{ broadcastType, createdAt, lengthSeconds, seekPreviewsURL, owner {{ login }} }} }}"
         };
         return JsonSerializer.Serialize(payload);
     }
 
-    private static string ExtractGraphQlError(JsonElement root)
+    private static TimeSpan TryReadTwitchLengthSeconds(JsonElement video)
     {
-        if (root.ValueKind == JsonValueKind.Object &&
-            root.TryGetProperty("errors", out var errors) &&
-            errors.ValueKind == JsonValueKind.Array)
-        {
-            return errors
-                .EnumerateArray()
-                .Select(error => GetOptionalString(error, "message"))
-                .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message)) ?? "";
-        }
-
-        return "";
-    }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            var root = document.RootElement;
-            var message = GetOptionalString(root, "message");
-            return string.IsNullOrWhiteSpace(message) ? "" : message;
-        }
-        catch (JsonException)
-        {
-            return "";
-        }
+        return video.ValueKind == JsonValueKind.Object &&
+            video.TryGetProperty("lengthSeconds", out var property) &&
+            TryGetPositiveDuration(property, TimeSpan.TicksPerSecond, out var duration)
+            ? duration
+            : TimeSpan.Zero;
     }
 
     private static string CreateDeviceId() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-
-    private static HttpClient CreateHttpClient()
-    {
-        return new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(20)
-        };
-    }
 
     [GeneratedRegex("^[0-9]+$", RegexOptions.CultureInvariant)]
     private static partial Regex TwitchVodIdPattern();
 
     private sealed record TwitchVideoMetadata(
         string BroadcastType,
-        DateTimeOffset CreatedAtUtc,
+        TimeSpan MediaDuration,
+        DateTimeOffset? CreatedAtUtc,
         string SeekPreviewsUrl,
         string OwnerLogin);
 }

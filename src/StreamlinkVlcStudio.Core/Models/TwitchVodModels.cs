@@ -24,7 +24,8 @@ public sealed record TwitchVodSearchRequest(
 public sealed record TwitchVodBroadcaster(
     string Id,
     string Login,
-    string DisplayName);
+    string DisplayName,
+    string ProfileImageUrl = "");
 
 public sealed record TwitchVodItem(
     string Id,
@@ -41,4 +42,5 @@ public sealed record TwitchVodItem(
     TimeSpan Duration,
     int? ViewCount,
     TwitchVodTypeFilter Type,
-    TwitchVodAccessKind AccessKind = TwitchVodAccessKind.Unknown);
+    TwitchVodAccessKind AccessKind = TwitchVodAccessKind.Unknown,
+    string ProfileImageUrl = "");

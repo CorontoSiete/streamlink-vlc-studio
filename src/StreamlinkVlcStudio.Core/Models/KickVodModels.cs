@@ -20,4 +20,5 @@ public sealed record KickVodItem(
     DateTimeOffset? StartedAtUtc,
     TimeSpan Duration,
     int? ViewCount,
-    string ChannelId = "");
+    string ChannelId = "",
+    string ProfileImageUrl = "");

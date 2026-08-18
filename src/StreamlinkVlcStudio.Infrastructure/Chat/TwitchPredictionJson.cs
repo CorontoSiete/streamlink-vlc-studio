@@ -20,7 +20,10 @@ internal static class TwitchPredictionJson
             locksAt is { } locks &&
             locks > started)
         {
-            predictionWindowSeconds = (int)Math.Round((locks - started).TotalSeconds);
+            predictionWindowSeconds = (int)Math.Clamp(
+                Math.Round((locks - started).TotalSeconds),
+                0d,
+                int.MaxValue);
         }
 
         return new TwitchPrediction(
@@ -40,7 +43,8 @@ internal static class TwitchPredictionJson
 
     public static TwitchPrediction? ReadFirstPrediction(JsonElement root)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -48,7 +52,10 @@ internal static class TwitchPredictionJson
 
         foreach (var item in data.EnumerateArray())
         {
-            return ReadPrediction(item);
+            if (item.ValueKind == JsonValueKind.Object)
+            {
+                return ReadPrediction(item);
+            }
         }
 
         return null;
@@ -56,7 +63,8 @@ internal static class TwitchPredictionJson
 
     public static string GetOptionalString(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var property))
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty(propertyName, out var property))
         {
             return "";
         }
@@ -71,7 +79,8 @@ internal static class TwitchPredictionJson
 
     public static int GetOptionalInt32(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var property))
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty(propertyName, out var property))
         {
             return 0;
         }
@@ -132,6 +141,11 @@ internal static class TwitchPredictionJson
         var outcomes = new List<TwitchPredictionOutcome>();
         foreach (var outcomeElement in outcomesElement.EnumerateArray())
         {
+            if (outcomeElement.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             outcomes.Add(new TwitchPredictionOutcome(
                 GetOptionalString(outcomeElement, "id"),
                 GetOptionalString(outcomeElement, "title"),
@@ -146,7 +160,8 @@ internal static class TwitchPredictionJson
 
     private static IReadOnlyList<TwitchPredictionTopPredictor> ReadTopPredictors(JsonElement outcomeElement)
     {
-        if (!outcomeElement.TryGetProperty("top_predictors", out var predictorsElement) ||
+        if (outcomeElement.ValueKind != JsonValueKind.Object ||
+            !outcomeElement.TryGetProperty("top_predictors", out var predictorsElement) ||
             predictorsElement.ValueKind != JsonValueKind.Array)
         {
             return [];
@@ -155,6 +170,11 @@ internal static class TwitchPredictionJson
         var predictors = new List<TwitchPredictionTopPredictor>();
         foreach (var predictorElement in predictorsElement.EnumerateArray())
         {
+            if (predictorElement.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             predictors.Add(new TwitchPredictionTopPredictor(
                 GetOptionalString(predictorElement, "user_id"),
                 GetOptionalString(predictorElement, "user_login"),
@@ -174,11 +194,15 @@ internal static class TwitchPredictionJson
         return property.ValueKind switch
         {
             JsonValueKind.Number when property.TryGetInt32(out var value) => value,
-            JsonValueKind.Number when property.TryGetInt64(out var longValue) => longValue > int.MaxValue ? int.MaxValue : (int)longValue,
+            JsonValueKind.Number when property.TryGetInt64(out var longValue) => ClampToInt32(longValue),
             JsonValueKind.String when int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) => value,
+            JsonValueKind.String when long.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var longValue) => ClampToInt32(longValue),
             _ => 0
         };
     }
+
+    private static int ClampToInt32(long value) =>
+        (int)Math.Clamp(value, int.MinValue, int.MaxValue);
 
     private static TwitchPredictionStatus ReadStatus(string status, string eventType)
     {

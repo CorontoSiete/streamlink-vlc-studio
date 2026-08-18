@@ -1,0 +1,42 @@
+{
+  "twitch": [
+    "bits",
+    "clips",
+    "creatorcamp",
+    "directory",
+    "downloads",
+    "drops",
+    "inventory",
+    "jobs",
+    "login",
+    "moderator",
+    "p",
+    "popout",
+    "products",
+    "search",
+    "settings",
+    "signup",
+    "subscriptions",
+    "turbo",
+    "videos",
+    "wallet"
+  ],
+  "kick": [
+    "about",
+    "browse",
+    "categories",
+    "community-guidelines",
+    "creator-dashboard",
+    "dashboard",
+    "following",
+    "login",
+    "privacy",
+    "register",
+    "search",
+    "settings",
+    "subscriptions",
+    "terms-of-service",
+    "video",
+    "videos"
+  ]
+}

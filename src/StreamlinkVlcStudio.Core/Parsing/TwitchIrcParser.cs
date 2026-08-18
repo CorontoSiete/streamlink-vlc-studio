@@ -1,3 +1,4 @@
+using System.Globalization;
 using StreamlinkVlcStudio.Core.Models;
 using System.Text;
 
@@ -41,7 +42,7 @@ public static class TwitchIrcParser
         var commandStart = prefixSeparator + 1;
         if (prefixSeparator <= 1 ||
             line[0] != ':' ||
-            !line.AsSpan(commandStart).StartsWith(privMsgCommand, StringComparison.Ordinal))
+            !line.AsSpan(commandStart).StartsWith(privMsgCommand, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -78,7 +79,7 @@ public static class TwitchIrcParser
             : null;
         var timestamp = TryReadTmiSentTimestamp(tags, out var sentAt)
             ? sentAt
-            : DateTimeOffset.Now;
+            : DateTimeOffset.UtcNow;
 
         return new ChatMessage(
             PlatformKind.Twitch,
@@ -93,11 +94,11 @@ public static class TwitchIrcParser
             messageId);
     }
 
-    private static bool TryReadTmiSentTimestamp(IReadOnlyDictionary<string, string> tags, out DateTimeOffset timestamp)
+    private static bool TryReadTmiSentTimestamp(Dictionary<string, string> tags, out DateTimeOffset timestamp)
     {
         timestamp = default;
         if (!tags.TryGetValue("tmi-sent-ts", out var rawTimestamp) ||
-            !long.TryParse(rawTimestamp, out var milliseconds))
+            !long.TryParse(rawTimestamp, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds))
         {
             return false;
         }
@@ -114,7 +115,7 @@ public static class TwitchIrcParser
         }
     }
 
-    private static IReadOnlyList<ChatBadge> ParseBadges(IReadOnlyDictionary<string, string> tags)
+    private static ChatBadge[] ParseBadges(Dictionary<string, string> tags)
     {
         var badges = new List<ChatBadge>();
         if (tags.TryGetValue("badges", out var rawBadges) && rawBadges.Length > 0)
@@ -124,22 +125,22 @@ public static class TwitchIrcParser
                 var split = rawBadge.IndexOf('/');
                 var id = split >= 0 ? rawBadge[..split] : rawBadge;
                 var version = split >= 0 && split + 1 < rawBadge.Length ? rawBadge[(split + 1)..] : null;
-                AddBadge(badges, id, version, ResolveBadgeTitle(id));
+                AddBadge(badges, id, version, TwitchBadgeValues.ResolveTitle(id));
             }
         }
 
         if ((tags.TryGetValue("mod", out var mod) && string.Equals(mod, "1", StringComparison.Ordinal)) ||
             (tags.TryGetValue("user-type", out var userType) && string.Equals(userType, "mod", StringComparison.OrdinalIgnoreCase)))
         {
-            AddBadge(badges, "moderator", "1", ResolveBadgeTitle("moderator"));
+            AddBadge(badges, "moderator", "1", TwitchBadgeValues.ResolveTitle("moderator"));
         }
 
-        return badges.Count > 0 ? badges.ToArray() : Array.Empty<ChatBadge>();
+        return badges.Count > 0 ? badges.ToArray() : [];
     }
 
     private static void AddBadge(List<ChatBadge> badges, string? id, string? version, string? title, string? imageUrl = null)
     {
-        id = NormalizeBadgeId(id);
+        id = TwitchBadgeValues.NormalizeId(id);
         if (string.IsNullOrWhiteSpace(id) ||
             badges.Any(existing => string.Equals(existing.Id, id, StringComparison.OrdinalIgnoreCase)))
         {
@@ -149,45 +150,11 @@ public static class TwitchIrcParser
         badges.Add(new ChatBadge(id, string.IsNullOrWhiteSpace(version) ? null : version.Trim(), title, imageUrl));
     }
 
-    private static string NormalizeBadgeId(string? id)
-    {
-        return string.IsNullOrWhiteSpace(id) ? "" : id.Trim().ToLowerInvariant();
-    }
-
-    private static string ResolveBadgeTitle(string? id)
-    {
-        return NormalizeBadgeId(id) switch
-        {
-            "admin" => "Admin",
-            "artist-badge" => "Artist",
-            "bits" => "Bits",
-            "broadcaster" => "Broadcaster",
-            "founder" => "Founder",
-            "moderator" => "Moderator",
-            "partner" => "Partner",
-            "premium" => "Prime Gaming",
-            "staff" => "Staff",
-            "subscriber" => "Subscriber",
-            "turbo" => "Turbo",
-            "vip" => "VIP",
-            var normalized when normalized.Length > 0 => ToTitle(normalized),
-            _ => "Badge"
-        };
-    }
-
-    private static string ToTitle(string value)
-    {
-        return string.Join(
-            ' ',
-            value.Split('-', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(part => part.Length == 0 ? part : char.ToUpperInvariant(part[0]) + part[1..]));
-    }
-
-    private static IReadOnlyList<ChatEmote> ParseEmotesTag(string message, string emotesTag)
+    private static ChatEmote[] ParseEmotesTag(string message, string emotesTag)
     {
         if (string.IsNullOrEmpty(message) || string.IsNullOrWhiteSpace(emotesTag))
         {
-            return Array.Empty<ChatEmote>();
+            return [];
         }
 
         var emotes = new List<ChatEmote>();
@@ -204,9 +171,10 @@ public static class TwitchIrcParser
             {
                 var rangeSplit = rangeText.IndexOf('-');
                 if (rangeSplit <= 0 ||
-                    !int.TryParse(rangeText[..rangeSplit], out var start) ||
-                    !int.TryParse(rangeText[(rangeSplit + 1)..], out var end) ||
-                    end < start)
+                    !int.TryParse(rangeText[..rangeSplit], NumberStyles.None, CultureInfo.InvariantCulture, out var start) ||
+                    !int.TryParse(rangeText[(rangeSplit + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var end) ||
+                    end < start ||
+                    end == int.MaxValue)
                 {
                     continue;
                 }

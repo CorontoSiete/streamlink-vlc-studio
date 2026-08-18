@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "component": "bundled-vlc-chat-overlay",
+  "provenance": {
+    "classification": "opaque-third-party-input",
+    "sourceAvailability": "unavailable",
+    "reviewedUtc": "2026-08-15T00:00:00Z",
+    "notes": "These unsigned binaries predate this hardening pass. Their original source and reproducible build recipe are unavailable, so releases pin and verify them as opaque inputs."
+  },
+  "files": [
+    {
+      "path": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build/libmyoverlay_plugin.dll",
+      "length": 166773,
+      "sha256": "34fddd30f9a6c163ed14e5992da6f7c8213c809ad60a66a856a017ed2d7a0318",
+      "authenticode": "NotSigned"
+    },
+    {
+      "path": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build/vlc_chat_overlay.exe",
+      "length": 403688,
+      "sha256": "c5d5c1236b3617f420b41282ee26823de1a7094a70c95a2cde6cd2cf03e56fdd",
+      "authenticode": "NotSigned"
+    }
+  ]
+}

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
 
@@ -13,6 +14,8 @@ public sealed partial class VideoSurface : HwndHost
     private const int ErrorClassAlreadyExists = 1410;
     private const int BlackBrush = 4;
     private const int WmEraseBackground = 0x0014;
+    private const int WmCreate = 0x0001;
+    private const int WmParentNotify = 0x0210;
     private const int WmSetCursor = 0x0020;
     private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
@@ -30,6 +33,7 @@ public sealed partial class VideoSurface : HwndHost
     private const int SwpNoZOrder = 0x0004;
     private const int SwpNoActivate = 0x0010;
     private const int SwpShowWindow = 0x0040;
+    private const long DirectChildResizeIntervalMilliseconds = 250;
     private static readonly object WindowClassGate = new();
     private static readonly NativeWindowProc RegisteredWindowProc = DefWindowProcCallback;
     private static bool windowClassRegistered;
@@ -40,6 +44,8 @@ public sealed partial class VideoSurface : HwndHost
     private int lastNativeWidth = -1;
     private int lastNativeHeight = -1;
     private bool lastNativeVisible;
+    private long lastDirectChildResizeAt = long.MinValue;
+    private bool directChildBoundsSyncQueued;
 
     public new IntPtr Handle => handle;
     public event EventHandler<VideoSurfaceMouseWheelEventArgs>? MouseWheelScrolled;
@@ -55,7 +61,6 @@ public sealed partial class VideoSurface : HwndHost
     {
         IsVisibleChanged += (_, _) => SyncNativeBounds();
         SizeChanged += (_, _) => SyncNativeBounds();
-        LayoutUpdated += (_, _) => SyncNativeBounds();
     }
 
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
@@ -80,6 +85,7 @@ public sealed partial class VideoSurface : HwndHost
             throw new Win32Exception(Marshal.GetLastPInvokeError(), "Failed to create the video surface window.");
         }
 
+        ResetNativeBoundsCache();
         SyncNativeBounds();
         return new HandleRef(this, handle);
     }
@@ -90,11 +96,27 @@ public sealed partial class VideoSurface : HwndHost
         {
             DestroyWindow(hwnd.Handle);
             handle = IntPtr.Zero;
+            ResetNativeBoundsCache();
         }
+    }
+
+    protected override void OnWindowPositionChanged(Rect rcBoundingBox)
+    {
+        base.OnWindowPositionChanged(rcBoundingBox);
+        // WPF owns the final device-pixel bounds of the HwndHost. Use its actual client
+        // rectangle so fractional DPI/layout rounding cannot leave VLC one pixel smaller.
+        ResizeDirectChildWindowsToClient();
     }
 
     protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == WmParentNotify && GetLowWord(wParam) == WmCreate)
+        {
+            // VLC creates its renderer window after the host has already been arranged.
+            // Defer until WM_CREATE completes, then make that late child fill the host.
+            QueueDirectChildBoundsSync();
+        }
+
         if (msg == WmEraseBackground)
         {
             FillClientArea(hwnd, wParam);
@@ -258,23 +280,31 @@ public sealed partial class VideoSurface : HwndHost
         return true;
     }
 
-    public void SyncNativeBounds()
+    public void SyncNativeBounds() => SyncNativeBounds(forceDirectChildResize: false);
+
+    private void SyncNativeBounds(bool forceDirectChildResize)
     {
         if (handle == IntPtr.Zero)
         {
             return;
         }
 
-        var source = PresentationSource.FromVisual(this);
         var visible = IsVisible &&
             ActualWidth > 0 &&
             ActualHeight > 0;
         if (!visible)
         {
-            _ = ShowWindow(handle, SwHide);
+            if (lastNativeVisible)
+            {
+                _ = ShowWindow(handle, SwHide);
+            }
+
             lastNativeVisible = false;
+            lastDirectChildResizeAt = long.MinValue;
             return;
         }
+
+        var source = PresentationSource.FromVisual(this);
 
         if (source is null)
         {
@@ -285,9 +315,10 @@ public sealed partial class VideoSurface : HwndHost
         var width = Math.Max(1, (int)Math.Round(ActualWidth * transformToDevice.M11));
         var height = Math.Max(1, (int)Math.Round(ActualHeight * transformToDevice.M22));
 
-        if (!lastNativeVisible ||
+        var boundsChanged = !lastNativeVisible ||
             width != lastNativeWidth ||
-            height != lastNativeHeight)
+            height != lastNativeHeight;
+        if (boundsChanged)
         {
             _ = SetWindowPos(
                 handle,
@@ -302,7 +333,42 @@ public sealed partial class VideoSurface : HwndHost
             lastNativeVisible = true;
         }
 
-        ResizeDirectChildWindows(width, height);
+        // VLC creates its own child window after playback starts. Keep a small,
+        // throttled discovery window for that child, but avoid enumerating and
+        // moving it on every WPF LayoutUpdated notification.
+        if (forceDirectChildResize ||
+            boundsChanged ||
+            lastDirectChildResizeAt == long.MinValue ||
+            Environment.TickCount64 - lastDirectChildResizeAt >= DirectChildResizeIntervalMilliseconds)
+        {
+            ResizeDirectChildWindowsToClient(width, height);
+            lastDirectChildResizeAt = Environment.TickCount64;
+        }
+    }
+
+    private void QueueDirectChildBoundsSync()
+    {
+        if (directChildBoundsSyncQueued)
+        {
+            return;
+        }
+
+        directChildBoundsSyncQueued = true;
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Loaded,
+            new Action(() =>
+            {
+                directChildBoundsSyncQueued = false;
+                SyncNativeBounds(forceDirectChildResize: true);
+            }));
+    }
+
+    private void ResetNativeBoundsCache()
+    {
+        lastNativeWidth = -1;
+        lastNativeHeight = -1;
+        lastNativeVisible = false;
+        lastDirectChildResizeAt = long.MinValue;
     }
 
     private void ResizeDirectChildWindows(int width, int height)
@@ -331,6 +397,22 @@ public sealed partial class VideoSurface : HwndHost
                 return true;
             },
             IntPtr.Zero);
+    }
+
+    private void ResizeDirectChildWindowsToClient(int fallbackWidth = 0, int fallbackHeight = 0)
+    {
+        var width = fallbackWidth;
+        var height = fallbackHeight;
+        if (handle != IntPtr.Zero && GetClientRect(handle, out var clientRect))
+        {
+            width = clientRect.Right - clientRect.Left;
+            height = clientRect.Bottom - clientRect.Top;
+        }
+
+        if (width > 0 && height > 0)
+        {
+            ResizeDirectChildWindows(width, height);
+        }
     }
 
     private static void EnsureWindowClassRegistered()
@@ -429,6 +511,8 @@ public sealed partial class VideoSurface : HwndHost
         var value = unchecked((long)lParam);
         return unchecked((short)((value >> 16) & 0xFFFF));
     }
+
+    private static int GetLowWord(IntPtr value) => unchecked((ushort)(value.ToInt64() & 0xFFFF));
 
     private delegate IntPtr NativeWindowProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
     private delegate bool EnumChildWindowProc(IntPtr hwnd, IntPtr lParam);

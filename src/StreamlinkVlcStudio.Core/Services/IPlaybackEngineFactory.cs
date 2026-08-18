@@ -1,6 +1,13 @@
+using StreamlinkVlcStudio.Core.Models;
+
 namespace StreamlinkVlcStudio.Core.Services;
 
 public interface IPlaybackEngineFactory
 {
-    IPlaybackEngine Create(string vlcDirectory, bool enableNativeOverlay = true, string? nativeOverlayPositionStatePath = null);
+    Task<IPlaybackEngine> CreateAsync(
+        string vlcDirectory,
+        bool enableNativeOverlay = true,
+        string? nativeOverlayPositionStatePath = null,
+        CancellationToken cancellationToken = default,
+        VideoRendererMode rendererMode = VideoRendererMode.Automatic);
 }

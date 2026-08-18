@@ -1,5 +1,4 @@
 using System.Net.WebSockets;
-using System.Text;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
@@ -10,6 +9,7 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
 {
     private static readonly Uri DefaultWebSocketUri = new("wss://eventsub.wss.twitch.tv/ws");
     private static readonly TimeSpan WelcomeTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MaximumKeepaliveTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumReconnectDelay = TimeSpan.FromSeconds(30);
     private static readonly string[] PredictionSubscriptionTypes =
@@ -27,10 +27,14 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
     private readonly string broadcasterId;
     private readonly Action<TwitchPrediction> predictionReceived;
     private readonly Action<string> statusChanged;
+    private readonly Func<CancellationToken, Task>? runOverride;
     private readonly TwitchPredictionEventSubParser parser = new();
+    private readonly object lifecycleGate = new();
     private CancellationTokenSource? cancellation;
     private Task? runTask;
+    private Task? disposalTask;
     private ClientWebSocket? webSocket;
+    private bool disposed;
 
     public TwitchPredictionEventSubClient(
         TwitchPredictionApiClient apiClient,
@@ -39,7 +43,8 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
         string clientId,
         string broadcasterId,
         Action<TwitchPrediction> predictionReceived,
-        Action<string> statusChanged)
+        Action<string> statusChanged,
+        Func<CancellationToken, Task>? runOverride = null)
     {
         this.apiClient = apiClient;
         this.logger = logger;
@@ -48,39 +53,105 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
         this.broadcasterId = broadcasterId;
         this.predictionReceived = predictionReceived;
         this.statusChanged = statusChanged;
+        this.runOverride = runOverride;
     }
 
     public void Start()
     {
-        if (runTask is not null)
+        lock (lifecycleGate)
         {
-            return;
-        }
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (runTask is not null)
+            {
+                return;
+            }
 
-        cancellation = new CancellationTokenSource();
-        runTask = Task.Run(() => RunAsync(cancellation.Token));
+            var nextCancellation = new CancellationTokenSource();
+            cancellation = nextCancellation;
+            var runner = runOverride ?? RunAsync;
+            runTask = Task.Run(() => runner(nextCancellation.Token), CancellationToken.None);
+        }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        cancellation?.Cancel();
-        webSocket?.Abort();
+        lock (lifecycleGate)
+        {
+            if (disposalTask is not null)
+            {
+                return new ValueTask(disposalTask);
+            }
 
-        if (runTask is not null)
+            disposed = true;
+            var cancellationToDispose = cancellation;
+            var runTaskToWait = runTask;
+            var socketToAbort = webSocket;
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            disposalTask = completion.Task;
+            _ = CompleteDisposalAsync(
+                cancellationToDispose,
+                runTaskToWait,
+                socketToAbort,
+                completion);
+            return new ValueTask(disposalTask);
+        }
+    }
+
+    private async Task CompleteDisposalAsync(
+        CancellationTokenSource? cancellationToDispose,
+        Task? runTaskToWait,
+        ClientWebSocket? socketToAbort,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            await DisposeCoreAsync(cancellationToDispose, runTaskToWait, socketToAbort)
+                .ConfigureAwait(false);
+            completion.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+    }
+
+    private async Task DisposeCoreAsync(
+        CancellationTokenSource? cancellationToDispose,
+        Task? runTaskToWait,
+        ClientWebSocket? socketToAbort)
+    {
+        cancellationToDispose?.Cancel();
+        socketToAbort?.Abort();
+
+        if (runTaskToWait is not null)
         {
             try
             {
-                await runTask.ConfigureAwait(false);
+                await runTaskToWait.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
             }
         }
 
-        cancellation?.Dispose();
-        webSocket = null;
-        runTask = null;
-        cancellation = null;
+        cancellationToDispose?.Dispose();
+        lock (lifecycleGate)
+        {
+            if (ReferenceEquals(runTask, runTaskToWait))
+            {
+                runTask = null;
+            }
+
+            if (ReferenceEquals(cancellation, cancellationToDispose))
+            {
+                cancellation = null;
+            }
+
+            if (ReferenceEquals(webSocket, socketToAbort))
+            {
+                webSocket = null;
+            }
+        }
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -105,7 +176,7 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
             catch (Exception ex)
             {
                 logger.Write(AppLogLevel.Warning, "TwitchEventSub", "Twitch prediction EventSub WebSocket disconnected; reconnecting.", ex);
-                statusChanged($"Twitch prediction updates disconnected: {ex.Message}");
+                RaiseStatusChanged($"Twitch prediction updates disconnected: {ex.Message}");
                 reconnectDelay = NextReconnectDelay(reconnectDelay);
             }
 
@@ -123,7 +194,12 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
     private async Task<ConnectionResult> RunConnectionAsync(CancellationToken cancellationToken)
     {
         var socket = new ClientWebSocket();
-        webSocket = socket;
+        if (!TrySetActiveSocket(socket))
+        {
+            socket.Dispose();
+            return new ConnectionResult(Stop: true, WasConnected: false);
+        }
+
         var connected = false;
         int? keepaliveTimeoutSeconds = null;
         try
@@ -135,23 +211,21 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
                 string? json;
                 using (var receiveTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
-                    receiveTimeout.CancelAfter(keepaliveTimeoutSeconds is { } keepalive
-                        ? TimeSpan.FromSeconds(keepalive + 1)
-                        : WelcomeTimeout);
+                    receiveTimeout.CancelAfter(GetReceiveTimeout(keepaliveTimeoutSeconds));
                     try
                     {
                         json = await ReceiveTextMessageAsync(socket, receiveTimeout.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                     {
-                        statusChanged("Twitch prediction EventSub connection timed out; reconnecting.");
+                        RaiseStatusChanged("Twitch prediction EventSub connection timed out; reconnecting.");
                         return new ConnectionResult(Stop: false, WasConnected: connected);
                     }
                 }
 
                 if (json is null)
                 {
-                    statusChanged("Twitch prediction EventSub WebSocket disconnected; reconnecting.");
+                    RaiseStatusChanged("Twitch prediction EventSub WebSocket disconnected; reconnecting.");
                     return new ConnectionResult(Stop: false, WasConnected: connected);
                 }
 
@@ -169,14 +243,14 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
                     }
 
                     connected = true;
-                    statusChanged("Twitch prediction updates connected.");
+                    RaiseStatusChanged("Twitch prediction updates connected.");
                     continue;
                 }
 
                 if (message.ReconnectUrl is { Length: > 0 } reconnectUrl &&
-                    Uri.TryCreate(reconnectUrl, UriKind.Absolute, out var reconnectUri))
+                    TryCreateReconnectUri(reconnectUrl, out var reconnectUri))
                 {
-                    statusChanged("Twitch requested a prediction EventSub reconnect.");
+                    RaiseStatusChanged("Twitch requested a prediction EventSub reconnect.");
                     var handoff = await HandoffReconnectAsync(socket, reconnectUri, cancellationToken).ConfigureAwait(false);
                     if (handoff.Stop)
                     {
@@ -185,23 +259,28 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
 
                     var previousSocket = socket;
                     socket = handoff.Socket!;
-                    webSocket = socket;
+                    if (!TryReplaceActiveSocket(previousSocket, socket))
+                    {
+                        socket.Dispose();
+                        return new ConnectionResult(Stop: true, WasConnected: connected);
+                    }
+
                     previousSocket.Dispose();
                     keepaliveTimeoutSeconds = handoff.KeepaliveTimeoutSeconds;
                     connected = true;
-                    statusChanged("Twitch prediction updates connected.");
+                    RaiseStatusChanged("Twitch prediction updates connected.");
                     continue;
                 }
 
                 if (message.RevocationStatus is { Length: > 0 } revocationStatus)
                 {
-                    statusChanged($"Twitch prediction EventSub subscription revoked: {revocationStatus}.");
+                    RaiseStatusChanged($"Twitch prediction EventSub subscription revoked: {revocationStatus}.");
                     return new ConnectionResult(Stop: true, WasConnected: connected);
                 }
 
                 if (message is { IsDuplicate: false, Prediction: { } prediction })
                 {
-                    predictionReceived(prediction);
+                    RaisePredictionReceived(prediction);
                 }
             }
 
@@ -209,12 +288,48 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
         }
         finally
         {
+            ClearActiveSocket(socket);
+
+            socket.Dispose();
+        }
+    }
+
+    private bool TrySetActiveSocket(ClientWebSocket socket)
+    {
+        lock (lifecycleGate)
+        {
+            if (disposed)
+            {
+                return false;
+            }
+
+            webSocket = socket;
+            return true;
+        }
+    }
+
+    private bool TryReplaceActiveSocket(ClientWebSocket previous, ClientWebSocket replacement)
+    {
+        lock (lifecycleGate)
+        {
+            if (disposed || !ReferenceEquals(webSocket, previous))
+            {
+                return false;
+            }
+
+            webSocket = replacement;
+            return true;
+        }
+    }
+
+    private void ClearActiveSocket(ClientWebSocket socket)
+    {
+        lock (lifecycleGate)
+        {
             if (ReferenceEquals(webSocket, socket))
             {
                 webSocket = null;
             }
-
-            socket.Dispose();
         }
     }
 
@@ -284,6 +399,13 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
                 }
             }
 
+            if (!reconnectTask.IsCompleted)
+            {
+                // The old socket can disappear before the reconnect attempt finishes.
+                // Cancel the pending connect so handoff cannot wait indefinitely.
+                handoffCancellation.Cancel();
+            }
+
             var completedHandoff = ValidateReconnectWelcome(await reconnectTask.ConfigureAwait(false));
             successfulHandoff = true;
             return completedHandoff;
@@ -307,13 +429,13 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
 
         if (message.RevocationStatus is { Length: > 0 } revocationStatus)
         {
-            statusChanged($"Twitch prediction EventSub subscription revoked: {revocationStatus}.");
+            RaiseStatusChanged($"Twitch prediction EventSub subscription revoked: {revocationStatus}.");
             return true;
         }
 
         if (message is { IsDuplicate: false, Prediction: { } prediction })
         {
-            predictionReceived(prediction);
+            RaisePredictionReceived(prediction);
         }
 
         return false;
@@ -406,30 +528,59 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
     }
 
     private static async Task<string?> ReceiveTextMessageAsync(ClientWebSocket socket, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[8192];
-        using var stream = new MemoryStream();
-        while (true)
-        {
-            var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                return null;
-            }
+        => await BoundedWebSocketTextReader.ReadAsync(socket, cancellationToken).ConfigureAwait(false);
 
-            stream.Write(buffer, 0, result.Count);
-            if (result.EndOfMessage)
-            {
-                break;
-            }
+    internal static bool TryCreateReconnectUri(string value, out Uri reconnectUri)
+    {
+        reconnectUri = null!;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var candidate) ||
+            !candidate.Scheme.Equals(Uri.UriSchemeWss, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(candidate.IdnHost, DefaultWebSocketUri.IdnHost, StringComparison.OrdinalIgnoreCase) ||
+            candidate.Port != DefaultWebSocketUri.Port ||
+            !string.IsNullOrEmpty(candidate.UserInfo) ||
+            !string.IsNullOrEmpty(candidate.Fragment))
+        {
+            return false;
         }
 
-        return Encoding.UTF8.GetString(stream.ToArray());
+        reconnectUri = candidate;
+        return true;
+    }
+
+    private static TimeSpan GetReceiveTimeout(int? keepaliveTimeoutSeconds)
+    {
+        if (keepaliveTimeoutSeconds is not > 0)
+        {
+            return WelcomeTimeout;
+        }
+
+        var requestedSeconds = (long)keepaliveTimeoutSeconds.Value + 1;
+        return TimeSpan.FromSeconds(Math.Min(requestedSeconds, (long)MaximumKeepaliveTimeout.TotalSeconds));
     }
 
     private static TimeSpan NextReconnectDelay(TimeSpan currentDelay)
     {
         return TimeSpan.FromSeconds(Math.Min(currentDelay.TotalSeconds * 2, MaximumReconnectDelay.TotalSeconds));
+    }
+
+    private void RaisePredictionReceived(TwitchPrediction prediction)
+    {
+        SafeEventDispatcher.Invoke(
+            predictionReceived,
+            prediction,
+            logger,
+            "TwitchEventSub",
+            nameof(predictionReceived));
+    }
+
+    private void RaiseStatusChanged(string message)
+    {
+        SafeEventDispatcher.Invoke(
+            statusChanged,
+            message,
+            logger,
+            "TwitchEventSub",
+            nameof(statusChanged));
     }
 
     private sealed record ConnectionResult(bool Stop, bool WasConnected);

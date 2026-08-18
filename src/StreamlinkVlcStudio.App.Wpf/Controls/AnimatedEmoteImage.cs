@@ -7,6 +7,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using SkiaSharp;
+using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Limits;
 
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
 
@@ -15,15 +17,18 @@ public sealed class AnimatedEmoteImage : Image
     internal const int DefaultMaxImageBytes = 8 * 1024 * 1024;
     private const int AbsoluteMaxImageBytes = 32 * 1024 * 1024;
     private const int MaxCompletedCacheEntries = 256;
-    private const long MaxCompletedCacheDecodedBytes = 96L * 1024 * 1024;
+    private const long MaxCompletedCacheDecodedBytes = PayloadLimits.ImageMaximumDecodedBytes;
+    private const int MaximumConcurrentImageWork = 8;
     // Failed Twitch preview and emote requests must be coalesced, but not forever. Twitch keeps
     // the same preview URL while a channel is live, so an indefinite negative cache makes every
     // later live-page refresh reuse one transient CDN failure.
     internal static readonly TimeSpan FailedLoadCacheDuration = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultFrameDelay = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan MinimumFrameDelay = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan ImageLoadDeadline = TimeSpan.FromSeconds(10);
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
     private static readonly object ImageCacheGate = new();
+    private static readonly SemaphoreSlim ImageWorkGate = new(MaximumConcurrentImageWork, MaximumConcurrentImageWork);
     private static readonly Dictionary<AnimatedEmoteImageCacheKey, AnimatedEmoteImageCacheEntry> ImageCache = [];
     private static readonly LinkedList<AnimatedEmoteImageCacheKey> CompletedImageCacheLru = [];
     private static readonly Dictionary<object, HashSet<AnimatedEmoteImageCacheKey>> ImageCachePinsByOwner =
@@ -110,8 +115,7 @@ public sealed class AnimatedEmoteImage : Image
         lock (ImageCacheGate)
         {
             if (!ImageCache.TryGetValue(key, out var cached) ||
-                !cached.LoadTask.IsValueCreated ||
-                !cached.LoadTask.Value.IsCompleted)
+                cached.CompletedLruNode is null)
             {
                 return false;
             }
@@ -270,8 +274,9 @@ public sealed class AnimatedEmoteImage : Image
 
         var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var key = CreateCacheKey(uri, Math.Clamp(maxImageBytes, 1, AbsoluteMaxImageBytes), cacheVersion);
-        var entry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
-            () => CompletePendingImageLoadForTestAsync(key, completion),
+        AnimatedEmoteImageCacheEntry? entry = null;
+        entry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
+            () => CompletePendingImageLoadForTestAsync(key, entry!, completion),
             LazyThreadSafetyMode.ExecutionAndPublication));
         lock (ImageCacheGate)
         {
@@ -317,15 +322,17 @@ public sealed class AnimatedEmoteImage : Image
         currentImageCacheKey = key;
         imageLoadPending = true;
         DecodedEmoteImage? image;
+        AnimatedEmoteImageCacheEntry? cacheEntry = null;
         try
         {
-            image = await GetOrLoadImageAsync(key).ConfigureAwait(false);
+            var loadTask = GetOrLoadImageAsync(key, out cacheEntry);
+            image = await loadTask.ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             // Remote image data is best-effort UI content. A decoder failure must not escape
             // this async-void dependency-property callback and terminate the application.
-            RemoveCacheEntry(key);
+            RemoveCacheEntry(key, cacheEntry);
             image = null;
         }
 
@@ -411,34 +418,41 @@ public sealed class AnimatedEmoteImage : Image
         frameTimer.Interval = image.Delays[frameIndex];
     }
 
-    private static Task<DecodedEmoteImage?> GetOrLoadImageAsync(AnimatedEmoteImageCacheKey key)
+    private static Task<DecodedEmoteImage?> GetOrLoadImageAsync(
+        AnimatedEmoteImageCacheKey key,
+        out AnimatedEmoteImageCacheEntry entry)
     {
-        AnimatedEmoteImageCacheEntry? entry;
+        AnimatedEmoteImageCacheEntry? cachedEntry;
         lock (ImageCacheGate)
         {
-            if (ImageCache.TryGetValue(key, out entry) && IsFailedCacheEntryExpired(entry))
+            if (ImageCache.TryGetValue(key, out cachedEntry) && IsFailedCacheEntryExpired(cachedEntry))
             {
                 RemoveCacheEntryCore(key);
-                entry = null;
+                cachedEntry = null;
             }
 
-            if (entry is null)
+            if (cachedEntry is null)
             {
-                entry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
-                    () => LoadAndDecodeImageAndNotifyAsync(key),
+                AnimatedEmoteImageCacheEntry? newEntry = null;
+                newEntry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
+                    () => LoadAndDecodeImageAndNotifyAsync(key, newEntry!),
                     LazyThreadSafetyMode.ExecutionAndPublication));
-                ImageCache.Add(key, entry);
+                cachedEntry = newEntry;
+                ImageCache.Add(key, cachedEntry);
             }
             else
             {
-                TouchCompletedCacheEntry(entry);
+                TouchCompletedCacheEntry(cachedEntry);
             }
         }
 
+        entry = cachedEntry;
         return entry.LoadTask.Value;
     }
 
-    private static async Task<DecodedEmoteImage?> LoadAndDecodeImageAndNotifyAsync(AnimatedEmoteImageCacheKey key)
+    private static async Task<DecodedEmoteImage?> LoadAndDecodeImageAndNotifyAsync(
+        AnimatedEmoteImageCacheKey key,
+        AnimatedEmoteImageCacheEntry entry)
     {
         DecodedEmoteImage? image = null;
         try
@@ -448,13 +462,16 @@ public sealed class AnimatedEmoteImage : Image
         }
         finally
         {
-            CompleteCacheEntry(key, image);
-            NotifyImageCacheEntryCompleted(key);
+            if (CompleteCacheEntry(key, entry, image))
+            {
+                NotifyImageCacheEntryCompleted(key);
+            }
         }
     }
 
     private static async Task<DecodedEmoteImage?> CompletePendingImageLoadForTestAsync(
         AnimatedEmoteImageCacheKey key,
+        AnimatedEmoteImageCacheEntry entry,
         TaskCompletionSource<object?> completion)
     {
         try
@@ -464,8 +481,10 @@ public sealed class AnimatedEmoteImage : Image
         }
         finally
         {
-            CompleteCacheEntry(key, null);
-            NotifyImageCacheEntryCompleted(key);
+            if (CompleteCacheEntry(key, entry, null))
+            {
+                NotifyImageCacheEntryCompleted(key);
+            }
         }
     }
 
@@ -485,13 +504,16 @@ public sealed class AnimatedEmoteImage : Image
         }
     }
 
-    private static void CompleteCacheEntry(AnimatedEmoteImageCacheKey key, DecodedEmoteImage? image)
+    private static bool CompleteCacheEntry(
+        AnimatedEmoteImageCacheKey key,
+        AnimatedEmoteImageCacheEntry expectedEntry,
+        DecodedEmoteImage? image)
     {
         lock (ImageCacheGate)
         {
-            if (!ImageCache.TryGetValue(key, out var entry))
+            if (!ImageCache.TryGetValue(key, out var entry) || !ReferenceEquals(entry, expectedEntry))
             {
-                return;
+                return false;
             }
 
             entry.FailedLoadRetryAfterUtc = image is null
@@ -499,6 +521,7 @@ public sealed class AnimatedEmoteImage : Image
                 : null;
             MarkCacheEntryCompleted(key, entry, EstimateDecodedImageBytes(image));
             TrimCompletedCache();
+            return true;
         }
     }
 
@@ -586,6 +609,21 @@ public sealed class AnimatedEmoteImage : Image
         }
     }
 
+    private static void RemoveCacheEntry(
+        AnimatedEmoteImageCacheKey key,
+        AnimatedEmoteImageCacheEntry? expectedEntry)
+    {
+        lock (ImageCacheGate)
+        {
+            if (expectedEntry is not null &&
+                ImageCache.TryGetValue(key, out var entry) &&
+                ReferenceEquals(entry, expectedEntry))
+            {
+                RemoveCacheEntryCore(key);
+            }
+        }
+    }
+
     private static void RemoveCacheEntryCore(AnimatedEmoteImageCacheKey key)
     {
         if (!ImageCache.Remove(key, out var entry))
@@ -612,12 +650,15 @@ public sealed class AnimatedEmoteImage : Image
             return;
         }
 
-        try
+        foreach (EventHandler<AnimatedEmoteImageCacheCompletedEventArgs> subscriber in handler.GetInvocationList())
         {
-            handler(null, new AnimatedEmoteImageCacheCompletedEventArgs(key));
-        }
-        catch
-        {
+            try
+            {
+                subscriber(null, new AnimatedEmoteImageCacheCompletedEventArgs(key));
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -635,6 +676,15 @@ public sealed class AnimatedEmoteImage : Image
 
     private static async Task<DecodedEmoteImage?> DownloadAndDecodeImageAsync(string url, int maxImageBytes)
     {
+        using var deadline = new CancellationTokenSource(ImageLoadDeadline);
+        try
+        {
+            await ImageWorkGate.WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            return null;
+        }
         try
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
@@ -644,29 +694,45 @@ public sealed class AnimatedEmoteImage : Image
 
             foreach (var candidate in GetImageUrlCandidates(uri))
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, candidate);
-                if (IsKickAssetHost(candidate))
+                try
                 {
-                    request.Headers.Referrer = new Uri("https://kick.com/");
-                }
+                    using var request = new HttpRequestMessage(HttpMethod.Get, candidate);
+                    if (IsKickAssetHost(candidate))
+                    {
+                        request.Headers.Referrer = new Uri("https://kick.com/");
+                    }
 
-                using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode ||
-                    response.Content.Headers.ContentLength > maxImageBytes)
-                {
-                    continue;
-                }
+                    using var response = await SharedHttpClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        deadline.Token).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode ||
+                        response.Content.Headers.ContentLength > maxImageBytes)
+                    {
+                        continue;
+                    }
 
-                var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-                if (bytes.Length == 0 || bytes.Length > maxImageBytes)
-                {
-                    continue;
-                }
+                    var bytes = await BoundedByteReader.ReadAsync(
+                        response.Content,
+                        maxImageBytes,
+                        deadline.Token).ConfigureAwait(false);
+                    if (bytes is null)
+                    {
+                        continue;
+                    }
 
-                var image = await Task.Run(() => DecodeImage(bytes)).ConfigureAwait(false);
-                if (image is not null)
+                    var image = await Task.Run(() => DecodeImage(bytes), deadline.Token).ConfigureAwait(false);
+                    if (image is not null)
+                    {
+                        return image;
+                    }
+                }
+                catch (Exception ex) when (
+                    !deadline.IsCancellationRequested &&
+                    ex is HttpRequestException or TaskCanceledException or NotSupportedException or InvalidOperationException or IOException)
                 {
-                    return image;
+                    // A transformed CDN candidate is optional. Continue to the original URL while
+                    // preserving the single deadline for the complete fallback sequence.
                 }
             }
 
@@ -676,10 +742,15 @@ public sealed class AnimatedEmoteImage : Image
         {
             return null;
         }
+        finally
+        {
+            ImageWorkGate.Release();
+        }
     }
 
     private static async Task<DecodedEmoteImage?> ReadAndDecodeFileAsync(string path, int maxImageBytes)
     {
+        await ImageWorkGate.WaitAsync().ConfigureAwait(false);
         try
         {
             var file = new FileInfo(path);
@@ -688,8 +759,8 @@ public sealed class AnimatedEmoteImage : Image
                 return null;
             }
 
-            var bytes = await File.ReadAllBytesAsync(file.FullName).ConfigureAwait(false);
-            if (bytes.Length == 0 || bytes.Length > maxImageBytes)
+            var bytes = await BoundedByteReader.ReadFileAsync(file.FullName, maxImageBytes).ConfigureAwait(false);
+            if (bytes is null)
             {
                 return null;
             }
@@ -699,6 +770,10 @@ public sealed class AnimatedEmoteImage : Image
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or ArgumentException)
         {
             return null;
+        }
+        finally
+        {
+            ImageWorkGate.Release();
         }
     }
 
@@ -725,6 +800,9 @@ public sealed class AnimatedEmoteImage : Image
         return false;
     }
 
+    internal static bool IsDecodedImageShapeAllowedForTest(int width, int height, int frameCount) =>
+        IsDecodedImageShapeAllowed(width, height, frameCount);
+
     private static DecodedEmoteImage? DecodeImageWithWpf(byte[] bytes)
     {
         try
@@ -733,9 +811,9 @@ public sealed class AnimatedEmoteImage : Image
             var decoder = BitmapDecoder.Create(
                 stream,
                 BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile,
-                BitmapCacheOption.OnLoad);
+                BitmapCacheOption.OnDemand);
 
-            if (decoder.Frames.Count == 0)
+            if (!AreWpfFramesAllowed(decoder.Frames))
             {
                 return null;
             }
@@ -766,19 +844,25 @@ public sealed class AnimatedEmoteImage : Image
     {
         try
         {
-            using var decoded = SKBitmap.Decode(bytes);
-            if (decoded is null || decoded.Width <= 0 || decoded.Height <= 0)
+            using var stream = new MemoryStream(bytes, writable: false);
+            using var codec = SKCodec.Create(stream);
+            if (codec is null ||
+                codec.FrameCount > 1 ||
+                !IsDecodedImageShapeAllowed(codec.Info.Width, codec.Info.Height, 1))
             {
                 return null;
             }
 
-            var imageInfo = new SKImageInfo(decoded.Width, decoded.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
+            var imageInfo = new SKImageInfo(
+                codec.Info.Width,
+                codec.Info.Height,
+                SKColorType.Bgra8888,
+                SKAlphaType.Premul);
             using var normalized = new SKBitmap(imageInfo);
-            using (var canvas = new SKCanvas(normalized))
+            var result = codec.GetPixels(imageInfo, normalized.GetPixels());
+            if (result is not (SKCodecResult.Success or SKCodecResult.IncompleteInput))
             {
-                canvas.Clear(SKColors.Transparent);
-                canvas.DrawBitmap(decoded, 0, 0);
-                canvas.Flush();
+                return null;
             }
 
             var frame = CreateBitmapSource(normalized);
@@ -797,7 +881,7 @@ public sealed class AnimatedEmoteImage : Image
             using var stream = new MemoryStream(bytes, writable: false);
             using var codec = SKCodec.Create(stream);
             if (codec is null || codec.FrameCount <= 1 ||
-                codec.Info.Width <= 0 || codec.Info.Height <= 0)
+                !IsDecodedImageShapeAllowed(codec.Info.Width, codec.Info.Height, codec.FrameCount))
             {
                 return null;
             }
@@ -885,7 +969,7 @@ public sealed class AnimatedEmoteImage : Image
         var frames = new List<ImageSource>(decoder.Frames.Count);
         foreach (var frame in decoder.Frames)
         {
-            frames.Add(FreezeImage(frame));
+            frames.Add(CloneBitmap(frame));
         }
 
         return frames;
@@ -893,8 +977,19 @@ public sealed class AnimatedEmoteImage : Image
 
     private static IReadOnlyList<ImageSource> ComposeGifFrames(BitmapDecoder decoder)
     {
-        var width = Math.Max(1, decoder.Frames.Max(frame => ReadGifFrameLeft(frame) + frame.PixelWidth));
-        var height = Math.Max(1, decoder.Frames.Max(frame => ReadGifFrameTop(frame) + frame.PixelHeight));
+        var widthValue = decoder.Frames.Max(frame =>
+            (long)Math.Max(0, ReadGifFrameLeft(frame)) + frame.PixelWidth);
+        var heightValue = decoder.Frames.Max(frame =>
+            (long)Math.Max(0, ReadGifFrameTop(frame)) + frame.PixelHeight);
+        if (widthValue > int.MaxValue ||
+            heightValue > int.MaxValue ||
+            !IsDecodedImageShapeAllowed((int)widthValue, (int)heightValue, decoder.Frames.Count))
+        {
+            return [];
+        }
+
+        var width = (int)widthValue;
+        var height = (int)heightValue;
         var composedFrames = new List<ImageSource>(decoder.Frames.Count);
         BitmapSource canvas = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
 
@@ -931,6 +1026,52 @@ public sealed class AnimatedEmoteImage : Image
         }
 
         return composedFrames;
+    }
+
+    private static bool AreWpfFramesAllowed(IReadOnlyList<BitmapFrame> frames)
+    {
+        if (frames.Count <= 0 || frames.Count > PayloadLimits.ImageMaximumFrames)
+        {
+            return false;
+        }
+
+        long decodedBytes = 0;
+        foreach (var frame in frames)
+        {
+            if (!IsDecodedImageShapeAllowed(frame.PixelWidth, frame.PixelHeight, 1))
+            {
+                return false;
+            }
+
+            decodedBytes += (long)frame.PixelWidth * frame.PixelHeight * 4;
+            if (decodedBytes > PayloadLimits.ImageMaximumDecodedBytes)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsDecodedImageShapeAllowed(int width, int height, int frameCount)
+    {
+        if (width <= 0 ||
+            height <= 0 ||
+            width > PayloadLimits.ImageMaximumDimension ||
+            height > PayloadLimits.ImageMaximumDimension ||
+            frameCount <= 0 ||
+            frameCount > PayloadLimits.ImageMaximumFrames)
+        {
+            return false;
+        }
+
+        var pixels = (long)width * height;
+        if (pixels > PayloadLimits.ImageMaximumPixels)
+        {
+            return false;
+        }
+
+        return pixels * 4 * frameCount <= PayloadLimits.ImageMaximumDecodedBytes;
     }
 
     private static BitmapSource ClearFrameArea(BitmapSource source, BitmapFrame frame, int width, int height)
@@ -1000,16 +1141,6 @@ public sealed class AnimatedEmoteImage : Image
             pixels,
             stride);
         return FreezeBitmap(clone);
-    }
-
-    private static ImageSource FreezeImage(BitmapSource image)
-    {
-        if (image.CanFreeze)
-        {
-            image.Freeze();
-        }
-
-        return image;
     }
 
     private static BitmapSource FreezeBitmap(BitmapSource bitmap)
@@ -1193,10 +1324,7 @@ public sealed class AnimatedEmoteImage : Image
 
     private static HttpClient CreateHttpClient()
     {
-        var client = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(10)
-        };
+        var client = HttpClientFactory.Create(TimeSpan.FromSeconds(10), includeUserAgent: true);
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36");
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
         client.DefaultRequestHeaders.Accept.ParseAdd("image/png,image/apng,image/gif,image/jpeg,image/bmp,image/*;q=0.8,*/*;q=0.5");
@@ -1217,20 +1345,109 @@ public sealed class AnimatedEmoteImage : Image
 
     private static IEnumerable<Uri> GetImageUrlCandidates(Uri uri)
     {
-        yield return uri;
+        var candidates = new List<Uri>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (!string.Equals(uri.Host, "static-cdn.jtvnw.net", StringComparison.OrdinalIgnoreCase) ||
-            !uri.AbsolutePath.Contains("/emoticons/v2/", StringComparison.OrdinalIgnoreCase) ||
-            !uri.AbsolutePath.Contains("/static/", StringComparison.OrdinalIgnoreCase))
+        void AddCandidate(Uri candidate)
         {
-            yield break;
+            if (seen.Add(candidate.AbsoluteUri))
+            {
+                candidates.Add(candidate);
+            }
         }
 
-        var animatedPath = uri.AbsolutePath.Replace(
-            "/static/",
-            "/animated/",
-            StringComparison.OrdinalIgnoreCase);
-        yield return new UriBuilder(uri) { Path = animatedPath }.Uri;
+        if (IsTwitchEmoteUri(uri))
+        {
+            // Twitch exposes multiple CDN sizes. Prefer the 3.0 representation so
+            // the replay renderer has more source pixels before it rasterizes the
+            // emote into a small VOD frame, while retaining the animated/static
+            // fallback behavior for ordinary and animated emotes.
+            foreach (var scale in new[] { "3.0", "2.0", "1.0" })
+            {
+                var scaledUri = CreateTwitchEmoteScaleUri(uri, scale);
+                var animatedPath = scaledUri.AbsolutePath.Replace(
+                    "/static/",
+                    "/animated/",
+                    StringComparison.OrdinalIgnoreCase);
+                AddCandidate(new UriBuilder(scaledUri) { Path = animatedPath }.Uri);
+                AddCandidate(scaledUri);
+            }
+        }
+        else if (IsSevenTvEmoteUri(uri))
+        {
+            // 7TV's catalog commonly advertises 2x, but its CDN also provides a
+            // 3x variant for animated GIFs. Use it when available and fall back to
+            // the catalog URL (and finally 1x) if that variant is unavailable.
+            foreach (var scale in new[] { "3x", "2x", "1x" })
+            {
+                var scaledUri = CreateSevenTvEmoteScaleUri(uri, scale);
+                if (scaledUri is not null)
+                {
+                    AddCandidate(scaledUri);
+                }
+            }
+        }
+        else
+        {
+            AddCandidate(uri);
+        }
+
+        foreach (var candidate in candidates)
+        {
+            yield return candidate;
+        }
+    }
+
+    private static bool IsTwitchEmoteUri(Uri uri)
+    {
+        return string.Equals(uri.Host, "static-cdn.jtvnw.net", StringComparison.OrdinalIgnoreCase) &&
+            uri.AbsolutePath.Contains("/emoticons/v2/", StringComparison.OrdinalIgnoreCase) &&
+            (uri.AbsolutePath.Contains("/static/", StringComparison.OrdinalIgnoreCase) ||
+             uri.AbsolutePath.Contains("/animated/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static Uri CreateTwitchEmoteScaleUri(Uri uri, string scale)
+    {
+        var path = uri.AbsolutePath;
+        var lastSlash = path.LastIndexOf('/');
+        if (lastSlash < 0 || lastSlash == path.Length - 1)
+        {
+            return uri;
+        }
+
+        return new UriBuilder(uri)
+        {
+            Path = path[..(lastSlash + 1)] + scale
+        }.Uri;
+    }
+
+    private static bool IsSevenTvEmoteUri(Uri uri)
+    {
+        return string.Equals(uri.Host, "cdn.7tv.app", StringComparison.OrdinalIgnoreCase) &&
+            uri.AbsolutePath.Contains("/emote/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Uri? CreateSevenTvEmoteScaleUri(Uri uri, string scale)
+    {
+        var path = uri.AbsolutePath;
+        var lastSlash = path.LastIndexOf('/');
+        if (lastSlash < 0 || lastSlash == path.Length - 1)
+        {
+            return null;
+        }
+
+        var fileName = path[(lastSlash + 1)..];
+        if (fileName.Length < 3 ||
+            fileName[1] != 'x' ||
+            (fileName[0] != '1' && fileName[0] != '2' && fileName[0] != '3'))
+        {
+            return null;
+        }
+
+        return new UriBuilder(uri)
+        {
+            Path = path[..(lastSlash + 1)] + scale + fileName[2..]
+        }.Uri;
     }
 
     private sealed class AnimatedEmoteImageCacheEntry

@@ -1,0 +1,55 @@
+name: Interactive desktop tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: interactive-desktop-tests
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    name: Full WPF suite on interactive desktop
+    runs-on: [self-hosted, windows, x64, interactive-desktop]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    env:
+      DOTNET_CLI_HOME: ${{ github.workspace }}\.dotnet-home
+      DOTNET_NOLOGO: "true"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+      NUGET_PACKAGES: ${{ github.workspace }}\.nuget\packages
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - name: Restore locked dependencies with vulnerability audit
+        run: >
+          dotnet restore StreamlinkVlcStudio.sln
+          --locked-mode
+          -p:NuGetAudit=true
+          -p:NuGetAuditMode=all
+          -warnaserror:NU1801,NU1900,NU1901,NU1902,NU1903,NU1904
+
+      - name: Build with zero warnings
+        run: dotnet build StreamlinkVlcStudio.sln --configuration Release --no-restore -warnaserror
+
+      - name: Run complete interactive WPF suite
+        env:
+          SVS_EXPECTED_MAX_SKIPS: "0"
+          SVS_TEST_TIMEOUT_SECONDS: "45"
+          SVS_TEST_DRAIN_TIMEOUT_SECONDS: "3"
+        run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore --no-build

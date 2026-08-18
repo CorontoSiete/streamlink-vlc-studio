@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -56,6 +58,37 @@ public static class OAuthTokenHelpers
             .Replace('/', '_');
     }
 
+    /// <summary>Creates a stable cache key without retaining UTF-8 copies of credential material.</summary>
+    internal static string CreateCredentialFingerprint(params string?[] values)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<byte> lengthPrefix = stackalloc byte[sizeof(int)];
+        foreach (var value in values)
+        {
+            var bytes = Encoding.UTF8.GetBytes(value ?? "");
+            try
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(lengthPrefix, bytes.Length);
+                hash.AppendData(lengthPrefix);
+                hash.AppendData(bytes);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(bytes);
+            }
+        }
+
+        var digest = hash.GetHashAndReset();
+        try
+        {
+            return Convert.ToHexString(digest).ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
+    }
+
     /// <summary>
     /// Reads a required string property, throwing <see cref="InvalidOperationException"/> with
     /// <paramref name="errorMessage"/> when it is missing or blank.
@@ -77,34 +110,130 @@ public static class OAuthTokenHelpers
     /// </summary>
     public static Dictionary<string, string> ParseQueryString(string query)
     {
-        var values = new Dictionary<string, string>(StringComparer.Ordinal);
-        var trimmed = query.StartsWith('?') ? query[1..] : query;
-        foreach (var part in trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        return TryParseQueryString(query, out var values)
+            ? values
+            : throw new FormatException("The OAuth callback query string is malformed.");
+    }
+
+    internal static bool TryParseQueryString(
+        string query,
+        out Dictionary<string, string> values)
+    {
+        values = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (query.Length > 16_384)
         {
-            var separator = part.IndexOf('=');
-            var name = separator >= 0 ? part[..separator] : part;
-            var value = separator >= 0 ? part[(separator + 1)..] : "";
-            values[Uri.UnescapeDataString(name.Replace('+', ' '))] =
-                Uri.UnescapeDataString(value.Replace('+', ' '));
+            return false;
         }
 
-        return values;
+        var trimmed = query.StartsWith('?') ? query[1..] : query;
+        var parts = trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length > 128)
+        {
+            return false;
+        }
+
+        try
+        {
+            foreach (var part in parts)
+            {
+                var separator = part.IndexOf('=');
+                var encodedName = separator >= 0 ? part[..separator] : part;
+                var encodedValue = separator >= 0 ? part[(separator + 1)..] : "";
+                if (encodedName.Length == 0 ||
+                    !HasValidPercentEncoding(encodedName) ||
+                    !HasValidPercentEncoding(encodedValue))
+                {
+                    return false;
+                }
+
+                var name = Uri.UnescapeDataString(encodedName.Replace('+', ' '));
+                var value = Uri.UnescapeDataString(encodedValue.Replace('+', ' '));
+                if (name.Length == 0 || name.Length > 256 || value.Length > 8_192 ||
+                    !values.TryAdd(name, value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException)
+        {
+            values.Clear();
+            return false;
+        }
+    }
+
+    private static bool HasValidPercentEncoding(string value)
+    {
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] != '%')
+            {
+                continue;
+            }
+
+            if (index + 2 >= value.Length ||
+                !Uri.IsHexDigit(value[index + 1]) ||
+                !Uri.IsHexDigit(value[index + 2]))
+            {
+                return false;
+            }
+
+            index += 2;
+        }
+
+        return true;
     }
 
     /// <summary>
     /// Converts an OAuth "expires_in" value (a number or numeric string, in seconds) into an absolute
-    /// UTC expiry, or null when the value is non-positive.
+    /// UTC expiry, or null when the value is invalid, non-positive, or outside the DateTimeOffset range.
     /// </summary>
     public static DateTimeOffset? TryGetExpiresAt(JsonElement expiresInElement)
     {
-        long seconds = expiresInElement.ValueKind switch
+        return expiresInElement.ValueKind switch
         {
-            JsonValueKind.Number when expiresInElement.TryGetInt64(out var numericValue) => numericValue,
-            JsonValueKind.String when long.TryParse(expiresInElement.GetString(), out var stringValue) => stringValue,
-            _ => 0
+            JsonValueKind.Number when expiresInElement.TryGetInt64(out var numericValue) => TryGetExpiresAt(numericValue),
+            JsonValueKind.String => TryGetExpiresAt(expiresInElement.GetString()),
+            _ => null
         };
+    }
 
-        return seconds <= 0 ? null : DateTimeOffset.UtcNow.AddSeconds(seconds);
+    public static DateTimeOffset? TryGetExpiresAt(JsonElement root, string propertyName)
+    {
+        return root.ValueKind == JsonValueKind.Object &&
+            root.TryGetProperty(propertyName, out var expiresInElement)
+            ? TryGetExpiresAt(expiresInElement)
+            : null;
+    }
+
+    public static DateTimeOffset? TryGetExpiresAt(string? expiresIn)
+    {
+        return long.TryParse(
+            expiresIn,
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out var seconds)
+            ? TryGetExpiresAt(seconds)
+            : null;
+    }
+
+    private static DateTimeOffset? TryGetExpiresAt(long seconds)
+    {
+        if (seconds <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            return DateTimeOffset.UtcNow.AddSeconds(seconds);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -114,14 +243,9 @@ public static class OAuthTokenHelpers
     public static HashSet<string> ReadScopes(JsonElement root, string propertyName = "scope")
     {
         var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!root.TryGetProperty(propertyName, out var scopeProperty))
+        if (TryGetNonEmptyString(root, propertyName, out var scopeValue))
         {
-            return scopes;
-        }
-
-        if (scopeProperty.ValueKind == JsonValueKind.String)
-        {
-            foreach (var scope in (scopeProperty.GetString() ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            foreach (var scope in scopeValue.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 scopes.Add(scope);
             }
@@ -129,15 +253,19 @@ public static class OAuthTokenHelpers
             return scopes;
         }
 
-        if (scopeProperty.ValueKind == JsonValueKind.Array)
+        if (!TryGetArray(root, propertyName, out var scopeArray))
         {
-            foreach (var item in scopeProperty.EnumerateArray())
+            return scopes;
+        }
+
+        foreach (var item in scopeArray.EnumerateArray())
+        {
+            var scope = item.ValueKind == JsonValueKind.String
+                ? item.GetString()
+                : null;
+            if (!string.IsNullOrWhiteSpace(scope))
             {
-                var scope = item.GetString();
-                if (!string.IsNullOrWhiteSpace(scope))
-                {
-                    scopes.Add(scope);
-                }
+                scopes.Add(scope);
             }
         }
 

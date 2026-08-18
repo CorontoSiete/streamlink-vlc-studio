@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -9,9 +8,9 @@ using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
-using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
@@ -19,12 +18,12 @@ public sealed class StreamSearchService : IStreamSearchService
 {
     private const int MinimumDiscoveryQueryLength = 3;
     private const int StreamProbeConcurrency = 4;
-    private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(20));
     private static readonly TimeSpan CurlTimeout = TimeSpan.FromSeconds(12);
     private readonly IAppLogger logger;
     private readonly IStreamlinkService streamlinkService;
     private readonly HttpClient httpClient;
-    private readonly Func<string, string, CancellationToken, Task<string?>> kickCurlJsonReader;
+    private readonly KickWebsiteJsonReader kickWebsiteJsonReader;
 
     public StreamSearchService(IAppLogger logger, IStreamlinkService streamlinkService)
         : this(logger, streamlinkService, SharedHttpClient)
@@ -45,7 +44,12 @@ public sealed class StreamSearchService : IStreamSearchService
         this.logger = logger;
         this.streamlinkService = streamlinkService;
         this.httpClient = httpClient;
-        this.kickCurlJsonReader = kickCurlJsonReader ?? TryReadKickJsonWithCurlAsync;
+        kickWebsiteJsonReader = new KickWebsiteJsonReader(
+            httpClient,
+            logger,
+            "Search",
+            CurlTimeout,
+            kickCurlJsonReader);
     }
 
     public async Task<StreamSearchResult> SearchAsync(
@@ -157,7 +161,14 @@ public sealed class StreamSearchService : IStreamSearchService
             return new TwitchSearchLoad([], ["Twitch channel discovery requires a Twitch OAuth token."]);
         }
 
-        var clientId = await ResolveTwitchClientIdAsync(settings.Chat, token, cancellationToken).ConfigureAwait(false);
+        var clientId = await TwitchClientIdResolver.ResolveAsync(
+            settings.Chat,
+            httpClient,
+            token,
+            logger,
+            "Search",
+            "Twitch token validation failed for channel search.",
+            cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(clientId))
         {
             return new TwitchSearchLoad([], ["Twitch channel discovery requires a Twitch Client ID that matches the OAuth token."]);
@@ -169,14 +180,14 @@ public sealed class StreamSearchService : IStreamSearchService
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-            using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+            var body = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 logger.Write(
                     AppLogLevel.Warning,
                     "Search",
-                    $"Twitch channel search failed for {query}: {(int)response.StatusCode} {response.ReasonPhrase}. {ExtractApiMessage(body)}");
+                    $"Twitch channel search failed for {query}: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(body, includeBodyFallback: false)}");
                 return new TwitchSearchLoad([], ["Twitch channel search is unavailable."]);
             }
 
@@ -202,8 +213,9 @@ public sealed class StreamSearchService : IStreamSearchService
         var url = $"https://kick.com/api/search?searched_word={Uri.EscapeDataString(query)}";
         try
         {
-            var body = await TryReadKickJsonWithHttpClientAsync(url, referrer: "https://kick.com/", cancellationToken).ConfigureAwait(false) ??
-                await kickCurlJsonReader(url, "https://kick.com/", cancellationToken).ConfigureAwait(false);
+            var body = await kickWebsiteJsonReader
+                .ReadAsync(url, "https://kick.com/", cancellationToken)
+                .ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(body))
             {
                 return new KickSearchLoad([], ["Kick channel search is unavailable."]);
@@ -332,115 +344,10 @@ public sealed class StreamSearchService : IStreamSearchService
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    private async Task<string?> ResolveTwitchClientIdAsync(
-        ChatSettings settings,
-        string token,
-        CancellationToken cancellationToken)
-    {
-        var configured = settings.TwitchClientId.Trim();
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return configured;
-        }
-
-        return await TwitchClientIdCache.GetOrResolveAsync(
-            httpClient,
-            token,
-            logger,
-            "Search",
-            "Twitch token validation failed for channel search.",
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<string?> TryReadKickJsonWithHttpClientAsync(
-        string url,
-        string referrer,
-        CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
-        request.Headers.Accept.ParseAdd("application/json, text/plain, */*");
-        request.Headers.Referrer = new Uri(referrer);
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            logger.Write(
-                AppLogLevel.Info,
-                "Search",
-                $"Kick website search returned {(int)response.StatusCode} {response.ReasonPhrase}; trying curl fallback.");
-            return null;
-        }
-
-        return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<string?> TryReadKickJsonWithCurlAsync(
-        string url,
-        string referrer,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var curlPath = ResolveCurlPath();
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = curlPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in BuildKickCurlArguments(url, referrer))
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            return null;
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(CurlTimeout);
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
-
-        string stdout;
-        string stderr;
-
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            stdout = await stdoutTask.ConfigureAwait(false);
-            stderr = await stderrTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
-            await ObserveOutputReadsAsync(stdoutTask, stderrTask).ConfigureAwait(false);
-            if (cancellationToken.IsCancellationRequested)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-
-            logger.Write(AppLogLevel.Warning, "Search", "curl.exe timed out during Kick channel search.");
-            return null;
-        }
-
-        if (process.ExitCode != 0)
-        {
-            logger.Write(AppLogLevel.Warning, "Search", $"curl.exe failed during Kick channel search: {stderr.Trim()}");
-            return null;
-        }
-
-        return stdout;
-    }
-
     private static IEnumerable<DiscoveredChannel> ReadTwitchChannels(JsonElement root)
     {
-        if (!root.TryGetProperty("data", out var data) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
             yield break;
@@ -464,15 +371,15 @@ public sealed class StreamSearchService : IStreamSearchService
                 GetOptionalString(item, "thumbnail_url"),
                 GetOptionalString(item, "title"),
                 GetOptionalString(item, "game_name"),
-                TryGetBoolean(item, "is_live") == true,
-                StreamSearchSourceStatus.Available,
+                TryGetBool(item, "is_live") == true,
                 order++);
         }
     }
 
     private static IEnumerable<DiscoveredChannel> ReadKickSearchChannels(JsonElement root)
     {
-        if (!root.TryGetProperty("channels", out var channels) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("channels", out var channels) ||
             channels.ValueKind != JsonValueKind.Array)
         {
             yield break;
@@ -491,6 +398,11 @@ public sealed class StreamSearchService : IStreamSearchService
     private static bool TryReadKickChannel(JsonElement item, int order, out DiscoveredChannel channel)
     {
         channel = default!;
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
         var slug = GetOptionalString(item, "slug").ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(slug) ||
             !TryCreateTarget(PlatformKind.Kick, slug, out var target))
@@ -505,9 +417,9 @@ public sealed class StreamSearchService : IStreamSearchService
             ? livestreamElement
             : default;
 
-        var isLive = TryGetBoolean(item, "isLive") ??
-            TryGetBoolean(item, "is_live") ??
-            (livestream.ValueKind == JsonValueKind.Object ? TryGetBoolean(livestream, "is_live") : null) ??
+        var isLive = TryGetBool(item, "isLive") ??
+            TryGetBool(item, "is_live") ??
+            (livestream.ValueKind == JsonValueKind.Object ? TryGetBool(livestream, "is_live") : null) ??
             false;
         var viewerCount = livestream.ValueKind == JsonValueKind.Object
             ? TryGetInt32(livestream, "viewer_count")
@@ -535,7 +447,6 @@ public sealed class StreamSearchService : IStreamSearchService
                 TryReadNestedString(item, "category", "name"),
                 livestream.ValueKind == JsonValueKind.Object ? TryReadNestedString(livestream, "category", "name") : ""),
             isLive,
-            StreamSearchSourceStatus.Available,
             order,
             viewerCount is { } value ? Math.Max(0, value) : null);
         return true;
@@ -616,7 +527,6 @@ public sealed class StreamSearchService : IStreamSearchService
             "",
             "",
             null,
-            StreamSearchSourceStatus.Available,
             order);
     }
 
@@ -709,75 +619,6 @@ public sealed class StreamSearchService : IStreamSearchService
         return (value ?? "").Trim().TrimStart('@').Trim('/').ToLowerInvariant();
     }
 
-    private static string ResolveCurlPath()
-    {
-        var systemRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var systemCurl = string.IsNullOrWhiteSpace(systemRoot)
-            ? ""
-            : Path.Combine(systemRoot, "System32", "curl.exe");
-        if (File.Exists(systemCurl))
-        {
-            return systemCurl;
-        }
-
-        return "curl.exe";
-    }
-
-    private static IEnumerable<string> BuildKickCurlArguments(string url, string referrer)
-    {
-        yield return "-s";
-        yield return "-L";
-        yield return "--max-time";
-        yield return ((int)CurlTimeout.TotalSeconds).ToString(CultureInfo.InvariantCulture);
-        yield return "-A";
-        yield return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-        yield return "-H";
-        yield return "Accept: application/json, text/plain, */*";
-        yield return "-H";
-        yield return $"Referer: {referrer}";
-        yield return url;
-    }
-
-    private static bool? TryGetBoolean(JsonElement element, string propertyName)
-    {
-        if (!element.TryGetProperty(propertyName, out var property))
-        {
-            return null;
-        }
-
-        return property.ValueKind switch
-        {
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            JsonValueKind.Number when property.TryGetInt32(out var value) => value != 0,
-            JsonValueKind.String when bool.TryParse(property.GetString(), out var value) => value,
-            JsonValueKind.String when int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) => value != 0,
-            _ => null
-        };
-    }
-
-    private static string ExtractApiMessage(string responseBody)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            var message = GetOptionalString(document.RootElement, "message");
-            return string.IsNullOrWhiteSpace(message) ? "" : message;
-        }
-        catch (JsonException)
-        {
-            return "";
-        }
-    }
-
-    private static HttpClient CreateHttpClient()
-    {
-        return new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(20)
-        };
-    }
-
     private sealed record TwitchSearchLoad(IReadOnlyList<DiscoveredChannel> Channels, IReadOnlyList<string> Messages);
 
     private sealed record KickSearchLoad(IReadOnlyList<DiscoveredChannel> Channels, IReadOnlyList<string> Messages);
@@ -791,7 +632,6 @@ public sealed class StreamSearchService : IStreamSearchService
         string Title,
         string CategoryName,
         bool? IsLive,
-        StreamSearchSourceStatus SourceStatus,
         int Order,
         int? ViewerCount = null);
 }

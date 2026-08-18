@@ -5,8 +5,9 @@ public sealed record WindowCloseBehaviorOption(WindowCloseBehavior Value, string
     public override string ToString() => DisplayName;
 
     public static IReadOnlyList<WindowCloseBehaviorOption> All { get; } =
-    [
-        new(WindowCloseBehavior.MinimizeToTray, "Minimize to system tray"),
-        new(WindowCloseBehavior.Exit, "Exit completely")
-    ];
+        Array.AsReadOnly<WindowCloseBehaviorOption>(
+        [
+            new(WindowCloseBehavior.MinimizeToTray, "Minimize to system tray"),
+            new(WindowCloseBehavior.Exit, "Exit completely")
+        ]);
 }

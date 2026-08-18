@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
@@ -14,7 +16,15 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
 {
     private readonly ISettingsService settingsService;
     private readonly IAppLogger logger;
+    private readonly ClipboardService clipboardService = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
+    private readonly object operationGate = new();
+    private Task<bool>? finishOperation;
+    private int activeOperationCount;
+    private bool closeRequested;
+    private bool handlersDetached;
+    private bool cancellationDisposed;
+    private bool dialogResultAssigned;
     private int currentStep;
     private bool isBusy;
     private string statusMessage = "Use Next to connect the platforms you want to use.";
@@ -159,16 +169,17 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
 
     private void SetupWizardWindowClosing(object? sender, CancelEventArgs e)
     {
-        if (IsBusy)
+        lock (operationGate)
         {
-            e.Cancel = true;
-            StatusMessage = "Finish or wait for the browser authorization before closing setup.";
-            return;
+            closeRequested = true;
         }
-
-        Settings.Chat.PropertyChanged -= ChatSettingsPropertyChanged;
         lifetimeCancellation.Cancel();
-        lifetimeCancellation.Dispose();
+        DetachHandlersOnce();
+    }
+
+    private void SetupWizardWindowClosed(object? sender, EventArgs e)
+    {
+        DisposeCancellationWhenIdle();
     }
 
     private void NextButtonClick(object sender, RoutedEventArgs e)
@@ -191,15 +202,28 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         CurrentStep = Math.Max(CurrentStep - 1, 0);
     }
 
-    private void CopyRedirectButtonClick(object sender, RoutedEventArgs e)
+    private async void CopyRedirectButtonClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: string redirectUri })
         {
             return;
         }
 
-        Clipboard.SetText(redirectUri);
-        StatusMessage = $"Copied {redirectUri}";
+        try
+        {
+            var result = await clipboardService.TrySetTextAsync(redirectUri, lifetimeCancellation.Token);
+            if (result.Succeeded)
+            {
+                StatusMessage = $"Copied {redirectUri}";
+                return;
+            }
+
+            StatusMessage = "The clipboard is busy. Select and copy the redirect URL manually.";
+            logger.Write(AppLogLevel.Info, "Setup", "Could not copy the OAuth redirect URL to the clipboard after three attempts.", result.Error);
+        }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+        {
+        }
     }
 
     private void OpenUrlButtonClick(object sender, RoutedEventArgs e)
@@ -235,6 +259,11 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!TryBeginOperation())
+        {
+            return;
+        }
+
         SetBusy(true, "Waiting for Twitch authorization in your browser...");
         try
         {
@@ -253,9 +282,17 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Warning, "Setup", "Twitch authorization failed during first-run setup.", ex);
         }
+        catch (OperationCanceledException)
+        {
+            if (!IsCloseRequested())
+            {
+                StatusMessage = "Twitch authorization canceled.";
+            }
+        }
         finally
         {
             SetBusy(false, StatusMessage);
+            EndOperation();
         }
     }
 
@@ -264,6 +301,11 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         if (!CanConnectKick)
         {
             StatusMessage = "Enter the Kick Client ID and Client Secret first.";
+            return;
+        }
+
+        if (!TryBeginOperation())
+        {
             return;
         }
 
@@ -304,31 +346,111 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Warning, "Setup", "Kick authorization failed during first-run setup.", ex);
         }
+        catch (OperationCanceledException)
+        {
+            if (!IsCloseRequested())
+            {
+                StatusMessage = "Kick authorization canceled.";
+            }
+        }
         finally
         {
             SetBusy(false, StatusMessage);
+            EndOperation();
         }
     }
 
     private async void FinishButtonClick(object sender, RoutedEventArgs e)
     {
-        if (IsBusy)
-        {
-            return;
-        }
+        await FinishSetupAsync();
+    }
 
+    internal Task<bool> FinishSetupAsync()
+    {
+        lock (operationGate)
+        {
+            if (finishOperation is not null)
+            {
+                return finishOperation;
+            }
+
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            finishOperation = completion.Task;
+            _ = CompleteSetupAsync(completion);
+            return finishOperation;
+        }
+    }
+
+    private async Task CompleteSetupAsync(TaskCompletionSource<bool> completion)
+    {
+        var succeeded = false;
+        var operationStarted = false;
+        var previousSetupCompleted = Settings.SetupCompleted;
+        var ownsSetupMutation = false;
         try
         {
+            if (!TryBeginOperation())
+            {
+                completion.TrySetResult(false);
+                return;
+            }
+
+            operationStarted = true;
+            SetBusy(true, "Saving setup...");
             Settings.SetupCompleted = true;
+            ownsSetupMutation = !previousSetupCompleted;
             await settingsService.SaveAsync(Settings, lifetimeCancellation.Token);
-            DialogResult = true;
-            Close();
+            lifetimeCancellation.Token.ThrowIfCancellationRequested();
+            lock (operationGate)
+            {
+                if (closeRequested)
+                {
+                    throw new OperationCanceledException(lifetimeCancellation.Token);
+                }
+            }
+
+            succeeded = true;
+            if (!dialogResultAssigned)
+            {
+                dialogResultAssigned = true;
+                DialogResult = true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (ownsSetupMutation && Settings.SetupCompleted)
+            {
+                Settings.SetupCompleted = previousSetupCompleted;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Settings.SetupCompleted = false;
+            if (ownsSetupMutation && Settings.SetupCompleted)
+            {
+                Settings.SetupCompleted = previousSetupCompleted;
+            }
             StatusMessage = "Could not save setup. Check that the settings folder is writable, then try again.";
             logger.Write(AppLogLevel.Error, "Setup", "Could not save first-run setup.", ex);
+        }
+        finally
+        {
+            if (operationStarted)
+            {
+                SetBusy(false, StatusMessage);
+                EndOperation();
+            }
+
+            if (!succeeded)
+            {
+                lock (operationGate)
+                {
+                    if (ReferenceEquals(finishOperation, completion.Task))
+                    {
+                        finishOperation = null;
+                    }
+                }
+            }
+            completion.TrySetResult(succeeded);
         }
     }
 
@@ -347,7 +469,80 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         StatusMessage = message;
     }
 
-    private void OnPropertyChanged(string? propertyName = null)
+    private bool TryBeginOperation()
+    {
+        lock (operationGate)
+        {
+            if (closeRequested || cancellationDisposed || activeOperationCount != 0)
+            {
+                return false;
+            }
+
+            activeOperationCount++;
+            return true;
+        }
+    }
+
+    private bool IsCloseRequested()
+    {
+        lock (operationGate)
+        {
+            return closeRequested;
+        }
+    }
+
+    private void EndOperation()
+    {
+        var shouldDispose = false;
+        lock (operationGate)
+        {
+            if (activeOperationCount > 0)
+            {
+                activeOperationCount--;
+            }
+            shouldDispose = closeRequested && activeOperationCount == 0 && !cancellationDisposed;
+            if (shouldDispose)
+            {
+                cancellationDisposed = true;
+            }
+        }
+        if (shouldDispose)
+        {
+            lifetimeCancellation.Dispose();
+        }
+    }
+
+    private void DisposeCancellationWhenIdle()
+    {
+        var shouldDispose = false;
+        lock (operationGate)
+        {
+            shouldDispose = activeOperationCount == 0 && !cancellationDisposed;
+            if (shouldDispose)
+            {
+                cancellationDisposed = true;
+            }
+        }
+        if (shouldDispose)
+        {
+            lifetimeCancellation.Dispose();
+        }
+    }
+
+    private void DetachHandlersOnce()
+    {
+        lock (operationGate)
+        {
+            if (handlersDetached)
+            {
+                return;
+            }
+            handlersDetached = true;
+        }
+        Settings.Chat.PropertyChanged -= ChatSettingsPropertyChanged;
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }

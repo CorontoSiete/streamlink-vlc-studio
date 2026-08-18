@@ -3,37 +3,51 @@ Streamlink VLC Studio
 Recommended latest install/update:
 
 Download StreamlinkVlcStudio-Setup.exe from the latest GitHub release and run
-it. The setup installer contains the app release zip, installs or updates the
-app, checks Streamlink and VLC, writes the detected dependency paths, creates
-the Start Menu shortcut, and launches the app when run normally.
+it. Verify the download against SHA256SUMS.txt from the same release first.
+The setup executable is a compressed, per-machine bundle containing the app
+MSI and the reviewed, version-locked x64 Streamlink and VLC installers. It
+installs the app under C:\Program Files\Streamlink VLC Studio, installs missing
+dependencies, creates the Start Menu shortcut, and offers to launch the app's
+first-run setup wizard.
 
-The installer registers Uninstall.exe for the current Windows user, so the app
-appears in Apps & features / Control Panel. Uninstall removes the app install
-folder, Start Menu shortcut, uninstall registry entry, logs, settings, token
-files, overlay cache, and other %APPDATA%\StreamlinkVlcStudio and
-%LOCALAPPDATA%\StreamlinkVlcStudio leftovers. It does not uninstall shared
-dependencies such as VLC or Streamlink.
+Inside the app, Settings > Advanced > Updates can start a latest-release update.
+Release-zip installs use the bundled install.ps1; MSI/full-installer installs
+download StreamlinkVlcStudio-Setup.msi and verify it against SHA256SUMS.txt
+before launching Windows Installer.
 
-PowerShell install is also available:
+The normal setup is registered through WiX/Windows Installer, not the separate
+per-user Uninstall.exe. Removing Streamlink VLC Studio through Apps & features /
+Control Panel removes the app and its shortcut but leaves the shared VLC and
+Streamlink installations. It also leaves logs, settings, protected account
+secrets, replay caches, and other user data under
+%APPDATA%\StreamlinkVlcStudio and %LOCALAPPDATA%\StreamlinkVlcStudio.
 
-1. Open PowerShell.
+Advanced PowerShell install is also available from the release zip:
 
-2. Run:
+1. Download StreamlinkVlcStudio-release.zip and SHA256SUMS.txt from the same
+   release, verify the zip, and extract it to a normal folder.
 
-   $installer = Join-Path $env:TEMP "Install-StreamlinkVlcStudio.ps1"
-   Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/CorontoSiete/streamlink-vlc-studio/releases/latest/download/Install-StreamlinkVlcStudio.ps1" -OutFile $installer
-   powershell.exe -ExecutionPolicy Bypass -File $installer -Launch
+2. Open PowerShell in the extracted folder and run:
 
-The installer downloads Streamlink VLC Studio from GitHub, preferring the latest
-release asset and falling back to the newest non-expired GitHub Actions artifact.
-It installs or updates Streamlink from Streamlink's GitHub Windows builds,
-installs or updates VLC 64-bit from VideoLAN, writes the detected Streamlink and
-VLC paths to %APPDATA%\StreamlinkVlcStudio\settings.json, and creates a Start
-Menu shortcut.
+   powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -AppSource Local -Launch
 
-GitHub install mode requires the repository and either its releases or Actions
-artifacts to be public. For a private repository, set GITHUB_TOKEN to a token
-with repo/actions read access before running the installer.
+In the default Auto mode, the script first downloads the latest final GitHub
+release zip and verifies it against that release's SHA256SUMS.txt. If the release
+cannot be used, Auto falls back only to a complete app payload beside install.ps1.
+Normal install modes never fall back to an arbitrary GitHub Actions artifact;
+artifact installation is an explicit developer-only mode that requires a trusted
+40-character main-branch commit.
+
+The script reads dependencies\windows-installers.json and installs the pinned
+Streamlink and VLC builds when no same-or-newer detected version is present.
+Downloads are checked by size and SHA-256 plus the recorded signature/product
+metadata. By default, it installs the app under
+%LOCALAPPDATA%\Programs\StreamlinkVlcStudio. It writes the detected paths to
+%APPDATA%\StreamlinkVlcStudio\settings.json, creates a per-user Start Menu
+shortcut, and registers the included Uninstall.exe for the current Windows user.
+
+For a private repository, set GITHUB_TOKEN to a token with release-content read
+access. Developer artifact mode additionally requires Actions read access.
 
 Force GitHub app download:
 
@@ -49,7 +63,7 @@ Local app setup from this extracted zip:
 
 Manual portable setup:
 
-1. Extract this zip to a normal folder, for example:
+1. Extract the release zip to a normal folder, for example:
    C:\Users\you\Apps\StreamlinkVlcStudio
 
 2. Install Streamlink for Windows if it is not already installed.
@@ -80,7 +94,21 @@ To install it in Brave:
 3. Click Load unpacked.
 4. Select the extracted browser-extension folder.
 
-Keep StreamlinkVlcStudio.exe running before clicking Twitch or Kick links.
+Keep StreamlinkVlcStudio.exe running before clicking a direct Twitch or Kick
+channel link.
 
-Tokens and account-sensitive settings are saved under:
-%APPDATA%\StreamlinkVlcStudio
+Only unmodified left-clicks on direct Twitch or Kick channel routes are captured.
+VOD, clip, directory/category, settings, and other non-channel routes continue to
+navigate in the browser.
+
+Settings are saved under %APPDATA%\StreamlinkVlcStudio. Twitch OAuth, Kick
+access/refresh tokens, and the Kick client secret are stored inside settings.json
+in a Windows current-user DPAPI-protected ProtectedSecrets envelope. Other
+settings remain readable JSON. The protected secrets cannot be moved to another
+Windows user profile; treat settings.json and any recovery backups as
+account-sensitive.
+
+The PowerShell-path Uninstall.exe removes its registered shortcut, uninstall
+entry, and unchanged managed app payload. It preserves user-modified or unmanaged
+files and does not delete %APPDATA% or %LOCALAPPDATA% user data or uninstall VLC
+or Streamlink.
