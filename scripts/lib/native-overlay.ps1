@@ -66,6 +66,27 @@ function Get-NativeOverlayFileSha256 {
     }
 }
 
+function Test-NativeOverlayAuthenticodeUnavailableError {
+    param([Parameter(Mandatory = $true)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    if ($ErrorRecord.Exception -is [System.Management.Automation.CommandNotFoundException]) {
+        return $true
+    }
+
+    $fullyQualifiedErrorId = [string]$ErrorRecord.FullyQualifiedErrorId
+    if ([string]::Equals($fullyQualifiedErrorId, 'CouldNotAutoloadMatchingModule', [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    $message = [string]$ErrorRecord.Exception.Message
+    if ($message.IndexOf('Get-AuthenticodeSignature', [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $message.IndexOf('could not be loaded', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        return $true
+    }
+
+    $false
+}
+
 function Assert-NativeOverlaySource {
     [CmdletBinding()]
     param(
@@ -139,8 +160,9 @@ function Assert-NativeOverlaySource {
         if ($IsWindows -or $env:OS -eq 'Windows_NT') {
             try {
                 $signatureStatus = (Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString()
-            } catch [System.Management.Automation.CommandNotFoundException] {
-                if (-not $SkipAuthenticodeWhenUnavailable) {
+            } catch {
+                if (-not $SkipAuthenticodeWhenUnavailable -or
+                    -not (Test-NativeOverlayAuthenticodeUnavailableError $_)) {
                     throw
                 }
             }

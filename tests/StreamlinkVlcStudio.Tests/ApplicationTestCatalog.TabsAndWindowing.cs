@@ -1162,6 +1162,7 @@ internal static partial class ApplicationTestCatalog
                     "-PublishedAppDirectory", publishDir,
                     "-OverlaySource", overlaySource,
                     "-OutputRoot", outputRoot,
+                    "-SkipAuthenticodeWhenUnavailable",
                     "-Quiet"
                 ],
                 TimeSpan.FromSeconds(30));
@@ -1224,6 +1225,7 @@ internal static partial class ApplicationTestCatalog
                     "-PublishedAppDirectory", publishDir,
                     "-OverlaySource", overlaySource,
                     "-OutputRoot", publishDir,
+                    "-SkipAuthenticodeWhenUnavailable",
                     "-Quiet"
                 ],
                 TimeSpan.FromSeconds(15));

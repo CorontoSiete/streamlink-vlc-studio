@@ -6,6 +6,7 @@ param(
     [string]$OutputRoot,
     [string]$PublishedAppDirectory,
     [switch]$KeepStaging,
+    [switch]$SkipAuthenticodeWhenUnavailable,
     [switch]$Quiet
 )
 
@@ -96,7 +97,8 @@ $nativeManifestPath = Join-Path $repoRoot "dependencies\native-overlay.json"
 $verifiedOverlayFiles = @(
     Assert-NativeOverlaySource `
         -OverlaySource $overlaySourcePath `
-        -ManifestPath $nativeManifestPath
+        -ManifestPath $nativeManifestPath `
+        -SkipAuthenticodeWhenUnavailable:$SkipAuthenticodeWhenUnavailable
 )
 
 $browserExtensionSource = Join-Path $repoRoot "browser-extension"
