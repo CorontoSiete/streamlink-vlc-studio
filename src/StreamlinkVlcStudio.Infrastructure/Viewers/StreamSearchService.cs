@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -346,9 +347,7 @@ public sealed class StreamSearchService : IStreamSearchService
 
     private static IEnumerable<DiscoveredChannel> ReadTwitchChannels(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -358,7 +357,7 @@ public sealed class StreamSearchService : IStreamSearchService
         {
             var login = GetOptionalString(item, "broadcaster_login").ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(login) ||
-                !TryCreateTarget(PlatformKind.Twitch, login, out var target))
+                !StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var target))
             {
                 continue;
             }
@@ -378,9 +377,7 @@ public sealed class StreamSearchService : IStreamSearchService
 
     private static IEnumerable<DiscoveredChannel> ReadKickSearchChannels(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("channels", out var channels) ||
-            channels.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "channels", out var channels))
         {
             yield break;
         }
@@ -405,7 +402,7 @@ public sealed class StreamSearchService : IStreamSearchService
 
         var slug = GetOptionalString(item, "slug").ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(slug) ||
-            !TryCreateTarget(PlatformKind.Kick, slug, out var target))
+            !StreamInputParser.TryFromChannel(PlatformKind.Kick, slug, out var target))
         {
             return false;
         }
@@ -450,20 +447,6 @@ public sealed class StreamSearchService : IStreamSearchService
             order,
             viewerCount is { } value ? Math.Max(0, value) : null);
         return true;
-    }
-
-    private static bool TryCreateTarget(PlatformKind platform, string channel, out StreamTarget target)
-    {
-        try
-        {
-            target = StreamInputParser.FromChannel(platform, channel);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            target = null!;
-            return false;
-        }
     }
 
     private static void AddExactFallbacksForMissingPlatforms(

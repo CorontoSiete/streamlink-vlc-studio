@@ -457,7 +457,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
                 logger.Write(
                     AppLogLevel.Debug,
                     "KickChat",
-                    $"Kick seekback backfill requested for {channel}: {FormatBackfillTimestamp(fromTimestampUtc)} through {FormatBackfillTimestamp(throughTimestampUtc)}.");
+                    $"Kick seekback backfill requested for {channel}: {KickChatApi.FormatBackfillTimestamp(fromTimestampUtc)} through {KickChatApi.FormatBackfillTimestamp(throughTimestampUtc)}.");
 
                 var timestampResult = await BackfillRecentChatFromStartTimeAsync(
                         channel,
@@ -559,15 +559,9 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
             AppLogLevel.Debug,
             "KickChat",
             $"Kick seekback backfill completed for {channel}: loaded={result.LoadedMessageCount.ToString(CultureInfo.InvariantCulture)}, " +
-            $"covered={result.CoveredRequestedRange}, range={FormatBackfillTimestamp(result.CoveredFromTimestampUtc)} through {FormatBackfillTimestamp(result.CoveredThroughTimestampUtc)}.");
+            $"covered={result.CoveredRequestedRange}, range={KickChatApi.FormatBackfillTimestamp(result.CoveredFromTimestampUtc)} through {KickChatApi.FormatBackfillTimestamp(result.CoveredThroughTimestampUtc)}.");
     }
 
-    private static string FormatBackfillTimestamp(DateTimeOffset? timestampUtc)
-    {
-        return timestampUtc is { } timestamp
-            ? timestamp.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
-            : "none";
-    }
 
     private async Task<KickChannelInfo> ResolveChannelInfoAsync(string channel, CancellationToken cancellationToken)
     {

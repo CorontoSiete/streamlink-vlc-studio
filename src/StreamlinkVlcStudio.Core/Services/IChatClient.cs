@@ -21,16 +21,6 @@ public interface IChatHistoryBackfillClient
         CancellationToken cancellationToken = default);
 }
 
-public interface IKickChatHistoryProvider
-{
-    Task<ChatHistoryBackfillResult> BackfillRecentChatRangeAsync(
-        StreamTarget target,
-        ChatSettings settings,
-        DateTimeOffset fromTimestampUtc,
-        DateTimeOffset throughTimestampUtc,
-        CancellationToken cancellationToken = default);
-}
-
 public readonly record struct ChatHistoryBackfillResult
 {
     private readonly IReadOnlyList<ChatMessage>? messages;

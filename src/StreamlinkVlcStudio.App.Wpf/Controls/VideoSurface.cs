@@ -23,8 +23,6 @@ public sealed partial class VideoSurface : HwndHost
     private const int WmRightButtonDown = 0x0204;
     private const int WmMouseMove = 0x0200;
     private const int WmMouseWheel = 0x020A;
-    private const int SmCxDoubleClick = 36;
-    private const int SmCyDoubleClick = 37;
     private const int WsChild = 0x40000000;
     private const int WsVisible = 0x10000000;
     private const int WsClipChildren = 0x02000000;
@@ -38,14 +36,14 @@ public sealed partial class VideoSurface : HwndHost
     private static readonly NativeWindowProc RegisteredWindowProc = DefWindowProcCallback;
     private static bool windowClassRegistered;
     private IntPtr handle;
-    private long lastLeftButtonDownAt = long.MinValue;
-    private int lastLeftButtonDownX;
-    private int lastLeftButtonDownY;
+    private readonly DoubleClickTracker doubleClickTracker = new();
+    private readonly HashSet<IntPtr> overlayWindows = [];
     private int lastNativeWidth = -1;
     private int lastNativeHeight = -1;
     private bool lastNativeVisible;
     private long lastDirectChildResizeAt = long.MinValue;
     private bool directChildBoundsSyncQueued;
+    private bool notifyingNativeBoundsChanged;
 
     public new IntPtr Handle => handle;
     public event EventHandler<VideoSurfaceMouseWheelEventArgs>? MouseWheelScrolled;
@@ -56,6 +54,8 @@ public sealed partial class VideoSurface : HwndHost
     public event EventHandler<VideoSurfaceNativeMouseEventArgs>? NativeMouseMoved;
     public event EventHandler<VideoSurfaceNativeMouseEventArgs>? NativeMouseLeftButtonUp;
     public event EventHandler<VideoSurfaceNativeMouseEventArgs>? NativeMouseRightButtonDown;
+    internal event EventHandler? NativeBoundsChanged;
+    internal event EventHandler? NativeHandleDestroying;
 
     public VideoSurface()
     {
@@ -87,6 +87,7 @@ public sealed partial class VideoSurface : HwndHost
 
         ResetNativeBoundsCache();
         SyncNativeBounds();
+        NativeMouseWheelTarget.RegisterWindow(handle, acceptsInactiveWheel: Window.GetWindow(this) is DetachedVideoWindow);
         return new HandleRef(this, handle);
     }
 
@@ -94,10 +95,53 @@ public sealed partial class VideoSurface : HwndHost
     {
         if (hwnd.Handle != IntPtr.Zero)
         {
-            DestroyWindow(hwnd.Handle);
-            handle = IntPtr.Zero;
-            ResetNativeBoundsCache();
+            NativeMouseWheelTarget.UnregisterWindow(hwnd.Handle);
+            try
+            {
+                // Release managed child sources before Win32 destroys the descendants of
+                // this host, so they cannot retain a dead HWND across detach/reattach.
+                NativeHandleDestroying?.Invoke(this, EventArgs.Empty);
+            }
+            finally
+            {
+                overlayWindows.Clear();
+                DestroyWindow(hwnd.Handle);
+                handle = IntPtr.Zero;
+                ResetNativeBoundsCache();
+            }
         }
+    }
+
+    internal void RegisterOverlayWindow(IntPtr hwnd)
+    {
+        Dispatcher.VerifyAccess();
+        if (hwnd == IntPtr.Zero || handle == IntPtr.Zero || GetParent(hwnd) != handle)
+        {
+            throw new ArgumentException("An overlay must be a child of this video surface.", nameof(hwnd));
+        }
+
+        overlayWindows.Add(hwnd);
+    }
+
+    internal void UnregisterOverlayWindow(IntPtr hwnd)
+    {
+        Dispatcher.VerifyAccess();
+        overlayWindows.Remove(hwnd);
+    }
+
+    internal bool IsOverlayAboveRenderer(IntPtr hwnd)
+    {
+        Dispatcher.VerifyAccess();
+        const uint gwHwndPrev = 3;
+        // Other registered overlays may be above this one. Only a renderer sibling
+        // above it requires repair; raising each overlay to the top on every layout
+        // pass makes the seekbar and thumbnail repeatedly exchange z-order.
+        for (var sibling = GetWindow(hwnd, gwHwndPrev); sibling != IntPtr.Zero;
+             sibling = GetWindow(sibling, gwHwndPrev))
+        {
+            if (!overlayWindows.Contains(sibling)) return false;
+        }
+        return true;
     }
 
     protected override void OnWindowPositionChanged(Rect rcBoundingBox)
@@ -133,6 +177,14 @@ public sealed partial class VideoSurface : HwndHost
         if (msg == WmLeftButtonDoubleClick)
         {
             ResetLastLeftButtonDown();
+            // A second press on a PiP resize border still belongs to the border, even
+            // when Windows reports it as a double-click on this child HWND.
+            if (TryRaiseNativeMouseLeftButtonDown(hwnd, lParam, out var mouseDownResult))
+            {
+                handled = true;
+                return mouseDownResult;
+            }
+
             MouseLeftButtonDoubleClicked?.Invoke(this, EventArgs.Empty);
         }
         else if (msg == WmLeftButtonDown)
@@ -189,7 +241,8 @@ public sealed partial class VideoSurface : HwndHost
             var delta = GetWheelDelta(wParam);
             if (delta != 0)
             {
-                MouseWheelScrolled?.Invoke(this, new VideoSurfaceMouseWheelEventArgs(delta));
+                MouseWheelScrolled?.Invoke(this, new VideoSurfaceMouseWheelEventArgs(
+                    delta, new Point(GetLParamX(lParam), GetLParamY(lParam))));
                 handled = true;
                 return IntPtr.Zero;
             }
@@ -294,6 +347,7 @@ public sealed partial class VideoSurface : HwndHost
             ActualHeight > 0;
         if (!visible)
         {
+            var visibilityChanged = lastNativeVisible;
             if (lastNativeVisible)
             {
                 _ = ShowWindow(handle, SwHide);
@@ -301,6 +355,11 @@ public sealed partial class VideoSurface : HwndHost
 
             lastNativeVisible = false;
             lastDirectChildResizeAt = long.MinValue;
+            if (visibilityChanged)
+            {
+                RaiseNativeBoundsChanged();
+            }
+
             return;
         }
 
@@ -382,7 +441,9 @@ public sealed partial class VideoSurface : HwndHost
             handle,
             (childHandle, lParam) =>
             {
-                if (GetParent(childHandle) == handle)
+                // VLC renderer children fill the host. Interactive overlay children retain
+                // their own local bounds and visibility above that renderer.
+                if (GetParent(childHandle) == handle && !overlayWindows.Contains(childHandle))
                 {
                     _ = SetWindowPos(
                         childHandle,
@@ -412,6 +473,27 @@ public sealed partial class VideoSurface : HwndHost
         if (width > 0 && height > 0)
         {
             ResizeDirectChildWindows(width, height);
+            // A late-created VLC child can also change sibling z-order without changing
+            // the client size. Overlay hosts restore their bounds/z-order after this pass.
+            RaiseNativeBoundsChanged();
+        }
+    }
+
+    private void RaiseNativeBoundsChanged()
+    {
+        if (handle == IntPtr.Zero || notifyingNativeBoundsChanged)
+        {
+            return;
+        }
+
+        notifyingNativeBoundsChanged = true;
+        try
+        {
+            NativeBoundsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        finally
+        {
+            notifyingNativeBoundsChanged = false;
         }
     }
 
@@ -462,37 +544,13 @@ public sealed partial class VideoSurface : HwndHost
     private static IntPtr DefWindowProcCallback(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam) =>
         DefWindowProc(hwnd, msg, wParam, lParam);
 
-    private bool IsLeftButtonDoubleClick(IntPtr lParam)
-    {
-        if (lastLeftButtonDownAt == long.MinValue)
-        {
-            return false;
-        }
+    private bool IsLeftButtonDoubleClick(IntPtr lParam) =>
+        doubleClickTracker.IsDoubleClick(GetLParamX(lParam), GetLParamY(lParam));
 
-        var now = Environment.TickCount64;
-        var elapsed = now - lastLeftButtonDownAt;
-        var x = GetLParamX(lParam);
-        var y = GetLParamY(lParam);
+    private void CaptureLastLeftButtonDown(IntPtr lParam) =>
+        doubleClickTracker.Capture(GetLParamX(lParam), GetLParamY(lParam));
 
-        return elapsed >= 0 &&
-            elapsed <= GetDoubleClickTime() &&
-            Math.Abs(x - lastLeftButtonDownX) <= GetSystemMetrics(SmCxDoubleClick) &&
-            Math.Abs(y - lastLeftButtonDownY) <= GetSystemMetrics(SmCyDoubleClick);
-    }
-
-    private void CaptureLastLeftButtonDown(IntPtr lParam)
-    {
-        lastLeftButtonDownAt = Environment.TickCount64;
-        lastLeftButtonDownX = GetLParamX(lParam);
-        lastLeftButtonDownY = GetLParamY(lParam);
-    }
-
-    private void ResetLastLeftButtonDown()
-    {
-        lastLeftButtonDownAt = long.MinValue;
-        lastLeftButtonDownX = 0;
-        lastLeftButtonDownY = 0;
-    }
+    private void ResetLastLeftButtonDown() => doubleClickTracker.Reset();
 
     private static int GetWheelDelta(IntPtr wParam)
     {
@@ -588,6 +646,9 @@ public sealed partial class VideoSurface : HwndHost
     private static partial IntPtr GetParent(IntPtr hwnd);
 
     [LibraryImport("user32")]
+    private static partial IntPtr GetWindow(IntPtr hwnd, uint command);
+
+    [LibraryImport("user32")]
     private static partial int FillRect(IntPtr hdc, ref NativeRect rect, IntPtr brush);
 
     [LibraryImport("kernel32", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
@@ -629,22 +690,18 @@ public sealed partial class VideoSurface : HwndHost
         int width,
         int height,
         int flags);
-
-    [LibraryImport("user32")]
-    private static partial uint GetDoubleClickTime();
-
-    [LibraryImport("user32")]
-    private static partial int GetSystemMetrics(int nIndex);
 }
 
 public sealed class VideoSurfaceMouseWheelEventArgs : EventArgs
 {
-    public VideoSurfaceMouseWheelEventArgs(int delta)
+    public VideoSurfaceMouseWheelEventArgs(int delta, Point? screenPoint = null)
     {
         Delta = delta;
+        ScreenPoint = screenPoint;
     }
 
     public int Delta { get; }
+    public Point? ScreenPoint { get; }
 }
 
 public sealed class VideoSurfaceNativeMouseEventArgs : EventArgs

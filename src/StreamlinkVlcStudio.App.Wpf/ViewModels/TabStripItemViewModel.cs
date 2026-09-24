@@ -33,6 +33,12 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
     public StreamTabViewModel ActiveTab => activeTab;
     public bool IsGroup => tabs.Length > 1;
     public bool IsDetached => tabs.All(tab => tab.IsDetached);
+    public bool HasNeverMute => tabs.Any(tab => tab.NeverMute);
+    public string NeverMuteToolTip => !HasNeverMute
+        ? ""
+        : IsGroup
+            ? $"Never mute enabled: {string.Join(", ", tabs.Where(tab => tab.NeverMute).Select(tab => tab.Title))}"
+            : "Never mute enabled";
     public string ProfileImageUrl => IsGroup ? "" : PrimaryTab.ProfileImageUrl;
     public bool HasProfileImage => !string.IsNullOrWhiteSpace(ProfileImageUrl);
 
@@ -92,6 +98,13 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
 
     private void TabOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(StreamTabViewModel.NeverMute))
+        {
+            OnPropertyChanged(nameof(HasNeverMute));
+            OnPropertyChanged(nameof(NeverMuteToolTip));
+            OnPropertyChanged(nameof(ToolTip));
+        }
+
         if (e.PropertyName is nameof(StreamTabViewModel.Title) or
             nameof(StreamTabViewModel.StreamTitle) or
             nameof(StreamTabViewModel.Status) or
@@ -110,16 +123,12 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(HasProfileImage));
             OnPropertyChanged(nameof(ToolTip));
             OnPropertyChanged(nameof(IsDetached));
+            OnPropertyChanged(nameof(NeverMuteToolTip));
         }
     }
 
     private static string FormatSingleTabToolTip(StreamTabViewModel tab)
     {
-        if (!tab.HasCategory && string.IsNullOrWhiteSpace(tab.StreamTitle))
-        {
-            return tab.Target.DisplayName;
-        }
-
         var lines = new List<string> { tab.Target.DisplayName };
         if (!string.IsNullOrWhiteSpace(tab.StreamTitle))
         {
@@ -130,6 +139,11 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
         {
             lines.Add($"Category: {tab.CategoryName}");
             lines.Add($"Status: {tab.StatusText}");
+        }
+
+        if (tab.NeverMute)
+        {
+            lines.Add("Never mute enabled");
         }
 
         return string.Join(Environment.NewLine, lines);
@@ -149,6 +163,11 @@ public sealed class TabStripItemViewModel : ObservableObject, IDisposable
         }
 
         details.Add(tab.StatusText);
+        if (tab.NeverMute)
+        {
+            details.Add("Never mute enabled");
+        }
+
         return string.Join(", ", details);
     }
 }

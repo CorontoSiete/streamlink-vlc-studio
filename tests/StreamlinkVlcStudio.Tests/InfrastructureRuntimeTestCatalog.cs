@@ -22,7 +22,6 @@ internal static class InfrastructureRuntimeTestCatalog
         ("infrastructure runtime: live snapshot TTL begins when loading completes", LiveSnapshotTtlStartsAtCompletionAsync),
         ("infrastructure runtime: browse retry delays clamp and timestamp math saturates", BrowseRetryMathIsBounded),
         ("infrastructure runtime: bounded stream lines drain oversized records", BoundedStreamLinesDrainOversizedRecordsAsync),
-        ("infrastructure runtime: Kick replay cache skips oversized JSONL records", KickReplayCacheSkipsOversizedRecordsAsync),
         ("infrastructure runtime: Twitch replay chat stays anonymous", TwitchReplayChatStaysAnonymousAsync),
         ("infrastructure runtime: replay chat rejects overflowing offsets", ReplayChatRejectsOverflowingOffsets),
         ("infrastructure runtime: external input and lifecycle boundaries are enforced", ExternalInputAndLifecycleBoundariesAreEnforcedAsync)
@@ -284,41 +283,6 @@ internal static class InfrastructureRuntimeTestCatalog
         Assert.Equal("next", (await reader.ReadLineAsync())!.Value.Text);
     }
 
-    private static async Task KickReplayCacheSkipsOversizedRecordsAsync()
-    {
-        var root = Path.Combine(Path.GetTempPath(), $"svs-kick-replay-{Guid.NewGuid():N}");
-        var timestamp = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
-        try
-        {
-            var path = Path.Combine(root, "channel", "20260102.jsonl");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllTextAsync(path, new string('x', (1024 * 1024) + 1) + "\n");
-
-            var store = new KickOfficialChatReplayStore(root);
-            await store.AppendAsync(new ChatMessage(
-                PlatformKind.Kick,
-                "channel",
-                "viewer",
-                "hello",
-                timestamp,
-                MessageId: "one"));
-
-            var result = await store.ReadMessagesAsync(
-                "channel",
-                timestamp.AddMinutes(-1),
-                timestamp.AddMinutes(1));
-            Assert.Equal(1, result.Messages.Count);
-            Assert.Equal("hello", result.Messages[0].Message);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-    }
-
     private static async Task TwitchReplayChatStaysAnonymousAsync()
     {
         string? authorization = null;
@@ -335,77 +299,51 @@ internal static class InfrastructureRuntimeTestCatalog
                     "application/json")
             });
         }));
-        var provider = new ReplayChatProvider(client);
+        var provider = new VodChatProvider(client);
         var settings = new AppSettings();
         settings.Chat.TwitchOAuthToken = "  oauth:test-token  ";
         var replay = new ReplaySessionInfo(
             PlatformKind.Twitch,
             "channel",
             "https://www.twitch.tv/videos/1",
-            Guid.NewGuid().ToString("N"),
+            "1",
             DateTimeOffset.UtcNow.AddHours(-1),
             TimeSpan.FromHours(1),
             true,
             "");
 
-        await provider.LoadChatAsync(replay, settings, TimeSpan.Zero);
+        await provider.FetchAsync(replay, settings, TimeSpan.Zero);
         Assert.Equal(null, authorization);
-    }
-
-    private static async Task KickReplayDateBoundariesDoNotOverflowAsync()
-    {
-        var root = Path.Combine(Path.GetTempPath(), $"svs-kick-boundary-{Guid.NewGuid():N}");
-        try
-        {
-            var store = new KickOfficialChatReplayStore(root);
-            var lastInstant = DateTimeOffset.MaxValue;
-            var read = await store.ReadMessagesAsync("channel", lastInstant, lastInstant);
-            Assert.Equal(0, read.CacheFileCount);
-
-            var provider = new ReplayChatProvider(store);
-            var replay = new ReplaySessionInfo(
-                PlatformKind.Kick,
-                "channel",
-                "https://kick.com/channel/videos/example",
-                "example",
-                DateTimeOffset.MaxValue.AddMinutes(-1),
-                TimeSpan.FromHours(1),
-                true,
-                "");
-            var result = await provider.LoadKickOfficialWebhookChatAsync(
-                replay,
-                TimeSpan.FromHours(1));
-            Assert.Equal(false, result.IsAvailable);
-            Assert.Contains("outside the supported date range", result.UnavailableReason);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
     }
 
     private static Task ReplayChatRejectsOverflowingOffsets()
     {
         using var document = System.Text.Json.JsonDocument.Parse("""
-        {
-          "comments": [
-            {
-              "_id": "overflow",
-              "content_offset_seconds": 922337203685.4776,
-              "commenter": { "name": "invalid" },
-              "message": { "body": "must be rejected" }
-            },
-            {
-              "_id": "zero",
-              "content_offset_seconds": 0,
-              "commenter": { "name": "valid" },
-              "message": { "body": "must remain" }
-            }
-          ]
-        }
+        [{
+          "data": { "video": { "comments": {
+            "pageInfo": { "hasNextPage": false },
+            "edges": [
+              {
+                "cursor": "c1",
+                "node": {
+                  "id": "overflow",
+                  "contentOffsetSeconds": 922337203685.4776,
+                  "commenter": { "login": "invalid" },
+                  "message": { "body": "must be rejected" }
+                }
+              },
+              {
+                "cursor": "c2",
+                "node": {
+                  "id": "zero",
+                  "contentOffsetSeconds": 0,
+                  "commenter": { "login": "valid" },
+                  "message": { "body": "must remain" }
+                }
+              }
+            ]
+          } } }
+        }]
         """);
         var replay = new ReplaySessionInfo(
             PlatformKind.Twitch,
@@ -417,30 +355,11 @@ internal static class InfrastructureRuntimeTestCatalog
             true,
             "");
 
-        var messages = ReplayChatProvider.ReadTwitchDownloaderMessages(document.RootElement, replay);
+        var page = TwitchVodChatFetcher.ReadPage(document.RootElement, replay);
 
-        Assert.Equal(1, messages.Count);
-        Assert.Equal("zero", messages[0].Message.MessageId);
-        Assert.Equal(TimeSpan.Zero, messages[0].Offset);
-        return Task.CompletedTask;
-    }
-
-    private static Task ReplayChatRejectsUnsafeTwitchVodCacheIds()
-    {
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Twitch,
-            "channel",
-            "https://www.twitch.tv/videos/1",
-            "../outside-cache",
-            DateTimeOffset.UtcNow,
-            TimeSpan.FromHours(1),
-            true,
-            "");
-
-        var result = ReplayChatProvider.LoadTwitchChat(replay);
-
-        Assert.Equal(false, result.IsAvailable);
-        Assert.Contains("valid numeric VOD ID", result.UnavailableReason);
+        Assert.Equal(1, page.Messages.Count);
+        Assert.Equal("zero", page.Messages[0].Message.MessageId);
+        Assert.Equal(TimeSpan.Zero, page.Messages[0].Offset);
         return Task.CompletedTask;
     }
 
@@ -509,11 +428,9 @@ internal static class InfrastructureRuntimeTestCatalog
     private static async Task ExternalInputAndLifecycleBoundariesAreEnforcedAsync()
     {
         await ValidatedReplayRejectsHiddenRedirectsAsync();
-        await KickReplayDateBoundariesDoNotOverflowAsync();
         await TwitchChatDoesNotDuplicateUserAgentAsync();
         await KickTokenExpiryBoundaryDoesNotOverflowAsync();
         await LiveChatSupervisorRecoversFromNonFiniteJitterAsync();
-        await ReplayChatRejectsUnsafeTwitchVodCacheIds();
         await EventSubInputIsBounded();
     }
 

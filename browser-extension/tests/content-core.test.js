@@ -21,6 +21,12 @@ function loadCore() {
   return context.StreamlinkVlcStudioContentCore;
 }
 
+const EXTENSION_ID = "streamlink-vlc-studio-test-extension";
+
+function twitchSender(url = "https://www.twitch.tv/xqc") {
+  return { id: EXTENSION_ID, tab: { id: 7 }, origin: new URL(url).origin, url };
+}
+
 function loadBackground(overrides = {}) {
   let messageListener = null;
   const context = {
@@ -37,6 +43,7 @@ function loadBackground(overrides = {}) {
     },
     chrome: {
       runtime: {
+        id: EXTENSION_ID,
         onMessage: {
           addListener(listener) {
             messageListener = listener;
@@ -144,7 +151,7 @@ test("background capture posts the URL and returns the desktop response", async 
   });
 
   const response = await new Promise(resolve => {
-    assert.equal(listener({ type: "capture-stream", url: "https://www.twitch.tv/xqc" }, {}, resolve), true);
+    assert.equal(listener({ type: "capture-stream", url: "https://www.twitch.tv/xqc" }, twitchSender(), resolve), true);
   });
 
   assert.equal(request.url, "http://127.0.0.1:39179/capture");
@@ -175,7 +182,7 @@ test("background capture aborts a stalled desktop request", async () => {
   });
 
   const responsePromise = new Promise(resolve => {
-    assert.equal(listener({ type: "capture-stream", url: "https://kick.com/xqc" }, {}, resolve), true);
+    assert.equal(listener({ type: "capture-stream", url: "https://kick.com/xqc" }, twitchSender("https://kick.com/xqc"), resolve), true);
   });
   assert.equal(typeof fireTimeout, "function");
   fireTimeout();
@@ -189,9 +196,9 @@ test("background capture aborts a stalled desktop request", async () => {
 
 test("background ignores unrelated messages", () => {
   const listener = loadBackground();
-  assert.equal(listener(null, {}, () => {}), false);
-  assert.equal(listener({ type: "other", url: "https://kick.com/xqc" }, {}, () => {}), false);
-  assert.equal(listener({ type: "capture-stream", url: 123 }, {}, () => {}), false);
+  assert.equal(listener(null, twitchSender(), () => {}), false);
+  assert.equal(listener({ type: "other", url: "https://kick.com/xqc" }, twitchSender(), () => {}), false);
+  assert.equal(listener({ type: "capture-stream", url: 123 }, twitchSender(), () => {}), false);
 });
 
 test("background rejects invalid and non-canonical channel URLs", async () => {
@@ -204,10 +211,31 @@ test("background rejects invalid and non-canonical channel URLs", async () => {
     " https://www.twitch.tv/xqc"
   ]) {
     const response = await new Promise(resolve => {
-      assert.equal(listener({ type: "capture-stream", url }, {}, resolve), true);
+      assert.equal(listener({ type: "capture-stream", url }, twitchSender(), resolve), true);
     });
     assert.equal(response.ok, false);
     assert.equal(response.status, 400);
+  }
+});
+
+test("background rejects capture requests from untrusted senders", async () => {
+  const listener = loadBackground();
+
+  const senders = [
+    {},
+    { id: "some-other-extension", tab: { id: 7 }, origin: "https://www.twitch.tv", url: "https://www.twitch.tv/xqc" },
+    { id: EXTENSION_ID, origin: "https://www.twitch.tv", url: "https://www.twitch.tv/xqc" },
+    { id: EXTENSION_ID, tab: { id: 7 }, origin: "https://evil.example", url: "https://evil.example/xqc" }
+  ];
+
+  for (const sender of senders) {
+    const response = await new Promise(resolve => {
+      assert.equal(
+        listener({ type: "capture-stream", url: "https://www.twitch.tv/xqc" }, sender, resolve),
+        true);
+    });
+    assert.equal(response.ok, false);
+    assert.equal(response.status, 403);
   }
 });
 
@@ -386,8 +414,15 @@ function loadShippedContentController(initialUrl) {
   let nextTimerId = 1;
 
   class FakeAnchor {
-    constructor(href) {
-      this.href = href;
+    constructor(rawHref, baseUrl) {
+      // Mirrors a real anchor: getAttribute("href") returns the literal markup value
+      // while .href is the value resolved against the document URL.
+      this.rawHref = rawHref;
+      this.href = new URL(rawHref, baseUrl).href;
+    }
+
+    getAttribute(name) {
+      return name === "href" ? this.rawHref : null;
     }
   }
 
@@ -505,7 +540,7 @@ function loadShippedContentController(initialUrl) {
       documentListeners.get(name)?.(event);
     },
     createAnchor(href) {
-      return new FakeAnchor(href);
+      return new FakeAnchor(href, context.location.href);
     }
   };
 }
@@ -574,6 +609,71 @@ test("shipped capture handler ignores synthetic clicks", () => {
   });
 
   assert.equal(runtime.sentMessages.length, 0);
+});
+
+function dispatchAnchorClick(runtime, anchor, overrides = {}) {
+  const result = { prevented: false, propagationStopped: false };
+  runtime.dispatchDocumentEvent("click", {
+    isTrusted: true,
+    defaultPrevented: false,
+    button: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...overrides,
+    composedPath: () => [anchor],
+    preventDefault() {
+      result.prevented = true;
+    },
+    stopImmediatePropagation() {
+      result.propagationStopped = true;
+    }
+  });
+
+  return result;
+}
+
+test("shipped capture handler ignores same-document fragment links on a channel page", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/xqc");
+  for (const rawHref of ["#", "#panel-info", "/xqc#panel-info"]) {
+    const outcome = dispatchAnchorClick(runtime, runtime.createAnchor(rawHref));
+    assert.equal(runtime.sentMessages.length, 0, `captured fragment link ${rawHref}`);
+    assert.equal(outcome.prevented, false, `cancelled fragment link ${rawHref}`);
+    assert.equal(outcome.propagationStopped, false, `stopped propagation for ${rawHref}`);
+  }
+});
+
+test("shipped capture handler still captures another channel carrying a fragment", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/xqc");
+  const outcome = dispatchAnchorClick(runtime, runtime.createAnchor("/summit1g#about"));
+
+  assert.equal(runtime.sentMessages.length, 1);
+  assert.equal(runtime.sentMessages[0].url, "https://www.twitch.tv/summit1g");
+  assert.equal(outcome.prevented, true);
+  assert.equal(outcome.propagationStopped, true);
+});
+
+test("shipped capture handler ignores modified and non-primary channel clicks", () => {
+  const runtime = loadShippedContentController("https://www.twitch.tv/directory");
+  const modifiers = [
+    { button: 1 },
+    { button: 2 },
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+    { altKey: true },
+    { defaultPrevented: true },
+    { isTrusted: false }
+  ];
+
+  for (const overrides of modifiers) {
+    const anchor = runtime.createAnchor("https://www.twitch.tv/xqc");
+    const outcome = dispatchAnchorClick(runtime, anchor, overrides);
+    const label = JSON.stringify(overrides);
+    assert.equal(runtime.sentMessages.length, 0, `captured click for ${label}`);
+    assert.equal(outcome.prevented, false, `cancelled click for ${label}`);
+  }
 });
 
 test("shipped capture handler accepts a trusted unmodified channel click", () => {

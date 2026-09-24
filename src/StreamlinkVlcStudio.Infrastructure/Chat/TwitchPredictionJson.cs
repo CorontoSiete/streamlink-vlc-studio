@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Globalization;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
@@ -43,9 +44,7 @@ internal static class TwitchPredictionJson
 
     public static TwitchPrediction? ReadFirstPrediction(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return null;
         }
@@ -160,9 +159,7 @@ internal static class TwitchPredictionJson
 
     private static IReadOnlyList<TwitchPredictionTopPredictor> ReadTopPredictors(JsonElement outcomeElement)
     {
-        if (outcomeElement.ValueKind != JsonValueKind.Object ||
-            !outcomeElement.TryGetProperty("top_predictors", out var predictorsElement) ||
-            predictorsElement.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(outcomeElement, "top_predictors", out var predictorsElement))
         {
             return [];
         }

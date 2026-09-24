@@ -8,15 +8,33 @@ public partial class App : Application
     private const string ActivationEventName = "Local\\StreamlinkVlcStudio.App.Activate";
     private Mutex? singleInstanceMutex;
     private EventWaitHandle? activationEvent;
+    private EventWaitHandle? maintenanceShutdownEvent;
     private CancellationTokenSource? activationSignalCancellation;
     private Task? activationSignalTask;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Helper and maintenance modes must run before WPF, mutex creation, or app services.
+        if (MaintenanceModeRunner.TryRun(e.Args, out var maintenanceExitCode))
+        {
+            Shutdown(maintenanceExitCode);
+            return;
+        }
+
+        if (UpdateHelperRunner.TryRun(e.Args, out var helperExitCode))
+        {
+            Shutdown(helperExitCode);
+            return;
+        }
+
         // Publish the activation endpoint before claiming the mutex. A second
         // launch can otherwise observe the mutex during this short window and
         // have nowhere to signal the primary instance.
         activationEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationEventName);
+        maintenanceShutdownEvent = new EventWaitHandle(
+            false,
+            EventResetMode.AutoReset,
+            MaintenanceModeRunner.ShutdownEventName);
         singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var isPrimaryInstance);
         if (!isPrimaryInstance)
         {
@@ -41,6 +59,7 @@ public partial class App : Application
     {
         activationSignalCancellation?.Cancel();
         activationEvent?.Set();
+        maintenanceShutdownEvent?.Set();
 
         try
         {
@@ -52,6 +71,7 @@ public partial class App : Application
 
         activationSignalCancellation?.Dispose();
         activationEvent?.Dispose();
+        maintenanceShutdownEvent?.Dispose();
 
         if (singleInstanceMutex is not null)
         {
@@ -86,12 +106,12 @@ public partial class App : Application
 
     private void WatchActivationSignals(CancellationToken cancellationToken)
     {
-        if (activationEvent is null)
+        if (activationEvent is null || maintenanceShutdownEvent is null)
         {
             return;
         }
 
-        WaitHandle[] handles = [activationEvent, cancellationToken.WaitHandle];
+        WaitHandle[] handles = [activationEvent, maintenanceShutdownEvent, cancellationToken.WaitHandle];
         while (!cancellationToken.IsCancellationRequested)
         {
             int signaledHandle;
@@ -101,6 +121,18 @@ public partial class App : Application
             }
             catch (ObjectDisposedException)
             {
+                return;
+            }
+
+            if (signaledHandle == 1)
+            {
+                try
+                {
+                    Dispatcher.BeginInvoke(() => Shutdown());
+                }
+                catch (InvalidOperationException) when (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                {
+                }
                 return;
             }
 

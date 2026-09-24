@@ -337,7 +337,7 @@ internal static class NativeOverlayChatFrameRenderer
         var scale = GetVideoScale(normalizedVideoHeight);
 
         if (!string.IsNullOrWhiteSpace(positionStatePath) &&
-            TryReadNativeOverlaySizeFile(
+            NativeOverlaySizing.TryReadSizeFile(
                 $"{positionStatePath}.size",
                 out var savedWidth,
                 out var savedHeight,
@@ -428,51 +428,6 @@ internal static class NativeOverlayChatFrameRenderer
             layout.EffectiveReferenceFontSize);
     }
 
-    private static bool TryReadNativeOverlaySizeFile(
-        string path,
-        out int width,
-        out int height,
-        out bool referenceSize)
-    {
-        width = 0;
-        height = 0;
-        referenceSize = false;
-
-        try
-        {
-            if (!File.Exists(path))
-            {
-                return false;
-            }
-
-            var text = File.ReadAllText(path);
-            var values = text
-                .Split(
-                    new[] { ' ', '\t', '\r', '\n', ':', ',', '{', '}' },
-                    StringSplitOptions.RemoveEmptyEntries)
-                .Select(token => int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-                    ? value
-                    : (int?)null)
-                .Where(value => value.HasValue)
-                .Select(value => value!.Value)
-                .ToArray();
-            if (values.Length < 2)
-            {
-                return false;
-            }
-
-            width = values[0];
-            height = values[1];
-            referenceSize =
-                text.Contains("reference", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("normalized", StringComparison.OrdinalIgnoreCase);
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            return false;
-        }
-    }
 
     private static double GetVideoScale(int videoHeight)
     {

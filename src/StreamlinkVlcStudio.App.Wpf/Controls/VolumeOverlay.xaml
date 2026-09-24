@@ -23,12 +23,17 @@
     <!-- Transient volume OSD. A Popup (own top-level HWND) so it renders above the native
          libVLC video surface (an HwndHost) instead of being occluded by it. -->
     <Popup x:Name="Popup"
-           Placement="Center"
+           Placement="Relative"
            AllowsTransparency="True"
            Focusable="False"
            StaysOpen="True"
            PopupAnimation="Fade">
-        <Border Background="{DynamicResource VolumeOverlayFillBrush}"
+        <Viewbox x:Name="OverlayScale"
+                 Stretch="Uniform"
+                 StretchDirection="DownOnly"
+                 IsHitTestVisible="False">
+        <Border x:Name="OverlayChrome"
+                Background="{DynamicResource VolumeOverlayFillBrush}"
                 BorderBrush="{DynamicResource StudioBorderStrongBrush}"
                 BorderThickness="1"
                 CornerRadius="16"
@@ -60,5 +65,6 @@
                            VerticalAlignment="Center" />
             </StackPanel>
         </Border>
+        </Viewbox>
     </Popup>
 </UserControl>

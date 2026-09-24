@@ -1,5 +1,10 @@
 <Project>
   <PropertyGroup>
+    <VersionPrefix Condition="'$(VersionPrefix)' == ''">1.7.0</VersionPrefix>
+    <Version Condition="'$(Version)' == ''">$(VersionPrefix)</Version>
+    <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">$(VersionPrefix).0</AssemblyVersion>
+    <FileVersion Condition="'$(FileVersion)' == ''">$(VersionPrefix).0</FileVersion>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(VersionPrefix)</InformationalVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RestorePackagesWithLockFile Condition="'$(MSBuildProjectName)' == 'StreamlinkVlcStudio.App.Wpf' Or '$(MSBuildProjectName)' == 'StreamlinkVlcStudio.Tests'">true</RestorePackagesWithLockFile>

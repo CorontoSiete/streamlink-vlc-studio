@@ -901,6 +901,24 @@ public sealed class AnimatedEmoteImage : Image
                 }
 
                 using var bitmap = new SKBitmap(imageInfo);
+                if (frameInfo.RequiredFrame >= 0)
+                {
+                    if (frameInfo.RequiredFrame >= frames.Count ||
+                        frames[frameInfo.RequiredFrame] is not BitmapSource requiredFrame)
+                    {
+                        return null;
+                    }
+
+                    // PriorFrame tells Skia which composed frame is already in the destination.
+                    // Partial GIF/WebP frames need those pixels before Skia applies disposal and
+                    // blending. Use the required frame, which can skip restore-to-previous frames.
+                    requiredFrame.CopyPixels(
+                        Int32Rect.Empty,
+                        bitmap.GetPixels(),
+                        bitmap.ByteCount,
+                        bitmap.RowBytes);
+                }
+
                 var result = codec.GetPixels(
                     imageInfo,
                     bitmap.GetPixels(),

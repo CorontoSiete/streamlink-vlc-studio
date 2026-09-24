@@ -1376,7 +1376,7 @@ internal static partial class ApplicationTestCatalog
             DeleteTempTestDirectory(root);
         }
     }),
-    ("uninstaller script creates IExpress uninstall executable", async () =>
+    ("uninstaller script creates x64 NativeAOT maintenance executable", async () =>
     {
         var root = CreateTempTestDirectory();
         try
@@ -1714,7 +1714,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, firstEngine.Muted);
         Assert.Equal(0, firstEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, firstEngine.AudioState);
-        Assert.Equal(false, firstEngine.AudioTrackEnabled);
+        Assert.Equal(true, firstEngine.AudioTrackEnabled);
         Assert.Equal(false, secondEngine.Muted);
         Assert.Equal(80, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Audible, secondEngine.AudioState);
@@ -1744,7 +1744,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, secondEngine.Muted);
         Assert.Equal(0, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, secondEngine.AudioState);
-        Assert.Equal(false, secondEngine.AudioTrackEnabled);
+        Assert.Equal(true, secondEngine.AudioTrackEnabled);
         Assert.Equal(false, sharedAudio.Muted);
         Assert.Equal(80, sharedAudio.Volume);
         await firstTab.DisposeAsync();
@@ -1814,7 +1814,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, secondEngine.Muted);
         Assert.Equal(0, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, secondEngine.AudioState);
-        Assert.Equal(false, secondEngine.AudioTrackEnabled);
+        Assert.Equal(true, secondEngine.AudioTrackEnabled);
         Assert.Equal(1, new[] { firstEngine, secondEngine }.Count(engine => !engine.Muted && engine.Volume > 0 && engine.AudioTrackEnabled));
 
         await firstTab.DisposeAsync();
@@ -1891,7 +1891,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, secondEngine.Muted);
         Assert.Equal(0, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, secondEngine.AudioState);
-        Assert.Equal(false, secondEngine.AudioTrackEnabled);
+        Assert.Equal(true, secondEngine.AudioTrackEnabled);
 
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
@@ -2029,6 +2029,14 @@ internal static partial class ApplicationTestCatalog
         await firstTab.StartAsync(settings);
         viewModel.SelectedTab = secondTab;
         await secondTab.StartAsync(settings);
+
+        // Let the second tab's start-up audio settle before clearing the log; otherwise a
+        // late "audible" call from StartAsync lands after Clear() and is mistaken for the
+        // first call of the switch being measured.
+        await viewModel.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await TestWait.UntilAsync(
+            () => !sharedAudio.Muted && sharedAudio.AudioState == PlaybackAudioState.Audible,
+            TimeSpan.FromSeconds(2));
 
         audioCalls.Clear();
         viewModel.SelectedTab = firstTab;
@@ -2224,7 +2232,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, firstEngine.Muted);
         Assert.Equal(0, firstEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, firstEngine.AudioState);
-        Assert.Equal(false, firstEngine.AudioTrackEnabled);
+        Assert.Equal(true, firstEngine.AudioTrackEnabled);
         Assert.Equal(false, secondEngine.Muted);
         Assert.Equal(80, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Audible, secondEngine.AudioState);
@@ -2314,7 +2322,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, firstEngine.Muted);
         Assert.Equal(0, firstEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, firstEngine.AudioState);
-        Assert.Equal(false, firstEngine.AudioTrackEnabled);
+        Assert.Equal(true, firstEngine.AudioTrackEnabled);
         Assert.Equal(false, secondEngine.Muted);
         Assert.Equal(80, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Audible, secondEngine.AudioState);
@@ -2408,11 +2416,11 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, secondEngine.Muted);
         Assert.Equal(0, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, secondEngine.AudioState);
-        Assert.Equal(false, secondEngine.AudioTrackEnabled);
+        Assert.Equal(true, secondEngine.AudioTrackEnabled);
         Assert.Equal(true, thirdEngine.Muted);
         Assert.Equal(0, thirdEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, thirdEngine.AudioState);
-        Assert.Equal(false, thirdEngine.AudioTrackEnabled);
+        Assert.Equal(true, thirdEngine.AudioTrackEnabled);
 
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
@@ -2487,7 +2495,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, appEngine.AudioTrackEnabled);
         Assert.Equal(true, pipEngine.Muted);
         Assert.Equal(0, pipEngine.Volume);
-        Assert.Equal(false, pipEngine.AudioTrackEnabled);
+        Assert.Equal(true, pipEngine.AudioTrackEnabled);
 
         viewModel.SelectedTab = pipTab;
         await TestWait.UntilAsync(
@@ -2500,7 +2508,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, pipTab.IsAutoMuted);
         Assert.Equal(true, appEngine.Muted);
         Assert.Equal(0, appEngine.Volume);
-        Assert.Equal(false, appEngine.AudioTrackEnabled);
+        Assert.Equal(true, appEngine.AudioTrackEnabled);
         Assert.Equal(false, pipEngine.Muted);
         Assert.Equal(80, pipEngine.Volume);
         Assert.Equal(true, pipEngine.AudioTrackEnabled);

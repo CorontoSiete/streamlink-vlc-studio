@@ -17,9 +17,7 @@ internal sealed record StreamTabViewModelDependencies
     public int InitialVolume { get; init; } = StreamTabViewModel.DefaultVolume;
     public IViewerCountService? ViewerCountService { get; init; }
     public IReplayResolver? ReplayResolver { get; init; }
-    public IReplayChatProvider? ReplayChatProvider { get; init; }
+    public IVodChatProvider? VodChatProvider { get; init; }
     public TimeSpan? TwitchLiveDvrPromotionPollInterval { get; init; }
-    public IKickChatHistoryProvider? KickChatHistoryProvider { get; init; }
-    public IKickEventSubscriptionService? KickEventSubscriptionService { get; init; }
     public ITwitchSubOnlyVodResolver? TwitchSubOnlyVodResolver { get; init; }
 }

@@ -3,16 +3,10 @@ using System.Windows.Input;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
-internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers)
+internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers, MouseButton? MouseButton = null)
 {
     private const ModifierKeys SupportedModifiers =
         ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
-
-    public static HotkeyGesture FromKeyEvent(KeyEventArgs e)
-    {
-        ArgumentNullException.ThrowIfNull(e);
-        return new HotkeyGesture(GetEventKey(e), NormalizeModifiers(Keyboard.Modifiers));
-    }
 
     public static Key GetEventKey(KeyEventArgs e)
     {
@@ -48,6 +42,19 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers)
             Key.System or Key.ImeProcessed or Key.DeadCharProcessed);
     }
 
+    public static bool IsBindableMouseButton(MouseButton button)
+        => button is System.Windows.Input.MouseButton.XButton1 or System.Windows.Input.MouseButton.XButton2;
+
+    public static HotkeyGesture FromMouseButton(MouseButton button, ModifierKeys modifiers)
+    {
+        if (!IsBindableMouseButton(button))
+        {
+            throw new ArgumentOutOfRangeException(nameof(button));
+        }
+
+        return new HotkeyGesture(Key.None, NormalizeModifiers(modifiers), button);
+    }
+
     public static bool TryParse(string? value, out HotkeyGesture gesture)
     {
         gesture = default;
@@ -71,6 +78,18 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers)
             }
 
             modifiers |= modifier;
+        }
+
+        var mouseButton = tokens[^1].ToUpperInvariant() switch
+        {
+            "MOUSE4" or "XBUTTON1" => System.Windows.Input.MouseButton.XButton1,
+            "MOUSE5" or "XBUTTON2" => System.Windows.Input.MouseButton.XButton2,
+            _ => (MouseButton?)null
+        };
+        if (mouseButton is { } button)
+        {
+            gesture = FromMouseButton(button, modifiers);
+            return true;
         }
 
         if (!Enum.TryParse(tokens[^1], ignoreCase: true, out Key key) ||
@@ -105,9 +124,11 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers)
         Key key,
         ModifierKeys modifiers)
     {
-        var configured = ParseOrDefault(configuredGesture, defaultGesture);
-        return configured.Key == key && configured.Modifiers == NormalizeModifiers(modifiers);
+        return Matches(configuredGesture, defaultGesture, new HotkeyGesture(key, NormalizeModifiers(modifiers)));
     }
+
+    public static bool Matches(string? configuredGesture, string defaultGesture, HotkeyGesture input)
+        => ParseOrDefault(configuredGesture, defaultGesture) == input;
 
     public string Serialize()
     {
@@ -132,7 +153,7 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers)
             parts.Add("Win");
         }
 
-        parts.Add(Key.ToString());
+        parts.Add(MouseButton is null ? Key.ToString() : GetMouseButtonName());
         return string.Join('+', parts);
     }
 
@@ -159,9 +180,16 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers)
             parts.Add("Win");
         }
 
-        parts.Add(GetKeyDisplayName(Key));
+        parts.Add(MouseButton is null ? GetKeyDisplayName(Key) : GetMouseButtonName());
         return string.Join(" + ", parts);
     }
+
+    private string GetMouseButtonName() => MouseButton switch
+    {
+        System.Windows.Input.MouseButton.XButton1 => "Mouse4",
+        System.Windows.Input.MouseButton.XButton2 => "Mouse5",
+        _ => throw new InvalidOperationException("The mouse button is not bindable.")
+    };
 
     private static bool TryParseModifier(string value, out ModifierKeys modifier)
     {

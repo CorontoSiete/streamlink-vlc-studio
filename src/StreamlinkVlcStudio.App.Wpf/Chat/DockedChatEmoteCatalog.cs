@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Infrastructure.Http;
@@ -18,14 +19,16 @@ internal sealed class DockedChatEmoteCatalog
     private readonly Dictionary<string, HashSet<string>> emoteKeysByCatalogScope = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LinkedListNode<string>> messageEmoteNodes = new(StringComparer.Ordinal);
     private readonly LinkedList<string> messageEmoteLru = [];
+    private readonly ConditionalWeakTable<ChatMessage, object> registeredMessages = new();
     private readonly CatalogLoadCoordinator loadCoordinator;
-    private int catalogChangedQueued;
+    private readonly CatalogChangeNotifier catalogChangeNotifier;
 
     public static DockedChatEmoteCatalog Shared { get; } = new();
 
     internal DockedChatEmoteCatalog()
     {
         loadCoordinator = new CatalogLoadCoordinator(scopeEvicted: EvictCatalogScope);
+        catalogChangeNotifier = new CatalogChangeNotifier(this);
     }
 
     public event EventHandler? CatalogChanged;
@@ -54,10 +57,45 @@ internal sealed class DockedChatEmoteCatalog
 
     public void EnsureForMessage(ChatMessage message)
     {
-        if (message.Emotes is { Count: > 0 })
+        if (RegisterMessageEmotes(message))
         {
+            QueueCatalogChanged();
+        }
+
+        if (message.Platform != PlatformKind.Twitch)
+        {
+            return;
+        }
+
+        EnsureGlobalLoaded();
+        if (!string.IsNullOrWhiteSpace(message.RoomId))
+        {
+            EnsureTwitchChannelLoaded(message.RoomId, message.Channel);
+        }
+    }
+
+    private bool RegisterMessageEmotes(ChatMessage message)
+    {
+        if (message.Emotes is not { Count: > 0 } messageEmotes)
+        {
+            return false;
+        }
+
+        lock (sync)
+        {
+            if (registeredMessages.TryGetValue(message, out _))
+            {
+                return false;
+            }
+
+            // A message can be rendered by multiple controls and again after a catalog
+            // notification. Learn its emotes once: replaying older message URLs here
+            // would make colliding codes continually replace each other and notify.
+            // Weak identity tracking does not retain chat history or conflate records
+            // that have equal values but arrived as separate messages.
+            registeredMessages.Add(message, new object());
             var changed = false;
-            foreach (var emote in message.Emotes)
+            foreach (var emote in messageEmotes)
             {
                 if (!string.IsNullOrWhiteSpace(emote.ImageUrl))
                 {
@@ -71,21 +109,7 @@ internal sealed class DockedChatEmoteCatalog
                 }
             }
 
-            if (changed)
-            {
-                QueueCatalogChanged();
-            }
-        }
-
-        if (message.Platform != PlatformKind.Twitch)
-        {
-            return;
-        }
-
-        EnsureGlobalLoaded();
-        if (!string.IsNullOrWhiteSpace(message.RoomId))
-        {
-            EnsureTwitchChannelLoaded(message.RoomId, message.Channel);
+            return changed;
         }
     }
 
@@ -185,19 +209,7 @@ internal sealed class DockedChatEmoteCatalog
         return new CatalogLoadResult(succeeded, changed);
     }
 
-    private void QueueCatalogChanged()
-    {
-        if (Interlocked.Exchange(ref catalogChangedQueued, 1) != 0)
-        {
-            return;
-        }
-
-        _ = Task.Run(() =>
-        {
-            Interlocked.Exchange(ref catalogChangedQueued, 0);
-            CatalogLoadCoordinator.RaiseSafely(CatalogChanged, this);
-        });
-    }
+    private void QueueCatalogChanged() => catalogChangeNotifier.Queue(() => CatalogChanged);
 
     private async Task<CatalogLoadResult> LoadBttvAsync(
         string url,

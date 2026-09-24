@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -254,44 +255,26 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         return new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
     }
 
-    private async Task EnrichTwitchProfileImagesAsync(
+    private Task EnrichTwitchProfileImagesAsync(
         List<FollowedLiveStream> streams,
         string accessToken,
         string clientId,
         CancellationToken cancellationToken)
     {
-        if (streams.Count == 0)
-        {
-            return;
-        }
-
-        try
-        {
-            var profileImages = await TwitchProfileImageLookup.GetAsync(
-                httpClient,
-                accessToken,
-                clientId,
-                streams.Select(stream => stream.Channel),
-                cancellationToken).ConfigureAwait(false);
-            for (var index = 0; index < streams.Count; index++)
+        return TwitchProfileImageLookup.EnrichAsync(
+            httpClient,
+            streams,
+            stream => stream.Channel,
+            // Followed cards can already carry an image from the followed-channel payload.
+            (stream, profileImage) => stream with
             {
-                if (profileImages.TryGetValue(streams[index].Channel, out var profileImage))
-                {
-                    streams[index] = streams[index] with
-                    {
-                        ProfileImageUrl = FirstNonEmpty(streams[index].ProfileImageUrl, profileImage)
-                    };
-                }
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Followed", "Twitch profile images could not be loaded.", ex);
-        }
+                ProfileImageUrl = FirstNonEmpty(stream.ProfileImageUrl, profileImage)
+            },
+            accessToken,
+            clientId,
+            logger,
+            "Followed",
+            cancellationToken);
     }
 
     private async Task EnrichKickProfileImagesAsync(
@@ -340,9 +323,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
     private static IEnumerable<FollowedLiveStream> ReadTwitchStreams(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -355,7 +336,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 continue;
             }
 
-            if (!TryCreateTarget(PlatformKind.Twitch, login, out var target))
+            if (!StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var target))
             {
                 continue;
             }
@@ -383,9 +364,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         JsonElement root,
         IDictionary<string, string>? broadcasterUserIds = null)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -411,7 +390,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 continue;
             }
 
-            if (!TryCreateTarget(PlatformKind.Kick, slug, out var target))
+            if (!StreamInputParser.TryFromChannel(PlatformKind.Kick, slug, out var target))
             {
                 continue;
             }
@@ -502,10 +481,12 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             }
             else
             {
-                if (!TryCreateTarget(PlatformKind.Kick, candidate, out target))
+                if (!StreamInputParser.TryFromChannel(PlatformKind.Kick, candidate, out var channelTarget))
                 {
                     continue;
                 }
+
+                target = channelTarget;
             }
 
             if (seen.Add(target.Channel))
@@ -515,20 +496,6 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         }
 
         return normalized;
-    }
-
-    private static bool TryCreateTarget(PlatformKind platform, string channel, out StreamTarget target)
-    {
-        try
-        {
-            target = StreamInputParser.FromChannel(platform, channel);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            target = null!;
-            return false;
-        }
     }
 
     private static DateTimeOffset? FirstDateTimeOffset(JsonElement element, params string[] propertyNames)

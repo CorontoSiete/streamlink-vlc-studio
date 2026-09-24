@@ -309,7 +309,7 @@ public sealed partial class ReplayResolver : IReplayResolver
             document = await twitchGraphQlTransport.SendAsync(
                 BuildTwitchGraphQlArchiveVideosPayload(channel),
                 TwitchVodDownloaderClientId,
-                CreateTwitchGraphQlDeviceId(),
+                TwitchGraphQlTransport.CreateDeviceId(),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (TwitchGraphQlHttpException ex)
@@ -703,9 +703,7 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static TwitchLiveStreamInfo? ReadTwitchLiveStream(JsonElement root, string channel)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return null;
         }
@@ -741,9 +739,7 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static IReadOnlyList<TwitchVodInfo> ReadTwitchArchiveVods(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return [];
         }
@@ -1100,14 +1096,9 @@ public sealed partial class ReplayResolver : IReplayResolver
         return Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(hashInput))).ToLowerInvariant()[..20];
     }
 
-    private static string CreateTwitchGraphQlDeviceId() =>
-        Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-
     public static KickLiveStreamInfo? ReadKickLiveStream(JsonElement root, string channel)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return null;
         }

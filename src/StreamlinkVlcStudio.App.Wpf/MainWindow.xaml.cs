@@ -36,6 +36,7 @@ using StreamlinkVlcStudio.Infrastructure.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Updates;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 using StreamlinkVlcStudio.Infrastructure.Viewers;
+using StreamlinkVlcStudio.Infrastructure.Vod;
 using StreamlinkVlcStudio.App.Wpf.Themes;
 using static StreamlinkVlcStudio.App.Wpf.WindowInteropHelpers;
 
@@ -57,8 +58,7 @@ public partial class MainWindow : Window
     private const int WmRightButtonUp = 0x0205;
     private const int WmGetMinMaxInfo = 0x0024;
     private const int WmAppTrayIcon = 0x8001;
-    private const int SmCxDoubleClick = 36;
-    private const int SmCyDoubleClick = 37;
+    private const int WmAppCommand = 0x0319;
     private const int SmCxDrag = 68;
     private const int SmCyDrag = 69;
     private const int VkLeftButton = 0x01;
@@ -128,12 +128,8 @@ public partial class MainWindow : Window
     private MainViewModel? viewModel;
     private ISettingsService? settingsService;
     private IAppLogger? appLogger;
-    private KickOfficialChatReplayStore? kickOfficialChatReplayStore;
-    private ReplayChatProvider? replayChatProvider;
-    private KickChatHistoryProvider? kickChatHistoryProvider;
     private BrowserCaptureServer? browserCaptureServer;
-    private KickWebhookChatServer? kickWebhookChatServer;
-    private KickEventSubscriptionService? kickEventSubscriptionService;
+    private TwitchMutedVodPlaybackGateway? twitchMutedVodPlaybackGateway;
     private ToastLiveNotificationService? liveNotificationService;
     private LowLevelMouseHookPump? mouseHookPump;
     private DispatcherTimer? videoReorderPollTimer;
@@ -160,9 +156,7 @@ public partial class MainWindow : Window
     private bool dockedChatManualScrollOverride;
     private bool dockedChatScrollThumbDragging;
     private bool dockedChatAnchorRestorePending;
-    private long lastVideoLeftButtonDownAt = long.MinValue;
-    private int lastVideoLeftButtonDownX;
-    private int lastVideoLeftButtonDownY;
+    private readonly DoubleClickTracker videoDoubleClickTracker = new();
     private object? dockedChatAnchorItem;
     private FrameworkElement? tabDetachDragSource;
     private StreamTabViewModel? tabDetachDragTab;
@@ -182,11 +176,8 @@ public partial class MainWindow : Window
     private bool videoReorderPollLeftButtonWasPressed;
     private bool tabStripReorderDragReordered;
     private bool tabDetachDragStartedWithControlModifier;
-    private bool replaySeekPointerCommitPending;
     private volatile bool hasActiveLowLevelMouseMoveRoute;
-    private readonly SemaphoreSlim kickWebhookLifecycleGate = new(1, 1);
     private readonly bool setupRequested;
-    private int kickWebhookActiveSettingsPort = -1;
     private double dockedChatAnchorTop;
     private long homeAutoScrollLastTickTimestamp;
     private Cursor? homeAutoScrollPreviousCursor;
@@ -210,6 +201,7 @@ public partial class MainWindow : Window
         this.setupRequested = setupRequested;
         this.windowHitTester = windowHitTester ?? throw new ArgumentNullException(nameof(windowHitTester));
         InitializeComponent();
+        PlaybackHost.SizeChanged += (_, _) => UpdateResponsiveLayout();
         ApplyWindowChromeHitTestState();
         ((INotifyCollectionChanged)DockedChatListBox.Items).CollectionChanged += DockedChatItemsOnCollectionChanged;
         DockedChatListBox.Loaded += (_, _) =>
@@ -230,20 +222,13 @@ public partial class MainWindow : Window
         Activated += MainWindowActivated;
         StateChanged += MainWindowStateChanged;
         PreviewMouseDown += MainWindowPreviewMouseDown;
+        PreviewMouseUp += MainWindowPreviewMouseUp;
         PreviewGotKeyboardFocus += MainWindowPreviewGotKeyboardFocus;
         PreviewMouseMove += MainWindowPreviewMouseMove;
         PreviewMouseLeftButtonUp += MainWindowPreviewMouseLeftButtonUp;
         PreviewKeyDown += MainWindowPreviewKeyDown;
         Closing += MainWindowClosing;
         Closed += MainWindowClosed;
-
-        // The replay seek slider has IsMoveToPointEnabled, so its built-in class handler marks
-        // PreviewMouseLeftButtonDown as handled when the track is clicked. Register with
-        // handledEventsToo so begin-preview still arms a click-to-seek, not just thumb drags.
-        ReplaySeekSlider.AddHandler(
-            PreviewMouseLeftButtonDownEvent,
-            new MouseButtonEventHandler(ReplaySeekSlider_BeginPreview),
-            handledEventsToo: true);
     }
 
     internal static ITaskbarFullscreenController TaskbarFullscreenController
@@ -267,9 +252,23 @@ public partial class MainWindow : Window
 
     private IntPtr WindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == WmAppCommand && TryExecuteNativeMouseAppCommand(wParam, lParam))
+        {
+            handled = true;
+            return new IntPtr(1);
+        }
+
         if (msg == WmGetMinMaxInfo)
         {
             ApplyMonitorMaxInfo(hwnd, lParam, useFullMonitor: fullscreen && fullscreenMode != FullscreenMode.Theatre);
+            if (lParam != IntPtr.Zero)
+            {
+                // The layout has no artificial minimum. Keep native tracking in sync
+                // instead of letting Windows and WPF disagree about the client size.
+                var limits = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+                limits.MinTrackSize = new WindowPoint { X = 1, Y = 1 };
+                Marshal.StructureToPtr(limits, lParam, false);
+            }
             handled = true;
         }
         else if (msg == WmTaskbarCreated && ShouldMarkTaskbarFullscreen())
@@ -324,6 +323,7 @@ public partial class MainWindow : Window
 
     private void MainWindowActivated(object? sender, EventArgs e)
     {
+        viewModel?.ActivateMainWindowAudio();
         if (ShouldMarkTaskbarFullscreen())
         {
             MarkTaskbarFullscreen();
@@ -332,85 +332,147 @@ public partial class MainWindow : Window
 
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (Keyboard.FocusedElement is HotkeyRecorderButton { IsCapturingInput: true })
+        var input = new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers);
+        if (TryExecuteHotkey(input, Keyboard.FocusedElement, e.IsRepeat))
         {
-            return;
+            e.Handled = true;
+        }
+    }
+
+    internal bool TryExecuteHotkey(HotkeyGesture input, IInputElement? focusedElement, bool isRepeat = false)
+    {
+        if (focusedElement is HotkeyRecorderButton { IsCapturingInput: true })
+        {
+            return false;
         }
 
         var hotkeys = viewModel?.Settings.Hotkeys ?? DefaultHotkeys;
-        var key = HotkeyGesture.GetEventKey(e);
-        var modifiers = Keyboard.Modifiers;
         var dismissShortcutPressed = HotkeyBindingPolicy.Matches(
-            hotkeys,
-            AppHotkeyAction.DismissFullscreenOrAutoScroll,
-            key,
-            modifiers);
+            hotkeys, AppHotkeyAction.DismissFullscreenOrAutoScroll, input);
         var dismissShortcutSuppressed = HotkeyBindingPolicy.ShouldSuppressForTextInput(
-            hotkeys,
-            AppHotkeyAction.DismissFullscreenOrAutoScroll,
-            Keyboard.FocusedElement);
-
+            hotkeys, AppHotkeyAction.DismissFullscreenOrAutoScroll, focusedElement);
         if (homeAutoScrollViewer is not null && dismissShortcutPressed && !dismissShortcutSuppressed)
         {
             ClearHomeAutoScroll();
-            e.Handled = true;
-            return;
+            return true;
         }
 
         if (fullscreen && dismissShortcutPressed && !dismissShortcutSuppressed)
         {
             ExitFullscreenMode();
-            e.Handled = true;
-            return;
+            return true;
         }
 
-        if (ReplaySeekBarShortcutKeyPolicy.ShouldHandle(key, modifiers, hotkeys) &&
-            !HotkeyBindingPolicy.ShouldSuppressForTextInput(
-                hotkeys,
-                AppHotkeyAction.ToggleReplaySeekBar,
-                Keyboard.FocusedElement))
+        if (HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.ToggleReplaySeekBar, input) &&
+            !HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, AppHotkeyAction.ToggleReplaySeekBar, focusedElement))
         {
             TryExecuteReplaySeekBarShortcut(viewModel);
-            e.Handled = true;
-            return;
+            return true;
         }
 
-        var tabAction = HotkeyBindingPolicy.Matches(
-            hotkeys,
-            AppHotkeyAction.PreviousTab,
-            key,
-            modifiers)
+        var tabAction = HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.PreviousTab, input)
             ? AppHotkeyAction.PreviousTab
-            : HotkeyBindingPolicy.Matches(
-                hotkeys,
-                AppHotkeyAction.NextTab,
-                key,
-                modifiers)
+            : HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.NextTab, input)
                 ? AppHotkeyAction.NextTab
                 : (AppHotkeyAction?)null;
-        if (tabAction is null ||
-            HotkeyBindingPolicy.ShouldSuppressForTextInput(
-                hotkeys,
-                tabAction.Value,
-                Keyboard.FocusedElement) ||
-            !TabNavigationKeyPolicy.CanNavigate(
-                fullscreen,
-                fullscreenMode != FullscreenMode.None,
-                viewModel?.IsSettingsOpen == true))
+        if (tabAction is not null &&
+            !HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, tabAction.Value, focusedElement) &&
+            TabNavigationKeyPolicy.CanNavigate(
+                fullscreen, fullscreenMode != FullscreenMode.None, viewModel?.IsSettingsOpen == true))
         {
-            return;
+            var direction = tabAction == AppHotkeyAction.PreviousTab ? -1 : 1;
+            if (viewModel?.SelectAdjacentTab(direction) == true)
+            {
+                if (fullscreen)
+                {
+                    ApplyFullscreenSelectedTabState();
+                }
+
+                return true;
+            }
+
+            // Preserve older custom tab bindings that overlap a newly added default.
+            return false;
         }
 
-        var direction = tabAction == AppHotkeyAction.PreviousTab ? -1 : 1;
-        if (viewModel?.SelectAdjacentTab(direction) == true)
+        return TryExecutePlaybackHotkey(input, focusedElement, isRepeat) ||
+            TryExecuteGoBackHotkey(input, focusedElement, isRepeat);
+    }
+
+    internal bool TryExecuteGoBackHotkey(
+        HotkeyGesture input,
+        IInputElement? focusedElement,
+        bool isRepeat = false)
+    {
+        if (viewModel is null ||
+            focusedElement is HotkeyRecorderButton { IsCapturingInput: true } ||
+            !HotkeyBindingPolicy.Matches(viewModel.Settings.Hotkeys, AppHotkeyAction.GoBack, input) ||
+            HotkeyBindingPolicy.ShouldSuppressForTextInput(viewModel.Settings.Hotkeys, AppHotkeyAction.GoBack, focusedElement) ||
+            !viewModel.GoBackCommand.CanExecute(null))
+        {
+            return false;
+        }
+
+        if (!isRepeat)
         {
             if (fullscreen)
             {
-                ApplyFullscreenSelectedTabState();
+                ExitFullscreenMode();
             }
 
-            e.Handled = true;
+            viewModel.GoBackCommand.Execute(null);
         }
+
+        return true;
+    }
+
+    internal bool TryExecutePlaybackHotkey(
+        Key key,
+        ModifierKeys modifiers,
+        IInputElement? focusedElement,
+        bool isRepeat = false)
+        => TryExecutePlaybackHotkey(new HotkeyGesture(key, modifiers), focusedElement, isRepeat);
+
+    private bool TryExecutePlaybackHotkey(HotkeyGesture input, IInputElement? focusedElement, bool isRepeat)
+    {
+        if (viewModel is null || viewModel.IsSettingsOpen ||
+            focusedElement is HotkeyRecorderButton { IsCapturingInput: true })
+        {
+            return false;
+        }
+
+        var hotkeys = viewModel.Settings.Hotkeys;
+        if (HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.ToggleMultiStream, input) &&
+            !HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, AppHotkeyAction.ToggleMultiStream, focusedElement))
+        {
+            if (!isRepeat)
+            {
+                viewModel.ToggleMultiStreamCommand.Execute(null);
+            }
+
+            return true;
+        }
+
+        if (viewModel.IsHomeSelected || viewModel.SelectedTab is not { } tab)
+        {
+            return false;
+        }
+
+        var volumeAction = HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.VolumeUp, input)
+            ? AppHotkeyAction.VolumeUp
+            : HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.VolumeDown, input)
+                ? AppHotkeyAction.VolumeDown
+                : (AppHotkeyAction?)null;
+        if (volumeAction is null ||
+            HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, volumeAction.Value, focusedElement))
+        {
+            return false;
+        }
+
+        var direction = volumeAction == AppHotkeyAction.VolumeUp ? 1 : -1;
+        tab.Volume += direction * VolumeOverlay.WheelStep;
+        VolumeOsd.Show(ResolveVolumeOsdTarget(tab), tab.Volume, tab.IsMuted);
+        return true;
     }
 
     internal static bool TryExecuteReplaySeekBarShortcut(MainViewModel? viewModel)
@@ -459,7 +521,8 @@ public partial class MainWindow : Window
     {
         ReleaseNativeOverlayChatInputFocusForWpfTextInput(e.OriginalSource);
 
-        if (TryReturnToBrowseCategoriesFromMouseButton(e.ChangedButton))
+        if (Keyboard.FocusedElement is HotkeyRecorderButton recorder &&
+            recorder.TryCaptureMouseButton(e.ChangedButton, Keyboard.Modifiers))
         {
             e.Handled = true;
             return;
@@ -481,6 +544,64 @@ public partial class MainWindow : Window
     private void MainWindowPreviewGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         ReleaseNativeOverlayChatInputFocusForWpfTextInput(e.NewFocus);
+    }
+
+    private void MainWindowPreviewMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (Keyboard.FocusedElement is HotkeyRecorderButton recorder &&
+            (recorder.TryCaptureMouseButton(e.ChangedButton, Keyboard.Modifiers, isRelease: true) ||
+                recorder.IsCapturingInput && HotkeyGesture.IsBindableMouseButton(e.ChangedButton)))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (TryExecuteMouseHotkey(e.ChangedButton, Keyboard.Modifiers, Keyboard.FocusedElement))
+        {
+            e.Handled = true;
+        }
+    }
+
+    internal bool TryExecuteNativeMouseAppCommand(IntPtr sourceWindow, IntPtr lParam)
+    {
+        // Native video children forward unhandled side-button releases as WM_APPCOMMAND.
+        // WPF content handles PreviewMouseUp itself. Using the native message queue avoids
+        // dropping a press when the UI is busier than the low-level hook's timeout.
+        if (!IsActive || windowHandle == IntPtr.Zero || GetForegroundWindow() != windowHandle ||
+            sourceWindow == windowHandle ||
+            !WindowHitTestPolicy.IsWindowOwnedBy(windowHitTester, windowHandle, sourceWindow, includeOwnedPopups: false))
+        {
+            return false;
+        }
+
+        var value = unchecked((uint)lParam.ToInt64());
+        var commandAndDevice = value >> 16;
+        if ((commandAndDevice & 0xF000) != 0x8000) // FAPPCOMMAND_MOUSE
+        {
+            return false;
+        }
+
+        var button = (commandAndDevice & 0x0FFF) switch
+        {
+            1 => MouseButton.XButton1, // APPCOMMAND_BROWSER_BACKWARD
+            2 => MouseButton.XButton2, // APPCOMMAND_BROWSER_FORWARD
+            _ => (MouseButton?)null
+        };
+        if (button is not { } sideButton)
+        {
+            return false;
+        }
+
+        if (Keyboard.FocusedElement is HotkeyRecorderButton recorder &&
+            (recorder.TryCaptureMouseButton(sideButton, Keyboard.Modifiers, isRelease: true) || recorder.IsCapturingInput))
+        {
+            return true;
+        }
+
+        var modifiers = Keyboard.Modifiers & (ModifierKeys.Alt | ModifierKeys.Windows);
+        if ((value & 0x0008) != 0) modifiers |= ModifierKeys.Control;
+        if ((value & 0x0004) != 0) modifiers |= ModifierKeys.Shift;
+        return TryExecuteMouseHotkey(sideButton, modifiers, Keyboard.FocusedElement);
     }
 
     private void ReleaseNativeOverlayChatInputFocusForWpfTextInput(object? candidate)
@@ -507,26 +628,19 @@ public partial class MainWindow : Window
                 FindVisualParent<PasswordBox>(dependencyObject) is not null);
     }
 
-    internal static bool IsBrowseBackMouseButton(MouseButton changedButton)
+    internal bool TryExecuteMouseHotkey(MouseButton changedButton, ModifierKeys modifiers, IInputElement? focusedElement)
     {
-        return changedButton == MouseButton.XButton1;
-    }
-
-    private bool TryReturnToBrowseCategoriesFromMouseButton(MouseButton changedButton)
-    {
-        if (!IsBrowseBackMouseButton(changedButton))
+        if (!HotkeyGesture.IsBindableMouseButton(changedButton))
         {
             return false;
         }
 
-        var command = viewModel?.ReturnToBrowseCategoriesCommand;
-        if (command?.CanExecute(null) != true)
+        if (focusedElement is HotkeyRecorderButton { IsCapturingInput: true } recorder)
         {
-            return false;
+            return recorder.TryCaptureMouseButton(changedButton, modifiers);
         }
 
-        command.Execute(null);
-        return true;
+        return TryExecuteHotkey(HotkeyGesture.FromMouseButton(changedButton, modifiers), focusedElement);
     }
 
     private void MainWindowPreviewMouseMove(object sender, MouseEventArgs e)
@@ -875,16 +989,15 @@ public partial class MainWindow : Window
         settings.VlcDirectory ??= ExecutableResolver.FindVlcDirectory();
 
         var streamlinkService = new StreamlinkService(logger);
-        var playbackFactory = new LibVlcPlaybackEngineFactory(logger, settings.Chat);
+        // Twitch VODs with muted segments freeze libVLC; the gateway routes only those through a
+        // local repair proxy. It outlives the tabs, so it is disposed after the view model.
+        var mutedVodPlaybackGateway = new TwitchMutedVodPlaybackGateway(logger);
+        twitchMutedVodPlaybackGateway = mutedVodPlaybackGateway;
+        var playbackFactory = new LibVlcPlaybackEngineFactory(logger, settings.Chat, mutedVodPlaybackGateway);
         var chatFactory = new ChatClientFactory(settings, logger);
         var viewerCountService = new ViewerCountService(logger);
         var replayResolver = new ReplayResolver(logger, streamlinkService);
-        var kickOfficialChatReplayStore = new KickOfficialChatReplayStore(logger);
-        this.kickOfficialChatReplayStore = kickOfficialChatReplayStore;
-        var replayChatProvider = new ReplayChatProvider(kickOfficialChatReplayStore, logger);
-        this.replayChatProvider = replayChatProvider;
-        var kickChatHistoryProvider = new KickChatHistoryProvider(logger);
-        this.kickChatHistoryProvider = kickChatHistoryProvider;
+        var vodChatProvider = new VodChatProvider(logger);
         var followedStreamsService = new FollowedStreamsService(logger);
         var streamMetadataService = new StreamMetadataService(logger);
         var streamSearchService = new StreamSearchService(logger, streamlinkService);
@@ -892,12 +1005,9 @@ public partial class MainWindow : Window
         var twitchSubOnlyVodResolver = new TwitchSubOnlyVodResolver(logger);
         var twitchClipService = new TwitchClipService();
         var kickVodService = new KickVodService(logger);
-        kickEventSubscriptionService = new KickEventSubscriptionService(
-            logger,
-            settingsPersister: (_, cancellationToken) => settingsService.SaveAsync(settings, cancellationToken));
         var browseService = new BrowseService(logger);
         var liveNotificationService = new ToastLiveNotificationService(logger);
-        var appUpdateService = new GitHubReleaseAppUpdateService(logger);
+        var appUpdateService = new StagedAppUpdateService(logger);
         this.liveNotificationService = liveNotificationService;
         liveNotificationService.Activated += OnLiveNotificationActivated;
 
@@ -914,13 +1024,11 @@ public partial class MainWindow : Window
             FollowedStreamsService = followedStreamsService,
             StreamMetadataService = streamMetadataService,
             ReplayResolver = replayResolver,
-            ReplayChatProvider = replayChatProvider,
+            VodChatProvider = vodChatProvider,
             TwitchVodService = twitchVodService,
             BrowseService = browseService,
-            KickChatHistoryProvider = kickChatHistoryProvider,
             StreamSearchService = streamSearchService,
             KickVodService = kickVodService,
-            KickEventSubscriptionService = kickEventSubscriptionService,
             LiveNotificationService = liveNotificationService,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver,
             TwitchClipService = twitchClipService,
@@ -935,7 +1043,6 @@ public partial class MainWindow : Window
             viewModel.SetStartupWarning(settingsLoadWarning);
         }
         viewModel.Tabs.CollectionChanged += ViewModelTabsCollectionChanged;
-        settings.Chat.PropertyChanged += ChatSettingsOnPropertyChanged;
         DataContext = viewModel;
 
         if (setupRequested || !settings.SetupCompleted)
@@ -958,110 +1065,6 @@ public partial class MainWindow : Window
             browserClickFallbackEnabled = false;
         }
 
-        await ReconcileKickWebhookListenerAsync(settings.Chat);
-    }
-
-    private void ChatSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (viewModel is null ||
-            sender is not ChatSettings settings ||
-            (e.PropertyName != nameof(ChatSettings.KickWebhookListenerEnabled) &&
-                e.PropertyName != nameof(ChatSettings.KickWebhookListenerPort)))
-        {
-            return;
-        }
-
-        _ = ReconcileKickWebhookListenerAsync(settings);
-    }
-
-    private async Task ReconcileKickWebhookListenerAsync(ChatSettings settings)
-    {
-        await kickWebhookLifecycleGate.WaitAsync();
-        try
-        {
-            if (viewModel is null ||
-                appLogger is null ||
-                kickOfficialChatReplayStore is null ||
-                shutdownStarted)
-            {
-                return;
-            }
-
-            var requestedPort = settings.KickWebhookListenerPort;
-            if (!settings.KickWebhookListenerEnabled)
-            {
-                await StopKickWebhookListenerAsync().ConfigureAwait(true);
-                viewModel.SetKickWebhookListenerStatus(
-                    $"Official Kick webhook listener is stopped. Local forwarding target: {viewModel.KickWebhookLocalUrl}");
-                return;
-            }
-
-            if (kickWebhookChatServer is not null &&
-                kickWebhookActiveSettingsPort == requestedPort)
-            {
-                viewModel.SetKickWebhookListenerStatus(
-                    $"Official Kick webhook listener is running at {kickWebhookChatServer.LocalWebhookUrl}");
-                return;
-            }
-
-            await StopKickWebhookListenerAsync().ConfigureAwait(true);
-            var webhookServer = new KickWebhookChatServer(
-                kickOfficialChatReplayStore,
-                appLogger,
-                requestedPort);
-            if (webhookServer.Start())
-            {
-                kickWebhookChatServer = webhookServer;
-                kickWebhookActiveSettingsPort = requestedPort;
-                viewModel.SetKickWebhookListenerStatus(
-                    $"Official Kick webhook listener is running at {webhookServer.LocalWebhookUrl}");
-                return;
-            }
-
-            await webhookServer.DisposeAsync();
-            viewModel.SetKickWebhookListenerStatus(
-                $"Official Kick webhook listener could not start. Check whether port {requestedPort} is already in use.");
-        }
-        catch (Exception ex)
-        {
-            appLogger?.Write(AppLogLevel.Warning, "Chat", "Official Kick webhook listener update failed.", ex);
-            if (!shutdownStarted)
-            {
-                viewModel?.SetKickWebhookListenerStatus(
-                    $"Official Kick webhook listener failed: {ex.Message}");
-            }
-        }
-        finally
-        {
-            kickWebhookLifecycleGate.Release();
-        }
-    }
-
-    private async Task StopKickWebhookListenerAsync()
-    {
-        if (kickWebhookChatServer is null)
-        {
-            kickWebhookActiveSettingsPort = -1;
-            return;
-        }
-
-        var webhookServer = kickWebhookChatServer;
-        kickWebhookChatServer = null;
-        kickWebhookActiveSettingsPort = -1;
-        await webhookServer.DisposeAsync();
-    }
-
-    private async Task StopKickWebhookListenerSerializedAsync()
-    {
-        await kickWebhookLifecycleGate.WaitAsync();
-        try
-        {
-            await StopKickWebhookListenerAsync();
-        }
-        finally
-        {
-            kickWebhookLifecycleGate.Release();
-        }
     }
 
     private async void MainWindowClosing(object? sender, CancelEventArgs e)
@@ -1109,13 +1112,9 @@ public partial class MainWindow : Window
                     browserCaptureServer = null;
                 }
 
-                await StopKickWebhookListenerSerializedAsync().WaitAsync(ShutdownTimeout);
-
-                viewModel.Settings.Chat.PropertyChanged -= ChatSettingsOnPropertyChanged;
                 viewModel.Tabs.CollectionChanged -= ViewModelTabsCollectionChanged;
 
                 await viewModel.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
-                await DisposeKickEventSubscriptionServiceAsync().WaitAsync(ShutdownTimeout);
                 if (settingsService is not null)
                 {
                     await settingsService.SaveAsync(viewModel.Settings).WaitAsync(ShutdownTimeout);
@@ -1129,7 +1128,10 @@ public partial class MainWindow : Window
         }
         finally
         {
-            DisposeReplayProviders();
+            // After the tabs, whose playback engines hold its sessions -- and outside the block
+            // above, so a startup failure (no view model) cannot leak it and a proxy that will not
+            // stop cannot keep the settings from being saved.
+            await DisposeMutedVodPlaybackGatewayAsync();
             await DisposeAppLoggerAsync();
             closeConfirmed = true;
             // Null-conditional: test hosts close this window on a bare STA dispatcher
@@ -1148,7 +1150,6 @@ public partial class MainWindow : Window
 
         if (viewModel is not null)
         {
-            viewModel.Settings.Chat.PropertyChanged -= ChatSettingsOnPropertyChanged;
             viewModel.Tabs.CollectionChanged -= ViewModelTabsCollectionChanged;
         }
 
@@ -1156,12 +1157,6 @@ public partial class MainWindow : Window
         ClearHomeAutoScroll();
         UninstallMouseWheelHook();
         StopVideoReorderPolling();
-        var subscriptionService = kickEventSubscriptionService;
-        kickEventSubscriptionService = null;
-        if (subscriptionService is not null)
-        {
-            _ = subscriptionService.DisposeAsync();
-        }
         if (liveNotificationService is not null)
         {
             liveNotificationService.Activated -= OnLiveNotificationActivated;
@@ -1169,9 +1164,28 @@ public partial class MainWindow : Window
             liveNotificationService = null;
         }
 
-        DisposeReplayProviders();
-
         DisposeTrayIcon();
+    }
+
+    private async Task DisposeMutedVodPlaybackGatewayAsync()
+    {
+        var gateway = twitchMutedVodPlaybackGateway;
+        twitchMutedVodPlaybackGateway = null;
+        if (gateway is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await gateway.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
+        }
+        catch (Exception ex)
+        {
+            // Its connections run on pool threads, so a proxy that will not stop cannot keep the
+            // process alive; record it and let shutdown continue.
+            appLogger?.Write(AppLogLevel.Warning, "Shutdown", "The muted VOD repair proxy did not stop cleanly.", ex);
+        }
     }
 
     private async Task DisposeAppLoggerAsync()
@@ -1192,35 +1206,6 @@ public partial class MainWindow : Window
         catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
         {
             // Shutdown must remain bounded even if the filesystem is no longer writable.
-        }
-    }
-
-    private async Task DisposeKickEventSubscriptionServiceAsync()
-    {
-        var service = kickEventSubscriptionService;
-        kickEventSubscriptionService = null;
-        if (service is not null)
-        {
-            await service.DisposeAsync();
-        }
-    }
-
-    private void DisposeReplayProviders()
-    {
-        replayChatProvider = null;
-
-        var historyProvider = kickChatHistoryProvider;
-        kickChatHistoryProvider = null;
-        if (historyProvider is not null)
-        {
-            try
-            {
-                historyProvider.Dispose();
-            }
-            catch (Exception ex)
-            {
-                appLogger?.Write(AppLogLevel.Warning, "Shutdown", "Failed to dispose Kick chat history provider.", ex);
-            }
         }
     }
 
@@ -2400,7 +2385,7 @@ public partial class MainWindow : Window
         {
             if (viewModel?.Tabs.Contains(activatedTab) == true)
             {
-                viewModel.SelectedTab = activatedTab;
+                viewModel.ActivatePictureInPictureTab(activatedTab);
             }
         };
 
@@ -2949,90 +2934,21 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ReplaySeekSlider_BeginPreview(object sender, MouseButtonEventArgs e)
-    {
-        if (TryGetReplaySeekTab(sender, out var tab, out var slider))
-        {
-            replaySeekPointerCommitPending = true;
-            tab.BeginReplaySeekPreview(slider.Value);
-        }
-    }
-
-    private void ReplaySeekThumb_DragStarted(object sender, DragStartedEventArgs e)
-    {
-        if (TryGetReplaySeekTab(sender, out var tab, out var slider))
-        {
-            replaySeekPointerCommitPending = true;
-            tab.BeginReplaySeekPreview(slider.Value);
-        }
-    }
-
-    private async void ReplaySeekThumb_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        await CommitReplaySeekAsync(sender, requirePointerPreview: true);
-    }
-
-    private async void ReplaySeekSlider_Commit(object sender, MouseButtonEventArgs e)
-    {
-        await CommitReplaySeekAsync(sender, requirePointerPreview: true);
-    }
-
-    private async void ReplaySeekSlider_KeyUp(object sender, KeyEventArgs e)
-    {
-        if (e.Key is not (Key.Left or Key.Right or Key.Home or Key.End or Key.PageUp or Key.PageDown))
-        {
-            return;
-        }
-
-        await CommitReplaySeekAsync(sender);
-    }
-
-    private async Task CommitReplaySeekAsync(object sender, bool requirePointerPreview = false)
-    {
-        if (requirePointerPreview)
-        {
-            if (!replaySeekPointerCommitPending)
-            {
-                return;
-            }
-
-            replaySeekPointerCommitPending = false;
-        }
-
-        if (!TryGetReplaySeekTab(sender, out var tab, out var slider))
-        {
-            return;
-        }
-
-        await tab.CommitReplaySeekPreviewAsync(slider.Value);
-    }
-
-    private bool TryGetReplaySeekTab(object sender, out StreamTabViewModel tab, out Slider slider)
-    {
-        tab = null!;
-        slider = null!;
-        var candidateSlider = sender as Slider;
-        if (candidateSlider is null && sender is DependencyObject dependencyObject)
-        {
-            candidateSlider = FindVisualParent<Slider>(dependencyObject);
-        }
-
-        if (candidateSlider is not { IsEnabled: true } ||
-            viewModel?.SelectedTab is not { } selectedTab)
-        {
-            return false;
-        }
-
-        tab = selectedTab;
-        slider = candidateSlider;
-        return true;
-    }
-
     private void VideoSurface_MouseWheelScrolled(object sender, VideoSurfaceMouseWheelEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: StreamTabViewModel tab } || e.Delta == 0)
         {
             return;
+        }
+
+        if (e.ScreenPoint is { } point)
+        {
+            var screenPoint = new NativePoint((int)point.X, (int)point.Y);
+            if (!IsScreenPointOverVideoContent(tab, screenPoint) ||
+                TryRouteNativeOverlayWheel(tab, screenPoint, e.Delta))
+            {
+                return;
+            }
         }
 
         AdjustVolume(tab, e.Delta);
@@ -3050,6 +2966,11 @@ public partial class MainWindow : Window
 
     private void VideoViewport_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        if (ReplaySeekOverlay.IsReplayOverlayInput(e.OriginalSource))
+        {
+            return;
+        }
+
         if (e.ClickCount == 2 && ToggleStreamFullscreenFromVideoDoubleClick())
         {
             e.Handled = true;
@@ -3385,11 +3306,11 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private bool TryBeginDetachedBottomResizeFromScreenClick(NativePoint screenPoint)
+    private bool TryBeginDetachedResizeFromScreenClick(NativePoint screenPoint)
     {
         foreach (var window in detachedWindows.Values.Distinct().ToArray())
         {
-            if (window.TryBeginBottomResizeFromScreenClick(screenPoint.X, screenPoint.Y))
+            if (window.TryBeginResizeFromScreenClick(screenPoint.X, screenPoint.Y))
             {
                 return true;
             }
@@ -3847,7 +3768,7 @@ public partial class MainWindow : Window
         }
 
         if (!IsScreenPointOverElement(VideoViewport, screenPoint) ||
-            !TryGetVideoCursorPoint(tab, out var videoPoint, out var videoWidth, out var videoHeight) ||
+            !TryGetVideoWheelPoint(tab, screenPoint, out var videoPoint, out var videoWidth, out var videoHeight) ||
             !IsVideoPointInside(videoPoint, videoWidth, videoHeight) ||
             !TryGetNativeOverlayBounds(tab, videoHeight, out var overlayBounds) ||
             !overlayBounds.Contains(videoPoint))
@@ -3949,6 +3870,11 @@ public partial class MainWindow : Window
 
     private StreamTabViewModel? GetVideoTabAtScreenPoint(NativePoint screenPoint)
     {
+        if (ReplaySeekOverlay.IsReplayOverlayWindow(windowHitTester.WindowFromPoint(screenPoint.X, screenPoint.Y)))
+        {
+            return null;
+        }
+
         foreach (var (tab, surface) in videoSurfaces)
         {
             if (tab.IsVideoVisible && IsScreenPointOverElement(surface, screenPoint))
@@ -3962,10 +3888,10 @@ public partial class MainWindow : Window
 
     private bool IsScreenPointOverVideoContent(StreamTabViewModel tab, NativePoint screenPoint)
     {
+        // VideoSurfaceGridPanel already fits this HWND to the video's aspect ratio.
+        // Input must not depend on VLC's native lock or its last sampled cursor.
         return videoSurfaces.TryGetValue(tab, out var surface) &&
-            IsScreenPointOverElement(surface, screenPoint) &&
-            TryGetVideoCursorPoint(tab, out var videoPoint, out var videoWidth, out var videoHeight) &&
-            IsVideoPointInside(videoPoint, videoWidth, videoHeight);
+            IsScreenPointOverElement(surface, screenPoint);
     }
 
     private bool TryGetNativeOverlayBounds(StreamTabViewModel tab, int videoHeight, out VideoRect bounds)
@@ -4007,7 +3933,7 @@ public partial class MainWindow : Window
             ? null
             : $"{tab.NativeOverlayPositionStatePath}.size";
         if (!string.IsNullOrWhiteSpace(sizePath) &&
-            TryReadNativeOverlaySizeFile(sizePath, out var sizeWidth, out var sizeHeight, out var referenceSize))
+            NativeOverlaySizing.TryReadSizeFile(sizePath, out var sizeWidth, out var sizeHeight, out var referenceSize))
         {
             if (referenceSize)
             {
@@ -4047,6 +3973,35 @@ public partial class MainWindow : Window
         }
 
         videoPoint = new Point(x, y);
+        return true;
+    }
+
+    private bool TryGetVideoWheelPoint(
+        StreamTabViewModel tab,
+        NativePoint screenPoint,
+        out Point videoPoint,
+        out int videoWidth,
+        out int videoHeight)
+    {
+        videoPoint = default;
+        videoWidth = 0;
+        videoHeight = 0;
+        if (!videoSurfaces.TryGetValue(tab, out var surface) ||
+            !IsScreenPointOverElement(surface, screenPoint) ||
+            surface.ActualWidth <= 0 || surface.ActualHeight <= 0 ||
+            (!tab.TryGetLastVideoSize(out videoWidth, out videoHeight) &&
+             !tab.TryGetVideoSize(out videoWidth, out videoHeight)))
+        {
+            return false;
+        }
+
+        // Use the wheel event's position even if the pointer moved while WPF was busy.
+        // Dimensions are retained by the existing video-size poller; VLC's native
+        // audio/video lock cannot make a known chat overlay disappear during input.
+        var local = surface.PointFromScreen(new Point(screenPoint.X, screenPoint.Y));
+        videoPoint = new Point(
+            local.X * videoWidth / surface.ActualWidth,
+            local.Y * videoHeight / surface.ActualHeight);
         return true;
     }
 
@@ -4103,55 +4058,6 @@ public partial class MainWindow : Window
         return NativeOverlaySizing.ScaleReferencePixels(videoHeight, value);
     }
 
-    private static int[] ParseIntsFromText(string text)
-    {
-        return text
-            .Split([' ', '\t', '\r', '\n', ':', ',', '{', '}'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(token => int.TryParse(token, out var value) ? value : (int?)null)
-            .Where(value => value.HasValue)
-            .Select(value => value!.Value)
-            .ToArray();
-    }
-
-    private static bool TryReadNativeOverlaySizeFile(
-        string path,
-        out int width,
-        out int height,
-        out bool referenceSize)
-    {
-        width = 0;
-        height = 0;
-        referenceSize = false;
-        try
-        {
-            if (!File.Exists(path))
-            {
-                return false;
-            }
-
-            var text = File.ReadAllText(path);
-            var values = ParseIntsFromText(text);
-            if (values.Length < 2)
-            {
-                return false;
-            }
-
-            width = values[0];
-            height = values[1];
-            referenceSize =
-                text.Contains("reference", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("normalized", StringComparison.OrdinalIgnoreCase);
-            return true;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
 
     private static bool TryReadIntFile(string path, out int[] values)
     {
@@ -4163,7 +4069,7 @@ public partial class MainWindow : Window
                 return false;
             }
 
-            values = ParseIntsFromText(File.ReadAllText(path));
+            values = NativeOverlaySizing.ParseInts(File.ReadAllText(path));
             return values.Length > 0;
         }
         catch (IOException)
@@ -4290,7 +4196,7 @@ public partial class MainWindow : Window
                 Dispatcher,
                 RouteLowLevelMouseHookEvent,
                 HasActiveLowLevelMouseMoveRoute);
-            mouseHookPump = new LowLevelMouseHookPump(hookDispatcher);
+            mouseHookPump = new LowLevelMouseHookPump(hookDispatcher, () => appLogger);
             mouseHookPump.Start();
         }
         catch (Exception)
@@ -4341,7 +4247,7 @@ public partial class MainWindow : Window
 
         if (hookEvent.Message == LowLevelMouseHookEvent.WmLeftButtonDown)
         {
-            if (TryBeginDetachedBottomResizeFromScreenClick(screenPoint))
+            if (TryBeginDetachedResizeFromScreenClick(screenPoint))
             {
                 return true;
             }
@@ -4590,6 +4496,7 @@ public partial class MainWindow : Window
         // Retry once after the placement transition if the shell was temporarily unavailable
         // for the first unregistration request.
         ClearTaskbarFullscreen();
+        UpdateResponsiveLayout();
     }
 
     private void MarkTaskbarFullscreen(bool force = false)
@@ -4672,7 +4579,7 @@ public partial class MainWindow : Window
 
             if (window.ActiveTab is { } activeTab && viewModel?.Tabs.Contains(activeTab) == true)
             {
-                viewModel.SelectedTab = activeTab;
+                viewModel.ActivatePictureInPictureTab(activeTab);
             }
 
             return true;
@@ -4746,33 +4653,13 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private bool IsTrackedVideoDoubleClick(long now, NativePoint screenPoint)
-    {
-        if (lastVideoLeftButtonDownAt == long.MinValue)
-        {
-            return false;
-        }
+    private bool IsTrackedVideoDoubleClick(long now, NativePoint screenPoint) =>
+        videoDoubleClickTracker.IsDoubleClick(now, screenPoint.X, screenPoint.Y);
 
-        var elapsed = now - lastVideoLeftButtonDownAt;
-        return elapsed >= 0 &&
-            elapsed <= GetDoubleClickTime() &&
-            Math.Abs(screenPoint.X - lastVideoLeftButtonDownX) <= GetSystemMetrics(SmCxDoubleClick) &&
-            Math.Abs(screenPoint.Y - lastVideoLeftButtonDownY) <= GetSystemMetrics(SmCyDoubleClick);
-    }
+    private void CaptureVideoLeftButtonDown(long now, NativePoint screenPoint) =>
+        videoDoubleClickTracker.Capture(now, screenPoint.X, screenPoint.Y);
 
-    private void CaptureVideoLeftButtonDown(long now, NativePoint screenPoint)
-    {
-        lastVideoLeftButtonDownAt = now;
-        lastVideoLeftButtonDownX = screenPoint.X;
-        lastVideoLeftButtonDownY = screenPoint.Y;
-    }
-
-    private void ResetVideoDoubleClickTracking()
-    {
-        lastVideoLeftButtonDownAt = long.MinValue;
-        lastVideoLeftButtonDownX = 0;
-        lastVideoLeftButtonDownY = 0;
-    }
+    private void ResetVideoDoubleClickTracking() => videoDoubleClickTracker.Reset();
 
     private bool IsScreenPointInMainWindow(NativePoint screenPoint)
     {
@@ -4853,7 +4740,7 @@ public partial class MainWindow : Window
     {
         if (WindowChrome.GetWindowChrome(this) is { } chrome)
         {
-            chrome.CaptionHeight = fullscreen ? 0 : TitleBarChromeCaptionHeight;
+            chrome.CaptionHeight = fullscreen ? 0 : TitleBarChromeCaptionHeight * chromeScale.ScaleY;
             chrome.ResizeBorderThickness = fullscreen || WindowState == WindowState.Maximized
                 ? new Thickness(0)
                 : WindowChromeResizeBorderThickness;
@@ -5272,9 +5159,6 @@ public partial class MainWindow : Window
 
     [LibraryImport("user32")]
     private static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [LibraryImport("user32")]
-    private static partial uint GetDoubleClickTime();
 
     [LibraryImport("user32")]
     private static partial int GetSystemMetrics(int nIndex);

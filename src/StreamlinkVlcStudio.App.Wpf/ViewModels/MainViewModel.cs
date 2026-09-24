@@ -48,8 +48,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IChatClientFactory chatFactory;
     private readonly IViewerCountService? viewerCountService;
     private readonly IReplayResolver? replayResolver;
-    private readonly IReplayChatProvider? replayChatProvider;
-    private readonly IKickChatHistoryProvider? kickChatHistoryProvider;
+    private readonly IVodChatProvider? vodChatProvider;
     private readonly IFollowedStreamsService? followedStreamsService;
     private readonly ILiveNotificationService? liveNotificationService;
     private FollowedChannelsSettings? observedFollowedChannelsSettings;
@@ -59,7 +58,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IStreamSearchService? streamSearchService;
     private readonly ITwitchVodService? twitchVodService;
     private readonly IKickVodService? kickVodService;
-    private readonly IKickEventSubscriptionService? kickEventSubscriptionService;
     private readonly ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver;
     private readonly ITwitchClipService? twitchClipService;
     private readonly IAppUpdateService? appUpdateService;
@@ -97,24 +95,32 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly TabGroupingController tabGroupingController = new();
     private readonly RecentStreamController recentStreamController = new();
     private readonly HashSet<StreamTabViewModel> vlcPluginMultiViewChatPolicyHiddenTabs = [];
+    private readonly List<NavigationDestination> navigationHistory = [];
+    // Stream opening can hide Home before selecting its tab. Keep the last completed
+    // destination so that this intermediate loading state does not replace history.
+    private NavigationDestination currentNavigationDestination = new(NavigationPage.Followed);
+    private bool restoringNavigation;
     private readonly TabPlaybackPolicyController inactivePlaybackPolicyController;
     private ChatSettings? observedChatSettings;
     private Task? disposalTask;
     private StreamTabViewModel? selectedTab;
+    // PiP can own audio when there is no selected stream in the main window.
+    private StreamTabViewModel? audioActiveTab;
     private TabStripItemViewModel? selectedTabStripItem;
     private string newStreamText = "";
     private string streamSearchStatus = "";
     private string selectedQuality;
     private string statusMessage = "Ready";
     private string browserClickStatus = "Browser extension capture keeps Twitch and Kick on their home pages";
-    private string kickWebhookListenerStatus = "Official Kick webhook listener is stopped.";
     private string followedChannelsStatus = "Live followed channels are not loaded";
     private string twitchVodSearchText = "";
     private string twitchVodStatus = "Search a Twitch streamer to browse VODs.";
     private string browseCategorySearchText = "";
     private string browseStatus = "Browse Twitch or Kick categories.";
     private string browseCategoryStatus = "Browse Twitch or Kick categories.";
-    private string appUpdateStatus = "Ready to update from the latest verified GitHub release.";
+    private string appUpdateStatus = "Updates are checked automatically. No download starts without your consent.";
+    private string appUpdateActionText = "Check for updates";
+    private bool isUpdateBannerVisible;
     private string browseCategoryNextCursor = "";
     private string browseStreamNextCursor = "";
     private string kickFollowedChannelsText;
@@ -169,13 +175,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var followedStreamsService = dependencies.FollowedStreamsService;
         var streamMetadataService = dependencies.StreamMetadataService;
         var replayResolver = dependencies.ReplayResolver;
-        var replayChatProvider = dependencies.ReplayChatProvider;
-        var kickChatHistoryProvider = dependencies.KickChatHistoryProvider;
+        var vodChatProvider = dependencies.VodChatProvider;
         var liveNotificationService = dependencies.LiveNotificationService;
         var streamSearchService = dependencies.StreamSearchService;
         var twitchVodService = dependencies.TwitchVodService;
         var kickVodService = dependencies.KickVodService;
-        var kickEventSubscriptionService = dependencies.KickEventSubscriptionService;
         var twitchSubOnlyVodResolver = dependencies.TwitchSubOnlyVodResolver;
         var twitchClipService = dependencies.TwitchClipService;
         var appUpdateService = dependencies.AppUpdateService;
@@ -196,18 +200,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.chatFactory = chatFactory;
         this.viewerCountService = viewerCountService;
         this.replayResolver = replayResolver;
-        this.replayChatProvider = replayChatProvider;
-        this.kickChatHistoryProvider = kickChatHistoryProvider;
+        this.vodChatProvider = vodChatProvider;
         this.followedStreamsService = followedStreamsService;
         this.liveNotificationService = liveNotificationService;
         this.streamMetadataService = streamMetadataService;
         this.streamSearchService = streamSearchService;
         this.twitchVodService = twitchVodService;
         this.kickVodService = kickVodService;
-        this.kickEventSubscriptionService = kickEventSubscriptionService;
         this.twitchSubOnlyVodResolver = twitchSubOnlyVodResolver;
         this.twitchClipService = twitchClipService;
         this.appUpdateService = appUpdateService;
+        if (appUpdateService is not null)
+        {
+            appUpdateService.StateChanged += OnAppUpdateStateChanged;
+        }
         this.browseService = browseService;
         this.recentThumbnailRefreshInterval = recentThumbnailRefreshInterval ?? DefaultRecentThumbnailRefreshInterval;
         this.followedChannelsRefreshInterval = followedChannelsRefreshInterval ?? DefaultFollowedChannelsRefreshInterval;
@@ -233,18 +239,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         selectedQuality = settings.DefaultQuality;
         kickFollowedChannelsText = FormatKickFollowedChannelsText(settings.FollowedChannels.KickChannelSlugs);
 
-        AddAndPlayCommand = new AsyncRelayCommand(AddAndPlayAsync, () => HasNewStreamSearchText);
+        AddAndPlayCommand = CreateCommand(AddAndPlayAsync, () => HasNewStreamSearchText);
+        GoBackCommand = new RelayCommand(GoBack, () => CanGoBack);
         SelectHomeCommand = new RelayCommand(SelectHome);
         ShowFollowedHomePageCommand = new RelayCommand(ShowFollowedHomePage);
         ShowTwitchVodsHomePageCommand = new RelayCommand(ShowTwitchVodsHomePage);
         ShowRecentHomePageCommand = new RelayCommand(ShowRecentHomePage);
         ShowBrowseHomePageCommand = new RelayCommand(ShowBrowseHomePage);
         ReturnToBrowseCategoriesCommand = new RelayCommand(ReturnToBrowseCategoriesPage, () => IsBrowseStreamsPageVisible);
-        RefreshFollowedChannelsCommand = new AsyncRelayCommand(RefreshFollowedChannelsAsync, () => followedStreamsService is not null);
-        SearchTwitchVodsCommand = new AsyncRelayCommand(
+        RefreshFollowedChannelsCommand = CreateCommand(RefreshFollowedChannelsAsync, () => followedStreamsService is not null);
+        SearchTwitchVodsCommand = CreateCommand(
             () => SearchTwitchVodsAsync(reset: true),
             () => CanSearchSelectedVodPlatform);
-        LoadMoreTwitchVodsCommand = new AsyncRelayCommand(
+        LoadMoreTwitchVodsCommand = CreateCommand(
             () => SearchTwitchVodsAsync(reset: false),
             () => CanLoadMoreTwitchVods);
         SelectTwitchVodPlatformCommand = new RelayCommand(() => SelectVodPlatform(PlatformKind.Twitch));
@@ -255,25 +262,26 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ShowAllVodFilterCommand = new RelayCommand(() => SelectTwitchVodType(TwitchVodTypeFilter.All));
         SelectTwitchBrowsePlatformCommand = new RelayCommand(() => SelectBrowsePlatform(PlatformKind.Twitch));
         SelectKickBrowsePlatformCommand = new RelayCommand(() => SelectBrowsePlatform(PlatformKind.Kick));
-        RefreshBrowseCommand = new AsyncRelayCommand(RefreshBrowseAsync, () => browseService is not null);
-        LoadMoreBrowseCategoriesCommand = new AsyncRelayCommand(
+        RefreshBrowseCommand = CreateCommand(RefreshBrowseAsync, () => browseService is not null);
+        LoadMoreBrowseCategoriesCommand = CreateCommand(
             () => LoadBrowseCategoriesAsync(reset: false),
             () => browseService is not null && CanLoadMoreBrowseCategories);
-        LoadMoreBrowseStreamsCommand = new AsyncRelayCommand(
+        LoadMoreBrowseStreamsCommand = CreateCommand(
             () => LoadBrowseStreamsAsync(reset: false),
             () => browseService is not null && CanLoadMoreBrowseStreams);
-        PlaySelectedCommand = new AsyncRelayCommand(PlaySelectedAsync, () => SelectedTab is not null);
-        ReloadSelectedCommand = new AsyncRelayCommand(ReloadSelectedAsync, () => SelectedTab is not null);
-        StopSelectedCommand = new AsyncRelayCommand(StopSelectedAsync, () => SelectedTab is not null);
-        PauseSelectedCommand = new AsyncRelayCommand(PauseSelectedAsync, () => SelectedTab is not null);
-        CloseSelectedCommand = new AsyncRelayCommand(CloseSelectedAsync, () => SelectedTab is not null);
-        CreateClipCommand = new AsyncRelayCommand(CreateClipAsync, CanCreateClip);
-        SaveSettingsCommand = new AsyncRelayCommand(SaveSettingsAsync);
-        AuthorizeTwitchCommand = new AsyncRelayCommand(AuthorizeTwitchAsync);
-        ClearTwitchTokenCommand = new AsyncRelayCommand(ClearTwitchTokenAsync, HasTwitchToken);
-        AuthorizeKickCommand = new AsyncRelayCommand(AuthorizeKickAsync);
-        ClearKickTokenCommand = new AsyncRelayCommand(ClearKickTokenAsync, HasKickToken);
-        UpdateAppCommand = new AsyncRelayCommand(UpdateAppAsync, () => appUpdateService is not null);
+        PlaySelectedCommand = CreateCommand(PlaySelectedAsync, () => SelectedTab is not null);
+        ReloadSelectedCommand = CreateCommand(ReloadSelectedAsync, () => SelectedTab is not null);
+        StopSelectedCommand = CreateCommand(StopSelectedAsync, () => SelectedTab is not null);
+        PauseSelectedCommand = CreateCommand(PauseSelectedAsync, () => SelectedTab is not null);
+        CloseSelectedCommand = CreateCommand(CloseSelectedAsync, () => SelectedTab is not null);
+        CreateClipCommand = CreateCommand(CreateClipAsync, CanCreateClip);
+        SaveSettingsCommand = CreateCommand(SaveSettingsAsync);
+        AuthorizeTwitchCommand = CreateCommand(AuthorizeTwitchAsync);
+        ClearTwitchTokenCommand = CreateCommand(ClearTwitchTokenAsync, HasTwitchToken);
+        AuthorizeKickCommand = CreateCommand(AuthorizeKickAsync);
+        ClearKickTokenCommand = CreateCommand(ClearKickTokenAsync, HasKickToken);
+        UpdateAppCommand = CreateCommand(UpdateAppAsync, () => appUpdateService is not null);
+        LaterUpdateCommand = CreateCommand(SnoozeUpdateAsync, () => appUpdateService?.State.Release is not null);
         ToggleSettingsCommand = new RelayCommand(() => IsSettingsOpen = !IsSettingsOpen);
         ShowGeneralSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.General);
         ShowPlaybackSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Playback);
@@ -283,7 +291,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ShowAdvancedSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Advanced);
         ToggleMultiStreamCommand = new RelayCommand(ToggleMultiStream);
         ToggleReplaySeekBarCommand = new RelayCommand(ToggleReplaySeekBar);
-        ToggleChatCommand = new AsyncRelayCommand(ToggleChatAsync, () => SelectedTab is not null);
+        ToggleChatCommand = CreateCommand(ToggleChatAsync, () => SelectedTab is not null);
         MoveTabLeftCommand = new RelayCommand(MoveTabLeft, () => SelectedTab is not null && Tabs.IndexOf(SelectedTab) > 0);
         MoveTabRightCommand = new RelayCommand(MoveTabRight, () => SelectedTab is not null && Tabs.IndexOf(SelectedTab) < Tabs.Count - 1);
         RebuildRecentStreams();
@@ -317,6 +325,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<string> AppLogLines { get; } = [];
 
     public AsyncRelayCommand AddAndPlayCommand { get; }
+    public RelayCommand GoBackCommand { get; }
     public RelayCommand SelectHomeCommand { get; }
     public RelayCommand ShowFollowedHomePageCommand { get; }
     public RelayCommand ShowTwitchVodsHomePageCommand { get; }
@@ -349,6 +358,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand AuthorizeKickCommand { get; }
     public AsyncRelayCommand ClearKickTokenCommand { get; }
     public AsyncRelayCommand UpdateAppCommand { get; }
+    public AsyncRelayCommand LaterUpdateCommand { get; }
     public RelayCommand ToggleSettingsCommand { get; }
     public RelayCommand ShowGeneralSettingsCommand { get; }
     public RelayCommand ShowPlaybackSettingsCommand { get; }
@@ -372,7 +382,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (selectedTab == value)
             {
-                ApplySelectedTabSelection();
+                ActivateMainWindowAudio();
                 ApplyVideoLayout();
                 return;
             }
@@ -384,7 +394,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             selectedTab = value;
-            ApplyImmediateSelectedTabAudioState(previous, selectedTab);
+            SetAudioActiveTab(selectedTab);
 
             if (selectedTab is not null)
             {
@@ -415,7 +425,44 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             {
                 ApplyInactivePlaybackPolicyInBackground();
             }
+
+            RecordNavigation();
         }
+    }
+
+    internal void ActivatePictureInPictureTab(StreamTabViewModel tab)
+    {
+        if (!Tabs.Contains(tab) || !tab.IsDetached)
+        {
+            return;
+        }
+
+        // Focusing PiP must not interrupt the stream still selected in the main
+        // window. PiP retains its audio selection behavior when main shows Home
+        // or the selected stream is itself detached.
+        SetAudioActiveTab(selectedTab is { IsDetached: false } mainTab && Tabs.Contains(mainTab)
+            ? mainTab
+            : tab);
+        ApplySelectedTabSelection();
+    }
+
+    internal void ActivateMainWindowAudio()
+    {
+        SetAudioActiveTab(selectedTab);
+        ApplySelectedTabSelection();
+    }
+
+    private void SetAudioActiveTab(StreamTabViewModel? tab)
+    {
+        tab = tab is not null && Tabs.Contains(tab) ? tab : null;
+        if (ReferenceEquals(audioActiveTab, tab))
+        {
+            return;
+        }
+
+        var previous = audioActiveTab;
+        audioActiveTab = tab;
+        ApplyImmediateAudioOwnerState(previous, audioActiveTab);
     }
 
     public TabStripItemViewModel? SelectedTabStripItem
@@ -626,6 +673,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 OnPropertyChanged(nameof(IsBrowseCategorySearchPlaceholderVisible));
                 RaiseBrowseCommandStates();
                 ScheduleAutomaticBrowseCategorySearch();
+                RecordNavigation();
             }
         }
     }
@@ -885,15 +933,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         private set => SetProperty(ref browserClickStatus, value);
     }
 
-    public string KickWebhookLocalUrl =>
-        $"http://127.0.0.1:{Settings.Chat.KickWebhookListenerPort}{KickWebhookChatServer.WebhookPath}";
-
-    public string KickWebhookListenerStatus
-    {
-        get => kickWebhookListenerStatus;
-        private set => SetProperty(ref kickWebhookListenerStatus, value);
-    }
-
     public bool IsHomeSelected
     {
         get => isHomeSelected;
@@ -1090,7 +1129,17 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         private set => SetProperty(ref appUpdateStatus, value);
     }
 
-    public bool IsAppUpdateAvailable => appUpdateService is not null;
+    public string AppUpdateActionText
+    {
+        get => appUpdateActionText;
+        private set => SetProperty(ref appUpdateActionText, value);
+    }
+
+    public bool IsUpdateBannerVisible
+    {
+        get => isUpdateBannerVisible;
+        private set => SetProperty(ref isUpdateBannerVisible, value);
+    }
 
     public bool IsSettingsOpen
     {
@@ -1100,11 +1149,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             if (SetProperty(ref isSettingsOpen, value))
             {
                 OnPropertyChanged(nameof(IsPlaybackWorkspaceVisible));
+                RecordNavigation();
             }
         }
     }
 
     public bool IsPlaybackWorkspaceVisible => !IsSettingsOpen;
+
+    public bool CanGoBack => navigationHistory.Any(destination =>
+        IsNavigationDestinationAvailable(destination) && destination != CaptureNavigationDestination());
 
     public SettingsCategory SelectedSettingsCategory
     {
@@ -1287,6 +1340,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public void Initialize()
     {
+        if (appUpdateService is not null)
+        {
+            _ = CheckForStartupUpdateAsync();
+        }
+
         if (loggerEntryWrittenHandler is null)
         {
             loggerEntryWrittenHandler = (_, entry) =>
@@ -1331,11 +1389,161 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public void SetKickWebhookListenerStatus(string message)
+    private enum NavigationPage
     {
-        KickWebhookListenerStatus = string.IsNullOrWhiteSpace(message)
-            ? "Official Kick webhook listener status is unknown."
-            : message.Trim();
+        Followed,
+        Recent,
+        Vods,
+        BrowseCategories,
+        BrowseStreams,
+        Stream,
+        Settings
+    }
+
+    private sealed record NavigationDestination(
+        NavigationPage Page,
+        StreamTabViewModel? Tab = null,
+        PlatformKind BrowsePlatform = PlatformKind.Twitch,
+        BrowseCategoryViewModel? BrowseCategory = null);
+
+    private NavigationDestination CaptureNavigationDestination()
+    {
+        if (IsSettingsOpen)
+        {
+            return new(NavigationPage.Settings);
+        }
+
+        if (!IsHomeSelected && SelectedTab is { } tab)
+        {
+            return new(NavigationPage.Stream, Tab: tab);
+        }
+
+        if (IsBrowseHomePageSelected)
+        {
+            return isBrowseStreamsPageSelected && SelectedBrowseCategory is { } category
+                ? new(NavigationPage.BrowseStreams, BrowsePlatform: SelectedBrowsePlatform, BrowseCategory: category)
+                : new(NavigationPage.BrowseCategories, BrowsePlatform: SelectedBrowsePlatform);
+        }
+
+        return new(IsRecentHomePageSelected
+            ? NavigationPage.Recent
+            : IsTwitchVodsHomePageSelected
+                ? NavigationPage.Vods
+                : NavigationPage.Followed);
+    }
+
+    private bool IsNavigationDestinationAvailable(NavigationDestination destination)
+    {
+        return destination.Page != NavigationPage.Stream ||
+            destination.Tab is { } tab && Tabs.Contains(tab);
+    }
+
+    private void RecordNavigation()
+    {
+        var destination = CaptureNavigationDestination();
+        if (destination != currentNavigationDestination)
+        {
+            if (!restoringNavigation && IsNavigationDestinationAvailable(currentNavigationDestination) &&
+                (navigationHistory.Count == 0 || navigationHistory[^1] != currentNavigationDestination))
+            {
+                navigationHistory.Add(currentNavigationDestination);
+            }
+
+            currentNavigationDestination = destination;
+        }
+
+        RaiseNavigationCommandState();
+    }
+
+    private void RaiseNavigationCommandState()
+    {
+        OnPropertyChanged(nameof(CanGoBack));
+        GoBackCommand.RaiseCanExecuteChanged();
+    }
+
+    private void GoBack()
+    {
+        var current = CaptureNavigationDestination();
+        while (navigationHistory.Count > 0)
+        {
+            var destination = navigationHistory[^1];
+            navigationHistory.RemoveAt(navigationHistory.Count - 1);
+            if (!IsNavigationDestinationAvailable(destination) || destination == current)
+            {
+                continue;
+            }
+
+            restoringNavigation = true;
+            try
+            {
+                RestoreNavigationDestination(destination);
+            }
+            finally
+            {
+                restoringNavigation = false;
+                currentNavigationDestination = CaptureNavigationDestination();
+                RaiseNavigationCommandState();
+            }
+
+            return;
+        }
+
+        RaiseNavigationCommandState();
+    }
+
+    private void RestoreNavigationDestination(NavigationDestination destination)
+    {
+        if (destination.Page == NavigationPage.Settings)
+        {
+            IsSettingsOpen = true;
+            return;
+        }
+
+        IsSettingsOpen = false;
+        if (destination.Page == NavigationPage.Stream)
+        {
+            SelectedTab = destination.Tab;
+            IsHomeSelected = false;
+            ApplyVideoLayout();
+            return;
+        }
+
+        SelectHome();
+        switch (destination.Page)
+        {
+            case NavigationPage.Followed:
+                ShowFollowedHomePage();
+                break;
+            case NavigationPage.Recent:
+                ShowRecentHomePage();
+                break;
+            case NavigationPage.Vods:
+                ShowTwitchVodsHomePage();
+                break;
+            case NavigationPage.BrowseCategories:
+            case NavigationPage.BrowseStreams:
+                if (SelectedBrowsePlatform != destination.BrowsePlatform)
+                {
+                    SelectBrowsePlatform(destination.BrowsePlatform);
+                }
+
+                if (destination.Page == NavigationPage.BrowseStreams && destination.BrowseCategory is { } category)
+                {
+                    IsRecentHomePageSelected = false;
+                    IsTwitchVodsHomePageSelected = false;
+                    IsBrowseHomePageSelected = true;
+                    if (!isBrowseStreamsPageSelected || SelectedBrowseCategory != category)
+                    {
+                        backgroundOperationController.Track(SelectBrowseCategoryAsync(category));
+                    }
+                }
+                else
+                {
+                    ShowBrowseHomePage();
+                }
+
+                break;
+        }
     }
 
     private void SelectHome()
@@ -1347,12 +1555,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         else
         {
             IsHomeSelected = true;
-            ApplySelectedTabSelection();
+            ActivateMainWindowAudio();
             ApplyVideoLayout();
             ApplyInactivePlaybackPolicyInBackground();
         }
 
         StatusMessage = "Home";
+        RecordNavigation();
     }
 
     private void ShowFollowedHomePage()
@@ -1362,6 +1571,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         IsTwitchVodsHomePageSelected = false;
         IsBrowseHomePageSelected = false;
         StatusMessage = "Live followed channels";
+        RecordNavigation();
     }
 
     private void ShowTwitchVodsHomePage()
@@ -1371,6 +1581,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         IsTwitchVodsHomePageSelected = true;
         IsBrowseHomePageSelected = false;
         StatusMessage = $"{VodPlatformText} VODs";
+        RecordNavigation();
     }
 
     private void ShowRecentHomePage()
@@ -1382,6 +1593,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StatusMessage = RecentStreamsStatus;
         EnsureRecentThumbnailRefreshTimerStarted();
         RefreshRecentThumbnailsInBackground();
+        RecordNavigation();
     }
 
     private void ShowBrowseHomePage()
@@ -1397,6 +1609,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             _ = LoadBrowseCategoriesAsync(reset: true);
         }
+
+        RecordNavigation();
     }
 
     private void ShowBrowseCategoriesPage(bool clearSelection)
@@ -1419,6 +1633,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         BrowseStatus = browseCategoryStatus;
         StatusMessage = BrowseStatus;
         StartBrowseCategoryViewerCountLoad(SelectedBrowsePlatform, BrowseCategorySearchText.Trim());
+        RecordNavigation();
     }
 
     private void SetBrowseStreamsPageSelected(bool value)
@@ -1690,6 +1905,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             IsHomeSelected = true;
             ApplyVideoLayout();
+            RecordNavigation();
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Warning, "Followed", $"Failed to open {channel} from a live notification.", ex);
         }
@@ -1868,6 +2084,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             IsHomeSelected = true;
             ApplyVideoLayout();
+            RecordNavigation();
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Error, "VODs", $"Failed to open {vod.Platform} VOD {vod.Id}.", ex);
         }
@@ -1996,6 +2213,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         browseCategoryStatus = $"Loading {platform} categories";
         BrowseStatus = $"Loading {platform} categories";
         StatusMessage = BrowseStatus;
+        RecordNavigation();
         _ = LoadBrowseCategoriesAsync(reset: true);
     }
 
@@ -2228,10 +2446,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            var shouldStartPendingLoad = !cancellation.IsCancellationRequested &&
-                IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query) &&
-                DisposeBrowseCategoryViewerCountCancellation(cancellation);
-            if (shouldStartPendingLoad)
+            // Dispose first and unconditionally: short-circuiting on the cancellation checks
+            // leaked one CancellationTokenSource per cancelled load (one per keystroke while a
+            // viewer-count load was in flight).
+            var hasPendingLoad = DisposeBrowseCategoryViewerCountCancellation(cancellation);
+            if (hasPendingLoad &&
+                !cancellation.IsCancellationRequested &&
+                IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query))
             {
                 dispatch(() => StartBrowseCategoryViewerCountLoad(platform, query));
             }
@@ -2389,6 +2610,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         vodBrowseController.AdvanceBrowseCategoryGeneration();
         CancelBrowseCategorySearchDebounce();
         CancelActiveBrowseCategorySearch();
+        // The canceled generation no longer owns this flag and cannot clear it in
+        // its finally block. Returning to categories must be able to load again.
+        IsBrowseCategoriesLoading = false;
         CancelActiveBrowseCategoryViewerCountLoad();
         vodBrowseController.AdvanceBrowseStreamGeneration();
         CancelActiveBrowseStreamSearch();
@@ -2398,6 +2622,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         HasBrowseStreamSearchCompleted = false;
         BrowseStatus = $"Loading live streams in {category.Name}";
         StatusMessage = BrowseStatus;
+        RecordNavigation();
         await LoadBrowseStreamsAsync(reset: true);
     }
 
@@ -2518,6 +2743,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             IsHomeSelected = true;
             ApplyVideoLayout();
+            RecordNavigation();
             StatusMessage = ex.Message;
             var (area, origin) = stream.Source switch
             {
@@ -2633,6 +2859,25 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         vodBrowseController.CancelBrowseCategoryOperation();
     }
 
+    /// <summary>
+    /// Builds an async command whose unhandled failures are surfaced and logged. Without an
+    /// error handler <see cref="AsyncRelayCommand"/>'s async-void entry point swallows them,
+    /// so a failing command looks like a button that simply does nothing.
+    /// </summary>
+    private AsyncRelayCommand CreateCommand(Func<Task> execute, Func<bool>? canExecute = null) =>
+        new(execute, canExecute, ReportCommandFailure);
+
+    private void ReportCommandFailure(Exception exception)
+    {
+        if (disposed || exception is OperationCanceledException)
+        {
+            return;
+        }
+
+        StatusMessage = $"Command failed. {exception.Message}";
+        logger.Write(AppLogLevel.Error, "Command", "An application command failed.", exception);
+    }
+
     private void CancelActiveBrowseCategoryViewerCountLoad()
     {
         vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
@@ -2699,6 +2944,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             IsHomeSelected = true;
             ApplyVideoLayout();
+            RecordNavigation();
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Error, "Recent", $"Failed to open {stream.Target.DisplayName} from recent streams.", ex);
         }
@@ -3418,6 +3664,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             followedChannelsRefreshGate.Dispose();
             if (appUpdateService is IDisposable disposableUpdater)
             {
+                appUpdateService.StateChanged -= OnAppUpdateStateChanged;
                 disposableUpdater.Dispose();
             }
         }
@@ -3722,6 +3969,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             IsHomeSelected = true;
             ApplyVideoLayout();
+            RecordNavigation();
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Error, "Search", $"Failed to open {result.Target.DisplayName} from search results.", ex);
         }
@@ -4052,9 +4300,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             InitialVolume = GetSavedStreamVolume(target),
             ViewerCountService = viewerCountService,
             ReplayResolver = replayResolver,
-            ReplayChatProvider = replayChatProvider,
-            KickChatHistoryProvider = kickChatHistoryProvider,
-            KickEventSubscriptionService = kickEventSubscriptionService,
+            VodChatProvider = vodChatProvider,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver
         });
         Tabs.Add(tab);
@@ -5460,19 +5706,34 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        AppUpdateStatus = "Preparing the latest verified GitHub release update...";
-        StatusMessage = AppUpdateStatus;
-
         try
         {
-            var result = await appUpdateService.StartLatestReleaseUpdateAsync(lifetimeCancellation.Token);
+            Settings.Updates.SnoozedVersion = "";
+            Settings.Updates.SnoozedUntilUtc = null;
+            if (appUpdateService.State is { Phase: AppUpdatePhase.NotifyOnly, Release: { } notification })
+            {
+                openBrowser(notification.ReleasePage);
+                return;
+            }
+            if (appUpdateService.State is { Phase: AppUpdatePhase.Available, Release: { } release })
+            {
+                await appUpdateService.DownloadAsync(release, cancellationToken: lifetimeCancellation.Token);
+                return;
+            }
+            if (appUpdateService.State is { Phase: AppUpdatePhase.Ready, PreparedUpdate: { } prepared })
+            {
+                var launch = await appUpdateService.ApplyAndRestartAsync(prepared, lifetimeCancellation.Token);
+                AppUpdateStatus = launch.Message;
+                StatusMessage = launch.Message;
+                logger.Write(AppLogLevel.Info, "Updater", launch.Message);
+                requestShutdown?.Invoke();
+                return;
+            }
+            AppUpdateStatus = "Checking the latest signed release…";
+            var result = await appUpdateService.CheckAsync(UpdateCheckReason.Manual, lifetimeCancellation.Token);
             AppUpdateStatus = result.Message;
             StatusMessage = result.Message;
             logger.Write(AppLogLevel.Info, "Updater", result.Message);
-            if (result.RequestApplicationShutdown)
-            {
-                requestShutdown?.Invoke();
-            }
         }
         catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
         {
@@ -5483,6 +5744,81 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             StatusMessage = AppUpdateStatus;
             logger.Write(AppLogLevel.Error, "Updater", "Application update failed.", ex);
         }
+    }
+
+    private async Task CheckForStartupUpdateAsync()
+    {
+        try
+        {
+            if (!Settings.Updates.AutomaticChecksEnabled)
+            {
+                var disabledCompletion = await appUpdateService!.ConsumeCompletionAsync(lifetimeCancellation.Token);
+                if (disabledCompletion is not null) AppUpdateStatus = disabledCompletion.Message;
+                return;
+            }
+            var completion = await appUpdateService!.ConsumeCompletionAsync(lifetimeCancellation.Token);
+            if (completion is not null) AppUpdateStatus = completion.Message;
+            await Task.Delay(TimeSpan.FromSeconds(20), lifetimeCancellation.Token);
+            try
+            {
+                var result = await appUpdateService.CheckAsync(UpdateCheckReason.Startup, lifetimeCancellation.Token);
+                ApplySnooze(result);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.Write(AppLogLevel.Warning, "Updater", "Initial automatic update check failed; retrying in 15 minutes.", ex);
+                await Task.Delay(TimeSpan.FromMinutes(15), lifetimeCancellation.Token);
+                var result = await appUpdateService.CheckAsync(UpdateCheckReason.Retry, lifetimeCancellation.Token);
+                ApplySnooze(result);
+            }
+        }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested) { }
+        catch (NotSupportedException) { }
+        catch (Exception ex) { logger.Write(AppLogLevel.Warning, "Updater", "Automatic update check failed.", ex); }
+    }
+
+    private void OnAppUpdateStateChanged(object? sender, AppUpdateStateChangedEventArgs e)
+    {
+        dispatch(() =>
+        {
+            AppUpdateStatus = e.State.Message;
+            AppUpdateActionText = e.State.Phase switch
+            {
+                AppUpdatePhase.Available => "Download update",
+                AppUpdatePhase.Ready => "Restart and install",
+                AppUpdatePhase.NotifyOnly => "Open release page",
+                AppUpdatePhase.Downloading or AppUpdatePhase.Verifying or AppUpdatePhase.Launching => "Please wait…",
+                _ => "Check for updates"
+            };
+            IsUpdateBannerVisible = e.State.Phase is AppUpdatePhase.Available or AppUpdatePhase.Ready or AppUpdatePhase.NotifyOnly;
+            LaterUpdateCommand.RaiseCanExecuteChanged();
+        });
+    }
+
+    private void ApplySnooze(AppUpdateCheckResult result)
+    {
+        if (result.Release is { } release && Settings.Updates.IsSnoozed(release.Version, DateTimeOffset.UtcNow))
+        {
+            dispatch(() =>
+            {
+                IsUpdateBannerVisible = false;
+                AppUpdateStatus = $"Version {release.Version} is snoozed until {Settings.Updates.SnoozedUntilUtc:g}.";
+            });
+        }
+    }
+
+    private async Task SnoozeUpdateAsync()
+    {
+        if (appUpdateService?.State.Release is not { } release)
+        {
+            return;
+        }
+
+        Settings.Updates.SnoozedVersion = release.Version.ToString(3);
+        Settings.Updates.SnoozedUntilUtc = DateTimeOffset.UtcNow.AddHours(24);
+        await settingsService.SaveAsync(Settings, lifetimeCancellation.Token);
+        IsUpdateBannerVisible = false;
+        AppUpdateStatus = $"Version {release.Version} will be offered again in 24 hours.";
     }
 
     private async Task AuthorizeTwitchAsync()
@@ -5758,11 +6094,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (e.PropertyName == nameof(ChatSettings.VlcOverlayFontSize))
         {
             OnPropertyChanged(nameof(SelectedVlcOverlayFontSize));
-        }
-
-        if (e.PropertyName == nameof(ChatSettings.KickWebhookListenerPort))
-        {
-            OnPropertyChanged(nameof(KickWebhookLocalUrl));
         }
 
         var reconfigurePlayback = IsNativeOverlayPlaybackSetting(e.PropertyName);
@@ -6081,6 +6412,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void TabsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        navigationHistory.RemoveAll(destination => !IsNavigationDestinationAvailable(destination));
+        RaiseNavigationCommandState();
+
         if (e.Action != NotifyCollectionChangedAction.Move && e.OldItems is not null)
         {
             var oldTabs = e.OldItems.Cast<StreamTabViewModel>().ToArray();
@@ -6116,6 +6450,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         OnPropertyChanged(nameof(IsAnyStreamPlaying));
+
+        if (audioActiveTab is not null && !Tabs.Contains(audioActiveTab))
+        {
+            audioActiveTab.SetSelectedForAudio(false);
+            SetAudioActiveTab(selectedTab);
+        }
 
         if (selectedTab is not null && !Tabs.Contains(selectedTab))
         {
@@ -6192,6 +6532,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void TabOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(StreamTabViewModel.NeverMute))
+        {
+            ApplyInactivePlaybackPolicyInBackground();
+        }
+
         if (sender is StreamTabViewModel tab && e.PropertyName == nameof(StreamTabViewModel.Volume))
         {
             RememberStreamVolume(tab);
@@ -6199,6 +6544,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (sender is StreamTabViewModel detachedTab && e.PropertyName == nameof(StreamTabViewModel.IsDetached))
         {
+            if (!detachedTab.IsDetached && ReferenceEquals(detachedTab, audioActiveTab))
+            {
+                ActivateMainWindowAudio();
+            }
+
             if (ReferenceEquals(detachedTab, SelectedTab))
             {
                 OnPropertyChanged(nameof(IsSelectedTabDetached));
@@ -6228,14 +6578,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         if (applyingSelectedTabSelection ||
             sender is not StreamTabViewModel tab ||
-            ReferenceEquals(tab, selectedTab) ||
-            selectedTab is null ||
-            !Tabs.Contains(selectedTab))
+            ReferenceEquals(tab, audioActiveTab) ||
+            audioActiveTab is null ||
+            !Tabs.Contains(audioActiveTab))
         {
             return;
         }
 
-        selectedTab.ReapplyAudio();
+        audioActiveTab.ReapplyAudio();
     }
 
     private void RaiseChatVisibilityProperties()
@@ -6767,11 +7117,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         finally
         {
             // Resume/pause operations may themselves touch audio. Only the current pass may win,
-            // and it always finishes by reasserting the user's current selection.
+            // and it always finishes by reasserting the current main/PiP audio owner.
             if (!disposed && inactivePlaybackPolicyController.IsCurrent(generation) &&
-                SelectedTab is { } selected && Tabs.Contains(selected))
+                audioActiveTab is { } selected && Tabs.Contains(selected))
             {
-                ApplySelectedTabAudioState(selected);
+                ApplyAudioOwnerState(selected);
             }
         }
     }
@@ -6781,12 +7131,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         // Let a stream finish its initial resolve/start even if the user changes
         // pages while it is still loading. Once startup completes, the normal
         // off-grid pause policy applies without interrupting the initial handoff.
-        return Settings.KeepInactiveTabsRunning || tab.IsVideoVisible || tab.IsDetached || tab.IsBusy;
+        return tab.NeverMute || Settings.KeepInactiveTabsRunning || tab.IsVideoVisible || tab.IsDetached || tab.IsBusy;
     }
 
     private void ApplySelectedTabSelection()
     {
         var selected = selectedTab is not null && Tabs.Contains(selectedTab) ? selectedTab : null;
+        var audioSelected = audioActiveTab is not null && Tabs.Contains(audioActiveTab) ? audioActiveTab : null;
         var wasApplyingSelectedTabSelection = applyingSelectedTabSelection;
         applyingSelectedTabSelection = true;
         try
@@ -6801,33 +7152,24 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             foreach (var tab in Tabs)
             {
-                if (ReferenceEquals(tab, selected))
+                if (!ReferenceEquals(tab, audioSelected))
                 {
-                    continue;
+                    if (!tab.SetSelectedForAudio(false))
+                    {
+                        tab.ReapplyAudio();
+                    }
                 }
 
-                if (!tab.SetSelectedForAudio(false))
-                {
-                    tab.ReapplyAudio();
-                }
-
-                if (tab.IsSelected)
+                if (!ReferenceEquals(tab, selected) && tab.IsSelected)
                 {
                     tab.IsSelected = false;
                 }
             }
 
-            if (selected is null)
+            if (audioSelected is not null)
             {
-                return;
+                ApplyAudioOwnerState(audioSelected);
             }
-
-            if (!selected.IsSelected)
-            {
-                selected.IsSelected = true;
-            }
-
-            ApplySelectedTabAudioState(selected);
         }
         finally
         {
@@ -6835,7 +7177,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void ApplyImmediateSelectedTabAudioState(StreamTabViewModel? previous, StreamTabViewModel? selected)
+    private void ApplyImmediateAudioOwnerState(StreamTabViewModel? previous, StreamTabViewModel? selected)
     {
         selected = selected is not null && Tabs.Contains(selected) ? selected : null;
         var wasApplyingSelectedTabSelection = applyingSelectedTabSelection;
@@ -6854,7 +7196,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             if (selected is not null)
             {
-                ApplySelectedTabAudioState(selected);
+                ApplyAudioOwnerState(selected);
             }
         }
         finally
@@ -6863,7 +7205,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private static void ApplySelectedTabAudioState(StreamTabViewModel selected)
+    private static void ApplyAudioOwnerState(StreamTabViewModel selected)
     {
         if (!selected.SetSelectedForAudio(true))
         {

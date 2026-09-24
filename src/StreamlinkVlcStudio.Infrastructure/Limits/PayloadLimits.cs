@@ -9,7 +9,6 @@ internal static class PayloadLimits
     internal const int RangeProbeBytes = 64 * 1024;
     internal const int ProcessOutputBytes = 4 * 1024 * 1024;
     internal const int ProcessLineBytes = 64 * 1024;
-    internal const int ReplayChatCacheBytes = 64 * 1024 * 1024;
     internal const int TwitchInboundIrcBytes = 16 * 1024;
     internal const int TwitchOutboundIrcBytes = 512;
 

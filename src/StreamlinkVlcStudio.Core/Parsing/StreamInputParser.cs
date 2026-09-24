@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 
@@ -208,7 +209,7 @@ public static partial class StreamInputParser
     public static bool TryFromChannel(
         PlatformKind platform,
         string? channel,
-        out StreamTarget? target)
+        [NotNullWhen(true)] out StreamTarget? target)
     {
         try
         {

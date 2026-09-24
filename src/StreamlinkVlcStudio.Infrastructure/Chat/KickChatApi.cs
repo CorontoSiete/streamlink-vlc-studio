@@ -38,4 +38,12 @@ internal static class KickChatApi
             .ToUniversalTime()
             .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
     }
+
+    /// <summary>Formats a backfill cursor timestamp for logging.</summary>
+    internal static string FormatBackfillTimestamp(DateTimeOffset? timestampUtc)
+    {
+        return timestampUtc is { } timestamp
+            ? timestamp.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+            : "none";
+    }
 }

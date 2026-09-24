@@ -10,6 +10,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
 {
     private static readonly TimeSpan DefaultResizeDebounceDelay = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan PipeBusyRetryDelay = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan PipeFaultRetryDelay = TimeSpan.FromSeconds(1);
 
     private const int ErrorPipeBusy = 231;
 
@@ -245,10 +246,24 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
                         activeResizeSessionId,
                         cancellationToken).ConfigureAwait(false);
                 }
-                catch (IOException ex) when (!cancellationToken.IsCancellationRequested && IsAllPipeInstancesBusy(ex))
+                catch (IOException ex) when (!cancellationToken.IsCancellationRequested)
                 {
-                    logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native VLC replay overlay event pipe was busy; retrying listener start.", ex);
-                    await Task.Delay(PipeBusyRetryDelay, cancellationToken).ConfigureAwait(false);
+                    // A busy pipe means another listener is still shutting down; any other pipe
+                    // fault means the native overlay plugin died or dropped its end. Both are
+                    // recoverable by listening again, so keep the loop alive instead of leaving
+                    // scroll/resize handling permanently dead until something calls Start again.
+                    var busy = IsAllPipeInstancesBusy(ex);
+                    if (busy)
+                    {
+                        logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native VLC replay overlay event pipe was busy; retrying listener start.", ex);
+                    }
+                    else
+                    {
+                        logger.Write(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay event pipe faulted; restarting listener.", ex);
+                    }
+
+                    await Task.Delay(busy ? PipeBusyRetryDelay : PipeFaultRetryDelay, cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
         }

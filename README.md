@@ -2,6 +2,8 @@
 
 Windows-first desktop app for watching Twitch and Kick streams through Streamlink and embedded libVLC.
 
+> **Upgrading from 1.6.65 or earlier:** those builds cannot discover the new signed-update channel. Download and run `StreamlinkVlcStudio-Setup.exe` once from the `v1.7.0` release. Future managed updates are offered in the app. The ZIP/PowerShell install remains an advanced per-user option and receives release notifications only.
+
 ## Current Features
 
 - Browser extension capture for direct Twitch and Kick channel links; the extension prevents browser navigation and sends the clicked stream to the desktop app.
@@ -13,14 +15,15 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - Low-latency Streamlink defaults for Twitch/HLS.
 - Platform replay seekbar for Twitch and best-effort Kick replays. Live playback keeps the existing Streamlink HTTP path; seeking behind live switches to platform VOD HLS playback in libVLC.
 - Subscriber-only Twitch VOD playback: if Streamlink cannot resolve a Twitch VOD, the app falls back to a direct CloudFront playlist derived from the VOD's public storyboard metadata (TwitchNoSub technique). Pasting a `https://www.twitch.tv/videos/{id}` URL into the search box opens it directly. Very recent uploads cannot be resolved this way, and `audio_only` maps to the lowest video variant.
-- Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. Only the selected tab is audible; inactive visible streams stay muted. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted.
+- Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. By default, the selected main stream keeps its audio when a picture-in-picture window is focused; inactive visible streams stay muted. Clicking a picture-in-picture window leaves the main tab and layout in place. When no stream is selected in the main window, audio follows the activated picture-in-picture stream. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted. Enable **Never mute** beside the mute button to keep that tab unmuted and playing when switching tabs or opening Home. It clears manual mute and disables the mute button until turned off; volume, manual pause, and stop still work. A speaker icon beside the tab title marks tabs with Never mute enabled, including in the compact tab selector; for grouped tabs, its tooltip names the protected streams. The toggle is separate for each open tab, survives playback reloads, and resets when the tab is closed. Turning it off restores the normal inactive-tab mute and pause behavior.
 - Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL.
 - Home page showing live followed Twitch streams, configured Kick followed channel slugs that are currently live, Twitch/Kick VOD browsing, and recently watched streams.
-- Per-tab state: target, quality, status, mute, chat visibility, logs, chat messages.
+- Per-tab state: target, quality, status, mute, never mute, chat visibility, logs, chat messages.
 - Per-stream state: volume, VLC plugin chat overlay position, and VLC plugin chat text size are remembered by platform/channel.
+- Configurable shortcuts in **Settings > Hotkeys**: **Mouse4** (the first side button) goes back to the previous page, including the same open stream after visiting Settings; **M** toggles the multi-stream grid; and **Up/Down** change the selected stream's volume by 5%. The toolbar's **M** button highlights when the grid is enabled. Mouse-wheel volume controls are unchanged. Change **Back to previous page** in Hotkeys to choose a keyboard shortcut or mouse side button, then click **Save changes** to keep it across restarts.
 - Twitch chat via anonymous read-only IRC, or authenticated IRC sending with a Twitch OAuth token.
 - Kick chat via isolated public Pusher-style adapter, with OAuth chat sending through Kick's public API.
-- Twitch replay chat from Twitch VOD chat GraphQL, with cached TwitchDownloader JSON files under `%APPDATA%\StreamlinkVlcStudio\replay-chat\twitch` still supported. Kick VOD replay chat uses verified official `chat.message.sent` webhooks captured into `%APPDATA%\StreamlinkVlcStudio\replay-chat\kick-official`; Kick's official REST API does not expose historical VOD chat.
+- VOD chat replays on both platforms with no setup: Twitch from its public VOD comments GraphQL path, Kick from its public recent-messages endpoint, which serves history well beyond Kick's VOD retention. Chat streams in as playback advances and is appended like live chat, so it scrolls with the video.
 - Native VLC plugin chat overlay mode using `vlc-overlay`, with draggable/resizable chat and in-overlay chat input.
 - JSON settings with Windows current-user DPAPI protection for account secrets, plus file logging.
 - Dependency-free tests.
@@ -30,10 +33,11 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - 64-bit Windows 10 or Windows 11.
 - Administrator permission for the per-machine installation under `C:\Program Files`.
 - Internet access for platform sign-in and streaming. The full installer embeds its reviewed dependency installers and does not download them during setup.
+- VLC 3.0.18 or newer when you bring your own VLC (the installer provides a newer one). Older releases freeze on Twitch VODs with muted sections; the app works around that (see "Replay Seekbar"), but updating VLC is the better fix.
 
 `StreamlinkVlcStudio-Setup.exe` is the normal installer. It contains the self-contained app MSI and the reviewed, version-locked x64 Streamlink and VLC installers. It installs the app and any missing dependencies, creates the Start Menu shortcut, and offers to launch the first-run account wizard. The wizard never asks for a Twitch or Kick password: sign-in and consent happen in the platform browser. Streamlink and VLC are treated as shared dependencies and are left installed if the app is later removed.
 
-`StreamlinkVlcStudio-Setup.msi` is the app-only Windows Installer package for advanced/manual use. It installs the app payload and bundled VLC overlay but does not install Streamlink or VLC. The release zip includes the separate PowerShell dependency workflow.
+The app-only MSI is an internal bundle payload and is not published. This avoids split ownership in Apps & features: the Setup bundle is the sole supported per-machine installer, repair entry, updater, and uninstaller.
 
 The self-contained GitHub release does not require the .NET SDK. Building from source requires the .NET 10 SDK selected by `global.json`; running that build also requires Streamlink and VLC 64-bit with `libvlc.dll`.
 
@@ -51,7 +55,7 @@ Uninstall Streamlink VLC Studio from Apps & features / Control Panel. The bundle
 
 The release zip also provides the advanced PowerShell installer. It can install or update the app and its version-locked dependencies from the latest final GitHub release, install the adjacent extracted payload, or install dependencies only. A GitHub app download requires both `StreamlinkVlcStudio-release.zip` and `SHA256SUMS.txt`; the script verifies the zip before installing it. Normal `Auto`, `Release`, and `GitHub` modes never fall back to an arbitrary Actions artifact. `Auto` falls back only to an app payload beside `install.ps1`; the explicit developer artifact mode additionally requires a trusted 40-character main-branch commit. For a private repository, set `GITHUB_TOKEN` to a token with release-content read access (and Actions read access only when using developer artifact mode).
 
-From inside the app, Settings > Advanced > Updates can start the same latest-release update path. Release-zip installs use the bundled `install.ps1`; MSI/full-installer installs download `StreamlinkVlcStudio-Setup.msi` and verify it against `SHA256SUMS.txt` before launching Windows Installer.
+The app checks for stable releases automatically. A managed Program Files install first offers **Download update**, verifies the signed manifest and package, and then enables the separate **Restart and install** action. ZIP/PowerShell installs are notify-only and offer the release page; they never launch the per-machine updater. **Later** snoozes that version for 24 hours.
 
 The PowerShell workflow installs the app to `%LOCALAPPDATA%\Programs\StreamlinkVlcStudio` by default. It reads `dependencies\windows-installers.json`, verifies the pinned dependency downloads by size and SHA-256 plus the recorded signature/product metadata, and keeps an already installed dependency when its detected version is the same or newer. Run these examples from an extracted release zip:
 
@@ -114,6 +118,22 @@ subsystem run, and `SVS_SKIP_INTERACTIVE_WINDOW_TESTS=true` on headless Windows 
 also includes PowerShell parser checks and a Release build; timed-out tests are reported and return
 failure rather than silently passing.
 
+The seekbar's optional VLC desktop tests verify actual Direct3D11/GDI video composition,
+transparency, physical mouse/keyboard seeking, and movement with pointer polling stopped.
+On an interactive desktop, generate a steady local fixture with
+`ffmpeg -f lavfi -i "color=c=0x2080E0:s=960x540:r=24:d=60" -c:v libx264 -pix_fmt yuv420p -an seekbar-test.mp4`.
+Set `SVS_TEST_VLC_DIRECTORY` to the installed VLC directory, `SVS_TEST_VLC_MEDIA` to that
+file's absolute path, and `SVS_TEST_FILTER` to `replay seek overlay` before running the tests.
+Set `SVS_TEST_ARTIFACT_DIR` to a directory to retain cropped video screenshots.
+Set `SVS_TEST_PREVIEW_VIDEO_ID` to an available Twitch VOD ID to also check thumbnail loading against the live provider.
+Set `SVS_TEST_PREVIEW_SEGMENT` to a short MPEG-TS version of the same blue fixture, along with
+`SVS_TEST_VLC_DIRECTORY`, to verify the live DVR thumbnail decoder without network access.
+Set `SVS_TEST_LIVE_PREVIEW_CHANNEL` to a currently live Twitch channel and `SVS_TEST_TIMEOUT_SECONDS=120`
+to run the provider and visible-player integration checks using your existing app settings. These
+load real preview frames at several points in the current broadcast and verify that playback stays
+live. `SVS_TEST_ARTIFACT_DIR` retains the decoded previews and screenshots. The ordinary offline suite
+also covers the fragmented MP4 playlist format observed on Twitch, including initialization changes.
+
 Headless CI enforces its reviewed interactive-test skip ceiling. The manually dispatched
 `Interactive desktop tests` workflow is reserved for a signed-in self-hosted Windows runner labeled
 `interactive-desktop`; it runs the complete WPF suite and permits no skips.
@@ -135,7 +155,7 @@ The desktop app must be running before you click a direct channel link. If it is
 
 ## Package
 
-Create a friend-ready release zip, app-only MSI, and full dependency installer:
+Create a friend-ready release zip, internal app MSI, and full dependency installer:
 
 ```powershell
 $root = (Get-Location).Path
@@ -149,7 +169,9 @@ packaging output to temporary directories outside the source tree. The ignored `
 `.codex-*`, `.tools`, `.wix`, `artifacts`, `bin`, and `obj` directories are disposable generated
 output; the bundled overlay binaries under `src\...\BundledOverlay\build` are required source assets.
 
-The installer script runs the package script when `-ReleaseZip` is not supplied and builds `release\StreamlinkVlcStudio-Setup.msi` with WiX. It downloads exactly the Streamlink and VLC x64 installers recorded in `dependencies\windows-installers.json`, whose canonical byte-count field is `length`, using a bounded temporary download and one shared verifier for length, SHA-256, Authenticode signer/status, and product metadata. After installation, a dependency is accepted only when a discovered executable's parsed version is at least the pinned version; rejected candidates are reported. The verified dependencies are embedded in `release\StreamlinkVlcStudio-Setup.exe` with WiX Burn. The build fails on any manifest or verification mismatch and does not discover or guess a newer upstream asset. WiX and extension versions are compared semantically. MSI/bootstrapper outputs are validated in temporary staging and promoted together with rollback. WiX 6.0.2 is installed into the repository's ignored `.tools` directory on first use. `-ProductVersion` must be a three-part numeric MSI version with each part from 0 through 255; the bundle uses the same version with a fourth `.0` field. Run `scripts\package-release.ps1` directly when only the zip is needed.
+The installer script runs the package script when `-ReleaseZip` is not supplied and builds an internal app MSI plus `release\StreamlinkVlcStudio-Setup.exe` with WiX Burn. It downloads exactly the Streamlink and VLC x64 installers recorded in `dependencies\windows-installers.json`, whose canonical byte-count field is `length`, using a bounded temporary download and one shared verifier for length, SHA-256, Authenticode signer/status, and product metadata. Equal or newer compatible dependency executables are retained; dependencies are never removed with the app. The build fails on any manifest or verification mismatch and does not discover or guess a newer upstream asset. `-ProductVersion` must be the same three-part version injected into the application and ZIP metadata.
+
+Stable releases are created only from exact `vMAJOR.MINOR.PATCH` tags by the protected `release` GitHub environment. Main and pull-request runs upload validation artifacts only. The protected environment must provide `UPDATE_MANIFEST_PRIVATE_KEY_PEM`, matching `shared/update-signing-public-key.pem`; a missing or mismatched key fails closed. The workflow signs the exact UTF-8 manifest with RSA-PSS/SHA-256 and independently verifies every version, asset name, length, and hash before publishing. Optional Authenticode secrets are all-or-nothing. When configured, the workflow signs app/helper binaries and MSI, then follows the required Burn sequence: detach and sign the engine, reattach it, and sign the final bundle with an RFC3161 timestamp.
 
 Framework-dependent Windows publish without creating a zip:
 
@@ -165,9 +187,9 @@ $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 
 Packaging notes:
 
-- Ship `StreamlinkVlcStudio-Setup.exe` for normal users, keep `StreamlinkVlcStudio-Setup.msi` as the app-only/manual option, and keep `StreamlinkVlcStudio-release.zip` for portable/manual inspection and the PowerShell dependency workflow.
-- The local `release` directory contains those three distributable files by default.
-- CI publishes those three distributables together with `SHA256SUMS.txt`, `StreamlinkVlcStudio.spdx.json`, and `RELEASE-METADATA.json`. These six names and their output paths are defined once in `shared/release-contract.json`; CI independently revalidates the closed set, rejects non-increasing release versions, and records GitHub build-provenance and SBOM attestations before publishing.
+- Publish `StreamlinkVlcStudio-Setup.exe` as the sole per-machine installer/updater and `StreamlinkVlcStudio-release.zip` as the advanced per-user fallback. The app-only MSI remains an internal bundle input.
+- A stable GitHub release contains exactly seven assets: Setup.exe, the release ZIP, `UPDATE-MANIFEST.json`, `UPDATE-MANIFEST.sig`, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, and the SPDX SBOM. `shared/release-contract.json` defines and closes this set; an MSI or unexpected file causes publication to fail.
+- `install.ps1` verifies the detached manifest signature with the same pinned 3072-bit public key before parsing any manifest field, then enforces the final semantic tag, updater protocol, unique HTTPS assets, exact lengths, and SHA-256 values.
 - SBOM generation reconstructs dependencies from project assets, publish `.deps.json`, runtime packs, the Windows installer manifest, and native-overlay provenance. Verification reconstructs that canonical set independently and rejects missing or extra dependency records.
 - The MSI deliberately does not install the legacy `Uninstall.exe` or register a custom uninstall key; Windows Installer owns the MSI uninstall entry.
 - The release zip includes the legacy `Uninstall.exe` only for the separate PowerShell/manual path. It is not used by the MSI.
@@ -196,7 +218,7 @@ The full installer opens the connection wizard on first launch. You can also cha
 - Kick reading: no token is required. The app resolves the Kick chatroom ID from public channel metadata and connects to Kick's public Pusher-style chat feed.
 - Kick typing: set `Kick Client ID` and `Kick Client Secret`, configure the Kick developer app redirect URL as exactly `http://localhost:39177`, then click `Connect Kick`. The app opens Kick OAuth, requests `user:read channel:read chat:write`, saves the returned user access/refresh tokens, and refreshes the access token when it expires. If Kick omits `channel:read` from the user token, the app uses a short-lived app token from your Client ID/Secret to resolve the channel broadcaster ID needed for user-mode chat sends.
 - Kick manual token: you can still paste `Kick user access token` directly. It must be an active user access token with `chat:write`; without a refresh token it will stop working when Kick expires it. Kick Client ID/Secret alone do not enable typing in chat.
-- Kick VOD chat: set `Kick Client ID` and `Kick Client Secret`, enable `Listen for official Kick chat webhooks`, and configure your Kick developer app webhook URL to a public tunnel that forwards to `http://127.0.0.1:39180/kick-webhook` (or your configured port). When a Kick stream or VOD tab starts, the app uses Kick's official event subscription API to create or verify the `chat.message.sent` webhook subscription for that broadcaster, verifies Kick's webhook signature, and caches messages for later VOD replay. This cannot backfill messages that were sent before the webhook was configured and received.
+- Kick VOD chat needs no configuration. Kick's public recent-messages endpoint serves chat history, so any VOD in the list can replay its chat without having captured it first.
 - Chat layout defaults to `Overlay`, which uses the native VLC overlay plugin and controller for the full chatbox. Use `Docked` in Settings if you want the old side panel.
 - The release executable embeds the native VLC overlay plugin and controller and extracts them to local app data when needed. Leave `VLC overlay plugin directory` blank unless you want to override the bundled overlay with another valid `vlc-overlay` build.
 - Account secrets are saved in the current-user DPAPI-protected `ProtectedSecrets` envelope inside `%APPDATA%\StreamlinkVlcStudio\settings.json`; treat the file and any recovery backups as account-sensitive.
@@ -205,13 +227,18 @@ The full installer opens the connection wizard on first launch. You can also cha
 
 The seekbar depends on platform VOD/replay availability. It does not record a local DVR buffer.
 
+Replay controls are embedded over the bottom of each video in the main player and picture-in-picture windows. Their transparent native child surface moves and clips with the video host, including during window dragging; placement does not depend on pointer polling. Move the mouse over a stream to reveal them; they fade away after two seconds without movement when the pointer is off the controls, while resting the pointer on the controls keeps them visible. Scrubbing keeps the overlay visible until the seek is released. The overlay does not resize the video. Use the timeline, the 30-second step buttons, or **Go live** to navigate; explicit VODs omit the live action.
+
+Hover over the timeline to preview its timestamp without seeking. Twitch archive replays show the nearest available storyboard thumbnail. Live streams also show thumbnails over available DVR history: when a storyboard is unavailable or has not caught up, the app downloads the short DVR segment at that timestamp and decodes a small frame locally with audio disabled. Both MPEG-TS and fragmented MP4 segments are supported; fragmented MP4 previews include the matching initialization section from the playlist. This uses the existing VLC installation and leaves playback untouched. DVR manifests refresh as the stream grows, and a bounded cache reuses decoded frames. Unsupported or unavailable segments keep the timestamp alone. The preview follows the pointer, stays within the video edges, and scales down for picture-in-picture. Very short video windows hide it when there is no space above the controls. Thumbnail requests are delayed briefly during pointer movement.
+
 - Twitch replay lookup uses the saved Twitch OAuth token and Client ID to match the current live stream to a public `archive` VOD by stream ID or start time. If Twitch does not expose a public archive for the current stream, the seekbar stays disabled with the reason in its tooltip/status text.
 - Seeking behind live resolves the matched VOD through `streamlink --stream-url`, plays the raw VOD HLS URL in libVLC, and uses libVLC time seeking. Dragging to the live edge or clicking `Live` restarts normal live playback.
 - If the matched live VOD is subscriber-only and Streamlink rejects it, the seekbar uses the same storyboard-derived CloudFront fallback as an explicit subscriber-only Twitch VOD.
-- Twitch VODs opened from Home use the selected video URL directly, initialize the seekbar from Twitch metadata, and load replay chat by VOD ID when Twitch replay chat is available. Kick VODs opened from Home play the returned HLS source directly and load chat from the verified official Kick webhook cache when matching messages were captured while the official webhook listener was configured. Live viewer polling, live chat sending, the `Live` return action, and Recent-stream recording are disabled for explicit VOD tabs.
-- Chat sending is disabled while behind live. Twitch replay chat first uses any TwitchDownloader JSON file for the VOD in `%APPDATA%\StreamlinkVlcStudio\replay-chat\twitch` as `<vodId>.json`, `<vodId>_chat.json`, `v<vodId>.json`, or `v<vodId>_chat.json`; when no cache file exists, the app fetches replay chat directly through Twitch's VOD comments GraphQL path and prefetches more chat as replay playback advances.
+- Twitch VODs with muted sections need VLC 3.0.18 or newer to play unaided. Twitch's muted segments (`N-muted.ts`) carry an invalid clock reference every two seconds, and libVLC releases before 3.0.18 freeze two seconds into the first of them -- usually right at the start of a VOD with a muted intro -- while still reporting that they are playing. The installer's pinned VLC is not affected; **updating an older VLC is the real fix**. When the app finds itself running on an affected libVLC it works around the bug: it reads the Twitch VOD playlist once and, only if it lists muted segments, serves the playlist from `127.0.0.1` (ephemeral port, per-session token) and streams those segments through a repair that removes the invalid values. Every other segment is still fetched straight from Twitch, clean VODs are untouched, and any failure falls back to direct playback. `studio.log` records the libVLC version at playback start and `MutedVodRepair` entries whenever the workaround engages.
+- Twitch VODs opened from Home use the selected video URL directly, initialize the seekbar from Twitch metadata, and replay chat by VOD ID. Kick VODs play the returned HLS source directly and replay chat aligned to the broadcast start time. Live viewer polling, live chat sending, the `Live` return action, and Recent-stream recording are disabled for explicit VOD tabs.
+- Chat sending is disabled while behind live. VOD chat keeps a fetch frontier about 45 seconds ahead of playback and loads roughly half a minute of chat before the resume point, so the panel is never blank after a seek. Seeking back into chat that was already downloaded replays it without asking the network again. Twitch VOD comments are paged by content offset only, because Twitch now rejects its cursor variable without a Client-Integrity token that only its own web client can mint.
 - Current-live Twitch DVR replays use captured-only chat until Twitch publishes the normal VOD/comments ID. Chat before this tab connected is unavailable, and captured messages appear when replay playback reaches their timestamps. Kick live seekback chat is timestamp-aligned too; after a message appears at the replay time, it remains in chat like live chat until the normal 100-message limit is reached or you seek again.
-- Kick public APIs expose live/channel metadata but not stable replay-chat or replay lookup. The `Try private Kick replay lookup` setting enables best-effort website probing and Streamlink validation; failures leave live playback unchanged and explain why the seekbar is disabled.
+- Kick's official REST API exposes live/channel metadata but not replay lookup. The `Try private Kick replay lookup` setting enables best-effort website probing and Streamlink validation; failures leave live playback unchanged and explain why the seekbar is disabled. VOD chat comes from the same public `kick.com` endpoints the live chat client already uses, with the `curl.exe` fallback when a direct request is refused.
 
 ## Home Page Stream Search
 
@@ -296,7 +323,8 @@ Example:
   - Rename tabs.
   - Move tabs left/right.
   - Close a tab and confirm its Streamlink process exits.
-  - Confirm only the selected tab has audio while inactive running tabs are muted.
+  - Confirm only the selected tab has audio while inactive running tabs are muted by default. Enable Never mute on a tab, switch tabs and open Home, and confirm it keeps playing unmuted. Turn it off and confirm normal inactive-tab behavior returns.
+  - Play one stream in picture-in-picture and another in the main window. Click or double-click the picture-in-picture video and confirm the main stream keeps playing with audio and its tab and video stay in place. Switch main tabs and confirm audio follows the selected main stream. Repeat with manual mute and Never mute enabled.
   - Disable `KeepInactiveTabsRunning` and confirm tab switching pauses/resumes.
 
 - Chat:

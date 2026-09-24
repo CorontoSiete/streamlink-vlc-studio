@@ -9,12 +9,22 @@ internal enum AppHotkeyAction
     DismissFullscreenOrAutoScroll,
     ToggleReplaySeekBar,
     PreviousTab,
-    NextTab
+    NextTab,
+    ToggleMultiStream,
+    VolumeUp,
+    VolumeDown,
+    GoBack
 }
 
 internal static class HotkeyBindingPolicy
 {
     private static readonly AppHotkeyAction[] AllActions = Enum.GetValues<AppHotkeyAction>();
+
+    public static bool Matches(HotkeySettings settings, AppHotkeyAction action, HotkeyGesture input)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return HotkeyGesture.Matches(GetConfiguredGesture(settings, action), GetDefaultGesture(action), input);
+    }
 
     public static bool Matches(
         HotkeySettings settings,
@@ -98,6 +108,10 @@ internal static class HotkeyBindingPolicy
             AppHotkeyAction.ToggleReplaySeekBar => settings.ToggleReplaySeekBar,
             AppHotkeyAction.PreviousTab => settings.PreviousTab,
             AppHotkeyAction.NextTab => settings.NextTab,
+            AppHotkeyAction.ToggleMultiStream => settings.ToggleMultiStream,
+            AppHotkeyAction.VolumeUp => settings.VolumeUp,
+            AppHotkeyAction.VolumeDown => settings.VolumeDown,
+            AppHotkeyAction.GoBack => settings.GoBack,
             _ => throw new ArgumentOutOfRangeException(nameof(action))
         };
     }
@@ -122,6 +136,18 @@ internal static class HotkeyBindingPolicy
             case AppHotkeyAction.NextTab:
                 settings.NextTab = gesture;
                 break;
+            case AppHotkeyAction.ToggleMultiStream:
+                settings.ToggleMultiStream = gesture;
+                break;
+            case AppHotkeyAction.VolumeUp:
+                settings.VolumeUp = gesture;
+                break;
+            case AppHotkeyAction.VolumeDown:
+                settings.VolumeDown = gesture;
+                break;
+            case AppHotkeyAction.GoBack:
+                settings.GoBack = gesture;
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(action));
         }
@@ -135,6 +161,10 @@ internal static class HotkeyBindingPolicy
             AppHotkeyAction.ToggleReplaySeekBar => HotkeySettings.DefaultToggleReplaySeekBar,
             AppHotkeyAction.PreviousTab => HotkeySettings.DefaultPreviousTab,
             AppHotkeyAction.NextTab => HotkeySettings.DefaultNextTab,
+            AppHotkeyAction.ToggleMultiStream => HotkeySettings.DefaultToggleMultiStream,
+            AppHotkeyAction.VolumeUp => HotkeySettings.DefaultVolumeUp,
+            AppHotkeyAction.VolumeDown => HotkeySettings.DefaultVolumeDown,
+            AppHotkeyAction.GoBack => HotkeySettings.DefaultGoBack,
             _ => throw new ArgumentOutOfRangeException(nameof(action))
         };
     }

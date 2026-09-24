@@ -31,6 +31,8 @@ public sealed class HotkeyRecorderButton : Button
 
     private bool isCapturing;
     private Key suppressedKeyUp = Key.None;
+    private MouseButton? suppressedMouseUp;
+    private MouseButton? canceledMouseUp;
 
     public HotkeyRecorderButton()
     {
@@ -62,7 +64,7 @@ public sealed class HotkeyRecorderButton : Button
 
     internal bool IsCapturing => isCapturing;
 
-    internal bool IsCapturingInput => isCapturing || suppressedKeyUp != Key.None;
+    internal bool IsCapturingInput => isCapturing || suppressedKeyUp != Key.None || suppressedMouseUp is not null;
 
     protected override void OnClick()
     {
@@ -82,14 +84,24 @@ public sealed class HotkeyRecorderButton : Button
 
         isCapturing = false;
         suppressedKeyUp = Key.None;
+        suppressedMouseUp = null;
+        canceledMouseUp = null;
+        ReleaseMouseCapture();
         UpdateVisualState();
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        canceledMouseUp = suppressedMouseUp;
+        suppressedMouseUp = null;
+        base.OnLostMouseCapture(e);
     }
 
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         if (!isCapturing)
         {
-            if (suppressedKeyUp != Key.None)
+            if (IsCapturingInput)
             {
                 e.Handled = true;
                 return;
@@ -108,6 +120,12 @@ public sealed class HotkeyRecorderButton : Button
         }
 
         var newGesture = new HotkeyGesture(key, Keyboard.Modifiers).Serialize();
+        suppressedKeyUp = key;
+        CompleteCapture(newGesture);
+    }
+
+    private void CompleteCapture(string newGesture)
+    {
         var previousGesture = TryGetEffectiveGesture(out var effectiveGesture)
             ? effectiveGesture.Serialize()
             : newGesture;
@@ -115,7 +133,6 @@ public sealed class HotkeyRecorderButton : Button
         GestureChanging?.Invoke(this, changing);
 
         isCapturing = false;
-        suppressedKeyUp = key;
         if (!changing.Cancel)
         {
             SetCurrentValue(GestureProperty, newGesture);
@@ -123,6 +140,61 @@ public sealed class HotkeyRecorderButton : Button
         }
 
         UpdateVisualState();
+    }
+
+    internal bool TryCaptureMouseButton(MouseButton button, ModifierKeys modifiers, bool isRelease = false)
+    {
+        if (!HotkeyGesture.IsBindableMouseButton(button))
+        {
+            return false;
+        }
+
+        if (isRelease)
+        {
+            if (suppressedMouseUp != button && canceledMouseUp != button)
+            {
+                return false;
+            }
+
+            suppressedMouseUp = null;
+            canceledMouseUp = null;
+            ReleaseMouseCapture();
+            return true;
+        }
+
+        canceledMouseUp = null;
+        if (!isCapturing)
+        {
+            return IsCapturingInput;
+        }
+
+        suppressedMouseUp = button;
+        // Keep the matching release even if the pointer leaves this window.
+        _ = CaptureMouse();
+        CompleteCapture(HotkeyGesture.FromMouseButton(button, modifiers).Serialize());
+        return true;
+    }
+
+    protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
+    {
+        if (TryCaptureMouseButton(e.ChangedButton, Keyboard.Modifiers))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        base.OnPreviewMouseDown(e);
+    }
+
+    protected override void OnPreviewMouseUp(MouseButtonEventArgs e)
+    {
+        if (TryCaptureMouseButton(e.ChangedButton, Keyboard.Modifiers, isRelease: true))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        base.OnPreviewMouseUp(e);
     }
 
     protected override void OnPreviewKeyUp(KeyEventArgs e)
@@ -149,10 +221,10 @@ public sealed class HotkeyRecorderButton : Button
     {
         if (isCapturing)
         {
-            Content = "Press a key combination…";
-            ToolTip = "Press the shortcut you want to assign.";
-            AutomationProperties.SetName(this, $"{GetActionName()}: press a key combination");
-            AutomationProperties.SetHelpText(this, "Press the shortcut you want to assign.");
+            Content = "Press a key or side button…";
+            ToolTip = "Press a key combination, Mouse4, or Mouse5.";
+            AutomationProperties.SetName(this, $"{GetActionName()}: press a key or side button");
+            AutomationProperties.SetHelpText(this, "Press a key combination, Mouse4, or Mouse5.");
             return;
         }
 

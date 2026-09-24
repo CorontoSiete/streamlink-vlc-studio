@@ -22,18 +22,16 @@ internal sealed record MainViewModelDependencies
     public IFollowedStreamsService? FollowedStreamsService { get; init; }
     public IStreamMetadataService? StreamMetadataService { get; init; }
     public IReplayResolver? ReplayResolver { get; init; }
-    public IReplayChatProvider? ReplayChatProvider { get; init; }
+    public IVodChatProvider? VodChatProvider { get; init; }
     public TimeSpan? RecentThumbnailRefreshInterval { get; init; }
     public TimeSpan? StreamSearchDebounceInterval { get; init; }
     public ITwitchVodService? TwitchVodService { get; init; }
     public TimeSpan? TwitchVodSearchDebounceInterval { get; init; }
     public IBrowseService? BrowseService { get; init; }
     public TimeSpan? BrowseCategorySearchDebounceInterval { get; init; }
-    public IKickChatHistoryProvider? KickChatHistoryProvider { get; init; }
     public TimeSpan? FollowedChannelsRefreshInterval { get; init; }
     public IStreamSearchService? StreamSearchService { get; init; }
     public IKickVodService? KickVodService { get; init; }
-    public IKickEventSubscriptionService? KickEventSubscriptionService { get; init; }
     public ILiveNotificationService? LiveNotificationService { get; init; }
     public ITwitchSubOnlyVodResolver? TwitchSubOnlyVodResolver { get; init; }
     public ITwitchClipService? TwitchClipService { get; init; }

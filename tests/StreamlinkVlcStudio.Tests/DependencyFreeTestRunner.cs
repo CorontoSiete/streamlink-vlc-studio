@@ -6,6 +6,12 @@ internal static class DependencyFreeTestRunner
     private static readonly TimeSpan DefaultTestTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaximumConfiguredTimeout = TimeSpan.FromDays(1);
+    // RunInFreshProcessAsync waits `timeout + IsolatedProcessGrace` before it kills the child, so
+    // the outer race must allow strictly more than that. Otherwise a merely slow isolated test
+    // trips the outer abort first and stops the whole remaining suite while the child is still
+    // running, instead of failing that one test.
+    private static readonly TimeSpan IsolatedProcessGrace = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan IsolatedProcessTimeoutMargin = TimeSpan.FromSeconds(10);
     private static readonly HashSet<string> FreshProcessTests = new(StringComparer.Ordinal)
     {
         "inactive window first click focuses docked chat input and accepts typing",
@@ -44,10 +50,12 @@ internal static class DependencyFreeTestRunner
         foreach (var test in selected)
         {
             executed++;
+            var isolated = ShouldRunInFreshProcess(test.Name);
+            var testTimeout = isolated ? timeout + IsolatedProcessTimeoutMargin : timeout;
             Task runTask;
             try
             {
-                runTask = ShouldRunInFreshProcess(test.Name)
+                runTask = isolated
                     ? RunInFreshProcessAsync(test.Name, timeout)
                     : test.Run() ?? Task.FromException(
                         new InvalidOperationException($"Test '{test.Name}' returned a null task."));
@@ -58,7 +66,7 @@ internal static class DependencyFreeTestRunner
             }
 
             using var timeoutCancellation = new CancellationTokenSource();
-            var timeoutTask = Task.Delay(timeout, timeoutCancellation.Token);
+            var timeoutTask = Task.Delay(testTimeout, timeoutCancellation.Token);
             var completed = await Task.WhenAny(runTask, timeoutTask).ConfigureAwait(false);
             if (ReferenceEquals(completed, runTask))
             {
@@ -86,7 +94,7 @@ internal static class DependencyFreeTestRunner
             }
 
             timedOut++;
-            Console.WriteLine($"TIMEOUT {test.Name} after {timeout.TotalSeconds:0.#} seconds; draining before stopping.");
+            Console.WriteLine($"TIMEOUT {test.Name} after {testTimeout.TotalSeconds:0.#} seconds; draining before stopping.");
 
             if (!runTask.IsCompleted)
             {
@@ -167,7 +175,7 @@ internal static class DependencyFreeTestRunner
         var errorTask = process.StandardError.ReadToEndAsync();
         try
         {
-            await process.WaitForExitAsync().WaitAsync(timeout + TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await process.WaitForExitAsync().WaitAsync(timeout + IsolatedProcessGrace).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {

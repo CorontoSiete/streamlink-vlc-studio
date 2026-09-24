@@ -14,7 +14,6 @@ internal static partial class ApplicationTestCatalog
                 NativeOverlayPipeNameOverride = pipeName
             });
             var chatFactory = new FakeChatClientFactory();
-            chatFactory.Client.BackfillCoveredRequestedRange = true;
             var replay = new ReplaySessionInfo(
                 PlatformKind.Kick,
                 "streamer",
@@ -25,7 +24,7 @@ internal static partial class ApplicationTestCatalog
                 true,
                 "",
                 "best");
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested."));
+            var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested."));
             var tab = TestViewModels.CreateTab(
                 StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
                 "source",
@@ -35,7 +34,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -46,7 +45,12 @@ internal static partial class ApplicationTestCatalog
 
             tab.SetVideoHandle(new IntPtr(42));
             await tab.StartAsync(settings);
-            chatFactory.Client.BackfillMessages.Add(new ChatMessage(
+            // In overlay layout the capture client is connected in the background, so wait for it
+            // before feeding chat through it.
+            await TestWait.UntilAsync(
+                () => chatFactory.Client.Connected,
+                TimeSpan.FromSeconds(4));
+            chatFactory.Client.Receive(new ChatMessage(
                 PlatformKind.Kick,
                 "streamer",
                 "viewer",
@@ -57,15 +61,14 @@ internal static partial class ApplicationTestCatalog
             var initialFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
                 pipeName,
                 IsNativeOverlayRenderedChatFrame,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(8));
             await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-            AssertNativeOverlayChatFrame(await initialFrameTask);
             await TestWait.UntilAsync(
                 () => tab.ChatMessages.Any(message => message.Message == "initial kick native overlay chat"),
-                TimeSpan.FromSeconds(1));
+                TimeSpan.FromSeconds(2));
             Assert.True(tab.ChatMessages.Any(message => message.Message == "initial kick native overlay chat"));
+            AssertNativeOverlayChatFrame(await initialFrameTask);
 
-            var requestCountBeforeEmpty = chatFactory.Client.BackfillUntilRequests.Count;
             var emptyFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
                 pipeName,
                 IsNativeOverlayTransparentFrame,
@@ -73,13 +76,9 @@ internal static partial class ApplicationTestCatalog
             await tab.SeekReplayAsync(TimeSpan.FromMinutes(30));
 
             AssertNativeOverlayTransparentFrame(await emptyFrameTask);
-            await TestWait.UntilAsync(
-                () => chatFactory.Client.BackfillUntilRequests.Count > requestCountBeforeEmpty,
-                TimeSpan.FromSeconds(1));
             Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "initial kick native overlay chat"));
 
-            var requestCountBeforeRecovery = chatFactory.Client.BackfillUntilRequests.Count;
-            chatFactory.Client.BackfillMessages.Add(new ChatMessage(
+            chatFactory.Client.Receive(new ChatMessage(
                 PlatformKind.Kick,
                 "streamer",
                 "later-viewer",
@@ -94,13 +93,9 @@ internal static partial class ApplicationTestCatalog
 
             AssertNativeOverlayChatFrame(await recoveredFrameTask);
             await TestWait.UntilAsync(
-                () => chatFactory.Client.BackfillUntilRequests.Count > requestCountBeforeRecovery,
-                TimeSpan.FromSeconds(1));
-            await TestWait.UntilAsync(
                 () => tab.ChatMessages.Any(message => message.Message == "later kick timestamp overlay chat"),
                 TimeSpan.FromSeconds(1));
             Assert.True(tab.ChatMessages.Any(message => message.Message == "later kick timestamp overlay chat"));
-            Assert.Equal(0, replayChatProvider.CallCount);
 
             await tab.DisposeAsync();
         });
@@ -437,8 +432,8 @@ internal static partial class ApplicationTestCatalog
                 true,
                 "",
                 "best");
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-                new ReplayChatMessage(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(
                         PlatformKind.Twitch,
@@ -458,7 +453,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 Dispatch,
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -550,8 +545,8 @@ internal static partial class ApplicationTestCatalog
                 "",
                 "best",
                 ChatRoomId: roomId);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-                new ReplayChatMessage(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(
                         PlatformKind.Twitch,
@@ -573,7 +568,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 Dispatch,
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -653,8 +648,8 @@ internal static partial class ApplicationTestCatalog
                 true,
                 "",
                 "best");
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-                new ReplayChatMessage(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(
                         PlatformKind.Twitch,
@@ -674,7 +669,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 Dispatch,
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -722,7 +717,7 @@ internal static partial class ApplicationTestCatalog
             "",
             "best",
             ReplayMediaKind.CurrentLiveDvr);
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("VOD comments ID should not be requested."));
         var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("streamer", PlatformKind.Twitch),
             "source",
@@ -732,7 +727,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -756,9 +751,9 @@ internal static partial class ApplicationTestCatalog
         Assert.True(tab.IsReplayMode);
         Assert.True(tab.IsBehindLive);
         Assert.True(chatFactory.Client.Connected);
-        Assert.Equal(0, replayChatProvider.CallCount);
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "captured hello"));
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("VOD comments ID", StringComparison.Ordinal)));
+        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("unexpected provider call", StringComparison.Ordinal)));
 
         tab.OutgoingChatText = "should not send";
         await tab.SendChatMessageAsync();
@@ -783,7 +778,7 @@ internal static partial class ApplicationTestCatalog
             "",
             "best",
             ReplayMediaKind.CurrentLiveDvr);
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("VOD comments ID should not be requested."));
         var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("streamer", PlatformKind.Twitch),
             "source",
@@ -793,7 +788,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -816,7 +811,6 @@ internal static partial class ApplicationTestCatalog
 
         Assert.True(tab.IsReplayMode);
         Assert.True(tab.IsBehindLive);
-        Assert.Equal(0, replayChatProvider.CallCount);
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("Current-live DVR chat", StringComparison.Ordinal)));
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("was not captured by this tab", StringComparison.Ordinal)));
@@ -847,7 +841,7 @@ internal static partial class ApplicationTestCatalog
                 "",
                 "best",
                 ReplayMediaKind.CurrentLiveDvr);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+            var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("VOD comments ID should not be requested."));
             var tab = TestViewModels.CreateTab(
                 StreamInputParser.Parse("streamer", PlatformKind.Twitch),
                 "source",
@@ -857,7 +851,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -894,8 +888,7 @@ internal static partial class ApplicationTestCatalog
             await tab.SeekReplayAsync(new TimeSpan(7, 16, 0));
 
             AssertNativeOverlayTransparentFrame(await blankFrameTask);
-            Assert.Equal(0, replayChatProvider.CallCount);
-            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
+                Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
             Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("Current-live DVR chat", StringComparison.Ordinal)));
             Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("was not captured by this tab", StringComparison.Ordinal)));
 
@@ -927,7 +920,7 @@ internal static partial class ApplicationTestCatalog
                 "",
                 "best",
                 ReplayMediaKind.CurrentLiveDvr);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("VOD comments ID should not be requested."));
+            var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("VOD comments ID should not be requested."));
             var tab = TestViewModels.CreateTab(
                 StreamInputParser.Parse("streamer", PlatformKind.Twitch),
                 "source",
@@ -937,7 +930,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -969,8 +962,7 @@ internal static partial class ApplicationTestCatalog
             seekRelease.SetResult();
             await seekTask;
 
-            Assert.Equal(0, replayChatProvider.CallCount);
-            Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
+                Assert.Equal(false, tab.ChatMessages.Any(message => message.Message == "first captured Twitch DVR chat"));
             Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("Current-live DVR chat", StringComparison.Ordinal)));
             Assert.Equal(false, tab.ChatMessages.Any(message => message.Message.Contains("was not captured by this tab", StringComparison.Ordinal)));
 
@@ -1003,7 +995,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("unexpected provider call")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("unexpected provider call")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1063,7 +1055,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: replayResolver,
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("unexpected provider call")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("unexpected provider call")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1102,7 +1094,7 @@ internal static partial class ApplicationTestCatalog
             "",
             "best");
         var replayResolver = new BlockingReplayResolver(replay, releaseReplayLookup.Task);
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested."));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested."));
         var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
             "source",
@@ -1112,7 +1104,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: replayResolver,
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1147,7 +1139,6 @@ internal static partial class ApplicationTestCatalog
         Assert.True(tab.IsBehindLive);
         Assert.True(chatFactory.Client.Connected);
         Assert.Equal(false, tab.CanSendChatMessages);
-        Assert.Equal(0, replayChatProvider.CallCount);
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "buffered kick captured chat"));
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("Kick seekback chat", StringComparison.Ordinal)));
 
@@ -1178,7 +1169,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: replayResolver,
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested.")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1208,385 +1199,6 @@ internal static partial class ApplicationTestCatalog
         Assert.True(tab.IsReplayMode);
         Assert.True(tab.IsBehindLive);
         Assert.True(DockedChatMessagesContain(tab, "inflight captured kick chat"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekbar seekback backfills older recent chat before captured range warning", async () =>
-    {
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var chatFactory = new FakeChatClientFactory();
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-123",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            new FakePlaybackEngineFactory(),
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = true;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        chatFactory.Client.Receive(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "viewer",
-            "first captured after target",
-            startedAt.AddMinutes(45).AddSeconds(14),
-            MessageId: "first-captured-after-target"));
-        var expectedFromTimestamp = startedAt.AddMinutes(44).AddSeconds(15);
-        var expectedThroughTimestamp = startedAt.AddMinutes(45);
-        var visibleBackfillMessage = new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "older-viewer",
-            "older kick backfill for seekbar",
-            startedAt.AddMinutes(44).AddSeconds(50),
-            MessageId: "older-kick-backfill-for-seekbar");
-        chatFactory.Client.BackfillHandler = (client, fromTimestampUtc, throughTimestampUtc, cancellationToken) =>
-        {
-            if (fromTimestampUtc == expectedFromTimestamp &&
-                throughTimestampUtc == expectedThroughTimestamp)
-            {
-                client.Receive(visibleBackfillMessage);
-                return Task.FromResult(new ChatHistoryBackfillResult(
-                    Attempted: true,
-                    LoadedMessageCount: 1,
-                    CoveredRequestedRange: true,
-                    CoveredFromTimestampUtc: fromTimestampUtc,
-                    CoveredThroughTimestampUtc: throughTimestampUtc,
-                    Messages: [visibleBackfillMessage]));
-            }
-
-            return Task.FromResult(new ChatHistoryBackfillResult(
-                Attempted: true,
-                LoadedMessageCount: 0,
-                CoveredRequestedRange: false,
-                CoveredFromTimestampUtc: null,
-                CoveredThroughTimestampUtc: null));
-        };
-
-        tab.BeginReplaySeekPreview();
-        tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(45).TotalSeconds;
-        await tab.CommitReplaySeekPreviewAsync(tab.ReplaySeekSliderValue);
-
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "older kick backfill for seekbar"),
-            TimeSpan.FromSeconds(1));
-
-        Assert.True(chatFactory.Client.BackfillUntilRequests.Any(request =>
-            request == expectedFromTimestamp));
-        Assert.True(chatFactory.Client.BackfillRangeRequests.Any(request =>
-            request.FromTimestampUtc == expectedFromTimestamp &&
-            request.ThroughTimestampUtc == expectedThroughTimestamp));
-        Assert.True(tab.IsReplayMode);
-        Assert.True(tab.IsBehindLive);
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick seekback chat before"));
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekback does not warn when timestamp backfill verifies empty chat", async () =>
-    {
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var chatFactory = new FakeChatClientFactory();
-        chatFactory.Client.BackfillCoveredRequestedRange = true;
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-empty-chat",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            new FakePlaybackEngineFactory(),
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = true;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-
-        await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillUntilRequests.Any(request =>
-                request == startedAt.AddMinutes(9).AddSeconds(15)),
-            TimeSpan.FromSeconds(1));
-        Assert.True(tab.IsReplayMode);
-        Assert.True(tab.IsBehindLive);
-        Assert.Equal(false, tab.DockedChatMessages.Any(message =>
-            message.Message.Contains("Kick seekback chat", StringComparison.Ordinal)));
-        Assert.Equal(false, tab.DockedChatMessages.Any(message =>
-            message.Message.Contains("Kick replay chat should not be requested", StringComparison.Ordinal)));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekback empty captured window clears stale chat before uncovered backfill notice", async () =>
-    {
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var chatFactory = new FakeChatClientFactory();
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-empty-window",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            new FakePlaybackEngineFactory(),
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = true;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        chatFactory.Client.Receive(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "viewer",
-            "stale future captured chat",
-            startedAt.AddMinutes(50),
-            MessageId: "stale-future-captured-chat"));
-
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(50));
-        Assert.True(DockedChatMessagesContain(tab, "stale future captured chat"));
-
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-
-        Assert.Equal(false, DockedChatMessagesContain(tab, "stale future captured chat"));
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContainText(tab, "Kick seekback chat before"),
-            TimeSpan.FromSeconds(1));
-        Assert.True(DockedChatMessagesContainText(tab, "Kick seekback chat before"));
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekbar seekback uses standalone history when chat auto-connect is disabled", async () =>
-    {
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var chatFactory = new FakeChatClientFactory();
-        var kickHistoryProvider = new FakeKickChatHistoryProvider();
-        kickHistoryProvider.BackfillMessages.Add(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "history-viewer",
-            "standalone kick history chat",
-            startedAt.AddMinutes(9).AddSeconds(50),
-            MessageId: "standalone-kick-history-chat"));
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-standalone-no-auto-chat",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            new FakePlaybackEngineFactory(),
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")),
-            kickChatHistoryProvider: kickHistoryProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = false;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "standalone kick history chat"),
-            TimeSpan.FromSeconds(1));
-        Assert.Equal(0, chatFactory.Client.ConnectCount);
-        Assert.True(kickHistoryProvider.Requests.Any(request =>
-            request.FromTimestampUtc == startedAt.AddMinutes(9).AddSeconds(15) &&
-            request.ThroughTimestampUtc == startedAt.AddMinutes(10)));
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekbar seekback uses standalone history when chat is hidden and stopped", async () =>
-    {
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var chatFactory = new FakeChatClientFactory();
-        var kickHistoryProvider = new FakeKickChatHistoryProvider();
-        kickHistoryProvider.BackfillMessages.Add(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "history-viewer",
-            "hidden chat standalone kick history",
-            startedAt.AddMinutes(10),
-            MessageId: "hidden-chat-standalone-kick-history"));
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-standalone-hidden-chat",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            new FakePlaybackEngineFactory(),
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")),
-            kickChatHistoryProvider: kickHistoryProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = true;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await TestWait.UntilAsync(
-            () => chatFactory.Client.Connected,
-            TimeSpan.FromSeconds(1));
-
-        tab.IsChatVisible = false;
-        await tab.RestartChatAsync(settings);
-        await chatFactory.Client.DisconnectAsync();
-        Assert.Equal(false, chatFactory.Client.Connected);
-
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "hidden chat standalone kick history"),
-            TimeSpan.FromSeconds(1));
-
-        Assert.True(kickHistoryProvider.Requests.Count > 0);
-        Assert.Equal(0, chatFactory.Client.BackfillRangeRequests.Count);
-        Assert.Equal(false, chatFactory.Client.Connected);
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekback provider future messages do not remain visible after seeking backward", async () =>
-    {
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var kickHistoryProvider = new FakeKickChatHistoryProvider
-        {
-            FilterMessagesToRequest = false
-        };
-        kickHistoryProvider.BackfillMessages.Add(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "future-viewer",
-            "future provider kick history",
-            startedAt.AddMinutes(50),
-            MessageId: "future-provider-kick-history"));
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-provider-window-reset",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            new FakePlaybackEngineFactory(),
-            new FakeChatClientFactory(),
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")),
-            kickChatHistoryProvider: kickHistoryProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = false;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(50));
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "future provider kick history"),
-            TimeSpan.FromSeconds(1));
-
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await TestWait.UntilAsync(
-            () => kickHistoryProvider.Requests.Count >= 2,
-            TimeSpan.FromSeconds(1));
-
-        Assert.Equal(false, DockedChatMessagesContain(tab, "future provider kick history"));
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
 
         await tab.DisposeAsync();
     }),
@@ -1636,7 +1248,7 @@ internal static partial class ApplicationTestCatalog
             true,
             "",
             "best");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested."));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested."));
         var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
             "source",
@@ -1646,7 +1258,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1671,7 +1283,6 @@ internal static partial class ApplicationTestCatalog
         Assert.True(tab.IsBehindLive);
         Assert.True(chatFactory.Client.Connected);
         Assert.Equal(false, tab.CanSendChatMessages);
-        Assert.Equal(0, replayChatProvider.CallCount);
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "captured kick hello"));
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("Kick replay chat should not be requested", StringComparison.Ordinal)));
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("Kick seekback chat only includes", StringComparison.Ordinal)));
@@ -1711,7 +1322,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested.")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1732,218 +1343,26 @@ internal static partial class ApplicationTestCatalog
 
         await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "initial kick captured chat"));
-        await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillUntilRequests.Count > 0,
-            TimeSpan.FromSeconds(1));
 
-        var initialRequestCount = chatFactory.Client.BackfillUntilRequests.Count;
-        chatFactory.Client.BackfillMessages.Add(new ChatMessage(
+        // Chat the provider has already fetched must only become visible once playback reaches it.
+        chatFactory.Client.Receive(new ChatMessage(
             PlatformKind.Kick,
             "streamer",
             "later-viewer",
             "later kick timestamp chat",
             startedAt.AddMinutes(10).AddSeconds(50),
             MessageId: "later-kick-timestamp-chat"));
+        Assert.Equal(false, DockedChatMessagesContain(tab, "later kick timestamp chat"));
 
         MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(50));
         forcedClockPosition = TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(50));
         await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillUntilRequests.Count > initialRequestCount,
-            TimeSpan.FromSeconds(2));
-        await TestWait.UntilAsync(
             () => DockedChatMessagesContain(tab, "later kick timestamp chat"),
-            TimeSpan.FromSeconds(1));
+            TimeSpan.FromSeconds(2));
 
         Assert.True(DockedChatMessagesContain(tab, "initial kick captured chat"));
         Assert.True(DockedChatMessagesContain(tab, "later kick timestamp chat"));
         Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekback rechecks after partial timestamp backfill and retains reached chat", async () =>
-    {
-        TimeSpan? forcedClockPosition = null;
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
-        {
-            PlaybackClockOverride = engine =>
-                (true, new PlaybackClock(forcedClockPosition ?? engine.Position, engine.Duration, engine.Seekable))
-        });
-        var chatFactory = new FakeChatClientFactory();
-        chatFactory.Client.BackfillMessages.Add(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "early-viewer",
-            "early partial kick timestamp chat",
-            startedAt.AddMinutes(9).AddSeconds(16),
-            MessageId: "early-partial-kick-timestamp-chat"));
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-partial-backfill",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested."));
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            playbackFactory,
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = true;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "early partial kick timestamp chat"),
-            TimeSpan.FromSeconds(1));
-        await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillRangeRequests.Count > 0,
-            TimeSpan.FromSeconds(1));
-
-        var initialRequestCount = chatFactory.Client.BackfillRangeRequests.Count;
-        chatFactory.Client.BackfillMessages.Add(new ChatMessage(
-            PlatformKind.Kick,
-            "streamer",
-            "later-viewer",
-            "later cursor kick timestamp chat",
-            startedAt.AddMinutes(10).AddSeconds(10),
-            MessageId: "later-cursor-kick-timestamp-chat"));
-
-        MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(10));
-        forcedClockPosition = TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(10));
-        await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillRangeRequests.Count > initialRequestCount,
-            TimeSpan.FromSeconds(2));
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "later cursor kick timestamp chat"),
-            TimeSpan.FromSeconds(1));
-
-        Assert.True(DockedChatMessagesContain(tab, "later cursor kick timestamp chat"));
-        Assert.True(DockedChatMessagesContain(tab, "early partial kick timestamp chat"));
-        Assert.Equal(0, replayChatProvider.CallCount);
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-
-        await tab.DisposeAsync();
-    }),
-    ("Kick seekback supersedes stalled captured backfill with latest offset", async () =>
-    {
-        TimeSpan? forcedClockPosition = null;
-        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
-        {
-            PlaybackClockOverride = engine =>
-                (true, new PlaybackClock(forcedClockPosition ?? engine.Position, engine.Duration, engine.Seekable))
-        });
-        var chatFactory = new FakeChatClientFactory();
-        var handlerGate = new object();
-        var callCount = 0;
-        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstCancellationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        chatFactory.Client.BackfillHandler = async (client, fromTimestampUtc, throughTimestampUtc, cancellationToken) =>
-        {
-            int currentCall;
-            lock (handlerGate)
-            {
-                callCount++;
-                currentCall = callCount;
-            }
-
-            if (currentCall == 1)
-            {
-                firstStarted.SetResult();
-                using var registration = cancellationToken.Register(
-                    () => firstCancellationRequested.TrySetResult());
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            }
-
-            if (currentCall == 2)
-            {
-                secondStarted.SetResult();
-                client.Receive(new ChatMessage(
-                    PlatformKind.Kick,
-                    "streamer",
-                    "newer-viewer",
-                    "newer superseded kick seekback chat",
-                    startedAt.AddMinutes(12).AddSeconds(30),
-                    MessageId: "newer-superseded-kick-seekback-chat"));
-                return new ChatHistoryBackfillResult(
-                    Attempted: true,
-                    LoadedMessageCount: 1,
-                    CoveredRequestedRange: true,
-                    CoveredFromTimestampUtc: fromTimestampUtc,
-                    CoveredThroughTimestampUtc: throughTimestampUtc);
-            }
-
-            return new ChatHistoryBackfillResult(
-                Attempted: true,
-                LoadedMessageCount: 0,
-                CoveredRequestedRange: true,
-                CoveredFromTimestampUtc: fromTimestampUtc,
-                CoveredThroughTimestampUtc: throughTimestampUtc);
-        };
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.example/replay/index.m3u8",
-            "kick-replay-supersede-stalled-backfill",
-            startedAt,
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested."));
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            playbackFactory,
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = true;
-        settings.Chat.Layout = ChatLayout.Docked;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-        MarkReplayClockSeekConfirmed(tab, TimeSpan.FromMinutes(2).Add(TimeSpan.FromSeconds(30)));
-        forcedClockPosition = TimeSpan.FromMinutes(12).Add(TimeSpan.FromSeconds(30));
-        await firstCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await TestWait.UntilAsync(
-            () => DockedChatMessagesContain(tab, "newer superseded kick seekback chat"),
-            TimeSpan.FromSeconds(1));
-
-        Assert.True(DockedChatMessagesContain(tab, "newer superseded kick seekback chat"));
-        Assert.Equal(false, DockedChatMessagesContainText(tab, "Kick replay chat should not be requested"));
-        Assert.True(chatFactory.Client.BackfillRangeRequests.Count >= 2);
-        Assert.Equal(0, replayChatProvider.CallCount);
 
         await tab.DisposeAsync();
     }),
@@ -1976,7 +1395,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested.")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1988,28 +1407,23 @@ internal static partial class ApplicationTestCatalog
 
         await tab.StartAsync(settings);
         await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillRangeRequests.Count > 0,
-            TimeSpan.FromSeconds(1));
 
-        var initialRequestCount = chatFactory.Client.BackfillRangeRequests.Count;
-        chatFactory.Client.BackfillMessages.Add(new ChatMessage(
+        chatFactory.Client.Receive(new ChatMessage(
             PlatformKind.Kick,
             "streamer",
             "later-viewer",
             "anchor progressed kick chat",
             startedAt.AddMinutes(10).AddSeconds(8),
             MessageId: "anchor-progressed-kick-chat"));
+        Assert.Equal(false, DockedChatMessagesContain(tab, "anchor progressed kick chat"));
 
+        // The engine clock is stuck, so only the dead-reckoned anchor can move chat forward.
         MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(8));
         InvokeReplayClockUpdate(tab);
 
         await TestWait.UntilAsync(
-            () => chatFactory.Client.BackfillRangeRequests.Count > initialRequestCount,
-            TimeSpan.FromSeconds(1));
-        await TestWait.UntilAsync(
             () => DockedChatMessagesContain(tab, "anchor progressed kick chat"),
-            TimeSpan.FromSeconds(1));
+            TimeSpan.FromSeconds(2));
 
         Assert.True(tab.ReplaySeekValue >= TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(7)).TotalSeconds);
         Assert.True(DockedChatMessagesContain(tab, "anchor progressed kick chat"));
@@ -2047,7 +1461,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("unexpected provider call")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("unexpected provider call")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2112,7 +1526,7 @@ internal static partial class ApplicationTestCatalog
             true,
             "",
             "best");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested."));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested."));
         var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("https://kick.com/streamer", PlatformKind.Twitch),
             "source",
@@ -2122,7 +1536,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2135,11 +1549,8 @@ internal static partial class ApplicationTestCatalog
         await tab.StartAsync(settings);
         await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
 
-        Assert.Equal(0, replayChatProvider.CallCount);
-        await TestWait.UntilAsync(
-            () => tab.DockedChatMessages.Any(message => message.Message.Contains("Kick seekback chat only includes", StringComparison.Ordinal)),
-            TimeSpan.FromSeconds(1));
-        Assert.True(tab.DockedChatMessages.Any(message => message.Message.Contains("Kick seekback chat only includes", StringComparison.Ordinal)));
+        // Seeking back on a live stream stays quiet; captured chat simply appears as playback
+        // reaches it, so neither a coverage notice nor the provider reason belongs on screen.
         Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message.Contains("Kick replay chat should not be requested", StringComparison.Ordinal)));
 
         chatFactory.Client.Receive(new ChatMessage(
@@ -2181,8 +1592,8 @@ internal static partial class ApplicationTestCatalog
             "",
             "best");
         var replayResolver = new FakeReplayResolver(liveReplay, promotedReplay);
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-            new ReplayChatMessage(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+            new VodChatMessage(
                 TimeSpan.FromMinutes(10),
                 new ChatMessage(PlatformKind.Twitch, "streamer", "vod-viewer", "vod chat after promotion", startedAt.AddMinutes(10)))
         ]));
@@ -2195,7 +1606,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: replayResolver,
-            replayChatProvider: replayChatProvider,
+            vodChatProvider: vodChatProvider,
             twitchLiveDvrPromotionPollInterval: TimeSpan.FromMilliseconds(20));
         var settings = new AppSettings
         {
@@ -2210,9 +1621,11 @@ internal static partial class ApplicationTestCatalog
         await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
 
         await TestWait.UntilAsync(() => replayResolver.CallCount >= 2, TimeSpan.FromSeconds(1));
-        await TestWait.UntilAsync(() => replayChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
+        await TestWait.UntilAsync(
+            () => vodChatProvider.RequestedReplays.Any(replay => replay.ReplayId == "123"),
+            TimeSpan.FromSeconds(2));
 
-        Assert.Equal("123", replayChatProvider.Requests.Last().ReplayId);
+        Assert.True(vodChatProvider.RequestedReplays.Any(replay => replay.ReplayId == "123"));
         Assert.Contains("123", tab.ReplaySeekToolTip);
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "vod chat after promotion"));
 
@@ -2243,7 +1656,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: replayResolver,
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2308,7 +1721,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2373,7 +1786,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2480,7 +1893,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2539,7 +1952,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2591,7 +2004,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2653,7 +2066,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2710,7 +2123,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2753,7 +2166,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2788,35 +2201,6 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekSliderValue);
 
         await tab.DisposeAsync();
-    }),
-    ("does not load Twitch replay chat for current live DVR ids", async () =>
-    {
-        var requestCount = 0;
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
-        {
-            requestCount++;
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("""[]""", Encoding.UTF8, "application/json")
-            };
-        }));
-        var provider = new ReplayChatProvider(httpClient);
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Twitch,
-            "streamer",
-            "https://d1g1f25tn8m2e6.cloudfront.net/live/index-dvr.m3u8",
-            "live-dvr-123456789",
-            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-
-        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromMinutes(10));
-
-        Assert.Equal(false, result.IsAvailable);
-        Assert.Contains("VOD comments ID", result.UnavailableReason);
-        Assert.Equal(0, requestCount);
     }),
     ("parses Twitch IRC PRIVMSG", () =>
     {
@@ -3035,821 +2419,6 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(unixTimestamp, unixMessage!.Timestamp);
         return Task.CompletedTask;
     }),
-    ("parses official Kick chat webhook payload", () =>
-    {
-        var body = """
-        {
-          "message_id": "official-kick-message-1",
-          "broadcaster": {
-            "user_id": 123456789,
-            "username": "Broadcaster",
-            "channel_slug": "streamer"
-          },
-          "sender": {
-            "user_id": 987654321,
-            "username": "viewer",
-            "channel_slug": "viewer",
-            "identity": {
-              "username_color": "#FF5733",
-              "badges": [
-                { "text": "Moderator", "type": "moderator" },
-                { "text": "Subscriber", "type": "subscriber", "count": 3 }
-              ]
-            }
-          },
-          "content": "official hello [emote:4148074:HYPERCLAP]",
-          "created_at": "2026-06-01T20:04:05Z"
-        }
-        """;
-
-        var parsed = KickOfficialChatWebhookParser.TryParseChatMessage(body, out var message, out var error);
-
-        Assert.True(parsed, error);
-        Assert.Equal(PlatformKind.Kick, message.Platform);
-        Assert.Equal("streamer", message.Channel);
-        Assert.Equal("viewer", message.Username);
-        Assert.Equal("official hello [emote:4148074:HYPERCLAP]", message.Message);
-        Assert.Equal("official-kick-message-1", message.MessageId);
-        Assert.Equal("#FF5733", message.Color);
-        Assert.Equal(new DateTimeOffset(2026, 6, 1, 20, 4, 5, TimeSpan.Zero), message.Timestamp);
-        Assert.Equal("moderator", message.Badges![0].Id);
-        Assert.Equal("subscriber", message.Badges[1].Id);
-        Assert.Equal("3", message.Badges[1].Version);
-        Assert.Equal("HYPERCLAP", message.Emotes![0].Code);
-        return Task.CompletedTask;
-    }),
-    ("loads Kick replay chat from official webhook cache", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-official-chat-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var store = new KickOfficialChatReplayStore(cacheDirectory);
-            await store.AppendAsync(new ChatMessage(
-                PlatformKind.Kick,
-                "streamer",
-                "viewer",
-                "official cached replay chat",
-                startedAt.AddMinutes(2),
-                MessageId: "official-cached-replay-chat"));
-            await store.AppendAsync(new ChatMessage(
-                PlatformKind.Kick,
-                "streamer",
-                "viewer",
-                "outside requested window",
-                startedAt.AddMinutes(20),
-                MessageId: "outside-requested-window"));
-
-            var provider = new ReplayChatProvider(
-                new HttpClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Kick official cache should not call HTTP."))),
-                store);
-            var replay = new ReplaySessionInfo(
-                PlatformKind.Kick,
-                "streamer",
-                "https://vod.kick.example/index.m3u8",
-                "kick-vod-1",
-                startedAt,
-                TimeSpan.FromHours(1),
-                true,
-                "");
-
-            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromMinutes(2));
-
-            Assert.True(result.IsAvailable, result.UnavailableReason);
-            Assert.Equal(TimeSpan.FromMinutes(1), result.LoadedFromOffset);
-            Assert.Equal(TimeSpan.FromMinutes(6), result.LoadedThroughOffset);
-            var message = result.Messages.Single();
-            Assert.Equal(TimeSpan.FromMinutes(2), message.Offset);
-            Assert.Equal("official cached replay chat", message.Message.Message);
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("keeps official Kick replay cache paths inside the configured root", async () =>
-    {
-        var parentDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-cache-path-" + Guid.NewGuid().ToString("N"));
-        var cacheDirectory = Path.Combine(parentDirectory, "cache");
-        try
-        {
-            var timestamp = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var store = new KickOfficialChatReplayStore(cacheDirectory);
-            await store.AppendAsync(new ChatMessage(
-                PlatformKind.Kick,
-                "..",
-                "viewer",
-                "contained message",
-                timestamp,
-                MessageId: "contained-message"));
-
-            var files = Directory.GetFiles(cacheDirectory, "*.jsonl", SearchOption.AllDirectories);
-            Assert.Equal(1, files.Length);
-            var rootPrefix = Path.GetFullPath(cacheDirectory) + Path.DirectorySeparatorChar;
-            Assert.True(Path.GetFullPath(files[0]).StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase));
-            Assert.Equal(false, File.Exists(Path.Combine(parentDirectory, "20260601.jsonl")));
-        }
-        finally
-        {
-            if (Directory.Exists(parentDirectory))
-            {
-                Directory.Delete(parentDirectory, recursive: true);
-            }
-        }
-    }),
-    ("serializes concurrent official Kick replay cache appends", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-cache-concurrent-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var timestamp = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var store = new KickOfficialChatReplayStore(cacheDirectory);
-            var writes = Enumerable.Range(0, 200)
-                .Select(index => store.AppendAsync(new ChatMessage(
-                    PlatformKind.Kick,
-                    "streamer",
-                    $"viewer-{index}",
-                    $"message-{index}",
-                    timestamp,
-                    MessageId: $"concurrent-{index}")));
-
-            await Task.WhenAll(writes);
-
-            var result = await store.ReadMessagesAsync(
-                "streamer",
-                timestamp.Subtract(TimeSpan.FromSeconds(1)),
-                timestamp.AddSeconds(1));
-            Assert.Equal(200, result.Messages.Count);
-            Assert.Equal(200, result.Messages.Select(message => message.MessageId).Distinct(StringComparer.Ordinal).Count());
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("loads Kick replay chat from timestamp messages endpoint", async () =>
-    {
-        var requests = new List<Uri>();
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-        {
-            requests.Add(request.RequestUri!);
-            Assert.Equal("kick.com", request.RequestUri!.Host);
-            Assert.Equal(new Uri("https://kick.com/streamer"), request.Headers.Referrer);
-
-            if (request.RequestUri.AbsolutePath == "/api/v2/channels/streamer")
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"id":668,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
-                };
-            }
-
-            Assert.Equal("/api/v2/channels/668/messages", request.RequestUri.AbsolutePath);
-
-            var query = Uri.UnescapeDataString(request.RequestUri.Query);
-            var body = query.Contains("2026-06-01T20:00:00.000Z", StringComparison.Ordinal)
-                ? """
-                {
-                  "status": {"error": false, "code": 200, "message": "SUCCESS"},
-                  "data": {
-                    "messages": [
-                      {
-                        "id": "kick-replay-5",
-                        "content": "timestamp replay chat [emote:4148074:HYPERCLAP]",
-                        "created_at": "2026-06-01T20:00:05Z",
-                        "sender": {
-                          "username": "ViewerOne",
-                          "identity": {
-                            "color": "#55AAFF",
-                            "badges": [{"type": "subscriber", "text": "Subscriber", "count": 3}]
-                          }
-                        }
-                      },
-                      {
-                        "id": "kick-replay-10",
-                        "content": "second replay chat",
-                        "created_at": "2026-06-01T20:00:10Z",
-                        "sender": {"username": "ViewerTwo"}
-                      }
-                    ],
-                    "pinned_message": null
-                  }
-                }
-                """
-                : """{"data":{"messages":[],"pinned_message":null}}""";
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json")
-            };
-        }));
-        var provider = new ReplayChatProvider(httpClient);
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://vod.kick.example/index.m3u8",
-            "kick-vod-1",
-            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-            TimeSpan.FromSeconds(20),
-            true,
-            "",
-            ChatRoomId: "668");
-
-        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
-
-        Assert.True(result.IsAvailable, result.UnavailableReason);
-        Assert.Equal(TimeSpan.Zero, result.LoadedFromOffset);
-        Assert.Equal(TimeSpan.FromSeconds(10), result.LoadedThroughOffset);
-        Assert.Equal(2, result.Messages.Count);
-        Assert.Equal(TimeSpan.FromSeconds(5), result.Messages[0].Offset);
-        Assert.Equal("ViewerOne", result.Messages[0].Message.Username);
-        Assert.Equal("timestamp replay chat [emote:4148074:HYPERCLAP]", result.Messages[0].Message.Message);
-        Assert.Equal("668", result.Messages[0].Message.RoomId);
-        Assert.Equal("kick-replay-5", result.Messages[0].Message.MessageId);
-        Assert.Equal("subscriber", result.Messages[0].Message.Badges![0].Id);
-        Assert.Equal("HYPERCLAP", result.Messages[0].Message.Emotes![0].Code);
-        Assert.Equal(TimeSpan.FromSeconds(10), result.Messages[1].Offset);
-        Assert.Equal("second replay chat", result.Messages[1].Message.Message);
-        Assert.Equal(2, requests.Count);
-        Assert.True(requests.Any(uri => Uri.UnescapeDataString(uri.Query).Contains("2026-06-01T20:00:00.000Z", StringComparison.Ordinal)));
-    }),
-    ("Kick VOD timestamp replay chat starts at visible window and preserves partial coverage", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-visible-partial-chat-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var requests = new List<Uri>();
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-            {
-                requests.Add(request.RequestUri!);
-                if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
-                {
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
-                    };
-                }
-
-                Assert.Equal("/api/v2/channels/123/messages", request.RequestUri.AbsolutePath);
-                var query = Uri.UnescapeDataString(request.RequestUri.Query);
-                var body = query.Contains("2026-06-01T20:00:15.000Z", StringComparison.Ordinal)
-                    ? """
-                    {
-                      "data": {
-                        "messages": [
-                          {
-                            "id": "kick-visible-partial",
-                            "content": "visible partial replay chat",
-                            "created_at": "2026-06-01T20:00:25Z",
-                            "sender": { "username": "VisibleViewer" }
-                          }
-                        ]
-                      }
-                    }
-                    """
-                    : """{"data":{"messages":[]}}""";
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(body, Encoding.UTF8, "application/json")
-                };
-            }));
-            var provider = new ReplayChatProvider(httpClient, new KickOfficialChatReplayStore(cacheDirectory));
-            var replay = new ReplaySessionInfo(
-                PlatformKind.Kick,
-                "streamer",
-                "https://vod.kick.example/index.m3u8",
-                "kick-vod-1",
-                startedAt,
-                TimeSpan.FromMinutes(10),
-                true,
-                "",
-                ChatRoomId: "123");
-
-            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(60));
-
-            Assert.True(result.IsAvailable, result.UnavailableReason);
-            Assert.Equal(TimeSpan.FromSeconds(15), result.LoadedFromOffset);
-            Assert.Equal(TimeSpan.FromSeconds(25), result.LoadedThroughOffset);
-            var message = result.Messages.Single();
-            Assert.Equal(TimeSpan.FromSeconds(25), message.Offset);
-            Assert.Equal("visible partial replay chat", message.Message.Message);
-            Assert.SequenceEqual(
-                new[] { "https://kick.com/api/v2/channels/123/messages?start_time=2026-06-01T20%3A00%3A15.000Z" },
-                requests
-                    .Where(uri => uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
-                    .Select(uri => uri.AbsoluteUri)
-                    .ToArray());
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("loads Kick replay chat through curl fallback when timestamp HttpClient is forbidden", async () =>
-    {
-        var previousCurl = Environment.GetEnvironmentVariable("STREAMLINK_KICK_CURL");
-        var curlDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-replay-curl-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            Directory.CreateDirectory(curlDirectory);
-            var curlPath = Path.Combine(curlDirectory, "curl.cmd");
-            await File.WriteAllTextAsync(
-                curlPath,
-                """
-                @echo off
-                echo {"data":{"messages":[{"id":"kick-curl-replay","content":"curl fallback replay chat","created_at":"2026-06-01T20:00:05Z","sender":{"username":"CurlViewer"}}]}}
-                """);
-            Environment.SetEnvironmentVariable("STREAMLINK_KICK_CURL", curlPath);
-
-            var requests = new List<Uri>();
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-            {
-                requests.Add(request.RequestUri!);
-                if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
-                {
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
-                    };
-                }
-
-                return new HttpResponseMessage(HttpStatusCode.Forbidden)
-                {
-                    Content = new StringContent("""{"message":"blocked"}""", Encoding.UTF8, "application/json")
-                };
-            }));
-            var provider = new ReplayChatProvider(httpClient, new MemoryLogger());
-            var replay = new ReplaySessionInfo(
-                PlatformKind.Kick,
-                "streamer",
-                "https://vod.kick.example/index.m3u8",
-                "kick-vod-1",
-                new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-                TimeSpan.FromSeconds(20),
-                true,
-                "",
-                ChatRoomId: "123");
-
-            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
-
-            Assert.True(result.IsAvailable, result.UnavailableReason);
-            var message = result.Messages.Single();
-            Assert.Equal(TimeSpan.FromSeconds(5), message.Offset);
-            Assert.Equal("CurlViewer", message.Message.Username);
-            Assert.Equal("curl fallback replay chat", message.Message.Message);
-            Assert.Equal("kick-curl-replay", message.Message.MessageId);
-            Assert.Equal("668", message.Message.RoomId);
-            Assert.True(requests.Any(uri =>
-                uri.AbsolutePath == "/api/v2/channels/123/messages" &&
-                Uri.UnescapeDataString(uri.Query).Contains("2026-06-01T20:00:00.000Z", StringComparison.Ordinal)));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("STREAMLINK_KICK_CURL", previousCurl);
-            if (Directory.Exists(curlDirectory))
-            {
-                Directory.Delete(curlDirectory, recursive: true);
-            }
-        }
-    }),
-    ("loads Kick replay chat from chatroom id after empty channel id page", async () =>
-    {
-        var requests = new List<Uri>();
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-        {
-            requests.Add(request.RequestUri!);
-            if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
-                };
-            }
-
-            if (request.RequestUri.AbsolutePath == "/api/v2/channels/123/messages")
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"data":{"messages":[]}}""", Encoding.UTF8, "application/json")
-                };
-            }
-
-            Assert.Equal("/api/v2/channels/668/messages", request.RequestUri.AbsolutePath);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("""
-                {
-                  "data": {
-                    "messages": [
-                      {
-                        "id": "kick-chatroom-replay",
-                        "content": "chatroom id replay chat",
-                        "created_at": "2026-06-01T20:00:10Z",
-                        "sender": { "username": "ChatroomViewer" }
-                      }
-                    ]
-                  }
-                }
-                """, Encoding.UTF8, "application/json")
-            };
-        }));
-        var provider = new ReplayChatProvider(httpClient);
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://vod.kick.example/index.m3u8",
-            "kick-vod-1",
-            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-            TimeSpan.FromSeconds(20),
-            true,
-            "",
-            ChatRoomId: "123");
-
-        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
-
-        Assert.True(result.IsAvailable, result.UnavailableReason);
-        var message = result.Messages.Single();
-        Assert.Equal(TimeSpan.FromSeconds(10), message.Offset);
-        Assert.Equal("ChatroomViewer", message.Message.Username);
-        Assert.Equal("chatroom id replay chat", message.Message.Message);
-        Assert.Equal("668", message.Message.RoomId);
-        Assert.SequenceEqual(
-            new[]
-            {
-                "https://kick.com/api/v2/channels/123/messages?start_time=2026-06-01T20%3A00%3A00.000Z",
-                "https://kick.com/api/v2/channels/668/messages?start_time=2026-06-01T20%3A00%3A00.000Z"
-            },
-            requests
-                .Where(uri => uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
-                .Select(uri => uri.AbsoluteUri)
-                .ToArray());
-    }),
-    ("pages explicit Kick VOD replay chat through timestamp cursors", async () =>
-    {
-        var requests = new List<Uri>();
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-        {
-            requests.Add(request.RequestUri!);
-            if (request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer")
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"id":123,"chatroom":{"id":668}}""", Encoding.UTF8, "application/json")
-                };
-            }
-
-            if (request.RequestUri.Query.Contains("cursor=cursor-1", StringComparison.Ordinal))
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""
-                    {
-                      "data": {
-                        "messages": [
-                          {
-                            "id": "kick-replay-cursor-2",
-                            "content": "cursor replay page two",
-                            "created_at": "2026-06-01T20:00:20Z",
-                            "sender": { "username": "CursorTwo" }
-                          }
-                        ]
-                      }
-                    }
-                    """, Encoding.UTF8, "application/json")
-                };
-            }
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("""
-                {
-                  "data": {
-                    "messages": [
-                      {
-                        "id": "kick-replay-cursor-1",
-                        "content": "cursor replay page one",
-                        "created_at": "2026-06-01T20:00:05Z",
-                        "sender": { "username": "CursorOne" }
-                      }
-                    ],
-                    "cursor": "cursor-1"
-                  }
-                }
-                """, Encoding.UTF8, "application/json")
-            };
-        }));
-        var provider = new ReplayChatProvider(httpClient);
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://vod.kick.example/index.m3u8",
-            "kick-vod-1",
-            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-            TimeSpan.FromSeconds(20),
-            true,
-            "",
-            ChatRoomId: "123");
-
-        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
-
-        Assert.True(result.IsAvailable, result.UnavailableReason);
-        Assert.SequenceEqual(
-            new[] { "cursor replay page one", "cursor replay page two" },
-            result.Messages.Select(message => message.Message.Message).ToArray());
-        Assert.SequenceEqual(
-            new[]
-            {
-                "https://kick.com/api/v2/channels/123/messages?start_time=2026-06-01T20%3A00%3A00.000Z",
-                "https://kick.com/api/v2/channels/123/messages?cursor=cursor-1"
-            },
-            requests
-                .Where(uri => uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
-                .Select(uri => uri.AbsoluteUri)
-                .ToArray());
-    }),
-    ("uses Kick webhook cache when timestamp messages endpoint is empty", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-empty-direct-chat-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var store = new KickOfficialChatReplayStore(cacheDirectory);
-            await store.AppendAsync(new ChatMessage(
-                PlatformKind.Kick,
-                "streamer",
-                "cached",
-                "webhook fallback replay chat",
-                startedAt.AddSeconds(5),
-                MessageId: "webhook-fallback-replay-chat"));
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-            {
-                var body = request.RequestUri!.AbsolutePath == "/api/v2/channels/streamer"
-                    ? """{"id":668,"chatroom":{"id":668}}"""
-                    : """{"data":{"messages":[]}}""";
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(body, Encoding.UTF8, "application/json")
-                };
-            }));
-            var provider = new ReplayChatProvider(httpClient, store);
-            var replay = new ReplaySessionInfo(
-                PlatformKind.Kick,
-                "streamer",
-                "https://vod.kick.example/index.m3u8",
-                "kick-vod-1",
-                startedAt,
-                TimeSpan.FromSeconds(20),
-                true,
-                "",
-                ChatRoomId: "668");
-
-            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.FromSeconds(5));
-
-            Assert.True(result.IsAvailable, result.UnavailableReason);
-            Assert.Equal("webhook fallback replay chat", result.Messages.Single().Message.Message);
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("reports missing Kick official webhook cache", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-empty-kick-official-chat-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var provider = new ReplayChatProvider(
-                new HttpClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Kick official cache should not call HTTP."))),
-                new KickOfficialChatReplayStore(cacheDirectory));
-            var replay = new ReplaySessionInfo(
-                PlatformKind.Kick,
-                "streamer",
-                "https://vod.kick.example/index.m3u8",
-                "kick-vod-1",
-                new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-                TimeSpan.FromHours(1),
-                true,
-                "");
-
-            var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.Zero);
-
-            Assert.Equal(false, result.IsAvailable);
-            Assert.Contains("No official Kick webhook chat cache", result.UnavailableReason);
-            Assert.Contains("streamer", result.UnavailableReason);
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("reports missing Kick VOD start time for official replay chat", async () =>
-    {
-        var provider = new ReplayChatProvider(
-            new HttpClient(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Kick official cache should not call HTTP."))),
-            new KickOfficialChatReplayStore(Path.Combine(Path.GetTempPath(), "svs-unused-kick-official-chat-" + Guid.NewGuid().ToString("N"))));
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Kick,
-            "streamer",
-            "https://vod.kick.example/index.m3u8",
-            "kick-vod-1",
-            null,
-            TimeSpan.FromHours(1),
-            true,
-            "");
-
-        var result = await provider.LoadChatAsync(replay, new AppSettings(), TimeSpan.Zero);
-
-        Assert.Equal(false, result.IsAvailable);
-        Assert.Contains("VOD start time", result.UnavailableReason);
-    }),
-    ("official Kick webhook server stores only signed chat messages", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-webhook-server-" + Guid.NewGuid().ToString("N"));
-        using var rsa = RSA.Create(2048);
-        try
-        {
-            var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var publicKey = rsa.ExportSubjectPublicKeyInfoPem();
-            using var publicKeyHttpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
-                new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(
-                        JsonSerializer.Serialize(new { data = new { public_key = publicKey } }),
-                        Encoding.UTF8,
-                        "application/json")
-                }));
-            var store = new KickOfficialChatReplayStore(cacheDirectory);
-            await using var server = new KickWebhookChatServer(
-                store,
-                new MemoryLogger(),
-                port: 0,
-                httpClient: publicKeyHttpClient,
-                timeProvider: new ManualTimeProvider(new DateTimeOffset(2026, 6, 1, 20, 2, 1, TimeSpan.Zero)));
-            Assert.True(server.Start());
-
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            var body = """
-            {
-              "message_id": "signed-webhook-message",
-              "broadcaster": { "channel_slug": "streamer" },
-              "sender": { "username": "viewer" },
-              "content": "signed webhook chat",
-              "created_at": "2026-06-01T20:02:00Z"
-            }
-            """;
-            using var request = new HttpRequestMessage(HttpMethod.Post, server.LocalWebhookUrl);
-            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
-            KickWebhookTestSignature.AddKickHeaders(
-                request,
-                rsa,
-                "chat.message.sent",
-                "message-id-1",
-                "2026-06-01T20:02:01Z",
-                Encoding.UTF8.GetBytes(body));
-
-            using var response = await httpClient.SendAsync(request);
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-            var result = await store.ReadMessagesAsync(
-                "streamer",
-                startedAt,
-                startedAt.AddMinutes(5));
-            Assert.Equal(1, result.Messages.Count);
-            Assert.Equal("signed webhook chat", result.Messages[0].Message);
-            Assert.Equal("signed-webhook-message", result.Messages[0].MessageId);
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("official Kick webhook server rejects invalid signatures and ignores non-chat events", async () =>
-    {
-        var cacheDirectory = Path.Combine(Path.GetTempPath(), "svs-kick-webhook-reject-" + Guid.NewGuid().ToString("N"));
-        using var rsa = RSA.Create(2048);
-        try
-        {
-            var publicKey = rsa.ExportSubjectPublicKeyInfoPem();
-            using var publicKeyHttpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
-                new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(
-                        JsonSerializer.Serialize(new { data = new { public_key = publicKey } }),
-                        Encoding.UTF8,
-                        "application/json")
-                }));
-            var store = new KickOfficialChatReplayStore(cacheDirectory);
-            await using var server = new KickWebhookChatServer(
-                store,
-                new MemoryLogger(),
-                port: 0,
-                httpClient: publicKeyHttpClient,
-                timeProvider: new ManualTimeProvider(new DateTimeOffset(2026, 6, 1, 20, 3, 1, TimeSpan.Zero)));
-            Assert.True(server.Start());
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-
-            var chatBody = """
-            {
-              "message_id": "invalid-signature-message",
-              "broadcaster": { "channel_slug": "streamer" },
-              "sender": { "username": "viewer" },
-              "content": "should not store",
-              "created_at": "2026-06-01T20:02:00Z"
-            }
-            """;
-            using (var invalidRequest = new HttpRequestMessage(HttpMethod.Post, server.LocalWebhookUrl))
-            {
-                invalidRequest.Content = new StringContent(chatBody, Encoding.UTF8, "application/json");
-                KickWebhookTestSignature.AddKickHeaders(
-                    invalidRequest,
-                    rsa,
-                    "chat.message.sent",
-                    "message-id-2",
-                    "2026-06-01T20:02:02Z",
-                    Encoding.UTF8.GetBytes(chatBody + "tampered"));
-                using var invalidResponse = await httpClient.SendAsync(invalidRequest);
-                Assert.Equal(HttpStatusCode.Unauthorized, invalidResponse.StatusCode);
-            }
-
-            var nonChatBody = """{"broadcaster":{"channel_slug":"streamer"},"created_at":"2026-06-01T20:03:00Z"}""";
-            using (var nonChatRequest = new HttpRequestMessage(HttpMethod.Post, server.LocalWebhookUrl))
-            {
-                nonChatRequest.Content = new StringContent(nonChatBody, Encoding.UTF8, "application/json");
-                KickWebhookTestSignature.AddKickHeaders(
-                    nonChatRequest,
-                    rsa,
-                    "livestream.status.updated",
-                    "message-id-3",
-                    "2026-06-01T20:03:01Z",
-                    Encoding.UTF8.GetBytes(nonChatBody));
-                using var nonChatResponse = await httpClient.SendAsync(nonChatRequest);
-                Assert.Equal(HttpStatusCode.Accepted, nonChatResponse.StatusCode);
-            }
-
-            var result = await store.ReadMessagesAsync(
-                "streamer",
-                new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
-                new DateTimeOffset(2026, 6, 1, 20, 5, 0, TimeSpan.Zero));
-            Assert.Equal(0, result.Messages.Count);
-        }
-        finally
-        {
-            if (Directory.Exists(cacheDirectory))
-            {
-                Directory.Delete(cacheDirectory, recursive: true);
-            }
-        }
-    }),
-    ("official Kick webhook server shares concurrent disposal", async () =>
-    {
-        var server = new KickWebhookChatServer(
-            new KickOfficialChatReplayStore(Path.Combine(Path.GetTempPath(), "svs-unused-kick-webhook-" + Guid.NewGuid().ToString("N"))),
-            new MemoryLogger(),
-            port: 0);
-        Assert.True(server.Start());
-
-        var firstDisposal = server.DisposeAsync().AsTask();
-        var secondDisposal = server.DisposeAsync().AsTask();
-        Assert.True(ReferenceEquals(firstDisposal, secondDisposal));
-        await Task.WhenAll(firstDisposal, secondDisposal);
-        await server.DisposeAsync();
-        Assert.Equal(false, server.Start());
-    }),
-    ("normalizes out-of-range Kick webhook ports", async () =>
-    {
-        await using var server = new KickWebhookChatServer(
-            new KickOfficialChatReplayStore(Path.Combine(Path.GetTempPath(), "svs-unused-kick-webhook-port-" + Guid.NewGuid().ToString("N"))),
-            new MemoryLogger(),
-            port: 65_536);
-        var requestedPortField = typeof(KickWebhookChatServer).GetField(
-            "requestedPort",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-
-        Assert.NotNull(requestedPortField);
-        Assert.Equal(KickWebhookChatServer.DefaultPort, (int)requestedPortField!.GetValue(server)!);
-        Assert.Equal(
-            $"http://127.0.0.1:{KickWebhookChatServer.DefaultPort}{KickWebhookChatServer.WebhookPath}",
-            server.LocalWebhookUrl);
-    }),
     ("isolates throwing Streamlink log subscribers", async () =>
     {
         var logger = new MemoryLogger();
@@ -3901,129 +2470,6 @@ internal static partial class ApplicationTestCatalog
         await Task.WhenAll(firstDisposal, secondDisposal);
         await client.DisposeAsync();
     }),
-    ("creates official Kick chat message event subscription", async () =>
-    {
-        var requests = new List<(HttpMethod Method, Uri Uri, string Body, string? Authorization)>();
-        var persistCount = 0;
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-        {
-            var body = request.Content is null
-                ? ""
-                : request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-            requests.Add((request.Method, request.RequestUri!, body, request.Headers.Authorization?.ToString()));
-
-            if (request.Method == HttpMethod.Get)
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"data":[]}""", Encoding.UTF8, "application/json")
-                };
-            }
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("""
-                {
-                  "data": [
-                    {
-                      "name": "chat.message.sent",
-                      "version": 1,
-                      "subscription_id": "sub-123"
-                    }
-                  ]
-                }
-                """, Encoding.UTF8, "application/json")
-            };
-        }));
-        await using var service = new KickEventSubscriptionService(
-            new MemoryLogger(),
-            httpClient,
-            (_, _, _) => Task.FromResult<string?>("app-token"),
-            (channel, _, _, _) =>
-            {
-                Assert.Equal("streamer", channel);
-                return Task.FromResult<long?>(456);
-            },
-            (_, _) =>
-            {
-                persistCount++;
-                return Task.CompletedTask;
-            });
-        var settings = new AppSettings();
-        var target = new StreamTarget(PlatformKind.Kick, "streamer", "https://kick.com/streamer");
-
-        var result = await service.EnsureChatMessageSentSubscriptionAsync(target, settings.Chat);
-
-        Assert.Equal(KickEventSubscriptionEnsureStatus.Subscribed, result.Status);
-        Assert.Equal("sub-123", result.SubscriptionId);
-        Assert.Equal(456L, result.BroadcasterUserId);
-        Assert.Equal("456", settings.Chat.KickBroadcasterUserIds["streamer"]);
-        Assert.Equal(1, persistCount);
-        Assert.Equal(2, requests.Count);
-        Assert.Equal(HttpMethod.Get, requests[0].Method);
-        Assert.Equal("Bearer app-token", requests[0].Authorization);
-        Assert.Contains("broadcaster_user_id=456", requests[0].Uri.Query);
-        Assert.Equal(HttpMethod.Post, requests[1].Method);
-        Assert.Equal("Bearer app-token", requests[1].Authorization);
-
-        using var postBody = JsonDocument.Parse(requests[1].Body);
-        var root = postBody.RootElement;
-        Assert.Equal(456, root.GetProperty("broadcaster_user_id").GetInt32());
-        Assert.Equal("webhook", root.GetProperty("method").GetString());
-        var evt = root.GetProperty("events").EnumerateArray().Single();
-        Assert.Equal("chat.message.sent", evt.GetProperty("name").GetString());
-        Assert.Equal(1, evt.GetProperty("version").GetInt32());
-    }),
-    ("skips official Kick chat subscription create when it already exists", async () =>
-    {
-        var requestCount = 0;
-        var persistCount = 0;
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-        {
-            requestCount++;
-            Assert.Equal(HttpMethod.Get, request.Method);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("""
-                {
-                  "data": [
-                    {
-                      "id": "existing-sub",
-                      "event": "chat.message.sent",
-                      "version": 1,
-                      "method": "webhook"
-                    }
-                  ]
-                }
-                """, Encoding.UTF8, "application/json")
-            };
-        }));
-        await using var service = new KickEventSubscriptionService(
-            new MemoryLogger(),
-            httpClient,
-            (_, _, _) => Task.FromResult<string?>("app-token"),
-            (_, _, _, _) => throw new InvalidOperationException("Broadcaster resolver should not be called."),
-            (_, _) =>
-            {
-                persistCount++;
-                return Task.CompletedTask;
-            });
-        var settings = new AppSettings();
-        var target = new StreamTarget(
-            PlatformKind.Kick,
-            "streamer",
-            "https://kick.com/streamer",
-            BroadcasterId: "456");
-
-        var result = await service.EnsureChatMessageSentSubscriptionAsync(target, settings.Chat);
-
-        Assert.Equal(KickEventSubscriptionEnsureStatus.AlreadySubscribed, result.Status);
-        Assert.Equal("existing-sub", result.SubscriptionId);
-        Assert.Equal(456L, result.BroadcasterUserId);
-        Assert.Equal("456", settings.Chat.KickBroadcasterUserIds["streamer"]);
-        Assert.Equal(1, persistCount);
-        Assert.Equal(1, requestCount);
-    }),
     ("maps Kick recent chat backfill messages", () =>
     {
         using var document = JsonDocument.Parse("""
@@ -4067,6 +2513,302 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("vip", messages[1].Badges![0].Id);
 
         Assert.Equal("1777086806667581", page.Cursor);
+        return Task.CompletedTask;
+    }),
+    ("VOD chat timeline only releases messages playback has reached", () =>
+    {
+        var timeline = new VodChatTimeline();
+        timeline.AddRange(
+            [
+                VodChatTestMessage(TimeSpan.FromSeconds(5), "a"),
+                VodChatTestMessage(TimeSpan.FromSeconds(10), "b"),
+                VodChatTestMessage(TimeSpan.FromSeconds(30), "c")
+            ],
+            100);
+
+        Assert.Equal(3, timeline.Count);
+        Assert.Equal(TimeSpan.FromSeconds(30), timeline.LastOffset);
+
+        var first = timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(10), 100);
+        Assert.Equal(2, first.Count);
+        Assert.Equal("a", first[0].Message);
+        Assert.Equal("b", first[1].Message);
+
+        // Nothing new is due, so nothing is handed out a second time.
+        Assert.Equal(0, timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(10), 100).Count);
+
+        var second = timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(40), 100);
+        Assert.Equal(1, second.Count);
+        Assert.Equal("c", second[0].Message);
+        return Task.CompletedTask;
+    }),
+    ("VOD chat timeline rewinds its cursor so a backward seek replays chat", () =>
+    {
+        var timeline = new VodChatTimeline();
+        timeline.AddRange(
+            [
+                VodChatTestMessage(TimeSpan.FromSeconds(5), "a"),
+                VodChatTestMessage(TimeSpan.FromSeconds(10), "b"),
+                VodChatTestMessage(TimeSpan.FromSeconds(30), "c")
+            ],
+            100);
+        timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(40), 100);
+
+        timeline.MoveCursorTo(TimeSpan.FromSeconds(8));
+        var replayed = timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(30), 100);
+
+        Assert.Equal(2, replayed.Count);
+        Assert.Equal("b", replayed[0].Message);
+        Assert.Equal("c", replayed[1].Message);
+        return Task.CompletedTask;
+    }),
+    ("VOD chat timeline ignores duplicates and messages already behind the cursor", () =>
+    {
+        var timeline = new VodChatTimeline();
+        Assert.True(timeline.Add(VodChatTestMessage(TimeSpan.FromSeconds(10), "b"), 100));
+        Assert.Equal(false, timeline.Add(VodChatTestMessage(TimeSpan.FromSeconds(10), "b"), 100));
+
+        timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(10), 100);
+
+        // Arrives late but belongs to chat the viewer has already passed.
+        Assert.True(timeline.Add(VodChatTestMessage(TimeSpan.FromSeconds(4), "late"), 100));
+        Assert.Equal(0, timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(10), 100).Count);
+        return Task.CompletedTask;
+    }),
+    ("VOD chat timeline drops the oldest surplus instead of letting chat lag the video", () =>
+    {
+        var timeline = new VodChatTimeline();
+        var backlog = new List<VodChatMessage>();
+        for (var index = 0; index < 250; index++)
+        {
+            backlog.Add(VodChatTestMessage(
+                TimeSpan.FromMilliseconds(index),
+                "m" + index.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        timeline.AddRange(backlog, 1_000);
+        var shown = timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(1), 100);
+
+        Assert.Equal(100, shown.Count);
+        Assert.Equal("m150", shown[0].Message);
+        Assert.Equal("m249", shown[99].Message);
+        return Task.CompletedTask;
+    }),
+    ("VOD chat timeline evicts the oldest messages once capped", () =>
+    {
+        var timeline = new VodChatTimeline();
+        for (var index = 0; index < 20; index++)
+        {
+            timeline.Add(
+                VodChatTestMessage(
+                    TimeSpan.FromSeconds(index),
+                    "m" + index.ToString(CultureInfo.InvariantCulture)),
+                5);
+        }
+
+        Assert.Equal(5, timeline.Count);
+        timeline.MoveCursorTo(TimeSpan.Zero);
+        var remaining = timeline.TakeMessagesDueAt(TimeSpan.FromMinutes(1), 100);
+        Assert.Equal(5, remaining.Count);
+        Assert.Equal("m15", remaining[0].Message);
+        Assert.Equal("m19", remaining[4].Message);
+        return Task.CompletedTask;
+    }),
+    ("VOD chat pump walks forward and stops once the look-ahead is covered", async () =>
+    {
+        var replay = TwitchVodChatReplay();
+        var provider = new FakeVodChatProvider();
+        provider.Enqueue(FakeVodChatProvider.Chunk(replay, TimeSpan.Zero, 3, "first"));
+        provider.Enqueue(FakeVodChatProvider.Chunk(replay, TimeSpan.FromSeconds(3), 3, "second"));
+        provider.TrailingResult = VodChatFetchResult.Completed([], TimeSpan.FromMinutes(5));
+        await using var controller = new VodChatController(provider, new MemoryLogger());
+
+        controller.Start(replay, new AppSettings(), TimeSpan.Zero, () => replay.Duration);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Each request continues from the previous frontier, so paging always advances.
+        Assert.Equal(TimeSpan.Zero, provider.RequestedOffsets[0]);
+        Assert.Equal(TimeSpan.FromSeconds(3), provider.RequestedOffsets[1]);
+        Assert.True(provider.CallCount <= 3);
+
+        var due = controller.TakeMessagesDueAt(TimeSpan.FromSeconds(10), 100);
+        Assert.Equal(6, due.Count);
+        Assert.Equal("first 0", due[0].Message);
+        Assert.Equal("second 2", due[5].Message);
+    }),
+    ("VOD chat pump stops asking once a session reports it cannot serve chat", async () =>
+    {
+        var replay = TwitchVodChatReplay();
+        var provider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("no comments id yet"));
+        await using var controller = new VodChatController(provider, new MemoryLogger());
+
+        controller.Start(replay, new AppSettings(), TimeSpan.Zero, () => replay.Duration);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(120);
+
+        Assert.Equal(1, provider.CallCount);
+        Assert.True(controller.TryTakeNotice(out var notice));
+        Assert.Equal("no comments id yet", notice);
+        // Taken once, then offered again only after a seek wipes the visible chat.
+        Assert.Equal(false, controller.TryTakeNotice(out _));
+
+        controller.Start(replay, new AppSettings(), TimeSpan.FromMinutes(10), () => replay.Duration);
+        Assert.True(controller.TryTakeNotice(out var repeated));
+        Assert.Equal("no comments id yet", repeated);
+    }),
+    ("VOD chat seeking inside fetched chat republishes it without refetching", async () =>
+    {
+        var replay = TwitchVodChatReplay();
+        var provider = new FakeVodChatProvider();
+        provider.Enqueue(FakeVodChatProvider.Chunk(replay, TimeSpan.Zero, 40, "chunk"));
+        provider.TrailingResult = VodChatFetchResult.Completed([], TimeSpan.FromMinutes(5));
+        await using var controller = new VodChatController(provider, new MemoryLogger());
+
+        controller.Start(replay, new AppSettings(), TimeSpan.Zero, () => replay.Duration);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        controller.TakeMessagesDueAt(TimeSpan.FromSeconds(40), 100);
+        var callsBeforeSeek = provider.CallCount;
+
+        controller.Start(replay, new AppSettings(), TimeSpan.FromSeconds(20), () => replay.Duration);
+        var republished = controller.TakeMessagesDueAt(TimeSpan.FromSeconds(20), 100);
+
+        Assert.Equal(callsBeforeSeek, provider.CallCount);
+        Assert.Equal(21, republished.Count);
+        Assert.Equal("chunk 0", republished[0].Message);
+        Assert.Equal("chunk 20", republished[20].Message);
+    }),
+    ("VOD chat keeps captured chat when the session is promoted to a published VOD", async () =>
+    {
+        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+        var dvr = new ReplaySessionInfo(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://example.invalid/index-dvr.m3u8",
+            "live-dvr-99",
+            startedAt,
+            TimeSpan.FromHours(1),
+            true,
+            "",
+            MediaKind: ReplayMediaKind.CurrentLiveDvr);
+        var provider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("no comments id yet"));
+        provider.TrailingResult = VodChatFetchResult.Completed([], TimeSpan.FromHours(1));
+        await using var controller = new VodChatController(provider, new MemoryLogger());
+
+        controller.Start(dvr, new AppSettings(), TimeSpan.Zero, () => dvr.Duration);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        controller.CaptureLiveMessage(new ChatMessage(
+            PlatformKind.Twitch,
+            "streamer",
+            "viewer",
+            "captured while live",
+            startedAt.AddMinutes(5),
+            MessageId: "captured-while-live"));
+
+        controller.Promote(dvr with { ReplayId = "2877743217", MediaKind = ReplayMediaKind.Archive });
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(provider.RequestedReplays.Any(requested => requested.ReplayId == "2877743217"));
+        var due = controller.TakeMessagesDueAt(TimeSpan.FromMinutes(10), 100);
+        Assert.Equal(1, due.Count);
+        Assert.Equal("captured while live", due[0].Message);
+    }),
+    ("VOD chat captures live messages received before the replay session is known", async () =>
+    {
+        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+        var provider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("no comments id yet"));
+        await using var controller = new VodChatController(provider, new MemoryLogger());
+
+        // Arrives while the replay lookup is still in flight, so no offset can be computed yet.
+        Assert.Equal(false, controller.CaptureLiveMessage(new ChatMessage(
+            PlatformKind.Kick,
+            "streamer",
+            "viewer",
+            "buffered",
+            startedAt.AddMinutes(3),
+            MessageId: "buffered")));
+        Assert.Equal(false, controller.HasMessages);
+
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            "https://kick.example/replay/index.m3u8",
+            "kick-1",
+            startedAt,
+            TimeSpan.FromHours(1),
+            true,
+            "");
+        controller.Start(replay, new AppSettings(), TimeSpan.FromMinutes(5), () => replay.Duration);
+
+        Assert.True(controller.HasMessages);
+        var due = controller.TakeMessagesDueAt(TimeSpan.FromMinutes(5), 100);
+        Assert.Equal(1, due.Count);
+        Assert.Equal("buffered", due[0].Message);
+    }),
+    ("VOD chat reports a captured message as due only once playback reaches it", async () =>
+    {
+        var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Kick,
+            "streamer",
+            "https://kick.example/replay/index.m3u8",
+            "kick-1",
+            startedAt,
+            TimeSpan.FromHours(1),
+            true,
+            "");
+        var provider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("not needed"));
+        await using var controller = new VodChatController(provider, new MemoryLogger());
+        controller.Start(replay, new AppSettings(), TimeSpan.FromMinutes(10), () => replay.Duration);
+
+        Assert.Equal(false, controller.CaptureLiveMessage(new ChatMessage(
+            PlatformKind.Kick,
+            "streamer",
+            "viewer",
+            "from the future",
+            startedAt.AddMinutes(50),
+            MessageId: "future")));
+        Assert.True(controller.CaptureLiveMessage(new ChatMessage(
+            PlatformKind.Kick,
+            "streamer",
+            "viewer",
+            "already passed",
+            startedAt.AddMinutes(9).AddSeconds(50),
+            MessageId: "passed")));
+
+        var due = controller.TakeMessagesDueAt(TimeSpan.FromMinutes(10), 100);
+        Assert.Equal(1, due.Count);
+        Assert.Equal("already passed", due[0].Message);
+    }),
+    ("Twitch VOD chat frontier always advances past the offset it asked for", () =>
+    {
+        // Twitch answers an offset request with the page around it, so a page can end before the
+        // requested offset. The frontier still has to move, or polling would stall forever.
+        Assert.Equal(
+            TimeSpan.FromSeconds(3602),
+            TwitchVodChatFetcher.ResolveCoveredThroughOffset(
+                TimeSpan.FromSeconds(3600),
+                TimeSpan.FromSeconds(3602.9)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(3624),
+            TwitchVodChatFetcher.ResolveCoveredThroughOffset(
+                TimeSpan.FromSeconds(3623),
+                TimeSpan.FromSeconds(3622)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(1),
+            TwitchVodChatFetcher.ResolveCoveredThroughOffset(TimeSpan.Zero, TimeSpan.Zero));
+        return Task.CompletedTask;
+    }),
+    ("Kick VOD chat cursors are Unix microsecond timestamps", () =>
+    {
+        // Kick page cursors are timestamps, so one can be synthesized for any instant and used as
+        // an exclusive upper bound while paging backwards.
+        Assert.Equal(
+            "1789768800000000",
+            KickVodChatFetcher.ToCursor(new DateTimeOffset(2026, 9, 18, 22, 0, 0, TimeSpan.Zero)));
+        Assert.Equal(
+            "1789768800000000",
+            KickVodChatFetcher.ToCursor(new DateTimeOffset(2026, 9, 19, 0, 0, 0, TimeSpan.FromHours(2))));
+        Assert.Equal("0", KickVodChatFetcher.ToCursor(DateTimeOffset.UnixEpoch));
         return Task.CompletedTask;
     }),
     ];

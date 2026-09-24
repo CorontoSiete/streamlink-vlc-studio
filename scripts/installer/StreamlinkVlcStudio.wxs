@@ -24,7 +24,9 @@
       <Directory Id="StartMenuProgramsFolder" Name="Streamlink VLC Studio" />
     </StandardDirectory>
 
-    <Icon Id="StreamlinkVlcStudio.exe" SourceFile="$(var.PayloadDir)\StreamlinkVlcStudio.exe" />
+    <Icon Id="StreamlinkVlcStudio.ico" SourceFile="$(var.AppIcon)" />
+    <Property Id="ARPPRODUCTICON" Value="StreamlinkVlcStudio.ico" />
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
 
     <!-- The shortcut is keyed to the machine-installed executable. Windows Installer
          materializes it as a normal .lnk because DISABLEADVTSHORTCUTS is set above. -->
@@ -39,7 +41,7 @@
           Description="Watch Twitch and Kick streams with Streamlink and VLC."
           Directory="StartMenuProgramsFolder"
           WorkingDirectory="INSTALLFOLDER"
-          Icon="StreamlinkVlcStudio.exe"
+          Icon="StreamlinkVlcStudio.ico"
           Advertise="yes" />
       </File>
       <RemoveFolder Id="RemoveStartMenuProgramsFolder" Directory="StartMenuProgramsFolder" On="uninstall" />
@@ -60,6 +62,12 @@
         <Exclude Files="$(var.PayloadDir)\StreamlinkVlcStudio.exe" />
         <Exclude Files="$(var.PayloadDir)\install.ps1" />
         <Exclude Files="$(var.PayloadDir)\Uninstall.exe" />
+        <Exclude Files="$(var.PayloadDir)\.streamlink-vlc-studio-owner.json" />
+        <Exclude Files="$(var.PayloadDir)\.streamlink-vlc-studio-files.json" />
+        <Exclude Files="$(var.PayloadDir)\release-contract.json" />
+        <Exclude Files="$(var.PayloadDir)\dependencies\**" />
+        <Exclude Files="$(var.PayloadDir)\lib\**" />
+        <Exclude Files="$(var.PayloadDir)\**\*.ps1" />
       </Files>
       <ComponentRef Id="MainExecutable" />
     </Feature>

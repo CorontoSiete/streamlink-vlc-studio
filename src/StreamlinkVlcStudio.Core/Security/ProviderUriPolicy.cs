@@ -34,7 +34,7 @@ public static class ProviderUriPolicy
             PlatformKind.Twitch => IsHostOrSubdomain(normalized, "twitch.tv") ||
                 IsHostOrSubdomain(normalized, "ttvnw.net") ||
                 IsHostOrSubdomain(normalized, "jtvnw.net") ||
-                IsHostOrSubdomain(normalized, "cloudfront.net"),
+                IsCloudFrontDistributionHost(normalized),
             PlatformKind.Kick => IsHostOrSubdomain(normalized, "kick.com"),
             _ => false
         };
@@ -67,4 +67,22 @@ public static class ProviderUriPolicy
     private static bool IsHostOrSubdomain(string host, string expectedHost) =>
         string.Equals(host, expectedHost, StringComparison.OrdinalIgnoreCase) ||
         host.EndsWith($".{expectedHost}", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Twitch serves VOD segments from CloudFront distribution domains such as
+    /// <c>d2e2de1etea730.cloudfront.net</c>. CloudFront is a multi-tenant CDN, so the whole
+    /// <c>cloudfront.net</c> suffix cannot be trusted: accept only a single distribution label
+    /// (the shape Twitch actually uses) and never a nested, attacker-chosen subdomain.
+    /// </summary>
+    private static bool IsCloudFrontDistributionHost(string host)
+    {
+        const string suffix = ".cloudfront.net";
+        if (!host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var distribution = host[..^suffix.Length];
+        return distribution.Length > 0 && distribution.All(char.IsAsciiLetterOrDigit);
+    }
 }

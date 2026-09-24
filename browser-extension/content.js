@@ -2,6 +2,7 @@ const {
   channelFromUrl,
   captureStatusFromResponse,
   findChannelPointClaimElements,
+  isSameDocumentFragmentLink,
   isTwitchChannelRoute,
   isTwitchHost
 } = globalThis.StreamlinkVlcStudioContentCore;
@@ -158,6 +159,10 @@ document.addEventListener(
 
     const anchor = closestAnchor(event);
     if (!anchor) {
+      return;
+    }
+
+    if (isSameDocumentFragmentLink(anchor.getAttribute("href"), anchor.href, window.location.href)) {
       return;
     }
 
@@ -406,7 +411,6 @@ const twitchChannelPointAutoClaim = (() => {
   }
 
   return {
-    claimVisibleBonus,
     isActive: () => active,
     refreshRoute,
     start,

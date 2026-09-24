@@ -17,6 +17,7 @@
     <Prefer32Bit>false</Prefer32Bit>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <ApplicationIcon>Assets\Twitch.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>Stream Studio</AssemblyTitle>
   </PropertyGroup>
 

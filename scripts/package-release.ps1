@@ -5,6 +5,10 @@ param(
     [string]$OverlaySource,
     [string]$OutputRoot,
     [string]$PublishedAppDirectory,
+    [string]$Version = '1.7.0',
+    [string]$Tag = '',
+    [string]$Commit = '',
+    [string]$Repository = 'CorontoSiete/streamlink-vlc-studio',
     [switch]$KeepStaging,
     [switch]$SkipAuthenticodeWhenUnavailable,
     [switch]$Quiet
@@ -18,9 +22,30 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
 . (Join-Path $scriptRoot "lib\install-state.ps1")
 . (Join-Path $scriptRoot "lib\native-overlay.ps1")
 . (Join-Path $scriptRoot "lib\release-contract.ps1")
+. (Join-Path $scriptRoot "lib\authenticode.ps1")
 
 $releaseContractPath = Join-Path $repoRoot "shared\release-contract.json"
 $releaseContract = Read-ReleaseContract $releaseContractPath
+$releaseVersion = ConvertTo-StableReleaseVersion $Version
+if ($releaseVersion -lt (ConvertTo-StableReleaseVersion ([string]$releaseContract.release.minimumVersion))) {
+    throw "Package version $Version is below the supported release floor $($releaseContract.release.minimumVersion)."
+}
+if (-not [string]::IsNullOrWhiteSpace($Tag)) {
+    $releaseIdentity = Get-StableReleaseIdentity -Tag $Tag -MinimumVersion ([string]$releaseContract.release.minimumVersion)
+    if ($releaseIdentity.VersionText -cne $Version) {
+        throw "Package tag $Tag does not exactly match version $Version."
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($Commit) -and $Commit -notmatch '^[0-9a-f]{40}$') {
+    throw 'Package commit must be 40 lowercase hexadecimal characters when supplied.'
+}
+if (-not [string]::IsNullOrWhiteSpace($Tag) -and [string]::IsNullOrWhiteSpace($Commit)) {
+    throw 'A stable-tag package requires its source commit.'
+}
+if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+    throw "Repository must be an owner/name pair: $Repository"
+}
+$authenticode = Get-AuthenticodeSigningConfiguration
 
 $overlaySourcePath = if ([string]::IsNullOrWhiteSpace($OverlaySource)) {
     Join-Path $repoRoot "src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay"
@@ -171,6 +196,11 @@ if ([string]::IsNullOrWhiteSpace($PublishedAppDirectory)) {
         -p:PublishTrimmed=false `
         -p:DebugType=none `
         -p:DebugSymbols=false `
+        -p:Version=$Version `
+        -p:VersionPrefix=$Version `
+        -p:AssemblyVersion="${Version}.0" `
+        -p:FileVersion="${Version}.0" `
+        -p:InformationalVersion=$Version `
         -p:BundledVlcOverlayRoot=$overlaySourcePath `
         -p:RequireBundledVlcOverlay=true `
         -o $publishDir
@@ -206,7 +236,11 @@ if (-not (Test-Path -LiteralPath $uninstallerScript -PathType Leaf)) {
 }
 
 Write-Info "Building uninstaller..."
-& powershell -NoProfile -ExecutionPolicy Bypass -File $uninstallerScript -OutputPath $uninstallerTarget -Quiet | Out-Host
+& powershell -NoProfile -ExecutionPolicy Bypass -File $uninstallerScript `
+    -OutputPath $uninstallerTarget `
+    -Configuration $Configuration `
+    -Version $Version `
+    -Quiet | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "Uninstaller build failed with exit code $LASTEXITCODE."
 }
@@ -269,6 +303,10 @@ Copy-Item `
     -LiteralPath $releaseContractPath `
     -Destination (Join-Path $stageDir "release-contract.json") `
     -Force
+$releasePublicKeySource = Join-Path $repoRoot ([string]$releaseContract.release.manifestSignature.publicKey)
+$releasePublicKeyStage = Join-Path $stageDir ([string]$releaseContract.release.manifestSignature.publicKey)
+New-Item -ItemType Directory -Path (Split-Path -Parent $releasePublicKeyStage) -Force | Out-Null
+Copy-Item -LiteralPath $releasePublicKeySource -Destination $releasePublicKeyStage -Force
 
 Write-Info "Staging installation and usage documentation..."
 foreach ($relativePath in $requiredDocumentationFiles) {
@@ -296,6 +334,30 @@ if (-not (Test-Path -LiteralPath $dependencyManifest -PathType Leaf)) {
 $dependencyStage = Join-Path $stageDir "dependencies"
 New-Item -ItemType Directory -Path $dependencyStage -Force | Out-Null
 Copy-Item -LiteralPath $dependencyManifest -Destination (Join-Path $dependencyStage "windows-installers.json") -Force
+
+if ($authenticode.Enabled) {
+    Write-Info 'Authenticode-signing staged application binaries...'
+    Invoke-AuthenticodeSigning `
+        -Path @($friendlyExe, $uninstallerTarget) `
+        -Configuration $authenticode
+}
+
+Write-Info 'Writing ZIP release metadata...'
+$zipReleaseMetadata = [ordered]@{
+    schemaVersion = 1
+    artifactKind = 'zip'
+    version = $Version
+    tag = if ([string]::IsNullOrWhiteSpace($Tag)) { $null } else { $Tag }
+    commit = if ([string]::IsNullOrWhiteSpace($Commit)) { $null } else { $Commit }
+    repository = $Repository
+    updaterProtocolVersion = [int]$releaseContract.release.updaterProtocolVersion
+    updateSigningKeyId = [string]$releaseContract.release.manifestSignature.keyId
+    authenticodeSigned = [bool]$authenticode.Enabled
+}
+[IO.File]::WriteAllText(
+    (Join-Path $stageDir 'release-metadata.json'),
+    ($zipReleaseMetadata | ConvertTo-Json -Depth 5 -Compress),
+    [Text.UTF8Encoding]::new($false))
 
 Write-Info "Writing installation ownership marker and managed-file manifest..."
 Write-InstallOwnershipState -Directory $stageDir -InstallId "release-payload" | Out-Null

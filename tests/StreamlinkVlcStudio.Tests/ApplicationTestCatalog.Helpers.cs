@@ -129,6 +129,27 @@ internal static partial class ApplicationTestCatalog
         await ((Task)stopClock!.Invoke(tab, [])!).WaitAsync(TimeSpan.FromSeconds(1));
     }
 
+    static VodChatMessage VodChatTestMessage(TimeSpan offset, string text) =>
+        new(
+            offset,
+            new ChatMessage(
+                PlatformKind.Twitch,
+                "streamer",
+                "viewer",
+                text,
+                DateTimeOffset.UnixEpoch + offset,
+                MessageId: text));
+
+    static ReplaySessionInfo TwitchVodChatReplay() =>
+        new(
+            PlatformKind.Twitch,
+            "streamer",
+            "https://www.twitch.tv/videos/2877743217",
+            "2877743217",
+            new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromHours(1),
+            true,
+            "");
     static bool DockedChatMessagesContain(StreamTabViewModel tab, string message)
     {
         return SnapshotDockedChatMessages(tab).Any(candidate => candidate.Message == message);

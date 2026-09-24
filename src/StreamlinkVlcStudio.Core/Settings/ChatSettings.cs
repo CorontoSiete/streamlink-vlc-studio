@@ -33,8 +33,6 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     private string kickClientId = "";
     private string kickClientSecret = "";
     private bool kickSendAsBot;
-    private bool kickWebhookListenerEnabled;
-    private int kickWebhookListenerPort = 39180;
     private readonly KickIdentityStore kickIdentityStore = new();
 
     public ChatLayout Layout
@@ -149,18 +147,6 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     {
         get => kickSendAsBot;
         set => SetProperty(ref kickSendAsBot, value);
-    }
-
-    public bool KickWebhookListenerEnabled
-    {
-        get => kickWebhookListenerEnabled;
-        set => SetProperty(ref kickWebhookListenerEnabled, value);
-    }
-
-    public int KickWebhookListenerPort
-    {
-        get => kickWebhookListenerPort;
-        set => SetProperty(ref kickWebhookListenerPort, value <= 0 ? 39180 : Math.Clamp(value, 1024, 65535));
     }
 
     public Dictionary<string, string> KickChatroomIds

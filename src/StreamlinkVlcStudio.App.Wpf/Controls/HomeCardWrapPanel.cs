@@ -156,7 +156,7 @@ public sealed class HomeCardWrapPanel : Panel
             return 1;
         }
 
-        if (!double.IsFinite(availableWidth) || availableWidth <= 0)
+        if (!double.IsFinite(availableWidth))
         {
             return Math.Max(1, visibleChildCount);
         }
@@ -177,13 +177,25 @@ public sealed class HomeCardWrapPanel : Panel
     private double GetArrangeItemWidth(double availableWidth, int columns, double horizontalGap)
     {
         var baseItemWidth = GetBaseItemWidth();
-        if (KeepRightGap || !double.IsFinite(availableWidth) || availableWidth <= 0)
+        if (!double.IsFinite(availableWidth))
+        {
+            return baseItemWidth;
+        }
+
+        // The preferred card width is not a minimum window width. On narrow
+        // viewports use the complete row, including the otherwise reserved gap.
+        if (availableWidth < baseItemWidth + (KeepRightGap ? horizontalGap : 0))
+        {
+            return Math.Max(0, availableWidth);
+        }
+
+        if (KeepRightGap)
         {
             return baseItemWidth;
         }
 
         var filledWidth = (availableWidth - horizontalGap * Math.Max(0, columns - 1)) / Math.Max(1, columns);
-        return Math.Max(baseItemWidth, filledWidth);
+        return Math.Max(0, filledWidth);
     }
 
     private double GetVisualSlotWidth(double itemWidth, int column, double horizontalGap)

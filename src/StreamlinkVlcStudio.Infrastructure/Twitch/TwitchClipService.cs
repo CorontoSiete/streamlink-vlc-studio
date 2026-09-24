@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
@@ -291,9 +292,7 @@ public sealed class TwitchClipService : ITwitchClipService
     private static bool TryGetFirstDataItem(JsonElement root, out JsonElement item)
     {
         item = default;
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             throw new InvalidOperationException("Twitch response did not include a data array.");
         }

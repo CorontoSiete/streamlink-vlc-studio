@@ -31,6 +31,7 @@ internal static class TestSubsystemCatalog
     [
         ..CoreQualityTestCatalog.All,
         ..ChatSecurityTestCatalog.All,
+        ..UpdateModernizationTestCatalog.All,
         ("AsyncRelayCommand admits only one concurrent execution", AsyncRelayCommandIsSingleFlightAsync),
         ("native overlay capability probing is asynchronous, bounded, and cancellable", NativeOverlayCapabilityProbeAsync),
         ("PiP hit testing rejects occluded windows and accepts owned descendants", PictureInPictureHitTesting),
@@ -48,8 +49,6 @@ internal static class TestSubsystemCatalog
         ("settings secrets use a versioned DPAPI current-user envelope", ProtectedSettingsRoundTripAsync),
         ("legacy plaintext settings secrets migrate atomically", LegacySettingsSecretMigrationAsync),
         ("corrupt protected settings preserve nonsecrets and require reconnect", CorruptProtectedSettingsAsync),
-        ("Kick webhook validates freshness replay and key rotation", KickWebhookAuthenticationAsync),
-        ("Kick webhook preserves framing statuses blocks CORS and caps clients", KickWebhookHttpSurfaceAsync),
         ("replay URL security rejects spoofed hosts and nonpublic addresses", ReplayUrlValidationAsync),
         ("replay HTTP redirects remain on validated public provider hosts", ReplayRedirectValidationAsync),
         ("file logger redacts normalizes and rotates bounded files", FileLoggerSanitizationAndRotationAsync),
@@ -1364,149 +1363,6 @@ internal static class TestSubsystemCatalog
         }
 
         return Task.CompletedTask;
-    }
-
-    private static async Task KickWebhookAuthenticationAsync()
-    {
-        using var oldKey = RSA.Create(2048);
-        using var currentKey = RSA.Create(2048);
-        var keyRequestCount = 0;
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
-        {
-            var key = Interlocked.Increment(ref keyRequestCount) == 1 ? oldKey : currentKey;
-            var json = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                data = new { public_key = key.ExportSubjectPublicKeyInfoPem() }
-            });
-            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-            {
-                Content = new StringContent(json, Encoding.UTF8, "application/json")
-            };
-        }));
-        var now = new DateTimeOffset(2026, 8, 15, 20, 0, 0, TimeSpan.Zero);
-        var clock = new ManualTimeProvider(now);
-        var directory = CreateSettingsTestDirectory();
-        await using var server = new KickWebhookChatServer(
-            new KickOfficialChatReplayStore(directory),
-            new MemoryLogger(),
-            port: 0,
-            httpClient: httpClient,
-            timeProvider: clock);
-
-        var fresh = CreateSignedKickWebhookRequest(currentKey, "message-1", now, "{}");
-        Assert.Equal(
-            KickWebhookChatServer.WebhookAuthenticationResult.Valid,
-            await server.AuthenticateRequestAsync(fresh, CancellationToken.None));
-        Assert.Equal(2, keyRequestCount);
-        Assert.Equal(
-            KickWebhookChatServer.WebhookAuthenticationResult.Replay,
-            await server.AuthenticateRequestAsync(fresh, CancellationToken.None));
-
-        var stale = CreateSignedKickWebhookRequest(currentKey, "stale", now - TimeSpan.FromMinutes(6), "{}");
-        Assert.Equal(
-            KickWebhookChatServer.WebhookAuthenticationResult.Invalid,
-            await server.AuthenticateRequestAsync(stale, CancellationToken.None));
-        Assert.Equal(2, keyRequestCount);
-
-        clock.Advance(TimeSpan.FromMinutes(11));
-        var replayExpired = CreateSignedKickWebhookRequest(currentKey, "message-1", clock.GetUtcNow(), "{}");
-        Assert.Equal(
-            KickWebhookChatServer.WebhookAuthenticationResult.Valid,
-            await server.AuthenticateRequestAsync(replayExpired, CancellationToken.None));
-
-        clock.Advance(TimeSpan.FromHours(25));
-        var keyExpired = CreateSignedKickWebhookRequest(currentKey, "message-2", clock.GetUtcNow(), "{}");
-        Assert.Equal(
-            KickWebhookChatServer.WebhookAuthenticationResult.Valid,
-            await server.AuthenticateRequestAsync(keyExpired, CancellationToken.None));
-        Assert.Equal(3, keyRequestCount);
-        Directory.Delete(directory, recursive: true);
-    }
-
-    private static async Task KickWebhookHttpSurfaceAsync()
-    {
-        var directory = CreateSettingsTestDirectory();
-        try
-        {
-            await using var server = new KickWebhookChatServer(
-                new KickOfficialChatReplayStore(directory),
-                new MemoryLogger(),
-                port: 0);
-            Assert.True(server.Start());
-
-            var options = await BrowserCaptureTestClient.SendRawRequestAsync(
-                server.ListenerPort,
-                $"OPTIONS {KickWebhookChatServer.WebhookPath} HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            Assert.True(options.StartsWith("HTTP/1.1 404 Not Found", StringComparison.Ordinal));
-            Assert.DoesNotContain("Access-Control-Allow-Origin", options);
-
-            var unsupported = await BrowserCaptureTestClient.SendRawRequestAsync(
-                server.ListenerPort,
-                $"POST {KickWebhookChatServer.WebhookPath} HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            Assert.True(unsupported.StartsWith("HTTP/1.1 501 Not Implemented", StringComparison.Ordinal));
-
-            var oversized = await BrowserCaptureTestClient.SendRawRequestAsync(
-                server.ListenerPort,
-                $"POST {KickWebhookChatServer.WebhookPath} HTTP/1.1\r\nContent-Length: 300000\r\nConnection: close\r\n\r\n");
-            Assert.True(oversized.StartsWith("HTTP/1.1 413 Payload Too Large", StringComparison.Ordinal));
-
-            var stalledClients = new List<System.Net.Sockets.TcpClient>();
-            try
-            {
-                for (var index = 0; index < 32; index++)
-                {
-                    var client = new System.Net.Sockets.TcpClient();
-                    await client.ConnectAsync(IPAddress.Loopback, server.ListenerPort);
-                    stalledClients.Add(client);
-                }
-
-                await TestWait.UntilAsync(
-                    () => server.AvailableClientAdmissionsForTest == 0,
-                    TimeSpan.FromSeconds(2));
-                var overloaded = await BrowserCaptureTestClient.SendRawRequestAsync(
-                    server.ListenerPort,
-                    $"POST {KickWebhookChatServer.WebhookPath} HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                Assert.True(overloaded.StartsWith("HTTP/1.1 503 Service Unavailable", StringComparison.Ordinal));
-            }
-            finally
-            {
-                foreach (var client in stalledClients)
-                {
-                    client.Dispose();
-                }
-            }
-        }
-        finally
-        {
-            Directory.Delete(directory, recursive: true);
-        }
-    }
-
-    private static LocalHttpRequest CreateSignedKickWebhookRequest(
-        RSA key,
-        string messageId,
-        DateTimeOffset timestamp,
-        string body)
-    {
-        var timestampText = timestamp.ToUniversalTime().ToString(
-            "yyyy-MM-dd'T'HH:mm:ss'Z'",
-            System.Globalization.CultureInfo.InvariantCulture);
-        var bodyBytes = Encoding.UTF8.GetBytes(body);
-        var signedBytes = Encoding.UTF8.GetBytes($"{messageId}.{timestampText}.{body}");
-        var signature = Convert.ToBase64String(key.SignData(
-            signedBytes,
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1));
-        return new LocalHttpRequest(
-            "POST",
-            KickWebhookChatServer.WebhookPath,
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["Kick-Event-Message-Id"] = messageId,
-                ["Kick-Event-Message-Timestamp"] = timestampText,
-                ["Kick-Event-Signature"] = signature
-            },
-            bodyBytes);
     }
 
     private static async Task BoundedByteReaderFilesAndCancellationAsync()

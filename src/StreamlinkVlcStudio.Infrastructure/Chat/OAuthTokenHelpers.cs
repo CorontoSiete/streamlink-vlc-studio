@@ -271,4 +271,29 @@ public static class OAuthTokenHelpers
 
         return scopes;
     }
+
+    /// <summary>
+    /// Builds an authorization URL by percent-encoding every query key and value.
+    /// </summary>
+    internal static Uri BuildAuthorizationUri(string endpoint, IReadOnlyDictionary<string, string> query)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        ArgumentNullException.ThrowIfNull(query);
+        var encoded = string.Join('&', query.Select(pair =>
+            $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
+        return new Uri($"{endpoint}?{encoded}");
+    }
+
+    /// <summary>
+    /// Returns the trimmed setting, or throws naming the setting and the provider that needs it.
+    /// </summary>
+    internal static string RequireSetting(string? value, string name, string provider)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new InvalidOperationException($"{name} is required for {provider} authorization.");
+        }
+
+        return value.Trim();
+    }
 }

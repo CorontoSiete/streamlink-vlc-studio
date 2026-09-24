@@ -1,5 +1,11 @@
 Streamlink VLC Studio
 
+Upgrading from 1.6.65 or earlier:
+
+Those clients cannot discover the signed v1.7 update channel. Download and run
+StreamlinkVlcStudio-Setup.exe manually once. Later managed releases can update
+from inside the app.
+
 Recommended latest install/update:
 
 Download StreamlinkVlcStudio-Setup.exe from the latest GitHub release and run
@@ -10,10 +16,10 @@ installs the app under C:\Program Files\Streamlink VLC Studio, installs missing
 dependencies, creates the Start Menu shortcut, and offers to launch the app's
 first-run setup wizard.
 
-Inside the app, Settings > Advanced > Updates can start a latest-release update.
-Release-zip installs use the bundled install.ps1; MSI/full-installer installs
-download StreamlinkVlcStudio-Setup.msi and verify it against SHA256SUMS.txt
-before launching Windows Installer.
+The app checks for stable releases automatically. A managed Program Files
+installation offers Download update, verifies it, and then offers the separate
+Restart and install action. Release-zip installs are notification-only and open
+the release page; they do not launch the per-machine updater.
 
 The normal setup is registered through WiX/Windows Installer, not the separate
 per-user Uninstall.exe. Removing Streamlink VLC Studio through Apps & features /
@@ -32,8 +38,11 @@ Advanced PowerShell install is also available from the release zip:
    powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -AppSource Local -Launch
 
 In the default Auto mode, the script first downloads the latest final GitHub
-release zip and verifies it against that release's SHA256SUMS.txt. If the release
-cannot be used, Auto falls back only to a complete app payload beside install.ps1.
+release's UPDATE-MANIFEST.json and detached signature. It verifies RSA-PSS/
+SHA-256 with the pinned 3072-bit release key before trusting any manifest field,
+then verifies the ZIP's exact name, length, and SHA-256. SHA256SUMS.txt is checked
+as an additional release-set check. If the release cannot be used, Auto falls
+back only to a complete app payload beside install.ps1.
 Normal install modes never fall back to an arbitrary GitHub Actions artifact;
 artifact installation is an explicit developer-only mode that requires a trusted
 40-character main-branch commit.

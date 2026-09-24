@@ -13,6 +13,7 @@ using System.Windows.Threading;
 using StreamlinkVlcStudio.App.Wpf.Controls;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
 using StreamlinkVlcStudio.Core.Settings;
+using static StreamlinkVlcStudio.App.Wpf.PictureInPictureWindowResize;
 using static StreamlinkVlcStudio.App.Wpf.WindowInteropHelpers;
 
 namespace StreamlinkVlcStudio.App.Wpf;
@@ -29,23 +30,13 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private const int WmCaptureChanged = 0x0215;
     private const int MkLeftButton = 0x0001;
     private const int HtCaption = 2;
-    private const int HtBottom = 15;
-    private const int HtBottomLeft = 16;
-    private const int HtBottomRight = 17;
     private const int IdcSizeNwse = 32642;
     private const int IdcSizeNesw = 32643;
+    private const int IdcSizeWe = 32644;
     private const int IdcSizeNs = 32645;
-    private const int SmCxDoubleClick = 36;
-    private const int SmCyDoubleClick = 37;
     private const int SmCxDrag = 68;
     private const int SmCyDrag = 69;
-    private const int SmCxSizeFrame = 32;
-    private const int SmCySizeFrame = 33;
-    private const int SmCxPaddedBorder = 92;
-    private const int SmCyPaddedBorder = 92;
     private const int ScMove = 0xF010;
-    private const int MinimumBottomResizeGripPixels = 10;
-    private const int MinimumCornerResizeGripPixels = 24;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoZOrder = 0x0004;
@@ -56,8 +47,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private static readonly IntPtr HwndTopmost = new(-1);
     private static readonly int WmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
     private static readonly GridLength VisibleTitleBarHeight = new(34);
-    private static readonly GridLength VisibleBottomResizeGripHeight = new(10);
-    private static readonly Thickness WindowChromeResizeBorderThickness = new(6);
+    private static readonly GridLength VisibleBottomResizeGripHeight = new(BottomBorderThickness);
+    private static readonly Thickness WindowChromeResizeBorderThickness = new(PictureInPictureWindowResize.BorderThickness);
     private static ITaskbarFullscreenController taskbarFullscreenController = WindowsTaskbarFullscreenController.Instance;
     private readonly Dictionary<StreamTabViewModel, VideoSurface> detachedSurfaces = [];
     private readonly Dictionary<StreamTabViewModel, DetachedVideoItem> videoItemByTab = [];
@@ -76,6 +67,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private WindowState streamFullscreenRestoreWindowState = WindowState.Normal;
     private bool streamFullscreenRestoreTopmost = true;
     private IntPtr taskbarFullscreenWindowHandle;
+    private IntPtr contextMenuWindowHandle;
     private bool fullscreenNativePlacementPending;
     private StreamTabViewModel? activeTab;
     private string headerTitle = "";
@@ -84,9 +76,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private int videoGridRows = VideoGridLayoutCalculator.BaseGridSize;
     private int videoGridColumns = VideoGridLayoutCalculator.BaseGridSize;
     private StreamTabViewModel[] visibleTabs = [];
-    private long lastStreamLeftButtonDownAt = long.MinValue;
-    private int lastStreamLeftButtonDownX;
-    private int lastStreamLeftButtonDownY;
+    private readonly DoubleClickTracker streamDoubleClickTracker = new();
 
     public DetachedVideoWindow(StreamTabViewModel tab)
         : this([tab], tab)
@@ -315,7 +305,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     public bool TryToggleStreamFullscreenFromScreenClick(int screenX, int screenY)
     {
         if (!IsScreenPointInThisWindow(screenX, screenY) ||
-            !IsScreenPointOverStreamArea(screenX, screenY))
+            !IsScreenPointOverStreamArea(screenX, screenY) ||
+            TryGetResizeHitTest(screenX, screenY, out _))
         {
             ResetStreamDoubleClickTracking();
             return false;
@@ -362,10 +353,10 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         return true;
     }
 
-    public bool TryBeginBottomResizeFromScreenClick(int screenX, int screenY)
+    public bool TryBeginResizeFromScreenClick(int screenX, int screenY)
     {
         if (!IsScreenPointInThisWindow(screenX, screenY) ||
-            !TryGetBottomResizeHitTest(screenX, screenY, out var hitTest))
+            !TryGetResizeHitTest(screenX, screenY, out var hitTest))
         {
             return false;
         }
@@ -381,7 +372,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             !IsScreenPointInThisWindow(screenX, screenY) ||
             !IsScreenPointOverStreamArea(screenX, screenY) ||
             GetTabAtScreenPoint(screenX, screenY) is not { } tab ||
-            TryGetBottomResizeHitTest(screenX, screenY, out _))
+            TryGetResizeHitTest(screenX, screenY, out _))
         {
             CancelVideoMoveCandidate();
             return false;
@@ -434,12 +425,31 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     public bool TryOpenVideoContextMenu(int screenX, int screenY)
     {
-        if (!IsScreenPointInThisWindow(screenX, screenY) ||
-            GetTabAtScreenPoint(screenX, screenY) is not { } tab)
+        if (!IsVisible || !WindowHitTestPolicy.IsPointInWindow(
+                windowHitTester, new WindowInteropHelper(this).Handle, screenX, screenY, includeOwnedPopups: false))
         {
             return false;
         }
 
+        return OpenVideoContextMenu(screenX, screenY);
+    }
+
+    internal void OpenCapturedVideoContextMenu(LowLevelMouseHookEvent hookEvent)
+    {
+        // The hook already established native ownership at the time of the click.
+        _ = OpenVideoContextMenu(hookEvent.ScreenX, hookEvent.ScreenY);
+    }
+
+    private bool OpenVideoContextMenu(int screenX, int screenY)
+    {
+        if (IsClosing || !IsVisible || !IsEnabled ||
+            (GetTabAtScreenPoint(screenX, screenY) ?? activeTab) is not { } tab)
+        {
+            return false;
+        }
+
+        // The hook consumes the native press, including its normal activation.
+        _ = Activate();
         NotifyTabActivated(tab);
         ShowTopBarMenuItem.IsChecked = showTopBar;
         var placementPoint = this.ToDeviceIndependentPoint(new Point(screenX, screenY));
@@ -539,7 +549,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private void VideoHost_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         if (TryGetCursorPos(out var screenPoint) &&
-            GetTabAtScreenPoint(screenPoint.X, screenPoint.Y) is { } tab)
+            (GetTabAtScreenPoint(screenPoint.X, screenPoint.Y) ?? activeTab) is { } tab)
         {
             NotifyTabActivated(tab);
             ShowTopBarMenuItem.IsChecked = showTopBar;
@@ -551,20 +561,21 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void BottomResizeGrip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton != MouseButton.Left ||
-            WindowState != WindowState.Normal ||
-            ResizeMode is ResizeMode.NoResize or ResizeMode.CanMinimize)
+        if (e.ChangedButton != MouseButton.Left)
         {
             return;
         }
 
         var point = e.GetPosition(BottomResizeGrip);
-        var hitTest = point.X < BottomResizeGrip.ActualWidth / 3
-            ? HtBottomLeft
-            : point.X >= BottomResizeGrip.ActualWidth * 2 / 3
-                ? HtBottomRight
-                : HtBottom;
         var screenPoint = BottomResizeGrip.PointToScreen(point);
+        if (!TryGetResizeHitTest(
+                (int)Math.Round(screenPoint.X),
+                (int)Math.Round(screenPoint.Y),
+                out var hitTest))
+        {
+            return;
+        }
+
         BeginNativeResize(
             hitTest,
             (int)Math.Round(screenPoint.X),
@@ -622,6 +633,12 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (e.ScreenPoint is { } point)
+        {
+            _ = TryRouteMouseWheel((int)point.X, (int)point.Y, e.Delta);
+            return;
+        }
+
         if (TryGetCursorPos(out var screenPoint) &&
             TryRouteMouseWheel(screenPoint.X, screenPoint.Y, e.Delta))
         {
@@ -645,6 +662,9 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void DetachedVideoWindowClosed(object? sender, EventArgs e)
     {
+        NativePictureInPictureContextMenuTarget.UnregisterWindow(contextMenuWindowHandle);
+        contextMenuWindowHandle = IntPtr.Zero;
+        VideoContextMenu.IsOpen = false;
         CancelVideoMoveCandidate();
         ClearTaskbarFullscreen();
 
@@ -721,11 +741,22 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         }
     }
 
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == ResizeModeProperty)
+        {
+            ApplyWindowChromeHitTestState();
+        }
+    }
+
     private void DetachedVideoWindowSourceInitialized(object? sender, EventArgs e)
     {
         if (PresentationSource.FromVisual(this) is HwndSource source)
         {
             source.AddHook(WindowMessageHook);
+            contextMenuWindowHandle = source.Handle;
+            NativePictureInPictureContextMenuTarget.RegisterWindow(source.Handle, OpenCapturedVideoContextMenu);
         }
 
         if (streamFullscreen)
@@ -813,7 +844,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         }
 
         if (msg == WmNcHitTest &&
-            TryGetBottomResizeHitTest(
+            TryGetResizeHitTest(
                 GetLParamSignedLowWord(lParam),
                 GetLParamSignedHighWord(lParam),
                 out var hitTest))
@@ -942,7 +973,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void DetachedSurfaceOnNativeSetCursorRequested(object? sender, VideoSurfaceNativeMouseEventArgs e)
     {
-        if (!TryGetBottomResizeHitTest(e.ScreenX, e.ScreenY, out var hitTest))
+        if (!TryGetResizeHitTest(e.ScreenX, e.ScreenY, out var hitTest))
         {
             return;
         }
@@ -954,7 +985,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void DetachedSurfaceOnNativeMouseLeftButtonDown(object? sender, VideoSurfaceNativeMouseEventArgs e)
     {
-        if (TryGetBottomResizeHitTest(e.ScreenX, e.ScreenY, out var hitTest))
+        if (TryGetResizeHitTest(e.ScreenX, e.ScreenY, out var hitTest))
         {
             BeginNativeResize(hitTest, e.ScreenX, e.ScreenY);
             e.Handled = true;
@@ -985,45 +1016,27 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private bool TryGetBottomResizeHitTest(int x, int y, out int hitTest)
+    private bool TryGetResizeHitTest(int x, int y, out int hitTest)
     {
         hitTest = 0;
         var hwnd = new WindowInteropHelper(this).Handle;
-        if (WindowState != WindowState.Normal ||
+        if (streamFullscreen || WindowState != WindowState.Normal ||
             ResizeMode is ResizeMode.NoResize or ResizeMode.CanMinimize ||
             hwnd == IntPtr.Zero ||
-            !GetWindowRect(hwnd, out var bounds))
+            !GetWindowRect(hwnd, out var bounds) ||
+            PresentationSource.FromVisual(this) is not { CompositionTarget: { } compositionTarget })
         {
             return false;
         }
 
-        var bottomGripHeight = Math.Max(
-            MinimumBottomResizeGripPixels,
-            GetSystemMetrics(SmCySizeFrame) + GetSystemMetrics(SmCyPaddedBorder));
-        if (y < bounds.Bottom - bottomGripHeight || y >= bounds.Bottom)
-        {
-            return false;
-        }
-
-        var cornerGripWidth = Math.Max(
-            MinimumCornerResizeGripPixels,
-            (GetSystemMetrics(SmCxSizeFrame) + GetSystemMetrics(SmCxPaddedBorder)) * 2);
-        if (x < bounds.Left || x >= bounds.Right)
-        {
-            return false;
-        }
-
-        hitTest = x < bounds.Left + cornerGripWidth
-            ? HtBottomLeft
-            : x >= bounds.Right - cornerGripWidth
-                ? HtBottomRight
-                : HtBottom;
-        return true;
+        var toDevice = compositionTarget.TransformToDevice;
+        return PictureInPictureWindowResize.TryHitTest(bounds, x, y, toDevice.M11, toDevice.M22, out hitTest);
     }
 
     private void BeginNativeResize(int hitTest, int screenX, int screenY)
     {
         CancelVideoMoveCandidate();
+        ResetStreamDoubleClickTracking();
         NotifyTabActivated(GetTabAtScreenPoint(screenX, screenY) ?? activeTab);
 
         var hwnd = new WindowInteropHelper(this).Handle;
@@ -1279,8 +1292,9 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     {
         var cursorId = hitTest switch
         {
-            HtBottomLeft => IdcSizeNesw,
-            HtBottomRight => IdcSizeNwse,
+            HtTopRight or HtBottomLeft => IdcSizeNesw,
+            HtTopLeft or HtBottomRight => IdcSizeNwse,
+            HtLeft or HtRight => IdcSizeWe,
             _ => IdcSizeNs
         };
 
@@ -1642,7 +1656,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         if (WindowChrome.GetWindowChrome(this) is { } chrome)
         {
             chrome.CaptionHeight = streamFullscreen || !showTopBar ? 0 : 34;
-            chrome.ResizeBorderThickness = streamFullscreen || WindowState == WindowState.Maximized
+            chrome.ResizeBorderThickness = streamFullscreen || WindowState != WindowState.Normal ||
+                ResizeMode is ResizeMode.NoResize or ResizeMode.CanMinimize
                 ? new Thickness(0)
                 : WindowChromeResizeBorderThickness;
         }
@@ -1965,13 +1980,20 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             return false;
         }
 
-        // Root-owner matching accepts our own popups (volume OSD, context menu), which are
+        var pointWindow = windowHitTester.WindowFromPoint(screenX, screenY);
+        if (ReplaySeekOverlay.IsReplayOverlayWindow(pointWindow))
+        {
+            // The seekbar owns its input. A press or scrub must not also start a video drag,
+            // resize the picture-in-picture window, or count toward a fullscreen double-click.
+            return false;
+        }
+
+        // Root-owner matching still accepts the volume OSD and context menu, which are
         // separate owned top-level windows that legitimately float over this window's surfaces.
-        return WindowHitTestPolicy.IsPointInWindow(
+        return WindowHitTestPolicy.IsWindowOwnedBy(
             windowHitTester,
             hwnd,
-            screenX,
-            screenY,
+            pointWindow,
             includeOwnedPopups: true);
     }
 
@@ -1980,33 +2002,13 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         return IsScreenPointInThisWindow(screenX, screenY);
     }
 
-    private bool IsTrackedStreamDoubleClick(long now, int screenX, int screenY)
-    {
-        if (lastStreamLeftButtonDownAt == long.MinValue)
-        {
-            return false;
-        }
+    private bool IsTrackedStreamDoubleClick(long now, int screenX, int screenY) =>
+        streamDoubleClickTracker.IsDoubleClick(now, screenX, screenY);
 
-        var elapsed = now - lastStreamLeftButtonDownAt;
-        return elapsed >= 0 &&
-            elapsed <= GetDoubleClickTime() &&
-            Math.Abs(screenX - lastStreamLeftButtonDownX) <= GetSystemMetrics(SmCxDoubleClick) &&
-            Math.Abs(screenY - lastStreamLeftButtonDownY) <= GetSystemMetrics(SmCyDoubleClick);
-    }
+    private void CaptureStreamLeftButtonDown(long now, int screenX, int screenY) =>
+        streamDoubleClickTracker.Capture(now, screenX, screenY);
 
-    private void CaptureStreamLeftButtonDown(long now, int screenX, int screenY)
-    {
-        lastStreamLeftButtonDownAt = now;
-        lastStreamLeftButtonDownX = screenX;
-        lastStreamLeftButtonDownY = screenY;
-    }
-
-    private void ResetStreamDoubleClickTracking()
-    {
-        lastStreamLeftButtonDownAt = long.MinValue;
-        lastStreamLeftButtonDownX = 0;
-        lastStreamLeftButtonDownY = 0;
-    }
+    private void ResetStreamDoubleClickTracking() => streamDoubleClickTracker.Reset();
 
     private Rect GetCurrentNormalBounds()
     {
@@ -2220,7 +2222,4 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     [LibraryImport("user32", EntryPoint = "GetCursorPos")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool TryGetCursorPos(out WindowPoint point);
-
-    [LibraryImport("user32")]
-    private static partial uint GetDoubleClickTime();
 }

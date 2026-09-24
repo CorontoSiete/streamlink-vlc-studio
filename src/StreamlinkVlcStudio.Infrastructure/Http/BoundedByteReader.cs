@@ -136,7 +136,4 @@ internal static class BoundedByteReader
 }
 
 internal sealed class PayloadTooLargeException(int maximumBytes)
-    : IOException($"Payload exceeded the {maximumBytes:N0}-byte limit.")
-{
-    internal int MaximumBytes { get; } = maximumBytes;
-}
+    : IOException($"Payload exceeded the {maximumBytes:N0}-byte limit.");

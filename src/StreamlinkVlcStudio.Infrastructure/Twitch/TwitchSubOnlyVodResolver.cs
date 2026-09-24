@@ -8,6 +8,7 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Replay;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
@@ -144,7 +145,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
             document = await twitchGraphQlTransport.SendAsync(
                 BuildVideoQueryPayload(vodId),
                 TwitchPublicClientId,
-                CreateDeviceId(),
+                TwitchGraphQlTransport.CreateDeviceId(),
                 cancellationToken,
                 mediaType: "application/json").ConfigureAwait(false);
         }
@@ -236,39 +237,18 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
             : await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task WritePlaylistAtomicallyAsync(
+    private static Task WritePlaylistAtomicallyAsync(
         string playlistPath,
         string content,
         CancellationToken cancellationToken)
     {
-        var temporaryPath = $"{playlistPath}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            // Write without a BOM, then replace the destination in one filesystem
-            // operation so VLC never opens a half-written playlist.
-            await File.WriteAllTextAsync(
-                    temporaryPath,
-                    content,
-                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                    cancellationToken)
-                .ConfigureAwait(false);
-            File.Move(temporaryPath, playlistPath, overwrite: true);
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // A completed playlist is still usable if cleanup loses a race with
-                // another resolver; stale files are swept on the next construction.
-            }
-        }
+        // Written without a BOM so VLC parses the playlist, and swapped into place in one
+        // filesystem operation so it never opens a half-written file.
+        var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+        return AtomicFile.WriteAsync(
+            playlistPath,
+            (stream, token) => stream.WriteAsync(bytes, token).AsTask(),
+            cancellationToken);
     }
 
     private void SweepStalePlaylists()
@@ -319,9 +299,6 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
             ? duration
             : TimeSpan.Zero;
     }
-
-    private static string CreateDeviceId() =>
-        Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
     [GeneratedRegex("^[0-9]+$", RegexOptions.CultureInvariant)]
     private static partial Regex TwitchVodIdPattern();

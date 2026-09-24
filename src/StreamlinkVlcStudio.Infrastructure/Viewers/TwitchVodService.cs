@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -346,9 +347,7 @@ public sealed class TwitchVodService : ITwitchVodService
 
     private static TwitchVodBroadcaster? ReadBroadcaster(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return null;
         }
@@ -380,9 +379,7 @@ public sealed class TwitchVodService : ITwitchVodService
 
     private static IEnumerable<TwitchVodItem> ReadVideos(JsonElement root, TwitchVodBroadcaster broadcaster)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }

@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 using StreamlinkVlcStudio.App.Wpf.Chat;
@@ -99,9 +100,10 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         ["verified"] = new(BadgeCheckGeometry, BadgeVerifiedBackgroundBrush),
         ["vip"] = new(BadgeCheckGeometry, BadgeVipBackgroundBrush),
     };
-    private bool subscribed;
+    private volatile bool subscribed;
     private bool rebuildInProgress;
     private bool rebuildQueued;
+    private int catalogRebuildQueued;
     private bool hasNativeOverlayEmote;
     private NativeOverlayChatPresentation? nativeOverlayPresentation;
     private readonly List<AnimatedEmoteImage> animatedEmoteImages = [];
@@ -162,6 +164,11 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     {
         if (dependencyObject is DockedChatMessageTextBlock textBlock)
         {
+            if (e.Property == MessageProperty)
+            {
+                textBlock.EnsureMessageCatalogs();
+            }
+
             textBlock.FontSize = textBlock.ChatFontSize;
             textBlock.RebuildInlines();
         }
@@ -176,7 +183,17 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             subscribed = true;
         }
 
+        EnsureMessageCatalogs();
         RebuildInlines();
+    }
+
+    private void EnsureMessageCatalogs()
+    {
+        if (Message is { } message)
+        {
+            DockedChatEmoteCatalog.Shared.EnsureForMessage(message);
+            DockedChatBadgeCatalog.Shared.EnsureForMessage(message);
+        }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -193,18 +210,24 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
     private void OnCatalogChanged(object? sender, EventArgs e)
     {
-        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        // Catalog notifications arrive on worker threads. Coalesce before posting so a
+        // burst cannot enqueue one full inline rebuild per event for every visible row.
+        if (!subscribed || Interlocked.Exchange(ref catalogRebuildQueued, 1) != 0)
         {
             return;
         }
 
-        if (Dispatcher.CheckAccess())
+        if (!TryQueueOnDispatcher(() =>
         {
-            RequestRebuild();
-            return;
+            Interlocked.Exchange(ref catalogRebuildQueued, 0);
+            if (subscribed)
+            {
+                RequestRebuild();
+            }
+        }))
+        {
+            Interlocked.Exchange(ref catalogRebuildQueued, 0);
         }
-
-        _ = TryQueueOnDispatcher(RequestRebuild);
     }
 
     private void RequestRebuild()
@@ -245,7 +268,8 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
         try
         {
-            _ = Dispatcher.BeginInvoke(action);
+            // Decoration refreshes must yield to input and rendering.
+            _ = Dispatcher.BeginInvoke(action, DispatcherPriority.Background);
             return true;
         }
         catch (InvalidOperationException)
@@ -277,9 +301,6 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             {
                 return;
             }
-
-            DockedChatEmoteCatalog.Shared.EnsureForMessage(message);
-            DockedChatBadgeCatalog.Shared.EnsureForMessage(message);
 
             if (nativeOverlayPresentation is not null)
             {

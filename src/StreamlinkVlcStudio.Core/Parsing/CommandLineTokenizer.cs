@@ -101,8 +101,12 @@ public static class CommandLineTokenizer
 
                     if (inQuotes && index + 1 < value.Length && value[index + 1] == '"')
                     {
+                        // CommandLineToArgvW treats the pair as "close the quoted section, then
+                        // emit a literal quote that reopens it", so the quote state still flips
+                        // once. Leaving it unchanged split arguments that Windows keeps together.
                         current.Append('"');
                         index += 2;
+                        inQuotes = !inQuotes;
                         continue;
                     }
 

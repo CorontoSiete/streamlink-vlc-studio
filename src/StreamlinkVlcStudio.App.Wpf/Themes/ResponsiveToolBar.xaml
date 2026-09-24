@@ -1,0 +1,48 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Real ToolBar items move into the overflow popup and retain their commands,
+         bindings, focus handling and automation peers when space runs out. -->
+    <Style x:Key="ResponsiveToolBar" TargetType="ToolBar">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToolBar">
+                    <Grid Background="{TemplateBinding Background}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ToolBarPanel x:Name="PART_ToolBarPanel" IsItemsHost="True" />
+                        <ToggleButton x:Name="OverflowButton" Grid.Column="1"
+                                      Width="28" Height="36" MinHeight="0" Padding="0"
+                                      Content="&#xE712;" FontFamily="Segoe MDL2 Assets"
+                                      Background="{DynamicResource StudioSurface2Brush}"
+                                      Foreground="{DynamicResource StudioTextBrush}"
+                                      BorderBrush="{DynamicResource StudioBorderStrongBrush}"
+                                      IsChecked="{Binding IsOverflowOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                      ToolTip="More controls" AutomationProperties.Name="More controls" />
+                        <Popup x:Name="PART_ToolBarOverflowPopup"
+                               Placement="Bottom" PlacementTarget="{Binding ElementName=OverflowButton}"
+                               IsOpen="{Binding IsOverflowOpen, RelativeSource={RelativeSource TemplatedParent}}"
+                               StaysOpen="False" AllowsTransparency="True" Focusable="False">
+                            <Border Background="{DynamicResource StudioSurface1Brush}"
+                                    BorderBrush="{DynamicResource StudioBorderStrongBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="8">
+                                <ToolBarOverflowPanel x:Name="PART_ToolBarOverflowPanel" WrapWidth="240"
+                                                      KeyboardNavigation.TabNavigation="Cycle" />
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="HasOverflowItems" Value="False">
+                            <Setter TargetName="OverflowButton" Property="Visibility" Value="Hidden" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

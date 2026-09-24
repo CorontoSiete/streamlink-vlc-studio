@@ -1195,7 +1195,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(true, secondEngine.Muted);
         Assert.Equal(0, secondEngine.Volume);
         Assert.Equal(PlaybackAudioState.Muted, secondEngine.AudioState);
-        Assert.Equal(false, secondEngine.AudioTrackEnabled);
+        Assert.Equal(true, secondEngine.AudioTrackEnabled);
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
     }),
@@ -2186,9 +2186,9 @@ internal static partial class ApplicationTestCatalog
             PlatformKind.Twitch,
             "summit1g",
             "not used"));
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(PlatformKind.Twitch, "summit1g", "viewer", "vod chat", DateTimeOffset.UtcNow))
             ],
@@ -2219,11 +2219,11 @@ internal static partial class ApplicationTestCatalog
             action => action(),
             viewerCountService: viewerCountService,
             replayResolver: replayResolver,
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
 
         tab.SetVideoHandle(new IntPtr(1234));
         await tab.StartAsync(settings);
-        await TestWait.UntilAsync(() => replayChatProvider.CallCount > 0, TimeSpan.FromMilliseconds(500));
+        await TestWait.UntilAsync(() => vodChatProvider.CallCount > 0, TimeSpan.FromMilliseconds(500));
 
         Assert.Equal(PlaybackStatus.Playing, tab.Status);
         Assert.Equal("vod title", tab.Title);
@@ -2241,8 +2241,8 @@ internal static partial class ApplicationTestCatalog
         Assert.True(tab.IsReplaySeekEnabled);
         Assert.Equal(TimeSpan.FromMinutes(90).TotalSeconds, tab.ReplaySeekMaximum);
         Assert.Equal("VOD", tab.ReplayLiveStateText);
-        Assert.Equal("2786354640", replayChatProvider.Requests[0].ReplayId);
-        Assert.Equal("26490481", replayChatProvider.Requests[0].ChatRoomId);
+        Assert.Equal("2786354640", vodChatProvider.RequestedReplays[0].ReplayId);
+        Assert.Equal("26490481", vodChatProvider.RequestedReplays[0].ChatRoomId);
         Assert.Equal(false, tab.CanSendChatMessages);
         Assert.Equal(false, tab.CanReturnToLive);
         Assert.Equal(false, tab.ReturnToLiveCommand.CanExecute(null));
@@ -2257,13 +2257,11 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, tab.IsBehindLive);
         Assert.Equal("VOD", tab.ReplayLiveStateText);
         await TestWait.UntilAsync(
-            () => replayChatProvider.Offsets.LastOrDefault() == TimeSpan.FromMinutes(10),
-            TimeSpan.FromMilliseconds(500));
-        Assert.Equal(TimeSpan.FromMinutes(10), replayChatProvider.Offsets.Last());
-        await TestWait.UntilAsync(
             () => tab.DockedChatMessages.Any(message => message.Message == "vod chat"),
-            TimeSpan.FromMilliseconds(500));
+            TimeSpan.FromSeconds(1));
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "vod chat"));
+        Assert.Equal(TimeSpan.Zero, vodChatProvider.RequestedOffsets[0]);
+        Assert.True(vodChatProvider.RequestedOffsets.All(offset => offset < TimeSpan.FromMinutes(10)));
 
         tab.OutgoingChatText = "should not send";
         await tab.SendChatMessageAsync();
@@ -2285,7 +2283,7 @@ internal static partial class ApplicationTestCatalog
         };
         var playbackFactory = new FakePlaybackEngineFactory();
         var chatFactory = new FakeChatClientFactory();
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(unavailableReason));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported(unavailableReason));
         var target = new StreamTarget(
             PlatformKind.Kick,
             "xqc",
@@ -2312,12 +2310,12 @@ internal static partial class ApplicationTestCatalog
             chatFactory,
             new MemoryLogger(),
             action => action(),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
 
         tab.SetVideoHandle(new IntPtr(1234));
         await tab.StartAsync(settings);
         await TestWait.UntilAsync(
-            () => replayChatProvider.CallCount >= 1 &&
+            () => vodChatProvider.CallCount >= 1 &&
                 DockedChatMessagesContainText(tab, "webhook chat cache"),
             TimeSpan.FromMilliseconds(500));
 
@@ -2332,10 +2330,10 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(resolvedVodUri, playbackFactory.Engine.LastPlayedUri);
         Assert.Equal(0, chatFactory.Client.ConnectCount);
         Assert.Equal(false, tab.CanSendChatMessages);
-        Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
-        Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
-        Assert.Equal("668", replayChatProvider.Requests[0].ChatRoomId);
-        Assert.Equal(TimeSpan.Zero, replayChatProvider.Offsets[0]);
+        Assert.Equal("uuid-123", vodChatProvider.RequestedReplays[0].ReplayId);
+        Assert.Equal(startedAt, vodChatProvider.RequestedReplays[0].StreamStartedAtUtc);
+        Assert.Equal("668", vodChatProvider.RequestedReplays[0].ChatRoomId);
+        Assert.Equal(TimeSpan.Zero, vodChatProvider.RequestedOffsets[0]);
         Assert.True(DockedChatMessagesContainText(tab, unavailableReason));
 
         await tab.DisposeAsync();
@@ -2357,7 +2355,7 @@ internal static partial class ApplicationTestCatalog
             PlatformKind.Kick,
             "xqc",
             "not used"));
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported(
             "Official Kick VOD chat needs the VOD start time so webhook messages can be aligned to playback."));
         var target = new StreamTarget(
             PlatformKind.Kick,
@@ -2384,16 +2382,16 @@ internal static partial class ApplicationTestCatalog
             action => action(),
             viewerCountService: viewerCountService,
             replayResolver: replayResolver,
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
 
         tab.SetVideoHandle(new IntPtr(1234));
         await tab.StartAsync(settings);
         await TestWait.UntilAsync(
-            () => replayChatProvider.CallCount >= 1 &&
+            () => vodChatProvider.CallCount >= 1 &&
                 DockedChatMessagesContainText(tab, "VOD start time") &&
                 tab.CanSeekReplay,
-            TimeSpan.FromMilliseconds(500));
-        await tab.ReplayChatLoadIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
+            TimeSpan.FromSeconds(2));
+        await tab.VodChatIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal(PlaybackStatus.Playing, tab.Status);
         Assert.Equal(1, streamlink.ResolveStreamUrlCount);
@@ -2408,7 +2406,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(0, viewerCountService.CallCount);
         Assert.Equal(0, replayResolver.CallCount);
         Assert.Equal(0, chatFactory.Client.ConnectCount);
-        Assert.True(replayChatProvider.CallCount >= 1);
+        Assert.True(vodChatProvider.CallCount >= 1);
         Assert.True(tab.IsReplaySeekEnabled);
         Assert.True(tab.CanSeekReplay);
         Assert.Equal(TimeSpan.FromMinutes(30).TotalSeconds, tab.ReplaySeekMaximum);
@@ -2428,20 +2426,20 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, tab.IsBehindLive);
         Assert.Equal("VOD", tab.ReplayLiveStateText);
         await TestWait.UntilAsync(
-            () => replayChatProvider.CallCount >= 2 &&
-                DockedChatMessagesContainText(tab, "VOD start time"),
-            TimeSpan.FromMilliseconds(500));
-        await tab.ReplayChatLoadIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
+            () => DockedChatMessagesContainText(tab, "VOD start time"),
+            TimeSpan.FromSeconds(1));
+        await tab.VodChatIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
 
         await tab.SeekReplayAsync(TimeSpan.FromSeconds(-30));
-        await tab.ReplayChatLoadIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await tab.VodChatIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal(TimeSpan.Zero, playbackFactory.Engine.Position);
 
         await tab.SeekReplayAsync(TimeSpan.FromMinutes(45));
-        await tab.ReplayChatLoadIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await tab.VodChatIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal(TimeSpan.FromMinutes(30), playbackFactory.Engine.Position);
         Assert.Equal(1, streamlink.ResolveStreamUrlCount);
-        Assert.True(replayChatProvider.CallCount >= 2);
+        Assert.True(vodChatProvider.CallCount >= 1);
+        Assert.True(DockedChatMessagesContainText(tab, "VOD start time"));
 
         await tab.DisposeAsync();
     }),
@@ -2449,9 +2447,9 @@ internal static partial class ApplicationTestCatalog
     {
         var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
         var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
         [
-            new ReplayChatMessage(
+            new VodChatMessage(
                 TimeSpan.Zero,
                 new ChatMessage(
                     PlatformKind.Kick,
@@ -2461,12 +2459,6 @@ internal static partial class ApplicationTestCatalog
                     startedAt,
                     MessageId: "official-kick-vod-replay-chat"))
         ], TimeSpan.Zero, TimeSpan.FromMinutes(4)));
-        var eventSubscriptionService = new FakeKickEventSubscriptionService(
-            new KickEventSubscriptionEnsureResult(
-                KickEventSubscriptionEnsureStatus.Subscribed,
-                "Official Kick chat webhook subscription created for xqc.",
-                "sub-123",
-                456));
         var chatFactory = new FakeChatClientFactory();
         var target = new StreamTarget(
             PlatformKind.Kick,
@@ -2487,29 +2479,25 @@ internal static partial class ApplicationTestCatalog
             chatFactory,
             new MemoryLogger(),
             action => action(),
-            replayChatProvider: replayChatProvider,
-            kickEventSubscriptionService: eventSubscriptionService);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
             VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
         };
-        settings.Chat.KickWebhookListenerEnabled = true;
 
         tab.SetVideoHandle(new IntPtr(1234));
         await tab.StartAsync(settings);
 
         await TestWait.UntilAsync(
-            () => replayChatProvider.CallCount >= 1 &&
-                eventSubscriptionService.CallCount >= 1 &&
+            () => vodChatProvider.CallCount >= 1 &&
                 DockedChatMessagesContain(tab, "official Kick VOD replay chat"),
             TimeSpan.FromSeconds(2));
 
-        Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
-        Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
-        Assert.Equal("668", replayChatProvider.Requests[0].ChatRoomId);
-        Assert.Equal(TimeSpan.Zero, replayChatProvider.Offsets[0]);
-        Assert.Equal("xqc", eventSubscriptionService.Requests[0].Channel);
+        Assert.Equal("uuid-123", vodChatProvider.RequestedReplays[0].ReplayId);
+        Assert.Equal(startedAt, vodChatProvider.RequestedReplays[0].StreamStartedAtUtc);
+        Assert.Equal("668", vodChatProvider.RequestedReplays[0].ChatRoomId);
+        Assert.Equal(TimeSpan.Zero, vodChatProvider.RequestedOffsets[0]);
         Assert.Equal(0, chatFactory.Client.ConnectCount);
         Assert.Equal(false, tab.CanSendChatMessages);
         Assert.Equal(0, tab.DockedChatMessages.Count(message =>
@@ -2526,7 +2514,7 @@ internal static partial class ApplicationTestCatalog
     ("Kick VOD with missing duration leaves replay seekbar disabled", async () =>
     {
         var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat is unsupported."));
+        var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat is unsupported."));
         var tab = TestViewModels.CreateTab(
             new StreamTarget(
                 PlatformKind.Kick,
@@ -2543,7 +2531,7 @@ internal static partial class ApplicationTestCatalog
             new FakeChatClientFactory(),
             new MemoryLogger(),
             action => action(),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2558,7 +2546,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, tab.IsReplaySeekEnabled);
         Assert.Equal(false, tab.CanSeekReplay);
         Assert.Contains("usable duration", tab.ReplaySeekToolTip);
-        Assert.Equal(0, replayChatProvider.CallCount);
+        Assert.Equal(0, vodChatProvider.CallCount);
 
         await tab.DisposeAsync();
     }),
@@ -3618,7 +3606,7 @@ internal static partial class ApplicationTestCatalog
             TimeSpan.FromSeconds(1));
         Assert.Equal(true, firstEngine.Muted);
         Assert.Equal(0, firstEngine.Volume);
-        Assert.Equal(false, firstEngine.AudioTrackEnabled);
+        Assert.Equal(true, firstEngine.AudioTrackEnabled);
         Assert.Equal(false, secondEngine.Muted);
         Assert.Equal(80, secondEngine.Volume);
         Assert.Equal(true, secondEngine.AudioTrackEnabled);
@@ -3635,7 +3623,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(1, firstEngine.StopCount);
         Assert.Equal(true, firstEngine.Muted);
         Assert.Equal(0, firstEngine.Volume);
-        Assert.Equal(false, firstEngine.AudioTrackEnabled);
+        Assert.Equal(true, firstEngine.AudioTrackEnabled);
         Assert.Equal(false, secondEngine.Muted);
         Assert.Equal(80, secondEngine.Volume);
         Assert.Equal(true, secondEngine.AudioTrackEnabled);
@@ -4032,7 +4020,8 @@ internal static partial class ApplicationTestCatalog
                 Assert.NotNull(thumb);
                 Assert.Equal(true, panel.IsVisible);
                 Assert.Equal(ChatSettings.MinimumDockWidth, panel.MinWidth);
-                Assert.Equal(ChatSettings.MaximumDockWidth, panel.MaxWidth);
+                Assert.True(panel.MaxWidth <= ((FrameworkElement)window.Content).ActualWidth / 2,
+                    "Docked chat must leave at least half of the window available for video.");
 
                 var resize = typeof(MainWindow).GetMethod(
                     "DockedChatResizeThumb_DragDelta",
@@ -4333,12 +4322,15 @@ internal static partial class ApplicationTestCatalog
             await runningOpen.WaitAsync(TimeSpan.FromSeconds(1));
         });
     }),
-    ("mouse button four is browse back and other mouse buttons are not", () =>
+    ("mouse button four is the default back hotkey and other mouse buttons are not", () =>
     {
-        Assert.Equal(true, MainWindow.IsBrowseBackMouseButton(MouseButton.XButton1));
-        Assert.Equal(false, MainWindow.IsBrowseBackMouseButton(MouseButton.XButton2));
-        Assert.Equal(false, MainWindow.IsBrowseBackMouseButton(MouseButton.Left));
-        Assert.Equal(false, MainWindow.IsBrowseBackMouseButton(MouseButton.Middle));
+        var settings = new HotkeySettings();
+        Assert.True(HotkeyBindingPolicy.Matches(settings, AppHotkeyAction.GoBack,
+            HotkeyGesture.FromMouseButton(MouseButton.XButton1, ModifierKeys.None)));
+        Assert.Equal(false, HotkeyBindingPolicy.Matches(settings, AppHotkeyAction.GoBack,
+            HotkeyGesture.FromMouseButton(MouseButton.XButton2, ModifierKeys.None)));
+        Assert.Equal(false, HotkeyGesture.IsBindableMouseButton(MouseButton.Left));
+        Assert.Equal(false, HotkeyGesture.IsBindableMouseButton(MouseButton.Middle));
         return Task.CompletedTask;
     }),
     ("Twitch and Kick category clicks open stream pages at the top", () =>

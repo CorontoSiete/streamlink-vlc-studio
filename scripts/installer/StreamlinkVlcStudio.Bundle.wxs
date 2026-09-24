@@ -10,56 +10,61 @@
     IconSourceFile="$(var.AppIcon)"
     AboutUrl="https://github.com/CorontoSiete/streamlink-vlc-studio"
     Compressed="yes"
+    DisableModify="no"
+    bal:CommandLineVariables="caseInsensitive"
     Condition="VersionNT64 &gt;= v10.0">
-    <BootstrapperApplication>
-      <bal:WixStandardBootstrapperApplication
-        Theme="hyperlinkLicense"
-        LicenseUrl=""
-        ShowVersion="yes"
-        SuppressOptionsUI="yes"
-        LaunchTarget="[ProgramFiles64Folder]Streamlink VLC Studio\StreamlinkVlcStudio.exe"
-        LaunchArguments="--setup"
-        LaunchWorkingFolder="[ProgramFiles64Folder]Streamlink VLC Studio" />
+    <Variable
+      Name="StreamlinkDependencyVersion"
+      Type="string"
+      Value="$(var.StreamlinkMinimumVersion)" />
+    <Variable
+      Name="VlcDependencyVersion"
+      Type="string"
+      Value="$(var.VlcVersion)" />
+    <Variable
+      Name="InstalledApplicationPath"
+      Type="formatted"
+      Value="[ProgramFiles64Folder]Streamlink VLC Studio\StreamlinkVlcStudio.exe" />
+    <Variable
+      Name="StreamlinkMachineExecutable"
+      Type="formatted"
+      Value="[ProgramFiles64Folder]Streamlink\bin\streamlink.exe" />
+    <Variable
+      Name="StreamlinkMachineVersion"
+      Type="version"
+      Value="0.0.0.0" />
+    <Variable
+      Name="PurgeUserData"
+      Type="numeric"
+      Value="0"
+      bal:Overridable="yes" />
+
+    <BootstrapperApplication
+      SourceFile="$(var.BootstrapperApplicationDir)\StreamlinkVlcStudio.Bootstrapper.exe">
+      <PayloadGroupRef Id="ManagedBootstrapperApplicationPayloads" />
     </BootstrapperApplication>
 
-    <util:RegistrySearch
-      Id="StreamlinkMachine64VersionSearch"
-      Variable="StreamlinkMachine64Version"
-      Root="HKLM"
-      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Streamlink"
-      Value="DisplayVersion"
-      Result="value"
-      Bitness="always64" />
-    <util:RegistrySearch
-      Id="StreamlinkMachine32VersionSearch"
-      Variable="StreamlinkMachine32Version"
-      Root="HKLM"
-      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Streamlink"
-      Value="DisplayVersion"
-      Result="value"
-      Bitness="always32" />
-    <util:RegistrySearch
-      Id="StreamlinkUserVersionSearch"
-      Variable="StreamlinkUserVersion"
-      Root="HKCU"
-      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Streamlink"
-      Value="DisplayVersion"
-      Result="value" />
+    <util:ProductSearch
+      Id="VlcRelatedProductSearch"
+      Variable="VlcRelatedVersion"
+      UpgradeCode="D2E0205B-0D3A-46E2-ADF7-0504FF48CF04"
+      Result="version" />
 
     <Chain>
       <ExePackage
         Id="Streamlink"
         DisplayName="Streamlink (x64)"
         SourceFile="$(var.StreamlinkInstaller)"
-        InstallArguments="/S"
+        InstallArguments="/AllUsers /S"
         PerMachine="yes"
         Permanent="yes"
-        DetectCondition="(StreamlinkMachine64Version AND StreamlinkMachine64Version &gt;= v$(var.StreamlinkMinimumVersion)) OR (StreamlinkMachine32Version AND StreamlinkMachine32Version &gt;= v$(var.StreamlinkMinimumVersion)) OR (StreamlinkUserVersion AND StreamlinkUserVersion &gt;= v$(var.StreamlinkMinimumVersion))" />
+        DetectCondition="StreamlinkMachineVersion &gt;= v$(var.StreamlinkMinimumVersion)" />
       <MsiPackage
         Id="Vlc"
         DisplayName="VLC media player (64-bit)"
         SourceFile="$(var.VlcMsi)"
         ForcePerMachine="yes"
+        InstallCondition="VlcRelatedVersion &lt; v$(var.VlcVersion)"
         Permanent="yes" />
       <MsiPackage
         Id="StreamlinkVlcStudio"

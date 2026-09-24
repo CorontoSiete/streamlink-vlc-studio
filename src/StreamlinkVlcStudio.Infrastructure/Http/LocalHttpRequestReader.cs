@@ -36,15 +36,6 @@ public sealed record LocalHttpRequestReadResult(
 
 public static class LocalHttpRequestReader
 {
-    public static async Task<LocalHttpRequest?> ReadAsync(
-        Stream stream,
-        int maxRequestBytes,
-        CancellationToken cancellationToken)
-    {
-        var result = await ReadWithStatusAsync(stream, maxRequestBytes, cancellationToken).ConfigureAwait(false);
-        return result.Request;
-    }
-
     public static async Task<LocalHttpRequestReadResult> ReadWithStatusAsync(
         Stream stream,
         int maxRequestBytes,

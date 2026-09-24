@@ -125,6 +125,14 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         !string.IsNullOrWhiteSpace(Settings.Chat.KickClientId) &&
         !string.IsNullOrWhiteSpace(Settings.Chat.KickClientSecret);
 
+    public string TwitchFooterActionText => ShouldConnectTwitchFromFooter
+        ? "Connect Twitch"
+        : "Continue";
+
+    public string KickFooterActionText => ShouldConnectKickFromFooter
+        ? "Connect Kick"
+        : "Continue";
+
     public string TwitchAccountStatus => HasTwitchConnection
         ? string.IsNullOrWhiteSpace(Settings.Chat.TwitchUsername)
             ? "Twitch account connected."
@@ -157,6 +165,15 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
     private bool HasKickConnection => !string.IsNullOrWhiteSpace(Settings.Chat.KickOAuthToken) ||
         !string.IsNullOrWhiteSpace(Settings.Chat.KickRefreshToken);
 
+    private bool ShouldConnectTwitchFromFooter =>
+        !HasTwitchConnection &&
+        !string.IsNullOrWhiteSpace(Settings.Chat.TwitchClientId);
+
+    private bool ShouldConnectKickFromFooter =>
+        !HasKickConnection &&
+        !string.IsNullOrWhiteSpace(Settings.Chat.KickClientId) &&
+        !string.IsNullOrWhiteSpace(Settings.Chat.KickClientSecret);
+
     private void SetupWizardWindowLoaded(object sender, RoutedEventArgs e)
     {
         KickClientSecretBox.Password = Settings.Chat.KickClientSecret;
@@ -164,6 +181,8 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(CanConnectKick));
         OnPropertyChanged(nameof(TwitchAccountStatus));
         OnPropertyChanged(nameof(KickAccountStatus));
+        OnPropertyChanged(nameof(TwitchFooterActionText));
+        OnPropertyChanged(nameof(KickFooterActionText));
         OnPropertyChanged(nameof(DependencyStatus));
     }
 
@@ -200,6 +219,34 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         }
 
         CurrentStep = Math.Max(CurrentStep - 1, 0);
+    }
+
+    private async void TwitchFooterActionButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (ShouldConnectTwitchFromFooter)
+        {
+            if (await ConnectTwitchAsync() && IsTwitchVisible)
+            {
+                CurrentStep = Math.Min(CurrentStep + 1, 3);
+            }
+            return;
+        }
+
+        NextButtonClick(sender, e);
+    }
+
+    private async void KickFooterActionButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (ShouldConnectKickFromFooter)
+        {
+            if (await ConnectKickAsync() && IsKickVisible)
+            {
+                CurrentStep = Math.Min(CurrentStep + 1, 3);
+            }
+            return;
+        }
+
+        NextButtonClick(sender, e);
     }
 
     private async void CopyRedirectButtonClick(object sender, RoutedEventArgs e)
@@ -249,19 +296,25 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
     {
         Settings.Chat.KickClientSecret = KickClientSecretBox.Password;
         OnPropertyChanged(nameof(CanConnectKick));
+        OnPropertyChanged(nameof(KickFooterActionText));
     }
 
     private async void ConnectTwitchButtonClick(object sender, RoutedEventArgs e)
     {
+        await ConnectTwitchAsync();
+    }
+
+    private async Task<bool> ConnectTwitchAsync()
+    {
         if (!CanConnectTwitch)
         {
             StatusMessage = "Enter the Twitch Client ID first.";
-            return;
+            return false;
         }
 
         if (!TryBeginOperation())
         {
-            return;
+            return false;
         }
 
         SetBusy(true, "Waiting for Twitch authorization in your browser...");
@@ -276,6 +329,8 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
                 ? "Twitch connected."
                 : $"Twitch connected as {Settings.Chat.TwitchUsername}.";
             OnPropertyChanged(nameof(TwitchAccountStatus));
+            OnPropertyChanged(nameof(TwitchFooterActionText));
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -294,19 +349,21 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             SetBusy(false, StatusMessage);
             EndOperation();
         }
+
+        return false;
     }
 
-    private async void ConnectKickButtonClick(object sender, RoutedEventArgs e)
+    private async Task<bool> ConnectKickAsync()
     {
         if (!CanConnectKick)
         {
             StatusMessage = "Enter the Kick Client ID and Client Secret first.";
-            return;
+            return false;
         }
 
         if (!TryBeginOperation())
         {
-            return;
+            return false;
         }
 
         SetBusy(true, "Waiting for Kick authorization in your browser...");
@@ -340,6 +397,8 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
                 ? "Kick connected."
                 : $"Kick connected as {Settings.Chat.KickUsername}.";
             OnPropertyChanged(nameof(KickAccountStatus));
+            OnPropertyChanged(nameof(KickFooterActionText));
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -358,6 +417,8 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             SetBusy(false, StatusMessage);
             EndOperation();
         }
+
+        return false;
     }
 
     private async void FinishButtonClick(object sender, RoutedEventArgs e)
@@ -460,6 +521,8 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(CanConnectKick));
         OnPropertyChanged(nameof(TwitchAccountStatus));
         OnPropertyChanged(nameof(KickAccountStatus));
+        OnPropertyChanged(nameof(TwitchFooterActionText));
+        OnPropertyChanged(nameof(KickFooterActionText));
         OnPropertyChanged(nameof(DependencyStatus));
     }
 

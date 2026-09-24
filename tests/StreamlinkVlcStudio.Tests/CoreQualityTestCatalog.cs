@@ -2,6 +2,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
+using StreamlinkVlcStudio.Core.Security;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Core.Twitch;
@@ -57,7 +58,42 @@ internal static class CoreQualityTestCatalog
             ["--http-header", "broken"],
             CommandLineTokenizer.Tokenize("--http-header \"broken"));
         CommandLineTokenizerRejectsNullCharacters();
+        PortableTokenizerMatchesWindowsRules();
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Core targets plain net10.0 and falls back to a hand-written tokenizer off Windows. The
+    /// two implementations must agree, so pin the portable one against the real
+    /// <c>CommandLineToArgvW</c> for the quote runs that previously diverged.
+    /// </summary>
+    private static void PortableTokenizerMatchesWindowsRules()
+    {
+        var portable = typeof(CommandLineTokenizer).GetMethod(
+            "TokenizePortable",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(portable);
+
+        string[] commandLines =
+        [
+            "\"b\"\"\" d\"",
+            "\"b\"\"c\"\"d\" e\"",
+            "\"a\"\"b\" c",
+            "\"x\"\"y z\"",
+            "--title \"He said \"\"hi\"\" now\" --x",
+            "b\"\"c\" d",
+            "\"a b\" c",
+            "x\"\"y z",
+            "\"\"\"\"",
+            "\"a\"\"\""
+        ];
+
+        foreach (var commandLine in commandLines)
+        {
+            var windows = CommandLineTokenizer.Tokenize(commandLine);
+            var fallback = (IReadOnlyList<string>)portable!.Invoke(null, [commandLine])!;
+            Assert.SequenceEqual(windows, fallback);
+        }
     }
 
     private static Task DurationConversionRejectsOverflowBoundary()
@@ -295,10 +331,27 @@ internal static class CoreQualityTestCatalog
 
         var rewritten = TwitchSubOnlyVodPlaylist.RewriteMediaPlaylist(
             "\uFEFF#EXTM3U\nsegment.ts",
-            new Uri("https://video-edge.example.cloudfront.net/vod/index-dvr.m3u8"));
+            new Uri("https://d2e2de1etea730.cloudfront.net/vod/index-dvr.m3u8"));
         Assert.Equal(
-            "#EXTM3U\nhttps://video-edge.example.cloudfront.net/vod/segment.ts\n",
+            "#EXTM3U\nhttps://d2e2de1etea730.cloudfront.net/vod/segment.ts\n",
             rewritten);
+
+        // CloudFront is multi-tenant, so only a single distribution label is an approved
+        // Twitch replay host; nested subdomains are attacker-choosable and must be rejected.
+        Assert.True(ProviderUriPolicy.IsApprovedReplayUri(
+            new Uri("https://d2e2de1etea730.cloudfront.net/vod/index-dvr.m3u8"),
+            PlatformKind.Twitch));
+        foreach (var rejected in new[]
+        {
+            "https://video-edge.example.cloudfront.net/vod/index-dvr.m3u8",
+            "https://evil.d2e2de1etea730.cloudfront.net/vod/index-dvr.m3u8",
+            "https://cloudfront.net/vod/index-dvr.m3u8"
+        })
+        {
+            Assert.Equal(
+                false,
+                ProviderUriPolicy.IsApprovedReplayUri(new Uri(rejected), PlatformKind.Twitch));
+        }
     }
 
     private static async Task TestRunnerReportsNotRunAsync()

@@ -58,6 +58,10 @@ internal static partial class LibVlcNative
         [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
 
+    // Returns a pointer to a static string owned by libVLC, for example "3.0.12 Vetinari".
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr libvlc_get_version();
+
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void libvlc_release(IntPtr instance);
 
@@ -83,6 +87,20 @@ internal static partial class LibVlcNative
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int libvlc_video_get_cursor(IntPtr player, uint num, out int x, out int y);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate IntPtr PreviewLockCallback(IntPtr opaque, IntPtr planes);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate void PreviewUnlockCallback(IntPtr opaque, IntPtr picture, IntPtr planes);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void libvlc_video_set_callbacks(IntPtr player, PreviewLockCallback lockCallback,
+        PreviewUnlockCallback unlockCallback, IntPtr displayCallback, IntPtr opaque);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void libvlc_video_set_format(IntPtr player,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string chroma, uint width, uint height, uint pitch);
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int libvlc_media_player_play(IntPtr player);

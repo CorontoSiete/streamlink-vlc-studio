@@ -42,3 +42,4 @@ global using StreamlinkVlcStudio.Infrastructure.Twitch;
 global using StreamlinkVlcStudio.Infrastructure.Updates;
 global using StreamlinkVlcStudio.Infrastructure.Vlc;
 global using StreamlinkVlcStudio.Infrastructure.Viewers;
+global using StreamlinkVlcStudio.Infrastructure.Vod;

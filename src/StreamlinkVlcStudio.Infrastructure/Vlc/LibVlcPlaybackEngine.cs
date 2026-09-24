@@ -11,11 +11,21 @@ public sealed class LibVlcPlaybackEngineFactory : IPlaybackEngineFactory
 {
     private readonly IAppLogger logger;
     private readonly ChatSettings chatSettings;
+    private readonly IPlaybackMediaSourceGateway? mediaSourceGateway;
 
     public LibVlcPlaybackEngineFactory(IAppLogger logger, ChatSettings chatSettings)
+        : this(logger, chatSettings, mediaSourceGateway: null)
+    {
+    }
+
+    internal LibVlcPlaybackEngineFactory(
+        IAppLogger logger,
+        ChatSettings chatSettings,
+        IPlaybackMediaSourceGateway? mediaSourceGateway)
     {
         this.logger = logger;
         this.chatSettings = chatSettings;
+        this.mediaSourceGateway = mediaSourceGateway;
     }
 
     public async Task<IPlaybackEngine> CreateAsync(
@@ -32,7 +42,8 @@ public sealed class LibVlcPlaybackEngineFactory : IPlaybackEngineFactory
                 enableNativeOverlay,
                 nativeOverlayPositionStatePath,
                 cancellationToken,
-                rendererMode)
+                rendererMode,
+                mediaSourceGateway)
             .ConfigureAwait(false);
     }
 }
@@ -64,12 +75,16 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     private readonly SemaphoreSlim audioApplySignal = new(0, 1);
     private readonly CancellationTokenSource audioApplyCancellation = new();
     private readonly Task audioApplyTask;
+    private readonly IPlaybackMediaSourceGateway? mediaSourceGateway;
+    private readonly Version? libVlcVersion;
     private RuntimeLease? runtimeLease;
     private IntPtr instance;
     private IntPtr player;
     private IntPtr media;
     private IntPtr videoHandle;
     private Uri? currentMediaUri;
+    // Keeps currentMediaUri openable (for example a repair proxy session) until the media is cleared.
+    private PlaybackMediaSource? currentMediaSource;
     private bool desiredPaused;
     private int? lastEnabledAudioTrackId;
     private int videoOutputVersion;
@@ -85,9 +100,11 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         IAppLogger logger,
         VlcOverlayPluginRuntime? nativeOverlay,
         string? nativeOverlayPositionStatePath,
-        VideoRendererMode rendererMode)
+        VideoRendererMode rendererMode,
+        IPlaybackMediaSourceGateway? mediaSourceGateway)
     {
         this.logger = logger;
+        this.mediaSourceGateway = mediaSourceGateway;
 
         if (string.IsNullOrWhiteSpace(vlcDirectory))
         {
@@ -162,10 +179,12 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
         instance = runtimeLease.Instance;
         RendererMode = selectedRenderer;
+        // The runtime above loaded libvlc.dll, so its version can be read without side effects.
+        libVlcVersion = LibVlcVersion.TryReadLoaded();
         logger.Write(
             AppLogLevel.Info,
             "libVLC",
-            $"Using {RendererMode} video renderer with automatic hardware decoding.");
+            $"Using {RendererMode} video renderer with automatic hardware decoding (libVLC {libVlcVersion?.ToString() ?? "version unknown"}).");
         audioApplyTask = Task.Run(ApplyAudioStateLoopAsync);
     }
 
@@ -176,7 +195,8 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         bool enableNativeOverlay,
         string? nativeOverlayPositionStatePath,
         CancellationToken cancellationToken,
-        VideoRendererMode rendererMode)
+        VideoRendererMode rendererMode,
+        IPlaybackMediaSourceGateway? mediaSourceGateway = null)
     {
         var nativeOverlay = enableNativeOverlay
             ? await VlcOverlayPluginRuntimeFactory.TryPrepareAsync(
@@ -191,7 +211,8 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             logger,
             nativeOverlay,
             nativeOverlayPositionStatePath,
-            rendererMode);
+            rendererMode,
+            mediaSourceGateway);
     }
 
     public bool UsesNativeOverlay { get; }
@@ -204,15 +225,18 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     public void SetVideoHandle(IntPtr handle)
     {
-        var previousHandle = videoHandle;
-        videoHandle = handle;
+        // Called from the UI thread while PlayAsync/StopCurrentCore/CreatePlayerCore run on a
+        // dedicated native thread under nativeGate. Publish the handle atomically and read the
+        // player/media fields with acquire semantics so this cannot observe torn or stale state;
+        // the native call below still uses TryEnter so the UI thread never blocks on libVLC.
+        var previousHandle = Interlocked.Exchange(ref videoHandle, handle);
         var handleChanged = previousHandle != handle;
         var rebindVersion = handleChanged ? Interlocked.Increment(ref videoOutputVersion) : Volatile.Read(ref videoOutputVersion);
         var shouldRebindVideoOutput = ShouldRebindVideoOutput(
             previousHandle,
-            videoHandle,
-            player != IntPtr.Zero,
-            currentMediaUri is not null);
+            handle,
+            Volatile.Read(ref player) != IntPtr.Zero,
+            Volatile.Read(ref currentMediaUri) is not null);
 
         if (shouldRebindVideoOutput)
         {
@@ -236,7 +260,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         {
             if (!disposed && player != IntPtr.Zero)
             {
-                LibVlcNative.libvlc_media_player_set_hwnd(player, videoHandle);
+                LibVlcNative.libvlc_media_player_set_hwnd(player, Volatile.Read(ref videoHandle));
             }
         }
         finally
@@ -261,50 +285,108 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         audioStateController.Update(volume, audioState);
-        return RunBlockingNativeAsync(() =>
+        return PlayCoreAsync(mediaUri, cancellationToken);
+    }
+
+    private async Task PlayCoreAsync(Uri mediaUri, CancellationToken cancellationToken)
+    {
+        var mediaSource = await PrepareMediaSourceAsync(mediaUri, cancellationToken).ConfigureAwait(false);
+        var engineOwnsMediaSource = false;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (nativeGate)
+            await RunBlockingNativeAsync(() =>
             {
-                ObjectDisposedException.ThrowIf(disposed, this);
-                StopCurrentCore();
-                currentMediaUri = mediaUri;
-                desiredPaused = false;
-
-                if (videoHandle == IntPtr.Zero)
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (nativeGate)
                 {
-                    throw new InvalidOperationException("The video surface is not ready yet.");
-                }
-
-                CreatePlayerCore(mediaUri);
-                _ = ApplyAudioCore();
-
-                var result = LibVlcNative.libvlc_media_player_play(player);
-                if (result != 0 &&
-                    RendererMode == VideoRendererMode.Direct3D11 &&
-                    !UsesNativeOverlay)
-                {
-                    logger.Write(
-                        AppLogLevel.Warning,
-                        "libVLC",
-                        "Direct3D11 could not start the video output; retrying with GDI.");
-                    SwitchToGdiCore(mediaUri);
-                    result = LibVlcNative.libvlc_media_player_play(player);
-                }
-
-                if (result != 0)
-                {
+                    ObjectDisposedException.ThrowIf(disposed, this);
                     StopCurrentCore();
-                    throw new InvalidOperationException("libVLC failed to start playback.");
-                }
+                    // From here the engine state owns the source: whatever clears the current
+                    // media (stop, a newer play, dispose) also releases it.
+                    currentMediaSource = mediaSource;
+                    engineOwnsMediaSource = true;
+                    var playbackUri = mediaSource.PlaybackUri;
+                    currentMediaUri = playbackUri;
+                    desiredPaused = false;
 
-                logger.Write(AppLogLevel.Info, "libVLC", $"Playing {mediaUri}");
-                if (!ApplyAudioCore())
-                {
-                    ScheduleAudioStateConvergence();
+                    if (videoHandle == IntPtr.Zero)
+                    {
+                        throw new InvalidOperationException("The video surface is not ready yet.");
+                    }
+
+                    CreatePlayerCore(playbackUri);
+                    _ = ApplyAudioCore();
+
+                    var result = LibVlcNative.libvlc_media_player_play(player);
+                    if (result != 0 &&
+                        RendererMode == VideoRendererMode.Direct3D11 &&
+                        !UsesNativeOverlay)
+                    {
+                        logger.Write(
+                            AppLogLevel.Warning,
+                            "libVLC",
+                            "Direct3D11 could not start the video output; retrying with GDI.");
+                        SwitchToGdiCore(playbackUri);
+                        result = LibVlcNative.libvlc_media_player_play(player);
+                    }
+
+                    if (result != 0)
+                    {
+                        StopCurrentCore();
+                        throw new InvalidOperationException("libVLC failed to start playback.");
+                    }
+
+                    logger.Write(
+                        AppLogLevel.Info,
+                        "libVLC",
+                        ReferenceEquals(playbackUri, mediaUri)
+                            ? $"Playing {mediaUri}"
+                            : $"Playing {mediaUri} through a local media source adapter");
+                    if (!ApplyAudioCore())
+                    {
+                        ScheduleAudioStateConvergence();
+                    }
                 }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (!engineOwnsMediaSource)
+            {
+                mediaSource.Dispose();
             }
-        }, cancellationToken);
+
+            throw;
+        }
+    }
+
+    private async Task<PlaybackMediaSource> PrepareMediaSourceAsync(Uri mediaUri, CancellationToken cancellationToken)
+    {
+        if (mediaSourceGateway is null)
+        {
+            return PlaybackMediaSource.Direct(mediaUri);
+        }
+
+        try
+        {
+            return await mediaSourceGateway
+                .PrepareAsync(mediaUri, libVlcVersion, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Gateways fall back on their own; a helper that still fails must never stop playback.
+            logger.Write(
+                AppLogLevel.Warning,
+                "libVLC",
+                $"The media source gateway failed for {mediaUri.GetLeftPart(UriPartial.Path)}; playing the media directly.",
+                ex);
+            return PlaybackMediaSource.Direct(mediaUri);
+        }
     }
 
     public Task PauseAsync(CancellationToken cancellationToken = default)
@@ -617,11 +699,14 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         lastEnabledAudioTrackId = null;
         lastNativeMuteState = null;
         audioTrackDisabledByEngine = false;
+        PlaybackMediaSource? releasedMediaSource = null;
         if (clearCurrentMedia)
         {
             currentMediaUri = null;
             desiredPaused = false;
             Interlocked.Increment(ref videoOutputVersion);
+            releasedMediaSource = currentMediaSource;
+            currentMediaSource = null;
         }
 
         if (player != IntPtr.Zero)
@@ -637,6 +722,9 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             LibVlcNative.libvlc_media_release(media);
             media = IntPtr.Zero;
         }
+
+        // Released only after the player stopped, so libVLC never reads from a revoked source.
+        releasedMediaSource?.Dispose();
     }
 
     private void CreatePlayerCore(Uri mediaUri)
@@ -698,7 +786,11 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private void SwitchToGdiCore(Uri mediaUri)
     {
+        // The renderer switch replays the same media, so its source must survive this stop.
+        var mediaSource = currentMediaSource;
+        currentMediaSource = null;
         StopCurrentCore();
+        currentMediaSource = mediaSource;
         runtimeLease?.Dispose();
         runtimeLease = null;
         instance = IntPtr.Zero;
@@ -899,7 +991,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             return audioState switch
             {
                 PlaybackAudioState.Audible => ApplyAudibleImmediateCore(version),
-                PlaybackAudioState.Muted => ApplyMutedAudioTrackCore(version, PlaybackAudioState.Muted),
+                PlaybackAudioState.Muted => ApplySoftMutedAudioCore(version),
                 PlaybackAudioState.HardMuted => ApplyMutedAudioTrackCore(version, PlaybackAudioState.HardMuted),
                 _ => ApplyAudibleImmediateCore(version)
             };
@@ -922,10 +1014,26 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         return audioState switch
         {
             PlaybackAudioState.Audible => ApplyAudibleAudioTrackCore(version),
-            PlaybackAudioState.Muted => ApplyMutedAudioTrackCore(version, PlaybackAudioState.Muted),
+            PlaybackAudioState.Muted => ApplySoftMutedAudioCore(version),
             PlaybackAudioState.HardMuted => ApplyMutedAudioTrackCore(version, PlaybackAudioState.HardMuted),
             _ => ApplyAudibleAudioTrackCore(version)
         };
+    }
+
+    private bool ApplySoftMutedAudioCore(int version)
+    {
+        // Automatic tab muting must keep decoding. Deselecting the track destroys
+        // VLC's decoder and makes the next selection wait for fresh stream data.
+        if (!ApplyMutedVolumeOnlyFallbackCore(version, PlaybackAudioState.Muted))
+        {
+            return false;
+        }
+
+        // A user can clear an explicit mute while this tab is in the background.
+        // Restore its track while still silent so it is ready for the next switch.
+        var audioTrackEnabled = EnsureAudioTrackEnabledCore(version, PlaybackAudioState.Muted);
+        var muted = ApplyMutedVolumeOnlyFallbackCore(version, PlaybackAudioState.Muted);
+        return audioTrackEnabled && muted;
     }
 
     private bool ApplyMutedAudioTrackCore(int version, PlaybackAudioState audioState)
@@ -1142,9 +1250,9 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         return !applied || audioState == PlaybackAudioState.Audible;
     }
 
-    private bool EnsureAudioTrackEnabledCore(int version)
+    private bool EnsureAudioTrackEnabledCore(int version, PlaybackAudioState audioState = PlaybackAudioState.Audible)
     {
-        if (!IsAudioRequestCurrent(version, PlaybackAudioState.Audible))
+        if (!IsAudioRequestCurrent(version, audioState))
         {
             return false;
         }
@@ -1164,7 +1272,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             return false;
         }
 
-        if (!IsAudioRequestCurrent(version, PlaybackAudioState.Audible))
+        if (!IsAudioRequestCurrent(version, audioState))
         {
             return false;
         }
@@ -1235,6 +1343,12 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             "--no-video-title-show",
             "--quiet",
             $"--vout={LibVlcRendererSelection.GetVoutOption(rendererMode)}",
+            // MMDevice mute/volume applies to a shared Windows audio session. With
+            // background tracks kept alive, use per-player DirectSound buffers so
+            // restoring the selected stream cannot also unmute the other streams.
+            // "none" prevents VLC from falling back to that shared-session backend.
+            "--aout=directsound,none",
+            "--no-volume-save",
             "--avcodec-hw=any",
             "--network-caching=500",
             "--live-caching=300",

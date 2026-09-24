@@ -423,44 +423,22 @@ public sealed class BrowseService : IBrowseService
             FormatStreamMessage(PlatformKind.Kick, streams.Length, request.CategoryName));
     }
 
-    private async Task EnrichTwitchProfileImagesAsync(
+    private Task EnrichTwitchProfileImagesAsync(
         BrowseLiveStream[] streams,
         string accessToken,
         string clientId,
         CancellationToken cancellationToken)
     {
-        if (streams.Length == 0)
-        {
-            return;
-        }
-
-        try
-        {
-            var profileImages = await TwitchProfileImageLookup.GetAsync(
-                httpClient,
-                accessToken,
-                clientId,
-                streams.Select(stream => stream.Channel),
-                cancellationToken).ConfigureAwait(false);
-            for (var index = 0; index < streams.Length; index++)
-            {
-                if (profileImages.TryGetValue(streams[index].Channel, out var profileImage))
-                {
-                    streams[index] = streams[index] with
-                    {
-                        ProfileImageUrl = profileImage
-                    };
-                }
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Browse", "Twitch profile images could not be loaded.", ex);
-        }
+        return TwitchProfileImageLookup.EnrichAsync(
+            httpClient,
+            streams,
+            stream => stream.Channel,
+            (stream, profileImage) => stream with { ProfileImageUrl = profileImage },
+            accessToken,
+            clientId,
+            logger,
+            "Browse",
+            cancellationToken);
     }
 
     private async Task<KickCategoryDetailsLoadResult> LoadKickCategoryDetailsAsync(

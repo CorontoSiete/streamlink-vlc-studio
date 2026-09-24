@@ -19,6 +19,139 @@ function Test-SafeContractRelativePath {
     $true
 }
 
+function ConvertTo-StableReleaseVersion {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    if ($Version -notmatch '^(?<major>0|[1-9][0-9]*)\.(?<minor>0|[1-9][0-9]*)\.(?<patch>0|[1-9][0-9]*)$') {
+        throw "Release version must be exactly MAJOR.MINOR.PATCH with no prerelease, metadata, or leading zeroes: '$Version'."
+    }
+
+    $parts = [Collections.Generic.List[int]]::new()
+    foreach ($name in @('major', 'minor', 'patch')) {
+        [int]$part = 0
+        if (-not [int]::TryParse(
+                $Matches[$name],
+                [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$part) -or
+            $part -gt 255) {
+            throw "Release version component '$name' must fit the MSI range 0 through 255: '$Version'."
+        }
+        $parts.Add($part)
+    }
+
+    [Version]::new($parts[0], $parts[1], $parts[2])
+}
+
+function Get-StableReleaseIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [string]$MinimumVersion = '1.7.0')
+
+    if ($Tag -notmatch '^v(?<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))$') {
+        throw "Stable releases require an exact vMAJOR.MINOR.PATCH tag: '$Tag'."
+    }
+    $versionText = $Matches.version
+    $version = ConvertTo-StableReleaseVersion $versionText
+    $minimum = ConvertTo-StableReleaseVersion $MinimumVersion
+    if ($version -lt $minimum) {
+        throw "Release tag $Tag is below the supported release floor v$MinimumVersion."
+    }
+
+    [pscustomobject]@{
+        Tag = $Tag
+        Version = $version
+        VersionText = $versionText
+        FourPartVersion = "$versionText.0"
+    }
+}
+
+function Get-PemSubjectPublicKeyInfoBytes {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Release public key is missing: $fullPath"
+    }
+    $pem = [IO.File]::ReadAllText($fullPath)
+    if ($pem -notmatch '(?s)^\s*-----BEGIN PUBLIC KEY-----\s*(?<body>[A-Za-z0-9+/=\r\n]+?)\s*-----END PUBLIC KEY-----\s*$') {
+        throw "Release public key must contain exactly one PEM SubjectPublicKeyInfo block: $fullPath"
+    }
+    try {
+        $bytes = [Convert]::FromBase64String(($Matches.body -replace '\s', ''))
+    } catch {
+        throw "Release public key contains invalid base64: $fullPath"
+    }
+    if ($bytes.Length -lt 256) {
+        throw "Release public key SubjectPublicKeyInfo is unexpectedly small: $fullPath"
+    }
+    $bytes
+}
+
+function Get-ReleasePublicKeyId {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        ([BitConverter]::ToString($algorithm.ComputeHash((Get-PemSubjectPublicKeyInfoBytes $Path)))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Get-MsiPropertyValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$Property)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "MSI database is missing: $fullPath"
+    }
+    $installer = $null
+    $database = $null
+    $view = $null
+    $record = $null
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installer.GetType().InvokeMember(
+            'OpenDatabase',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $installer,
+            @($fullPath, 0))
+        $query = "SELECT `Value` FROM `Property` WHERE `Property`='$Property'"
+        $view = $database.GetType().InvokeMember(
+            'OpenView',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $database,
+            @($query))
+        $view.GetType().InvokeMember('Execute', [Reflection.BindingFlags]::InvokeMethod, $null, $view, $null) | Out-Null
+        $record = $view.GetType().InvokeMember('Fetch', [Reflection.BindingFlags]::InvokeMethod, $null, $view, $null)
+        if ($null -eq $record) {
+            throw "MSI property is missing: $Property"
+        }
+        [string]$record.GetType().InvokeMember(
+            'StringData',
+            [Reflection.BindingFlags]::GetProperty,
+            $null,
+            $record,
+            @(1))
+    } finally {
+        foreach ($comObject in @($record, $view, $database, $installer)) {
+            if ($null -ne $comObject -and [Runtime.InteropServices.Marshal]::IsComObject($comObject)) {
+                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($comObject)
+            }
+        }
+    }
+}
+
 function Read-ReleaseContract {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -28,11 +161,38 @@ function Read-ReleaseContract {
         throw "Release contract missing: $fullPath"
     }
     $contract = Get-Content -LiteralPath $fullPath -Raw | ConvertFrom-Json
-    if ($contract.schemaVersion -ne 1 -or
+    if ($contract.schemaVersion -ne 2 -or
+        $null -eq $contract.release -or
+        $null -eq $contract.release.manifestSignature -or
         $null -eq $contract.payload -or
         $null -eq $contract.outputs -or
         @($contract.releaseSet).Count -eq 0) {
         throw "Unsupported or incomplete release contract: $fullPath"
+    }
+
+    $minimumVersion = ConvertTo-StableReleaseVersion ([string]$contract.release.minimumVersion)
+    if ($minimumVersion -lt [Version]::new(1, 7, 0) -or
+        [string]$contract.release.stableTagPattern -cne '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$' -or
+        [int]$contract.release.updaterProtocolVersion -ne 1 -or
+        [string]$contract.release.manifestSignature.algorithm -cne 'RSA-PSS-SHA256' -or
+        [int]$contract.release.manifestSignature.keyBits -ne 3072 -or
+        [string]$contract.release.manifestSignature.keyId -notmatch '^[0-9a-f]{64}$' -or
+        -not (Test-SafeContractRelativePath ([string]$contract.release.manifestSignature.publicKey))) {
+        throw "Release contract contains an invalid stable-release or manifest-signing policy: $fullPath"
+    }
+    $contractDirectory = Split-Path -Parent $fullPath
+    $repositoryRoot = if ([string]::Equals(
+            (Split-Path -Leaf $contractDirectory),
+            'shared',
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Split-Path -Parent $contractDirectory
+    } else {
+        $contractDirectory
+    }
+    $publicKeyPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot ([string]$contract.release.manifestSignature.publicKey)))
+    $actualKeyId = Get-ReleasePublicKeyId $publicKeyPath
+    if ($actualKeyId -cne [string]$contract.release.manifestSignature.keyId) {
+        throw "Release public-key ID mismatch. Contract: $($contract.release.manifestSignature.keyId); actual: $actualKeyId."
     }
 
     $required = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -74,6 +234,22 @@ function Read-ReleaseContract {
     }
     if (@($contract.releaseSet | Where-Object { -not $_.checksummed }).Count -ne 1) {
         throw "Release contract must contain exactly one non-checksummed manifest asset."
+    }
+
+    $requiredReleaseAssets = @(
+        'StreamlinkVlcStudio-Setup.exe',
+        'StreamlinkVlcStudio-release.zip',
+        'UPDATE-MANIFEST.json',
+        'UPDATE-MANIFEST.sig',
+        'SHA256SUMS.txt',
+        'RELEASE-METADATA.json',
+        'StreamlinkVlcStudio.spdx.json'
+    )
+    $actualReleaseAssets = @($contract.releaseSet | ForEach-Object { [string]$_.name })
+    if ($actualReleaseAssets.Count -ne $requiredReleaseAssets.Count -or
+        @($requiredReleaseAssets | Where-Object { $_ -cnotin $actualReleaseAssets }).Count -gt 0 -or
+        @($actualReleaseAssets | Where-Object { [IO.Path]::GetExtension($_) -ieq '.msi' }).Count -gt 0) {
+        throw 'Release contract must define the exact seven-asset public release set and must not expose the internal MSI.'
     }
 
     $contract
@@ -190,26 +366,18 @@ function Get-ReleaseSetFiles {
     $result.ToArray()
 }
 
-function Get-MsiProductVersion {
+function Assert-WindowsFileVersion {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][long]$RunNumber,
-        [Parameter(Mandatory = $true)][long]$RunAttempt)
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string]$Version)
 
-    if ($RunNumber -lt 0 -or $RunAttempt -lt 1 -or $RunAttempt -gt 99) {
-        throw "Unsupported workflow run number/attempt for MSI versioning: $RunNumber/$RunAttempt"
-    }
-    if ($RunNumber -gt [Math]::Floor(([long]::MaxValue - $RunAttempt) / 100)) {
-        throw "Workflow run number exceeds the supported build ordinal range: $RunNumber"
-    }
-    $ordinal = $RunNumber * 100 + $RunAttempt
-    $major = 1 + [int64][Math]::Floor($ordinal / 65536)
-    if ($major -gt 255) {
-        throw "Workflow run number exceeds MSI ProductVersion capacity: $RunNumber"
-    }
-    [pscustomobject]@{
-        Ordinal = $ordinal
-        ProductVersion = '{0}.{1}.{2}' -f $major, ([int64][Math]::Floor(($ordinal % 65536) / 256)), ($ordinal % 256)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Description is missing: $Path" }
+    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Path))
+    $accepted = @($Version, "$Version.0")
+    if ([string]$info.FileVersion -cnotin $accepted -or [string]$info.ProductVersion -cnotin $accepted) {
+        throw "$Description version mismatch. Expected $Version or $Version.0; FileVersion '$($info.FileVersion)'; ProductVersion '$($info.ProductVersion)'."
     }
 }
 

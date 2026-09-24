@@ -8,6 +8,7 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot '..'))
 . (Join-Path $scriptRoot 'lib\dependency-manifest.ps1')
 . (Join-Path $scriptRoot 'lib\native-overlay.ps1')
 . (Join-Path $scriptRoot 'lib\release-contract.ps1')
+. (Join-Path $scriptRoot 'lib\authenticode.ps1')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -204,7 +205,12 @@ try {
         Resolve-ReleasePayloadRoot $junctionPath $contract -AllowNone | Out-Null
     } 'junction|symbolic link'
 
-    $duplicateContractPath = Join-Path $testRoot 'case-duplicate-contract.json'
+    $duplicateRepository = Join-Path $testRoot 'duplicate-repository'
+    New-Item -ItemType Directory -Path (Join-Path $duplicateRepository 'shared') -Force | Out-Null
+    Copy-Item `
+        -LiteralPath (Join-Path $repoRoot 'shared\update-signing-public-key.pem') `
+        -Destination (Join-Path $duplicateRepository 'shared\update-signing-public-key.pem')
+    $duplicateContractPath = Join-Path $duplicateRepository 'shared\release-contract.json'
     $duplicateContract = Get-Content -LiteralPath (Join-Path $repoRoot 'shared\release-contract.json') -Raw | ConvertFrom-Json
     $originalAsset = @($duplicateContract.releaseSet | Where-Object { [bool]$_.checksummed })[0]
     $duplicateName = ([string]$originalAsset.name).ToUpperInvariant()
@@ -333,10 +339,26 @@ try {
     } 'dependency count|omits canonical dependency'
     Write-Host 'PASS tooling: SBOM verification reconstructs runtime-pack dependencies'
 
-    $version = Get-MsiProductVersion -RunNumber 123 -RunAttempt 2
-    Assert-True ($version.Ordinal -eq 12302) 'MSI build ordinal calculation changed.'
-    Assert-True ($version.ProductVersion -match '^\d+\.\d+\.\d+$') 'MSI semantic product version is invalid.'
-    Write-Host 'PASS tooling: MSI versions use the shared semantic calculation'
+    $identity = Get-StableReleaseIdentity -Tag 'v1.7.0' -MinimumVersion '1.7.0'
+    Assert-True ($identity.VersionText -ceq '1.7.0') 'Stable release version was not preserved exactly.'
+    Assert-True ($identity.FourPartVersion -ceq '1.7.0.0') 'Bundle version was not derived from the stable tag.'
+    foreach ($invalidTag in @('release-170', 'v1.7', 'v01.7.0', 'v1.7.0-beta.1', 'v1.6.65')) {
+        Assert-Throws { Get-StableReleaseIdentity -Tag $invalidTag -MinimumVersion '1.7.0' | Out-Null } 'stable|exact|below'
+    }
+    Assert-True (
+        (Get-ReleasePublicKeyId (Join-Path $repoRoot 'shared\update-signing-public-key.pem')) -ceq
+            [string]$contract.release.manifestSignature.keyId) `
+        'Committed update public key does not match the release contract key ID.'
+    Assert-True (@($contract.releaseSet | Where-Object { ([IO.Path]::GetExtension([string]$_.name)) -ieq '.msi' }).Count -eq 0) `
+        'The internal MSI leaked into the public release set.'
+    Assert-True (@($contract.releaseSet | Where-Object { [string]$_.name -in @('UPDATE-MANIFEST.json', 'UPDATE-MANIFEST.sig') }).Count -eq 2) `
+        'The signed update manifest pair is missing from the release set.'
+    Assert-Throws {
+        Get-AuthenticodeSigningConfiguration `
+            -CertificateThumbprint ('A' * 40) `
+            -TimestampUrl '' | Out-Null
+    } 'partial'
+    Write-Host 'PASS tooling: stable release tags, trust root, public closure, and signing configuration'
 } finally {
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
         Remove-DirectoryTreeSafely $testRoot

@@ -1,3 +1,5 @@
+using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Core.Logging;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using StreamlinkVlcStudio.Infrastructure.Http;
@@ -61,5 +63,53 @@ internal static class TwitchProfileImageLookup
         }
 
         return profileImages;
+    }
+
+    /// <summary>
+    /// Looks up profile images for <paramref name="items"/> and writes them back in place.
+    /// <paramref name="applyProfileImage"/> decides how the value is merged, since some callers
+    /// keep an image they already have. Lookup failures are logged and leave the items unchanged;
+    /// caller cancellation still propagates.
+    /// </summary>
+    internal static async Task EnrichAsync<T>(
+        HttpClient httpClient,
+        IList<T> items,
+        Func<T, string> getChannel,
+        Func<T, string, T> applyProfileImage,
+        string accessToken,
+        string clientId,
+        IAppLogger logger,
+        string logCategory,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var profileImages = await GetAsync(
+                httpClient,
+                accessToken,
+                clientId,
+                items.Select(getChannel),
+                cancellationToken).ConfigureAwait(false);
+            for (var index = 0; index < items.Count; index++)
+            {
+                if (profileImages.TryGetValue(getChannel(items[index]), out var profileImage))
+                {
+                    items[index] = applyProfileImage(items[index], profileImage);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, logCategory, "Twitch profile images could not be loaded.", ex);
+        }
     }
 }

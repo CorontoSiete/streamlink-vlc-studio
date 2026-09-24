@@ -59,6 +59,11 @@
         "resolved": "3.119.4",
         "contentHash": "XOpbx/4CReO2wYsq2s6rbvdauc6dntG4Zv499sHGTJ87bwZaFXszFkwql3+FIZMc8kUPeaj3Mx2ezIJmo8a1Kg=="
       },
+      "WixToolset.BootstrapperApplicationApi": {
+        "type": "Transitive",
+        "resolved": "6.0.2",
+        "contentHash": "k3Cpr12y4HFrgrBDFUhXCaJoMMz9iiE1qBAl83aqtGRllSKf04hvtX5P1t2dWh6V0Cm2Zh6vlfVnV5r4/IwLOw=="
+      },
       "streamlinkvlcstudio.app.wpf": {
         "type": "Project",
         "dependencies": {
@@ -66,8 +71,14 @@
           "SkiaSharp": "[3.119.4, )",
           "SkiaSharp.HarfBuzz": "[3.119.4, )",
           "SkiaSharp.NativeAssets.Win32": "[3.119.4, )",
-          "StreamlinkVlcStudio.Core": "[1.0.0, )",
-          "StreamlinkVlcStudio.Infrastructure": "[1.0.0, )"
+          "StreamlinkVlcStudio.Core": "[1.7.0, )",
+          "StreamlinkVlcStudio.Infrastructure": "[1.7.0, )"
+        }
+      },
+      "streamlinkvlcstudio.bootstrapper": {
+        "type": "Project",
+        "dependencies": {
+          "WixToolset.BootstrapperApplicationApi": "[6.0.2, )"
         }
       },
       "streamlinkvlcstudio.core": {
@@ -76,8 +87,11 @@
       "streamlinkvlcstudio.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "StreamlinkVlcStudio.Core": "[1.0.0, )"
+          "StreamlinkVlcStudio.Core": "[1.7.0, )"
         }
+      },
+      "streamlinkvlcstudio.maintenance": {
+        "type": "Project"
       }
     }
   }

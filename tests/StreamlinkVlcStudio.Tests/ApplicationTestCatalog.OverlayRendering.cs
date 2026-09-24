@@ -385,8 +385,8 @@ internal static partial class ApplicationTestCatalog
             "",
             "best");
         var replayResolver = new FakeReplayResolver(replay);
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-            new ReplayChatMessage(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+            new VodChatMessage(
                 TimeSpan.FromMinutes(10),
                 new ChatMessage(PlatformKind.Twitch, "streamer", "viewer", "replay hello", DateTimeOffset.UtcNow))
         ]));
@@ -399,7 +399,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: replayResolver,
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         try
         {
             var settings = new AppSettings
@@ -429,9 +429,9 @@ internal static partial class ApplicationTestCatalog
             Assert.True(tab.IsBehindLive);
             Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine!.Position);
             Assert.True(tab.DockedChatMessages.Any(message => message.Message == "replay hello"));
-            Assert.True(replayChatProvider.CallCount > 0);
-            Assert.Equal(false, replayChatProvider.Requests.Any(request => request.ReplayId.StartsWith("live-dvr-", StringComparison.Ordinal)));
-            Assert.True(replayChatProvider.Requests.Any(request => request.ReplayId == "123"));
+            Assert.True(vodChatProvider.CallCount > 0);
+            Assert.Equal(false, vodChatProvider.RequestedReplays.Any(request => request.ReplayId.StartsWith("live-dvr-", StringComparison.Ordinal)));
+            Assert.True(vodChatProvider.RequestedReplays.Any(request => request.ReplayId == "123"));
 
             tab.OutgoingChatText = "should not send";
             await tab.SendChatMessageAsync();
@@ -479,7 +479,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])),
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])),
             twitchSubOnlyVodResolver: subOnlyResolver);
         var settings = new AppSettings
         {
@@ -537,7 +537,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])),
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])),
             twitchSubOnlyVodResolver: subOnlyResolver);
         var settings = new AppSettings
         {
@@ -589,7 +589,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -650,7 +650,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -702,7 +702,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -766,7 +766,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -848,7 +848,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(oldReplay, newReplay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -919,7 +919,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -964,7 +964,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1025,7 +1025,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1075,7 +1075,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Available([])));
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1103,92 +1103,6 @@ internal static partial class ApplicationTestCatalog
 
         await tab.DisposeAsync();
     }),
-    ("stale Twitch replay chat load cannot overwrite later seek chat", async () =>
-    {
-        var streamlink = new FakeStreamlinkService();
-        var playbackFactory = new FakePlaybackEngineFactory();
-        var chatFactory = new FakeChatClientFactory();
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Twitch,
-            "streamer",
-            "https://www.twitch.tv/videos/123",
-            "123",
-            DateTimeOffset.UtcNow.AddHours(-1),
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var replayChatProvider = new BlockingReplayChatProvider();
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
-            "source",
-            streamlink,
-            playbackFactory,
-            chatFactory,
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = false;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await TestWait.UntilAsync(
-            () => tab.CanSeekReplay,
-            TimeSpan.FromSeconds(1));
-        Assert.True(tab.CanSeekReplay);
-
-        var firstSeek = tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await replayChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await firstSeek.WaitAsync(TimeSpan.FromSeconds(1));
-
-        Assert.Equal(false, tab.IsReplaySeekInProgress);
-        Assert.Equal(false, tab.IsBusy);
-        Assert.True(tab.CanSeekReplay);
-        Assert.True(tab.RewindReplay30SecondsCommand.CanExecute(null));
-        Assert.True(tab.FastForwardReplay30SecondsCommand.CanExecute(null));
-        Assert.True(tab.CanReturnToLive);
-        Assert.True(tab.ReturnToLiveCommand.CanExecute(null));
-
-        var secondSeek = tab.SeekReplayAsync(TimeSpan.FromMinutes(20));
-        await replayChatProvider.FirstLoadCancellationRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await replayChatProvider.SecondLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await secondSeek.WaitAsync(TimeSpan.FromSeconds(1));
-
-        Assert.Equal(false, tab.IsReplaySeekInProgress);
-        Assert.Equal(false, tab.IsBusy);
-        Assert.True(tab.CanSeekReplay);
-        Assert.True(tab.RewindReplay30SecondsCommand.CanExecute(null));
-        Assert.True(tab.FastForwardReplay30SecondsCommand.CanExecute(null));
-        Assert.True(tab.CanReturnToLive);
-        Assert.True(tab.ReturnToLiveCommand.CanExecute(null));
-
-        replayChatProvider.ReleaseSecondLoad();
-        await TestWait.UntilAsync(
-            () => tab.DockedChatMessages.Any(message => message.Message == "seek B chat"),
-            TimeSpan.FromSeconds(1));
-
-        Assert.Equal(false, tab.IsReplaySeekInProgress);
-        Assert.True(tab.CanSeekReplay);
-        Assert.True(tab.RewindReplay30SecondsCommand.CanExecute(null));
-        Assert.True(tab.FastForwardReplay30SecondsCommand.CanExecute(null));
-        Assert.True(tab.DockedChatMessages.Any(message => message.Message == "seek B chat"));
-        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message == "seek A chat"));
-
-        replayChatProvider.ReleaseFirstLoad();
-        await replayChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await Task.Delay(50);
-
-        Assert.True(tab.DockedChatMessages.Any(message => message.Message == "seek B chat"));
-        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message == "seek A chat"));
-
-        await tab.DisposeAsync();
-    }),
     ("seeking Twitch replay backward renders the earlier chat window", async () =>
     {
         var playbackFactory = new FakePlaybackEngineFactory();
@@ -1202,12 +1116,12 @@ internal static partial class ApplicationTestCatalog
             true,
             "",
             "best");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(PlatformKind.Twitch, "streamer", "early-viewer", "early replay chat", DateTimeOffset.UtcNow)),
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.FromMinutes(50),
                     new ChatMessage(PlatformKind.Twitch, "streamer", "late-viewer", "late replay chat", DateTimeOffset.UtcNow))
             ],
@@ -1222,7 +1136,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1248,77 +1162,6 @@ internal static partial class ApplicationTestCatalog
 
         await tab.DisposeAsync();
     }),
-    ("repeated replay chat ticks with same visible messages do not rebuild chat collections", async () =>
-    {
-        var playbackFactory = new FakePlaybackEngineFactory();
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Twitch,
-            "streamer",
-            "https://www.twitch.tv/videos/123",
-            "123",
-            DateTimeOffset.UtcNow.AddHours(-1),
-            TimeSpan.FromHours(1),
-            true,
-            "",
-            "best");
-        var timestamp = DateTimeOffset.UtcNow;
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
-            [
-                new ReplayChatMessage(
-                    TimeSpan.FromMinutes(9).Add(TimeSpan.FromSeconds(30)),
-                    new ChatMessage(PlatformKind.Twitch, "streamer", "viewer-a", "stable replay chat A", timestamp, MessageId: "stable-a")),
-                new ReplayChatMessage(
-                    TimeSpan.FromMinutes(10),
-                    new ChatMessage(PlatformKind.Twitch, "streamer", "viewer-b", "stable replay chat B", timestamp, MessageId: "stable-b"))
-            ],
-            TimeSpan.Zero,
-            TimeSpan.FromHours(1)));
-        var tab = TestViewModels.CreateTab(
-            StreamInputParser.Parse("streamer", PlatformKind.Twitch),
-            "source",
-            new FakeStreamlinkService(),
-            playbackFactory,
-            new FakeChatClientFactory(),
-            new MemoryLogger(),
-            action => action(),
-            replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
-        var settings = new AppSettings
-        {
-            StreamlinkPath = "streamlink.exe",
-            VlcDirectory = @"C:\VLC"
-        };
-        settings.Chat.ConnectAutomatically = false;
-        tab.SetVideoHandle(new IntPtr(42));
-
-        await tab.StartAsync(settings);
-        await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-        await TestWait.UntilAsync(
-            () => tab.DockedChatMessages.Any(message => message.Message == "stable replay chat B"),
-            TimeSpan.FromSeconds(1));
-        Assert.SequenceEqual(
-            new[] { "stable replay chat A", "stable replay chat B" },
-            tab.DockedChatMessages.Select(message => message.Message).ToArray());
-
-        await StopReplayClockPollingAsync(tab);
-
-        var collectionChanges = 0;
-        tab.DockedChatMessages.CollectionChanged += (_, _) => collectionChanges++;
-        var updateWindow = typeof(StreamTabViewModel).GetMethod(
-            "UpdateReplayChatWindow",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(updateWindow);
-        updateWindow!.Invoke(
-            tab,
-            [TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(2)), false, null]);
-
-        Assert.Equal(0, collectionChanges);
-        Assert.SequenceEqual(
-            new[] { "stable replay chat A", "stable replay chat B" },
-            tab.DockedChatMessages.Select(message => message.Message).ToArray());
-
-        await tab.DisposeAsync();
-    }),
     ("replay chat stays at seek target when VLC clock is unavailable or invalid after seek", async () =>
     {
         await RunClockFallbackCaseAsync(engine => (false, new PlaybackClock(TimeSpan.Zero, null, true)));
@@ -1341,12 +1184,12 @@ internal static partial class ApplicationTestCatalog
                 true,
                 "",
                 "best");
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
                 [
-                    new ReplayChatMessage(
+                    new VodChatMessage(
                         targetOffset,
                         new ChatMessage(PlatformKind.Twitch, "streamer", "target-viewer", "target replay chat", DateTimeOffset.UtcNow)),
-                    new ReplayChatMessage(
+                    new VodChatMessage(
                         TimeSpan.FromMinutes(59).Add(TimeSpan.FromSeconds(45)),
                         new ChatMessage(PlatformKind.Twitch, "streamer", "edge-viewer", "live edge replay chat", DateTimeOffset.UtcNow))
                 ],
@@ -1361,7 +1204,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -1400,12 +1243,12 @@ internal static partial class ApplicationTestCatalog
             true,
             "",
             "best");
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(PlatformKind.Twitch, "streamer", "early-viewer", "early replay chat", DateTimeOffset.UtcNow)),
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.FromMinutes(50),
                     new ChatMessage(PlatformKind.Twitch, "streamer", "late-viewer", "late replay chat", DateTimeOffset.UtcNow))
             ],
@@ -1420,7 +1263,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: replayChatProvider);
+            vodChatProvider: vodChatProvider);
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -1499,7 +1342,7 @@ internal static partial class ApplicationTestCatalog
             new MemoryLogger(),
             action => action(),
             replayResolver: new FakeReplayResolver(replay),
-            replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("unexpected provider call")));
+            vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("unexpected provider call")));
         var settings = new AppSettings
         {
             StreamlinkPath = "streamlink.exe",
@@ -2267,18 +2110,25 @@ internal static partial class ApplicationTestCatalog
             try
             {
                 using var document = JsonDocument.Parse("""
-                {
-                  "comments": [
-                    {
-                      "_id": "vod-animated-emote",
-                      "content_offset_seconds": 12,
-                      "message": {
-                        "body": "Kappa",
-                        "emoticons": [{ "_id": "25", "begin": 0, "end": 4 }]
+                [{
+                  "data": { "video": { "comments": {
+                    "pageInfo": { "hasNextPage": false },
+                    "edges": [
+                      {
+                        "cursor": "c1",
+                        "node": {
+                          "id": "vod-animated-emote",
+                          "contentOffsetSeconds": 12,
+                          "message": {
+                            "fragments": [
+                              { "text": "Kappa", "emote": { "emoticonID": "25", "id": "25" } }
+                            ]
+                          }
+                        }
                       }
-                    }
-                  ]
-                }
+                    ]
+                  } } }
+                }]
                 """);
                 var replay = new ReplaySessionInfo(
                     PlatformKind.Twitch,
@@ -2289,8 +2139,9 @@ internal static partial class ApplicationTestCatalog
                     TimeSpan.FromHours(1),
                     true,
                     "");
-                var message = ReplayChatProvider
-                    .ReadTwitchDownloaderMessages(document.RootElement, replay)
+                var message = TwitchVodChatFetcher
+                    .ReadPage(document.RootElement, replay)
+                    .Messages
                     .Single()
                     .Message;
 
@@ -3312,8 +3163,8 @@ internal static partial class ApplicationTestCatalog
                 true,
                 "",
                 "best");
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-                new ReplayChatMessage(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+                new VodChatMessage(
                     TimeSpan.FromMinutes(10),
                     new ChatMessage(
                         PlatformKind.Twitch,
@@ -3333,7 +3184,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -3401,8 +3252,8 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: new FakeReplayChatProvider(
-                    ReplayChatLoadResult.Unavailable("Current-live DVR uses captured chat.")));
+                vodChatProvider: new FakeVodChatProvider(
+                    VodChatFetchResult.Unsupported("Current-live DVR uses captured chat.")));
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -3464,7 +3315,7 @@ internal static partial class ApplicationTestCatalog
                 inBufferSize: 1,
                 outBufferSize: 1);
             var blockedConnection = blockedPipe.WaitForConnectionAsync();
-            var replayChatProvider = new BlockingReplayChatProvider();
+            var vodChatProvider = new BlockingVodChatProvider();
             var subOnlyResolver = new FakeTwitchSubOnlyVodResolver
             {
                 Override = (_, _) => Task.FromResult(
@@ -3500,7 +3351,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 action => action(),
-                replayChatProvider: replayChatProvider,
+                vodChatProvider: vodChatProvider,
                 twitchSubOnlyVodResolver: subOnlyResolver);
             var settings = new AppSettings
             {
@@ -3514,11 +3365,11 @@ internal static partial class ApplicationTestCatalog
             {
                 tab.SetVideoHandle(new IntPtr(42));
                 await tab.StartAsync(settings);
-                await replayChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                await vodChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
                 await blockedConnection.WaitAsync(TimeSpan.FromSeconds(1));
 
-                replayChatProvider.ReleaseFirstLoad();
-                await replayChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                vodChatProvider.ReleaseFirstLoad();
+                await vodChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
                 await TestWait.UntilAsync(
                     () => DockedChatMessagesContain(tab, "seek A chat"),
                     TimeSpan.FromSeconds(2));
@@ -3563,7 +3414,7 @@ internal static partial class ApplicationTestCatalog
                 "",
                 "best");
             var replayMessages = Enumerable.Range(0, 20)
-                .Select(index => new ReplayChatMessage(
+                .Select(index => new VodChatMessage(
                     TimeSpan.FromMinutes(10) - TimeSpan.FromSeconds(19 - index),
                     new ChatMessage(
                         PlatformKind.Twitch,
@@ -3573,7 +3424,7 @@ internal static partial class ApplicationTestCatalog
                         startedAt.AddMinutes(10).AddSeconds(index),
                         MessageId: $"twitch-scroll-{index}")))
                 .ToArray();
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
                 replayMessages,
                 TimeSpan.FromMinutes(9),
                 TimeSpan.FromMinutes(11)));
@@ -3599,7 +3450,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 Dispatch,
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -3748,7 +3599,7 @@ internal static partial class ApplicationTestCatalog
                 startedAt,
                 ChatRoomId: "668");
             var replayMessages = Enumerable.Range(0, 20)
-                .Select(index => new ReplayChatMessage(
+                .Select(index => new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -3758,7 +3609,7 @@ internal static partial class ApplicationTestCatalog
                         startedAt.AddSeconds(index),
                         MessageId: $"kick-vod-scroll-{index}")))
                 .ToArray();
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
                 replayMessages,
                 TimeSpan.Zero,
                 TimeSpan.FromMinutes(5)));
@@ -3789,7 +3640,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 Dispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -3849,7 +3700,7 @@ internal static partial class ApplicationTestCatalog
                 NativeOverlayPipeNameOverride = pipeName
             });
             const string unavailableReason = "Twitch replay chat is unavailable for this VOD.";
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(unavailableReason));
+            var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported(unavailableReason));
             var target = new StreamTarget(
                 PlatformKind.Twitch,
                 "streamer",
@@ -3898,7 +3749,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 DeferredDispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -3915,12 +3766,12 @@ internal static partial class ApplicationTestCatalog
             await tab.StartAsync(settings);
 
             var messages = await messagesTask;
-            await TestWait.UntilAsync(() => replayChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
+            await TestWait.UntilAsync(() => vodChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
             DrainDispatches();
 
             Assert.True(messages.Any(IsNativeOverlayTransparentFrame));
             Assert.Equal(false, messages.Any(IsNativeOverlayRenderedChatFrame));
-            Assert.Equal("123", replayChatProvider.Requests[0].ReplayId);
+            Assert.Equal("123", vodChatProvider.RequestedReplays[0].ReplayId);
             Assert.True(Volatile.Read(ref queuedDispatchCount) > 0);
 
             await tab.DisposeAsync();
@@ -3940,7 +3791,7 @@ internal static partial class ApplicationTestCatalog
                 NativeOverlayPipeNameOverride = pipeName
             });
             var chatFactory = new FakeChatClientFactory();
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable(unavailableReason));
+            var vodChatProvider = new FakeVodChatProvider(VodChatFetchResult.Unsupported(unavailableReason));
             var queuedDispatchCount = 0;
             var queuedDispatches = new Queue<Action>();
             void DeferredDispatch(Action action)
@@ -3990,7 +3841,7 @@ internal static partial class ApplicationTestCatalog
                 chatFactory,
                 new MemoryLogger(),
                 DeferredDispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4005,7 +3856,7 @@ internal static partial class ApplicationTestCatalog
                 () =>
                 {
                     DrainDispatches();
-                    return replayChatProvider.CallCount >= 1 &&
+                    return vodChatProvider.CallCount >= 1 &&
                         DockedChatMessagesContainText(tab, "webhook chat cache");
                 },
                 TimeSpan.FromSeconds(2));
@@ -4023,8 +3874,8 @@ internal static partial class ApplicationTestCatalog
             AssertNativeOverlayChatFrame(await renderedFrameTask);
             Assert.Equal(0, chatFactory.Client.ConnectCount);
             Assert.Equal(false, tab.CanSendChatMessages);
-            Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
-            Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
+            Assert.Equal("uuid-123", vodChatProvider.RequestedReplays[0].ReplayId);
+            Assert.Equal(startedAt, vodChatProvider.RequestedReplays[0].StreamStartedAtUtc);
 
             await tab.DisposeAsync();
         });
@@ -4036,9 +3887,9 @@ internal static partial class ApplicationTestCatalog
             var pipeName = $"svs_replay_kick_vod_chat_{Guid.NewGuid():N}";
             var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
             var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -4072,7 +3923,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 action => action(),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4092,10 +3943,10 @@ internal static partial class ApplicationTestCatalog
 
             Assert.True(messages.Any(IsNativeOverlayRenderedChatFrame));
             Assert.True(DockedChatMessagesContain(tab, "native Kick VOD replay chat"));
-            Assert.Equal("uuid-123", replayChatProvider.Requests[0].ReplayId);
-            Assert.Equal(startedAt, replayChatProvider.Requests[0].StreamStartedAtUtc);
-            Assert.Equal("668", replayChatProvider.Requests[0].ChatRoomId);
-            Assert.Equal(TimeSpan.Zero, replayChatProvider.Offsets[0]);
+            Assert.Equal("uuid-123", vodChatProvider.RequestedReplays[0].ReplayId);
+            Assert.Equal(startedAt, vodChatProvider.RequestedReplays[0].StreamStartedAtUtc);
+            Assert.Equal("668", vodChatProvider.RequestedReplays[0].ChatRoomId);
+            Assert.Equal(TimeSpan.Zero, vodChatProvider.RequestedOffsets[0]);
 
             await tab.DisposeAsync();
         });
@@ -4108,9 +3959,9 @@ internal static partial class ApplicationTestCatalog
             var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-kick-width-resize-{Guid.NewGuid():N}.txt");
             var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
             var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -4158,7 +4009,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 Dispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4235,9 +4086,9 @@ internal static partial class ApplicationTestCatalog
                 VideoHeight = 720
             };
             var playbackFactory = new FakePlaybackEngineFactory(() => engine);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -4279,7 +4130,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 Dispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4331,9 +4182,9 @@ internal static partial class ApplicationTestCatalog
             var positionStatePath = Path.Combine(Path.GetTempPath(), $"svs-replay-kick-warmup-{Guid.NewGuid():N}.txt");
             var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
             var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -4381,7 +4232,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 Dispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4429,9 +4280,9 @@ internal static partial class ApplicationTestCatalog
                 VideoHeight = 0
             };
             var playbackFactory = new FakePlaybackEngineFactory(() => engine);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -4473,7 +4324,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 Dispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4535,9 +4386,9 @@ internal static partial class ApplicationTestCatalog
             var pipeName = $"svs_replay_kick_vod_retry_{Guid.NewGuid():N}";
             var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
             var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+            var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     TimeSpan.Zero,
                     new ChatMessage(
                         PlatformKind.Kick,
@@ -4571,7 +4422,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 action => action(),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4583,7 +4434,7 @@ internal static partial class ApplicationTestCatalog
             tab.SetVideoHandle(new IntPtr(42));
             await tab.StartAsync(settings);
             await TestWait.UntilAsync(
-                () => replayChatProvider.CallCount >= 1 &&
+                () => vodChatProvider.CallCount >= 1 &&
                     DockedChatMessagesContain(tab, "retry Kick VOD replay chat"),
                 TimeSpan.FromSeconds(1));
             await Task.Delay(TimeSpan.FromMilliseconds(900));
@@ -4604,7 +4455,7 @@ internal static partial class ApplicationTestCatalog
             var pipeName = $"svs_replay_kick_vod_seek_blank_{Guid.NewGuid():N}";
             var directVodUri = new Uri("https://vod.kick.com/xqc/index.m3u8");
             var startedAt = new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero);
-            var replayChatProvider = new BlockingReplayChatProvider();
+            var vodChatProvider = new BlockingVodChatProvider();
             var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
             {
                 UsesNativeOverlayOverride = true,
@@ -4629,7 +4480,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 action => action(),
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4640,22 +4491,22 @@ internal static partial class ApplicationTestCatalog
 
             tab.SetVideoHandle(new IntPtr(42));
             await tab.StartAsync(settings);
-            await replayChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await vodChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
             var initialFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
                 pipeName,
                 IsNativeOverlayRenderedChatFrame,
                 TimeSpan.FromSeconds(4));
-            replayChatProvider.ReleaseFirstLoad();
+            vodChatProvider.ReleaseFirstLoad();
             AssertNativeOverlayChatFrame(await initialFrameTask);
-            await replayChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await vodChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
             var blankFrameTask = ReadNativeOverlayPipeMatchingMessageAsync(
                 pipeName,
                 IsNativeOverlayTransparentFrame,
                 TimeSpan.FromSeconds(4));
             await tab.SeekReplayAsync(TimeSpan.FromMinutes(5));
-            await replayChatProvider.SecondLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await vodChatProvider.SecondLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
             AssertNativeOverlayTransparentFrame(await blankFrameTask);
 
@@ -4663,7 +4514,7 @@ internal static partial class ApplicationTestCatalog
                 pipeName,
                 IsNativeOverlayRenderedChatFrame,
                 TimeSpan.FromSeconds(4));
-            replayChatProvider.ReleaseSecondLoad();
+            vodChatProvider.ReleaseSecondLoad();
             await TestWait.UntilAsync(
                 () => DockedChatMessagesContain(tab, "seek B chat"),
                 TimeSpan.FromSeconds(2));
@@ -4685,7 +4536,7 @@ internal static partial class ApplicationTestCatalog
                 UsesNativeOverlayOverride = true,
                 NativeOverlayPipeNameOverride = pipeName
             });
-            var replayChatProvider = new BlockingReplayChatProvider();
+            var vodChatProvider = new BlockingVodChatProvider();
             var target = new StreamTarget(
                 PlatformKind.Twitch,
                 "streamer",
@@ -4731,7 +4582,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 DeferredDispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4747,12 +4598,12 @@ internal static partial class ApplicationTestCatalog
                 TimeSpan.FromSeconds(4));
 
             await tab.StartAsync(settings);
-            await replayChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await vodChatProvider.FirstLoadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
             AssertNativeOverlayTransparentFrame(await blankFrameTask);
-            Assert.Equal(false, replayChatProvider.FirstLoadReturned.Task.IsCompleted);
-            replayChatProvider.ReleaseFirstLoad();
-            await replayChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(false, vodChatProvider.FirstLoadReturned.Task.IsCompleted);
+            vodChatProvider.ReleaseFirstLoad();
+            await vodChatProvider.FirstLoadReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
             DrainDispatches();
             await tab.DisposeAsync();
         });
@@ -4770,8 +4621,8 @@ internal static partial class ApplicationTestCatalog
                 UsesNativeOverlayOverride = true,
                 NativeOverlayPipeNameOverride = pipeName
             });
-            var replayChatProvider = new FakeReplayChatProvider(
-                ReplayChatLoadResult.Available([], TimeSpan.Zero, TimeSpan.FromHours(1)));
+            var vodChatProvider = new FakeVodChatProvider(
+                FakeVodChatProvider.Once([], TimeSpan.Zero, TimeSpan.FromHours(1)));
             var target = new StreamTarget(
                 PlatformKind.Twitch,
                 "streamer",
@@ -4820,7 +4671,7 @@ internal static partial class ApplicationTestCatalog
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
                 DeferredDispatch,
-                replayChatProvider: replayChatProvider);
+                vodChatProvider: vodChatProvider);
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -4837,11 +4688,11 @@ internal static partial class ApplicationTestCatalog
             await tab.StartAsync(settings);
 
             var messages = await messagesTask;
-            await TestWait.UntilAsync(() => replayChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
+            await TestWait.UntilAsync(() => vodChatProvider.CallCount > 0, TimeSpan.FromSeconds(1));
             DrainDispatches();
 
             Assert.True(messages.Any(IsNativeOverlayTransparentFrame));
-            Assert.Equal(false, messages.Any(IsNativeOverlayRenderedChatFrame));            Assert.Equal("124", replayChatProvider.Requests[0].ReplayId);
+            Assert.Equal(false, messages.Any(IsNativeOverlayRenderedChatFrame));            Assert.Equal("124", vodChatProvider.RequestedReplays[0].ReplayId);
             Assert.True(Volatile.Read(ref queuedDispatchCount) > 0);
 
             await tab.DisposeAsync();
@@ -4891,8 +4742,8 @@ internal static partial class ApplicationTestCatalog
                     true,
                     "",
                     "best");
-                var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available([
-                    new ReplayChatMessage(
+                var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once([
+                    new VodChatMessage(
                         TimeSpan.FromMinutes(10),
                         new ChatMessage(
                             PlatformKind.Twitch,
@@ -4913,7 +4764,7 @@ internal static partial class ApplicationTestCatalog
                     new MemoryLogger(),
                     Dispatch,
                     replayResolver: new FakeReplayResolver(replay),
-                    replayChatProvider: replayChatProvider);
+                    vodChatProvider: vodChatProvider);
                 var settings = new AppSettings
                 {
                     StreamlinkPath = "streamlink.exe",
@@ -5008,7 +4859,7 @@ internal static partial class ApplicationTestCatalog
                 new MemoryLogger(),
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
+                vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested.")));
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -5076,7 +4927,6 @@ internal static partial class ApplicationTestCatalog
                 NativeOverlayPipeNameOverride = pipeName
             });
             var chatFactory = new FakeChatClientFactory();
-            chatFactory.Client.BackfillCoveredRequestedRange = true;
             var logger = new MemoryLogger();
             var replay = new ReplaySessionInfo(
                 PlatformKind.Kick,
@@ -5097,7 +4947,7 @@ internal static partial class ApplicationTestCatalog
                 logger,
                 action => action(),
                 replayResolver: new FakeReplayResolver(replay),
-                replayChatProvider: new FakeReplayChatProvider(ReplayChatLoadResult.Unavailable("Kick replay chat should not be requested.")));
+                vodChatProvider: new FakeVodChatProvider(VodChatFetchResult.Unsupported("Kick replay chat should not be requested.")));
             var settings = new AppSettings
             {
                 StreamlinkPath = "streamlink.exe",
@@ -5110,13 +4960,8 @@ internal static partial class ApplicationTestCatalog
             await tab.StartAsync(settings);
 
             await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
-            var hasCapturedReplayCoverage = typeof(StreamTabViewModel).GetMethod(
-                "HasCapturedReplayChatBackfillCoverage",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.NotNull(hasCapturedReplayCoverage);
-            await TestWait.UntilAsync(
-                () => (bool)hasCapturedReplayCoverage!.Invoke(tab, [TimeSpan.FromMinutes(10)])!,
-                TimeSpan.FromSeconds(2));
+            await tab.VodChatIdleTask.WaitAsync(TimeSpan.FromSeconds(4));
+            Assert.Equal(0, tab.ChatMessages.Count);
 
             var invalidateFrame = typeof(StreamTabViewModel).GetMethod(
                 "InvalidateNativeReplayOverlayFrame",

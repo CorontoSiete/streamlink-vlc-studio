@@ -32,10 +32,6 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
 
     public AsyncRelayCommand OpenAndStayOnHomeCommand { get; }
 
-    public TwitchVodItem? TwitchVod => twitchVod;
-
-    public KickVodItem? KickVod => kickVod;
-
     public StreamTarget Target
     {
         get

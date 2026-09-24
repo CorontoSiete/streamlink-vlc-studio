@@ -6,6 +6,7 @@ param(
     [string]$PublishedDepsPath,
     [string]$DependencyManifestPath,
     [string]$NativeManifestPath,
+    [string]$ApplicationVersion = 'build',
     [string]$DocumentNamespace = "https://github.com/CorontoSiete/streamlink-vlc-studio/sbom/local",
     [switch]$Verify
 )
@@ -239,7 +240,9 @@ if ($Verify) {
     }
 
     $rootPackages = @($packages | Where-Object SPDXID -eq "SPDXRef-Package-StreamlinkVlcStudio")
-    if ($rootPackages.Count -ne 1 -or $rootPackages[0].filesAnalyzed -ne $true) {
+    if ($rootPackages.Count -ne 1 -or
+        $rootPackages[0].filesAnalyzed -ne $true -or
+        [string]$rootPackages[0].versionInfo -cne $ApplicationVersion) {
         throw "SBOM must contain exactly one analyzed Streamlink VLC Studio root package."
     }
 
@@ -414,7 +417,7 @@ foreach ($file in Get-RootFiles) {
 $packages = @([ordered]@{
     SPDXID = "SPDXRef-Package-StreamlinkVlcStudio"
     name = "Streamlink VLC Studio"
-    versionInfo = "build"
+    versionInfo = $ApplicationVersion
     downloadLocation = "NOASSERTION"
     filesAnalyzed = $true
     packageVerificationCode = [ordered]@{

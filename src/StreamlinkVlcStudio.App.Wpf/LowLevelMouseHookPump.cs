@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using StreamlinkVlcStudio.Core.Logging;
+using StreamlinkVlcStudio.Core.Services;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
@@ -10,6 +12,7 @@ internal sealed partial class LowLevelMouseHookPump : IDisposable
     private const uint PmNoRemove = 0x0000;
 
     private readonly LowLevelMouseHookDispatcher dispatcher;
+    private readonly Func<IAppLogger?>? resolveLogger;
     private readonly object gate = new();
     private Thread? hookThread;
     private LowLevelMouseProc? hookCallback;
@@ -17,9 +20,12 @@ internal sealed partial class LowLevelMouseHookPump : IDisposable
     private volatile int hookThreadId;
     private volatile bool disposed;
 
-    public LowLevelMouseHookPump(LowLevelMouseHookDispatcher dispatcher)
+    public LowLevelMouseHookPump(
+        LowLevelMouseHookDispatcher dispatcher,
+        Func<IAppLogger?>? resolveLogger = null)
     {
         this.dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+        this.resolveLogger = resolveLogger;
     }
 
     public void Start()
@@ -57,17 +63,24 @@ internal sealed partial class LowLevelMouseHookPump : IDisposable
             threadId = hookThreadId;
         }
 
-        if (thread is not null)
+        if (thread is not null && !ReferenceEquals(thread, Thread.CurrentThread))
         {
+            // The thread publishes its id as its first statement. Disposing immediately after
+            // Start can observe 0, so give it a moment rather than skipping WM_QUIT and
+            // leaving the hook installed for the rest of the process.
+            var deadline = Environment.TickCount64 + 1000;
+            while (threadId == 0 && thread.IsAlive && Environment.TickCount64 < deadline)
+            {
+                Thread.Sleep(1);
+                threadId = hookThreadId;
+            }
+
             if (threadId != 0)
             {
                 _ = PostThreadMessage(threadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
             }
 
-            if (!ReferenceEquals(thread, Thread.CurrentThread))
-            {
-                _ = thread.Join(TimeSpan.FromSeconds(1));
-            }
+            _ = thread.Join(TimeSpan.FromSeconds(1));
         }
     }
 
@@ -83,6 +96,10 @@ internal sealed partial class LowLevelMouseHookPump : IDisposable
 
             if (hookHandle == IntPtr.Zero)
             {
+                resolveLogger?.Invoke()?.Write(
+                    AppLogLevel.Warning,
+                    "Input",
+                    $"SetWindowsHookEx failed with error {Marshal.GetLastWin32Error()}; mouse hook features are unavailable.");
                 return;
             }
 
@@ -92,8 +109,13 @@ internal sealed partial class LowLevelMouseHookPump : IDisposable
                 _ = DispatchMessage(ref message);
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            resolveLogger?.Invoke()?.Write(
+                AppLogLevel.Error,
+                "Input",
+                "The low-level mouse hook thread stopped unexpectedly; mouse hook features are unavailable.",
+                ex);
         }
         finally
         {

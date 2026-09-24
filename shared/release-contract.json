@@ -1,5 +1,16 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "release": {
+    "minimumVersion": "1.7.0",
+    "stableTagPattern": "^v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$",
+    "updaterProtocolVersion": 1,
+    "manifestSignature": {
+      "algorithm": "RSA-PSS-SHA256",
+      "keyBits": 3072,
+      "publicKey": "shared/update-signing-public-key.pem",
+      "keyId": "5983e42ba44b37a245be5208c92ee7c7268e3cea1caa4728b3ec9af66a3b71e8"
+    }
+  },
   "payload": {
     "executable": "StreamlinkVlcStudio.exe",
     "requiredFiles": [
@@ -11,7 +22,9 @@
       "install.ps1",
       ".streamlink-vlc-studio-owner.json",
       ".streamlink-vlc-studio-files.json",
+      "release-metadata.json",
       "release-contract.json",
+      "shared/update-signing-public-key.pem",
       "native-overlay-provenance.json",
       "dependencies/windows-installers.json",
       "lib/common.ps1",
@@ -37,18 +50,20 @@
   },
   "outputs": {
     "bootstrapper": "artifacts/StreamlinkVlcStudio-Setup.exe",
-    "msi": "artifacts/StreamlinkVlcStudio-Setup.msi",
     "releaseZip": "artifacts/package/StreamlinkVlcStudio-release.zip",
     "sbom": "artifacts/package/StreamlinkVlcStudio.spdx.json",
     "metadata": "artifacts/RELEASE-METADATA.json",
+    "updateManifest": "artifacts/UPDATE-MANIFEST.json",
+    "updateSignature": "artifacts/UPDATE-MANIFEST.sig",
     "checksums": "artifacts/SHA256SUMS.txt"
   },
   "releaseSet": [
     { "name": "StreamlinkVlcStudio-Setup.exe", "output": "bootstrapper", "checksummed": true },
-    { "name": "StreamlinkVlcStudio-Setup.msi", "output": "msi", "checksummed": true },
     { "name": "StreamlinkVlcStudio-release.zip", "output": "releaseZip", "checksummed": true },
     { "name": "StreamlinkVlcStudio.spdx.json", "output": "sbom", "checksummed": true },
     { "name": "RELEASE-METADATA.json", "output": "metadata", "checksummed": true },
+    { "name": "UPDATE-MANIFEST.json", "output": "updateManifest", "checksummed": true },
+    { "name": "UPDATE-MANIFEST.sig", "output": "updateSignature", "checksummed": true },
     { "name": "SHA256SUMS.txt", "output": "checksums", "checksummed": false }
   ]
 }

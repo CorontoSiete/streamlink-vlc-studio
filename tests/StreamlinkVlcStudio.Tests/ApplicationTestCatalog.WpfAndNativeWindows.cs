@@ -2230,6 +2230,11 @@ internal static partial class ApplicationTestCatalog
                     (int)Math.Round(streamPoint.Y)));
                 Assert.True(videoContextMenu.IsOpen);
                 Assert.Equal(false, showTopBarMenuItem.IsChecked);
+                videoContextMenu.ApplyTemplate();
+                showTopBarMenuItem.ApplyTemplate();
+                Assert.NotNull(videoContextMenu.Template.FindName("MenuChrome", videoContextMenu));
+                Assert.NotNull(showTopBarMenuItem.Template.FindName("ItemChrome", showTopBarMenuItem));
+                Assert.NotNull(showTopBarMenuItem.Template.FindName("CheckBackground", showTopBarMenuItem));
 
                 showTopBarMenuItem.IsChecked = true;
                 showTopBarMenuItem.RaiseEvent(new System.Windows.RoutedEventArgs(
@@ -2739,7 +2744,7 @@ internal static partial class ApplicationTestCatalog
                     !window.HasVideoMoveCandidate,
                     "Occluded window left a pending window-move candidate.");
                 Assert.True(
-                    !window.TryBeginBottomResizeFromScreenClick(
+                    !window.TryBeginResizeFromScreenClick(
                         (int)Math.Round(gripPoint.X),
                         (int)Math.Round(gripPoint.Y)),
                     "Occluded window started a resize from a click it does not own.");
@@ -3836,6 +3841,7 @@ internal static partial class ApplicationTestCatalog
                 var detachedWindows = (IDictionary<StreamTabViewModel, DetachedVideoWindow>)detachedWindowsField!.GetValue(mainWindow)!;
                 detachedWindows[first] = detachedWindow;
                 detachedWindows[second] = detachedWindow;
+                Assert.True(viewModel.SetTabsDetached([first, second], detached: true));
 
                 detachedWindow.Show();
                 detachedWindow.UpdateLayout();
@@ -3862,7 +3868,10 @@ internal static partial class ApplicationTestCatalog
 
                 Assert.True(secondClickHandled);
                 Assert.True(detachedWindow.IsStreamFullscreen);
-                Assert.Equal(second, viewModel.SelectedTab);
+                Assert.Equal(second, detachedWindow.ActiveTab);
+                Assert.Equal(first, viewModel.SelectedTab);
+                Assert.Equal(true, first.IsAutoMuted);
+                Assert.Equal(false, second.IsAutoMuted);
             }
             finally
             {
@@ -4301,13 +4310,6 @@ internal static partial class ApplicationTestCatalog
 
             AssertTopControlToggleVisual(
                 window,
-                "ReplaySeekBarToggleIconButton",
-                new TopControlToggleState { IsReplaySeekBarUiVisible = true },
-                selectedBackground,
-                selectedBorder,
-                selectedForeground);
-            AssertTopControlToggleVisual(
-                window,
                 "ChatToggleIconButton",
                 new TopControlToggleState { IsSelectedChatShowing = true },
                 selectedBackground,
@@ -4477,7 +4479,7 @@ internal static partial class ApplicationTestCatalog
             }
         });
     }),
-    ("switching the theme repaints the picture-in-picture window and volume overlay", () =>
+    ("switching the theme repaints the picture-in-picture window seekbar and volume overlay", () =>
     {
         return TestSta.RunAsync(() =>
         {
@@ -4498,16 +4500,30 @@ internal static partial class ApplicationTestCatalog
                 var titleBar = (System.Windows.Controls.Border)window.FindName("TitleBar");
                 var volumeOsd = (StreamlinkVlcStudio.App.Wpf.Controls.VolumeOverlay)window.FindName("VolumeOsd");
                 var osdIcon = (System.Windows.Controls.TextBlock)volumeOsd.FindName("Icon");
+                var replayOverlay = FindVisualDescendants<ReplaySeekOverlay>(window).Single();
+                replayOverlay.ProcessPointerSample(new Point(100, 100), true, Environment.TickCount64);
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                window.UpdateLayout();
+                Assert.True(replayOverlay.IsOverlayOpen);
 
-                // These are resolved off the swappable palette. Before the fix they were bound with
-                // StaticResource, so the detached window and the OSD stayed on whichever palette was
-                // loaded when they were built and a theme change never reached them.
+                var seekChrome = (Border)replayOverlay.FindName("OverlayChrome");
+                var seekSlider = (Slider)replayOverlay.FindName("ReplaySeekSlider");
+                var seekTrack = (Track)seekSlider.Template.FindName("PART_Track", seekSlider);
+                var seekThumb = seekTrack.Thumb;
+                seekThumb.ApplyTemplate();
+                var seekThumbCore = (System.Windows.Shapes.Ellipse)seekThumb.Template.FindName("ThumbCore", seekThumb);
+
+                // These are resolved off the swappable palette so detached native surfaces repaint
+                // from the active app theme rather than carrying a fixed dark or private palette.
                 WpfVisualTest.AssertSolidBrushColor(
                     WpfVisualTest.PaletteColor(window, "StudioSurface1Color"),
                     titleBar.Background);
                 WpfVisualTest.AssertSolidBrushColor(
                     WpfVisualTest.PaletteColor(window, "StudioTextColor"),
                     osdIcon.Foreground);
+                AssertReplaySeekPalette();
 
                 StreamlinkVlcStudio.App.Wpf.Themes.ThemeManager.ApplyTheme(AppTheme.Light);
                 window.Dispatcher.Invoke(
@@ -4519,6 +4535,26 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal("#FFF0F0F3", lightPanel);
                 WpfVisualTest.AssertSolidBrushColor(lightPanel, titleBar.Background);
                 WpfVisualTest.AssertSolidBrushColor(lightText, osdIcon.Foreground);
+                AssertReplaySeekPalette();
+
+                void AssertReplaySeekPalette()
+                {
+                    WpfVisualTest.AssertSolidBrushColor(
+                        WpfVisualTest.PaletteColor(window, "StudioSurface1Color"),
+                        seekChrome.Background);
+                    WpfVisualTest.AssertSolidBrushColor(
+                        WpfVisualTest.PaletteColor(window, "StudioAccentColor"),
+                        seekTrack.DecreaseRepeatButton.Background);
+                    WpfVisualTest.AssertSolidBrushColor(
+                        WpfVisualTest.PaletteColor(window, "StudioBorderStrongColor"),
+                        seekTrack.IncreaseRepeatButton.Background);
+                    WpfVisualTest.AssertSolidBrushColor(
+                        WpfVisualTest.PaletteColor(window, "StudioTextColor"),
+                        seekThumbCore.Fill);
+                    WpfVisualTest.AssertSolidBrushColor(
+                        WpfVisualTest.PaletteColor(window, "StudioAccentColor"),
+                        seekThumbCore.Stroke);
+                }
             }
             finally
             {
@@ -4787,16 +4823,17 @@ internal static partial class ApplicationTestCatalog
             await viewModel.DisposeAsync();
         });
     }),
-    ("top controls bar owns playback toggles without a bottom deck", () =>
+    ("top controls bar owns playback controls with an overlaid seekbar", () =>
     {
         return TestSta.RunAsync(() =>
         {
             var window = new MainWindow();
             var videoHost = (System.Windows.Controls.Grid)window.FindName("VideoAndReplayHost");
-            Assert.Equal(2, videoHost.RowDefinitions.Count);
+            Assert.True(videoHost.RowDefinitions.Count <= 1, "The seekbar must not reserve a row below the stream.");
             Assert.True(window.FindName("BottomControlDeck") is null);
             Assert.NotNull(window.FindName("TopPlayPauseButton"));
-            Assert.NotNull(window.FindName("TopReplayToggleButton"));
+            Assert.True(window.FindName("TopReplayToggleButton") is null);
+            Assert.True(!window.Resources.Contains("ReplaySeekBarToggleIconButton"));
             Assert.NotNull(window.FindName("TopTheatreButton"));
             Assert.NotNull(window.FindName("TopFullscreenButton"));
             Assert.NotNull(window.FindName("TopMuteButton"));
@@ -4819,19 +4856,6 @@ internal static partial class ApplicationTestCatalog
                 WpfVisualTest.PaletteColor(window, "StudioAccentPressedColor"),
                 WpfVisualTest.PaletteColor(window, "StudioAccentColor"));
 
-            var replay = new System.Windows.Controls.Button
-            {
-                DataContext = new TopControlToggleState { IsReplaySeekBarUiVisible = true },
-                Style = (System.Windows.Style)window.Resources["ReplaySeekBarToggleIconButton"]
-            };
-            replay.ApplyTemplate();
-            replay.Dispatcher.Invoke(
-                () => { },
-                System.Windows.Threading.DispatcherPriority.DataBind);
-            WpfVisualTest.AssertTemplateBorderColor(
-                replay,
-                WpfVisualTest.PaletteColor(window, "StudioAccentPressedColor"),
-                WpfVisualTest.PaletteColor(window, "StudioAccentColor"));
         });
     }),
     ("switching settings from VLC plugin overlay to docked rebuilds playback without native overlay", async () =>

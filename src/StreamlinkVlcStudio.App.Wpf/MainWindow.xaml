@@ -6,13 +6,12 @@
         xmlns:models="clr-namespace:StreamlinkVlcStudio.Core.Models;assembly=StreamlinkVlcStudio.Core"
         xmlns:settings="clr-namespace:StreamlinkVlcStudio.Core.Settings;assembly=StreamlinkVlcStudio.Core"
         xmlns:vm="clr-namespace:StreamlinkVlcStudio.App.Wpf.ViewModels"
+        xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Twitch &amp; Kick player"
         Icon="/StreamlinkVlcStudio.App.Wpf;component/Assets/Twitch.ico"
         Width="1320"
         Height="820"
-        MinWidth="980"
-        MinHeight="620"
         Background="{DynamicResource StudioBaseBrush}"
         Foreground="{DynamicResource StudioTextBrush}"
         FontFamily="Segoe UI"
@@ -30,6 +29,7 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/StudioTheme.xaml" />
+                <ResourceDictionary Source="Themes/ResponsiveToolBar.xaml" />
             </ResourceDictionary.MergedDictionaries>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <converters:HomeContentPaddingConverter x:Key="HomeContentPadding" />
@@ -216,7 +216,6 @@
         <Style x:Key="DockedChatScrollBarThumbStyle" TargetType="{x:Type Thumb}">
             <EventSetter Event="DragStarted" Handler="DockedChatScrollThumb_DragStarted" />
             <EventSetter Event="DragCompleted" Handler="DockedChatScrollThumb_DragCompleted" />
-            <Setter Property="MinHeight" Value="42" />
             <Setter Property="Background" Value="{DynamicResource StudioScrollbarBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -248,17 +247,17 @@
                     <ControlTemplate TargetType="{x:Type ScrollBar}">
                         <Grid x:Name="Root" Background="Transparent" SnapsToDevicePixels="True">
                             <Border x:Name="TrackBackground"
-                                    Margin="3,5"
+                                    Margin="3,0"
                                     Background="{DynamicResource StudioSurface1Brush}"
                                     CornerRadius="3"
                                     Opacity="0" />
                             <Track x:Name="PART_Track"
                                    IsDirectionReversed="True"
                                    Focusable="False"
-                                   Margin="3,5"
+                                   Margin="3,0"
                                    Opacity="0">
                                 <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                    <RepeatButton x:Name="DecreasePageButton" Command="{x:Static ScrollBar.PageUpCommand}"
                                                   Style="{StaticResource DockedChatScrollBarPageButtonStyle}" />
                                 </Track.DecreaseRepeatButton>
                                 <Track.Thumb>
@@ -266,16 +265,23 @@
                                            Style="{StaticResource DockedChatScrollBarThumbStyle}" />
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                    <RepeatButton x:Name="IncreasePageButton" Command="{x:Static ScrollBar.PageDownCommand}"
                                                   Style="{StaticResource DockedChatScrollBarPageButtonStyle}" />
                                 </Track.IncreaseRepeatButton>
                             </Track>
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="Orientation" Value="Horizontal">
-                                <Setter TargetName="TrackBackground" Property="Margin" Value="5,3" />
+                                <Setter Property="Width" Value="Auto" />
+                                <Setter Property="MinWidth" Value="0" />
+                                <Setter Property="Height" Value="12" />
+                                <Setter Property="MinHeight" Value="12" />
+                                <Setter Property="Margin" Value="4,0,4,3" />
+                                <Setter TargetName="TrackBackground" Property="Margin" Value="0,3" />
                                 <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False" />
-                                <Setter TargetName="PART_Track" Property="Margin" Value="5,3" />
+                                <Setter TargetName="PART_Track" Property="Margin" Value="0,3" />
+                                <Setter TargetName="DecreasePageButton" Property="Command" Value="{x:Static ScrollBar.PageLeftCommand}" />
+                                <Setter TargetName="IncreasePageButton" Property="Command" Value="{x:Static ScrollBar.PageRightCommand}" />
                             </Trigger>
                             <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}}" Value="True">
                                 <Setter TargetName="TrackBackground" Property="Background" Value="{DynamicResource StudioSurface3Brush}" />
@@ -297,7 +303,6 @@
         </Style>
 
         <Style x:Key="HomeScrollBarThumbStyle" TargetType="{x:Type Thumb}">
-            <Setter Property="MinHeight" Value="56" />
             <Setter Property="Background" Value="{DynamicResource StudioTextDimBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -308,6 +313,9 @@
                                 CornerRadius="4"
                                 SnapsToDevicePixels="True" />
                         <ControlTemplate.Triggers>
+                            <DataTrigger Binding="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type ScrollBar}}}" Value="Horizontal">
+                                <Setter TargetName="ThumbPill" Property="Margin" Value="0,2" />
+                            </DataTrigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ThumbPill" Property="Background" Value="#6E7D90" />
                             </Trigger>
@@ -330,34 +338,39 @@
                     <ControlTemplate TargetType="{x:Type ScrollBar}">
                         <Grid Background="Transparent" SnapsToDevicePixels="True">
                             <Border x:Name="TrackBackground"
-                                    Margin="3,7"
+                                    Margin="3,0"
                                     Background="{DynamicResource StudioSurface1Brush}"
                                     CornerRadius="4"
                                     Opacity="0.78" />
                             <Track x:Name="PART_Track"
                                    IsDirectionReversed="True"
                                    Focusable="False"
-                                   Margin="2,7">
+                                   Margin="2,0">
                                 <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                    <RepeatButton x:Name="DecreasePageButton" Command="{x:Static ScrollBar.PageUpCommand}"
                                                   Style="{StaticResource DockedChatScrollBarPageButtonStyle}" />
                                 </Track.DecreaseRepeatButton>
                                 <Track.Thumb>
-                                    <Thumb Style="{StaticResource HomeScrollBarThumbStyle}" />
+                                    <Thumb x:Name="ScrollThumb" Style="{StaticResource HomeScrollBarThumbStyle}" />
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                    <RepeatButton x:Name="IncreasePageButton" Command="{x:Static ScrollBar.PageDownCommand}"
                                                   Style="{StaticResource DockedChatScrollBarPageButtonStyle}" />
                                 </Track.IncreaseRepeatButton>
                             </Track>
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Width" Value="Auto" />
+                                <Setter Property="MinWidth" Value="0" />
                                 <Setter Property="Height" Value="14" />
                                 <Setter Property="MinHeight" Value="14" />
-                                <Setter TargetName="TrackBackground" Property="Margin" Value="7,3" />
+                                <Setter Property="Margin" Value="6,0,6,4" />
+                                <Setter TargetName="TrackBackground" Property="Margin" Value="0,3" />
                                 <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False" />
-                                <Setter TargetName="PART_Track" Property="Margin" Value="7,2" />
+                                <Setter TargetName="PART_Track" Property="Margin" Value="0,2" />
+                                <Setter TargetName="DecreasePageButton" Property="Command" Value="{x:Static ScrollBar.PageLeftCommand}" />
+                                <Setter TargetName="IncreasePageButton" Property="Command" Value="{x:Static ScrollBar.PageRightCommand}" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="TrackBackground" Property="Background" Value="#15202B" />
@@ -908,7 +921,7 @@
             </Setter>
         </Style>
 
-        <Style x:Key="TopControlIconButton" TargetType="Button">
+        <Style x:Key="TopControlButtonBase" TargetType="{x:Type primitives:ButtonBase}">
             <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
@@ -924,7 +937,7 @@
             <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
             <Setter Property="Template">
                 <Setter.Value>
-                    <ControlTemplate TargetType="Button">
+                    <ControlTemplate TargetType="{x:Type primitives:ButtonBase}">
                         <Border x:Name="ButtonBorder"
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
@@ -960,18 +973,10 @@
             </Setter>
         </Style>
 
+        <Style x:Key="TopControlIconButton" TargetType="Button" BasedOn="{StaticResource TopControlButtonBase}" />
+
         <Style x:Key="TopControlIconButtonLast" TargetType="Button" BasedOn="{StaticResource TopControlIconButton}">
             <Setter Property="Tag" Value="Last" />
-        </Style>
-
-        <Style x:Key="ReplaySeekBarToggleIconButton" TargetType="Button" BasedOn="{StaticResource TopControlIconButton}">
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding IsReplaySeekBarUiVisible}" Value="True">
-                    <Setter Property="Background" Value="{StaticResource TopControlSelectedBackgroundBrush}" />
-                    <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="{StaticResource TopControlSelectedForegroundBrush}" />
-                </DataTrigger>
-            </Style.Triggers>
         </Style>
 
         <Style x:Key="ChatToggleIconButton" TargetType="Button" BasedOn="{StaticResource TopControlIconButton}">
@@ -1023,6 +1028,39 @@
             </Style.Triggers>
         </Style>
 
+        <Style x:Key="NeverMuteTabIndicator" TargetType="TextBlock">
+            <Setter Property="Text" Value="&#xE995;" />
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Width" Value="14" />
+            <Setter Property="Margin" Value="5,0,0,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+            <Setter Property="Visibility" Value="{Binding HasNeverMute, Converter={StaticResource BoolToVisibility}}" />
+            <Setter Property="ToolTip" Value="{Binding NeverMuteToolTip}" />
+            <Setter Property="AutomationProperties.Name" Value="Never mute enabled" />
+            <Setter Property="AutomationProperties.HelpText" Value="{Binding NeverMuteToolTip}" />
+        </Style>
+
+        <Style x:Key="NeverMuteToggleButton" TargetType="ToggleButton" BasedOn="{StaticResource TopControlButtonBase}">
+            <Setter Property="Width" Value="64" />
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="ToolTip" Value="Keep this tab unmuted, including when switching tabs." />
+            <Style.Triggers>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="{StaticResource TopControlSelectedBackgroundBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource TopControlSelectedForegroundBrush}" />
+                    <Setter Property="ToolTip" Value="Never mute is on for this tab. Turn it off to allow muting." />
+                </Trigger>
+                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <Style x:Key="PauseResumeIconButton" TargetType="Button" BasedOn="{StaticResource TopControlIconButton}">
             <Setter Property="Content" Value="&#xE769;" />
             <Style.Triggers>
@@ -1052,7 +1090,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="NavigationShell"
+                        <Border
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
@@ -1294,117 +1332,6 @@
             <Setter Property="Padding" Value="14,8" />
         </Style>
 
-        <Style x:Key="ReplaySeekFillButtonStyle" TargetType="{x:Type RepeatButton}">
-            <Setter Property="Focusable" Value="False" />
-            <Setter Property="IsTabStop" Value="False" />
-            <Setter Property="Background" Value="{DynamicResource StudioAccentBrush}" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="{x:Type RepeatButton}">
-                        <Border Height="6"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="3"
-                                SnapsToDevicePixels="True" />
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="ReplaySeekRemainderButtonStyle" TargetType="{x:Type RepeatButton}" BasedOn="{StaticResource ReplaySeekFillButtonStyle}">
-            <Setter Property="Background" Value="{DynamicResource StudioBorderBrush}" />
-        </Style>
-
-        <Style x:Key="ReplaySeekThumbStyle" TargetType="{x:Type Thumb}">
-            <Setter Property="Width" Value="16" />
-            <Setter Property="Height" Value="16" />
-            <Setter Property="Background" Value="#E8FFFB" />
-            <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
-            <Setter Property="BorderThickness" Value="2" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="{x:Type Thumb}">
-                        <Border x:Name="ThumbChrome"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8"
-                                SnapsToDevicePixels="True" />
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ThumbChrome" Property="Background" Value="#FFFFFF" />
-                                <Setter TargetName="ThumbChrome" Property="BorderBrush" Value="{DynamicResource StudioAccentTextBrush}" />
-                            </Trigger>
-                            <Trigger Property="IsDragging" Value="True">
-                                <Setter TargetName="ThumbChrome" Property="Background" Value="#FFFFFF" />
-                                <Setter TargetName="ThumbChrome" Property="BorderBrush" Value="{DynamicResource StudioAccentHoverBrush}" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="ReplaySeekSliderStyle" TargetType="{x:Type Slider}">
-            <Setter Property="Height" Value="28" />
-            <Setter Property="Focusable" Value="True" />
-            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="{x:Type Slider}">
-                        <Grid SnapsToDevicePixels="True">
-                            <Track x:Name="PART_Track"
-                                   Focusable="False"
-                                   VerticalAlignment="Center"
-                                   Height="18">
-                                <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="Slider.DecreaseLarge"
-                                                  Style="{StaticResource ReplaySeekFillButtonStyle}" />
-                                </Track.DecreaseRepeatButton>
-                                <Track.Thumb>
-                                    <Thumb x:Name="SeekThumb"
-                                           Style="{StaticResource ReplaySeekThumbStyle}"
-                                           DragStarted="ReplaySeekThumb_DragStarted"
-                                           DragCompleted="ReplaySeekThumb_DragCompleted" />
-                                </Track.Thumb>
-                                <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="Slider.IncreaseLarge"
-                                                  Style="{StaticResource ReplaySeekRemainderButtonStyle}" />
-                                </Track.IncreaseRepeatButton>
-                            </Track>
-                        </Grid>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="SeekThumb" Property="Width" Value="18" />
-                                <Setter TargetName="SeekThumb" Property="Height" Value="18" />
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Opacity" Value="0.5" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="ReplayLiveButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="MinHeight" Value="28" />
-            <Setter Property="Padding" Value="12,4" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Background" Value="#123834" />
-            <Setter Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
-        </Style>
-
-        <Style x:Key="ReplayStepButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="MinHeight" Value="28" />
-            <Setter Property="MinWidth" Value="54" />
-            <Setter Property="Padding" Value="10,4" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
-        </Style>
-
         <Style x:Key="TitleBarButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
@@ -1503,10 +1430,38 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="PlaybackTopControlIconButton" TargetType="Button" BasedOn="{StaticResource TopControlIconButton}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="PlaybackPauseResumeIconButton" TargetType="Button" BasedOn="{StaticResource PauseResumeIconButton}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="PlaybackChatToggleIconButton" TargetType="Button" BasedOn="{StaticResource ChatToggleIconButton}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="PlaybackMultiStreamToggleIconButton" TargetType="Button" BasedOn="{StaticResource MultiStreamToggleIconButton}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
         </ResourceDictionary>
     </Window.Resources>
 
-    <Grid>
+    <Grid x:Name="WorkspaceRoot" SizeChanged="WorkspaceRoot_SizeChanged">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
@@ -1530,9 +1485,9 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal"
+                <StackPanel x:Name="TitleBrand" Orientation="Horizontal"
                             VerticalAlignment="Center"
-                            Margin="14,0,0,0">
+                            Margin="14,0,0,0" ClipToBounds="True">
                     <Border Width="24"
                             Height="24"
                             Margin="0,0,10,0"
@@ -1577,29 +1532,57 @@
                                Foreground="{DynamicResource StudioTextMutedBrush}"
                                VerticalAlignment="Center" />
                 </StackPanel>
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
+                <UniformGrid x:Name="WindowButtons" Grid.Column="1" Rows="1" Width="138"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Stretch">
-                    <Button Style="{StaticResource TitleBarButton}"
+                    <Button Style="{StaticResource TitleBarButton}" Width="Auto"
                             Content="&#xE921;"
                             Click="MinimizeButton_Click"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True"
                             ToolTip="Minimize" />
                     <Button x:Name="MaximizeRestoreButton"
+                            Width="Auto"
                             Style="{StaticResource TitleBarButton}"
                             Content="&#xE922;"
                             Click="MaximizeRestoreButton_Click"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True"
                             ToolTip="Maximize" />
-                    <Button Style="{StaticResource TitleBarButton}"
+                    <Button x:Name="CloseWindowButton" Style="{StaticResource TitleBarButton}" Width="Auto"
                             Content="&#xE8BB;"
                             Click="CloseWindowButton_Click"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True"
                             ToolTip="Close" />
-                </StackPanel>
+                </UniformGrid>
             </Grid>
         </Border>
+
+        <ScrollViewer x:Name="UpdateBannerViewport"
+                      Grid.Row="2" Grid.ColumnSpan="2" Panel.ZIndex="100"
+                      VerticalAlignment="Top" Margin="12,8"
+                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                      Visibility="{Binding IsUpdateBannerVisible, Converter={StaticResource BoolToVisibility}}">
+            <Border Width="{Binding ViewportWidth, ElementName=UpdateBannerViewport}" MinWidth="200"
+                    Padding="14,10" CornerRadius="8"
+                    Background="{DynamicResource StudioSurfaceCardBrush}"
+                    BorderBrush="{DynamicResource StudioAccentBrush}" BorderThickness="1">
+                <controls:ResponsiveDockPanel LastChildFill="True">
+                    <WrapPanel DockPanel.Dock="Right" VerticalAlignment="Center">
+                        <Button Content="{Binding AppUpdateActionText}"
+                                Command="{Binding UpdateAppCommand}"
+                                Style="{StaticResource StudioPrimaryButtonStyle}" Margin="0,4,8,0" />
+                        <Button Content="Later"
+                                Command="{Binding LaterUpdateCommand}"
+                                Style="{StaticResource StudioButtonStyle}" Margin="0,4,0,0" />
+                    </WrapPanel>
+                    <StackPanel VerticalAlignment="Center" Margin="0,0,12,4">
+                        <TextBlock Text="Application update" FontWeight="SemiBold" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding AppUpdateStatus}"
+                                   Foreground="{DynamicResource StudioTextMutedBrush}"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+                </controls:ResponsiveDockPanel>
+            </Border>
+        </ScrollViewer>
 
         <DockPanel x:Name="PlaybackHost"
                    Grid.Row="2"
@@ -1625,7 +1608,11 @@
                     Opacity="{Binding Settings.Chat.Opacity}"
                     PreviewMouseWheel="DockedChatPanel_PreviewMouseWheel"
                     Visibility="{Binding IsDockedChatVisible, Converter={StaticResource BoolToVisibility}}">
-                <Grid>
+                <ScrollViewer x:Name="DockedChatViewport" HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto" CanContentScroll="False">
+                <Grid Width="{Binding ViewportWidth, ElementName=DockedChatViewport}"
+                      Height="{Binding ViewportHeight, ElementName=DockedChatViewport}"
+                      MinWidth="180" MinHeight="138">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="46" />
                         <RowDefinition Height="*" />
@@ -1715,6 +1702,7 @@
                         <Button DockPanel.Dock="Right"
                                 Content="Send"
                                 Command="{Binding SelectedTab.SendChatMessageCommand}"
+                                Padding="12,6"
                                 MinWidth="62"
                                 Margin="8,0,0,0" />
                         <TextBox x:Name="ChatInputTextBox"
@@ -1726,13 +1714,10 @@
                                  ToolTip="Chat message" />
                     </DockPanel>
                 </Grid>
+                </ScrollViewer>
             </Border>
 
             <Grid x:Name="VideoAndReplayHost">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
 
             <!-- Transient volume OSD shown on scroll-wheel volume changes (reusable control). -->
             <controls:VolumeOverlay x:Name="VolumeOsd" />
@@ -1775,31 +1760,52 @@
                     </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <controls:VideoSurface Loaded="VideoSurface_Loaded"
-                                                   Unloaded="VideoSurface_Unloaded"
-                                                   SurfaceMouseLeftButtonPressed="VideoSurface_MouseLeftButtonPressed"
-                                                   MouseWheelScrolled="VideoSurface_MouseWheelScrolled"
-                                                   MouseLeftButtonDoubleClicked="VideoSurface_MouseLeftButtonDoubleClicked"
-                                                   HorizontalAlignment="Stretch"
-                                                   VerticalAlignment="Stretch"
-                                                   Tag="{Binding}">
-                                <controls:VideoSurface.Style>
-                                    <Style TargetType="{x:Type controls:VideoSurface}">
-                                        <Setter Property="Visibility" Value="Hidden" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsVideoVisible}" Value="True">
-                                                <Setter Property="Visibility" Value="Visible" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </controls:VideoSurface.Style>
-                            </controls:VideoSurface>
+                            <Grid x:Name="SurfaceHost">
+                                <controls:VideoSurface x:Name="PlayerSurface" Loaded="VideoSurface_Loaded"
+                                                       Unloaded="VideoSurface_Unloaded"
+                                                       SurfaceMouseLeftButtonPressed="VideoSurface_MouseLeftButtonPressed"
+                                                       MouseWheelScrolled="VideoSurface_MouseWheelScrolled"
+                                                       MouseLeftButtonDoubleClicked="VideoSurface_MouseLeftButtonDoubleClicked"
+                                                       HorizontalAlignment="Stretch"
+                                                       VerticalAlignment="Stretch"
+                                                       Tag="{Binding}">
+                                    <controls:VideoSurface.Style>
+                                        <Style TargetType="{x:Type controls:VideoSurface}">
+                                            <Setter Property="Visibility" Value="Hidden" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsVideoVisible}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </controls:VideoSurface.Style>
+                                </controls:VideoSurface>
+                                <controls:ReplaySeekOverlay PlacementTarget="{Binding ElementName=PlayerSurface}">
+                                    <controls:ReplaySeekOverlay.Style>
+                                        <Style TargetType="controls:ReplaySeekOverlay">
+                                            <Setter Property="IsOverlayEnabled" Value="{Binding DataContext.IsReplaySeekBarUiVisible, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding DataContext.IsSettingsOpen, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                                    <Setter Property="IsOverlayEnabled" Value="False" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </controls:ReplaySeekOverlay.Style>
+                                </controls:ReplaySeekOverlay>
+                            </Grid>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
 
+                <ScrollViewer x:Name="HomeViewport"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto"
+                              Visibility="{Binding IsHomeVisible, Converter={StaticResource BoolToVisibility}}">
                 <Grid Background="{DynamicResource StudioBaseBrush}"
-                      Visibility="{Binding IsHomeVisible, Converter={StaticResource BoolToVisibility}}">
+                      Width="{Binding ViewportWidth, ElementName=HomeViewport}"
+                      Height="{Binding ViewportHeight, ElementName=HomeViewport}"
+                      MinWidth="180"
+                      MinHeight="120">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
@@ -1812,18 +1818,27 @@
                             CornerRadius="6"
                             Margin="16,10,16,0"
                             Padding="10,7">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
+                        <controls:ResponsiveGrid x:Name="HomeHeaderLayout" CompactWidth="800">
+                            <controls:ResponsiveGrid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" MinWidth="360" />
+                                <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                            </controls:ResponsiveGrid.ColumnDefinitions>
 
                             <Grid Grid.Column="0"
                                   Width="268"
                                   MinWidth="0"
                                   Margin="0,0,18,0"
                                   VerticalAlignment="Center">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsCompact, ElementName=HomeHeaderLayout}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
@@ -1865,7 +1880,7 @@
                             <Grid x:Name="HomeSearchAnchor"
                                   Grid.Column="1"
                                   MaxWidth="560"
-                                  MinWidth="360"
+                                  MinWidth="0"
                                   Height="36"
                                   Margin="0"
                                   HorizontalAlignment="Stretch"
@@ -1911,7 +1926,17 @@
                                                MaxWidth="140"
                                                TextTrimming="CharacterEllipsis"
                                                VerticalAlignment="Center"
-                                               Margin="0,0,8,0" />
+                                               Margin="0,0,8,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsCompact, ElementName=HomeHeaderLayout}" Value="True">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
                                     <Button Style="{StaticResource HomeRefreshButton}"
                                             Content="&#xE72C;"
                                             Command="{Binding RefreshFollowedChannelsCommand}"
@@ -1929,7 +1954,7 @@
                                        DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                        IsOpen="{Binding IsStreamSearchPanelVisible, Mode=OneWay}">
                                     <Border Width="{Binding ActualWidth, ElementName=HomeSearchAnchor}"
-                                            MinWidth="360"
+                                            MinWidth="240"
                                             MaxWidth="560"
                                             MaxHeight="360"
                                             Background="#F2101012"
@@ -2090,12 +2115,16 @@
                                                                         </ControlTemplate.Triggers>
                                                                     </ControlTemplate>
                                                                 </Button.Template>
-                                                                <Grid Margin="12,10">
+                                                                <controls:ResponsiveGrid x:Name="StreamSearchResultLayout" Margin="12,10" CompactWidth="440">
                                                                     <Grid.ColumnDefinitions>
                                                                         <ColumnDefinition Width="Auto" />
                                                                         <ColumnDefinition Width="*" />
                                                                         <ColumnDefinition Width="Auto" />
                                                                     </Grid.ColumnDefinitions>
+                                                                    <Grid.RowDefinitions>
+                                                                        <RowDefinition Height="Auto" />
+                                                                        <RowDefinition Height="Auto" />
+                                                                    </Grid.RowDefinitions>
 
                                                                     <Border Grid.Column="0"
                                                                             Width="96"
@@ -2106,6 +2135,15 @@
                                                                             CornerRadius="7"
                                                                             ClipToBounds="True"
                                                                             VerticalAlignment="Center">
+                                                                        <Border.Style>
+                                                                            <Style TargetType="Border">
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsCompact, ElementName=StreamSearchResultLayout}" Value="True">
+                                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Border.Style>
                                                                         <Grid>
                                                                             <TextBlock Text="&#xE7F4;"
                                                                                        FontFamily="Segoe MDL2 Assets"
@@ -2119,9 +2157,20 @@
                                                                         </Grid>
                                                                     </Border>
 
-                                                                    <StackPanel Grid.Column="1"
-                                                                                Margin="12,0"
-                                                                                VerticalAlignment="Center">
+                                                                    <StackPanel VerticalAlignment="Center">
+                                                                        <StackPanel.Style>
+                                                                            <Style TargetType="StackPanel">
+                                                                                <Setter Property="Grid.Column" Value="1" />
+                                                                                <Setter Property="Margin" Value="12,0" />
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsCompact, ElementName=StreamSearchResultLayout}" Value="True">
+                                                                                        <Setter Property="Grid.Column" Value="0" />
+                                                                                        <Setter Property="Grid.ColumnSpan" Value="3" />
+                                                                                        <Setter Property="Margin" Value="0" />
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </StackPanel.Style>
                                                                         <DockPanel LastChildFill="True">
                                                                             <Border DockPanel.Dock="Left"
                                                                                     Style="{StaticResource HomePlatformBadgeStyle}"
@@ -2159,9 +2208,20 @@
                                                                                    Margin="0,2,0,0" />
                                                                     </StackPanel>
 
-                                                                    <StackPanel Grid.Column="2"
-                                                                                Orientation="Horizontal"
-                                                                                VerticalAlignment="Center">
+                                                                    <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                        <WrapPanel.Style>
+                                                                            <Style TargetType="WrapPanel">
+                                                                                <Setter Property="Grid.Column" Value="2" />
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsCompact, ElementName=StreamSearchResultLayout}" Value="True">
+                                                                                        <Setter Property="Grid.Column" Value="0" />
+                                                                                        <Setter Property="Grid.ColumnSpan" Value="3" />
+                                                                                        <Setter Property="Grid.Row" Value="1" />
+                                                                                        <Setter Property="Margin" Value="0,8,0,0" />
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </WrapPanel.Style>
                                                                         <Border BorderThickness="1"
                                                                                 CornerRadius="6"
                                                                                 Padding="8,4"
@@ -2210,8 +2270,8 @@
                                                                                    Foreground="{StaticResource AccentBrush}"
                                                                                    FontSize="12"
                                                                                    VerticalAlignment="Center" />
-                                                                    </StackPanel>
-                                                                </Grid>
+                                                                    </WrapPanel>
+                                                                </controls:ResponsiveGrid>
                                                             </Button>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
@@ -2220,13 +2280,13 @@
                                         </Grid>
                                     </Border>
                                 </Popup>
-                        </Grid>
+                        </controls:ResponsiveGrid>
                     </Border>
 
                     <ScrollViewer x:Name="HomeContentScrollViewer"
                                   Grid.Row="1"
                                   VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled"
+                                  HorizontalScrollBarVisibility="Auto"
                                   Padding="{Binding Settings.KeepHomeCardRightGap, Converter={StaticResource HomeContentPadding}}"
                                   PreviewMouseDown="HomeContentScrollViewer_PreviewMouseDown"
                                   PreviewMouseMove="HomeContentScrollViewer_PreviewMouseMove"
@@ -2236,10 +2296,10 @@
                         <ScrollViewer.Resources>
                             <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource HomeScrollBarStyle}" />
                         </ScrollViewer.Resources>
-                        <StackPanel>
+                        <StackPanel Width="{Binding ViewportWidth, ElementName=HomeContentScrollViewer}" MinWidth="240">
                             <Grid Visibility="{Binding IsFollowedHomePageVisible, Converter={StaticResource BoolToVisibility}}">
                                 <StackPanel>
-                            <DockPanel LastChildFill="True"
+                            <controls:ResponsiveDockPanel LastChildFill="True"
                                        Margin="0,0,0,14">
                                 <Border DockPanel.Dock="Right"
                                         Background="{DynamicResource StudioSurface1Brush}"
@@ -2270,7 +2330,7 @@
                                                Foreground="{StaticResource TextMutedBrush}"
                                                Margin="0,4,0,0" />
                                 </StackPanel>
-                            </DockPanel>
+                            </controls:ResponsiveDockPanel>
 
                             <ProgressBar Height="4"
                                          IsIndeterminate="True"
@@ -2317,7 +2377,7 @@
 
                             <Grid Visibility="{Binding IsTwitchVodsHomePageVisible, Converter={StaticResource BoolToVisibility}}">
                                 <StackPanel>
-                                    <DockPanel LastChildFill="True"
+                                    <controls:ResponsiveDockPanel LastChildFill="True"
                                                Margin="0,0,0,14">
                                         <Border DockPanel.Dock="Right"
                                                 Background="{DynamicResource StudioSurface1Brush}"
@@ -2341,9 +2401,9 @@
                                                        Foreground="{StaticResource TextMutedBrush}"
                                                        Margin="0,4,0,0" />
                                         </StackPanel>
-                                    </DockPanel>
+                                    </controls:ResponsiveDockPanel>
 
-                                    <DockPanel LastChildFill="True"
+                                    <controls:ResponsiveDockPanel LastChildFill="True"
                                                Margin="0,0,0,12">
                                         <StackPanel DockPanel.Dock="Right"
                                                     Orientation="Horizontal"
@@ -2378,9 +2438,9 @@
                                                        TextTrimming="CharacterEllipsis"
                                                        Visibility="{Binding IsTwitchVodSearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
                                         </Grid>
-                                    </DockPanel>
+                                    </controls:ResponsiveDockPanel>
 
-                                    <StackPanel Orientation="Horizontal"
+                                    <WrapPanel Orientation="Horizontal"
                                                 Margin="0,0,0,16"
                                                 Visibility="{Binding IsTwitchVodFilterVisible, Converter={StaticResource BoolToVisibility}}">
                                         <Button Style="{StaticResource PastBroadcastsVodFilterButton}"
@@ -2395,7 +2455,7 @@
                                         <Button Style="{StaticResource AllVodFilterButton}"
                                                 Content="All"
                                                 Command="{Binding ShowAllVodFilterCommand}" />
-                                    </StackPanel>
+                                    </WrapPanel>
 
                                     <ProgressBar Height="4"
                                                  IsIndeterminate="True"
@@ -2599,7 +2659,7 @@
                                 <StackPanel>
                                     <Grid Visibility="{Binding IsBrowseCategoriesPageVisible, Converter={StaticResource BoolToVisibility}}">
                                         <StackPanel>
-                                            <DockPanel LastChildFill="True"
+                                            <controls:ResponsiveDockPanel LastChildFill="True"
                                                        Margin="0,0,0,14">
                                                 <Border DockPanel.Dock="Right"
                                                         Background="{DynamicResource StudioSurface1Brush}"
@@ -2623,9 +2683,9 @@
                                                                Foreground="{StaticResource TextMutedBrush}"
                                                                Margin="0,4,0,0" />
                                                 </StackPanel>
-                                            </DockPanel>
+                                            </controls:ResponsiveDockPanel>
 
-                                            <DockPanel LastChildFill="True"
+                                            <controls:ResponsiveDockPanel LastChildFill="True"
                                                        Margin="0,0,0,12">
                                                 <StackPanel DockPanel.Dock="Left"
                                                             Orientation="Horizontal"
@@ -2664,7 +2724,7 @@
                                                                TextTrimming="CharacterEllipsis"
                                                                Visibility="{Binding IsBrowseCategorySearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
                                                 </Grid>
-                                            </DockPanel>
+                                            </controls:ResponsiveDockPanel>
 
                                             <ProgressBar Height="4"
                                                          IsIndeterminate="True"
@@ -2833,7 +2893,7 @@
 
                                     <Grid Visibility="{Binding IsBrowseStreamsPageVisible, Converter={StaticResource BoolToVisibility}}">
                                         <StackPanel>
-                                            <DockPanel LastChildFill="True"
+                                            <controls:ResponsiveDockPanel LastChildFill="True"
                                                        Margin="0,0,0,14">
                                                 <Border DockPanel.Dock="Right"
                                                         Background="{DynamicResource StudioSurface1Brush}"
@@ -2857,9 +2917,9 @@
                                                                Foreground="{StaticResource TextMutedBrush}"
                                                                Margin="0,4,0,0" />
                                                 </StackPanel>
-                                            </DockPanel>
+                                            </controls:ResponsiveDockPanel>
 
-                                            <DockPanel LastChildFill="False"
+                                            <controls:ResponsiveDockPanel LastChildFill="False"
                                                        Margin="0,0,0,12">
                                                 <StackPanel DockPanel.Dock="Left"
                                                             Orientation="Horizontal"
@@ -2876,7 +2936,7 @@
                                                         Command="{Binding RefreshBrowseCommand}"
                                                         MinWidth="104"
                                                         Margin="12,0,0,0" />
-                                            </DockPanel>
+                                            </controls:ResponsiveDockPanel>
 
                                             <Border Background="{DynamicResource StudioSurface1Brush}"
                                                     BorderBrush="{DynamicResource StudioBorderBrush}"
@@ -2958,7 +3018,7 @@
 
                             <Grid Visibility="{Binding IsRecentHomePageVisible, Converter={StaticResource BoolToVisibility}}">
                                 <StackPanel>
-                                    <DockPanel LastChildFill="True"
+                                    <controls:ResponsiveDockPanel LastChildFill="True"
                                                Margin="0,0,0,14">
                                         <Border DockPanel.Dock="Right"
                                                 Background="{DynamicResource StudioSurface1Brush}"
@@ -2982,7 +3042,7 @@
                                                        Foreground="{StaticResource TextMutedBrush}"
                                                        Margin="0,4,0,0" />
                                         </StackPanel>
-                                    </DockPanel>
+                                    </controls:ResponsiveDockPanel>
 
                                     <StackPanel HorizontalAlignment="Center"
                                                 MaxWidth="560"
@@ -3027,12 +3087,17 @@
                                                     <Button Grid.Column="0"
                                                             Style="{StaticResource RecentStreamButton}"
                                                             Command="{Binding OpenCommand}">
-                                                    <Grid Margin="14,10">
-                                                        <Grid.ColumnDefinitions>
+                                                    <controls:ResponsiveGrid x:Name="RecentStreamLayout" Margin="14,10" CompactWidth="560">
+                                                        <controls:ResponsiveGrid.ColumnDefinitions>
                                                             <ColumnDefinition Width="Auto" />
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
+                                                        </controls:ResponsiveGrid.ColumnDefinitions>
+                                                        <controls:ResponsiveGrid.RowDefinitions>
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="Auto" />
+                                                        </controls:ResponsiveGrid.RowDefinitions>
                                                         <Border Grid.Column="0"
                                                                 Width="116"
                                                                 Height="66"
@@ -3043,6 +3108,15 @@
                                                                 ClipToBounds="True"
                                                                 HorizontalAlignment="Left"
                                                                 VerticalAlignment="Center">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsCompact, ElementName=RecentStreamLayout}" Value="True">
+                                                                            <Setter Property="Grid.ColumnSpan" Value="3" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
                                                             <Grid>
                                                                 <TextBlock Text="&#xE7F4;"
                                                                            FontFamily="Segoe MDL2 Assets"
@@ -3066,9 +3140,20 @@
                                                                 </Border>
                                                             </Grid>
                                                         </Border>
-                                                        <StackPanel Grid.Column="1"
-                                                                    Margin="14,0"
+                                                        <StackPanel Margin="14,0"
                                                                     VerticalAlignment="Center">
+                                                            <StackPanel.Style>
+                                                                <Style TargetType="StackPanel">
+                                                                    <Setter Property="Grid.Column" Value="1" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsCompact, ElementName=RecentStreamLayout}" Value="True">
+                                                                            <Setter Property="Grid.Row" Value="1" />
+                                                                            <Setter Property="Grid.Column" Value="0" />
+                                                                            <Setter Property="Grid.ColumnSpan" Value="3" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </StackPanel.Style>
                                                             <TextBlock Text="{Binding DisplayName}"
                                                                        FontSize="15"
                                                                        FontWeight="SemiBold"
@@ -3079,9 +3164,20 @@
                                                                        TextTrimming="CharacterEllipsis"
                                                                        Margin="0,3,0,0" />
                                                         </StackPanel>
-                                                        <DockPanel Grid.Column="2"
-                                                                   LastChildFill="False"
+                                                        <DockPanel LastChildFill="False"
                                                                    VerticalAlignment="Center">
+                                                            <DockPanel.Style>
+                                                                <Style TargetType="DockPanel">
+                                                                    <Setter Property="Grid.Column" Value="2" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsCompact, ElementName=RecentStreamLayout}" Value="True">
+                                                                            <Setter Property="Grid.Row" Value="2" />
+                                                                            <Setter Property="Grid.Column" Value="0" />
+                                                                            <Setter Property="Grid.ColumnSpan" Value="3" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </DockPanel.Style>
                                                             <TextBlock Text="&#xE768;"
                                                                        DockPanel.Dock="Right"
                                                                        FontFamily="Segoe MDL2 Assets"
@@ -3154,7 +3250,7 @@
                                                                            Margin="0,5,0,0" />
                                                             </StackPanel>
                                                         </DockPanel>
-                                                    </Grid>
+                                                    </controls:ResponsiveGrid>
                                                     </Button>
                                                     <Button Grid.Column="2"
                                                             Style="{StaticResource RecentStreamDeleteButton}"
@@ -3170,6 +3266,7 @@
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
+                </ScrollViewer>
 
                 <Grid Visibility="{Binding IsSelectedTabDetached, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -3185,98 +3282,33 @@
                 </Grid>
 
             </Grid>
-                <Border Grid.Row="1"
-                        Background="{DynamicResource StudioBaseBrush}"
-                        BorderBrush="{StaticResource LineBrush}"
-                        BorderThickness="0,1,0,0"
-                        Padding="12,8"
-                        Visibility="{Binding IsReplaySeekBarVisible, Converter={StaticResource BoolToVisibility}}">
-                    <Grid ToolTip="{Binding SelectedTab.ReplaySeekToolTip}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="64" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="78" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0"
-                                   Text="{Binding SelectedTab.ReplayElapsedText}"
-                                   Foreground="{DynamicResource StudioTextBrush}"
-                                   FontSize="12"
-                                   FontWeight="SemiBold"
-                                   VerticalAlignment="Center"
-                                   TextAlignment="Right"
-                                   Margin="0,0,12,0" />
-                        <Button Grid.Column="1"
-                                Content="-30s"
-                                Style="{StaticResource ReplayStepButton}"
-                                Command="{Binding SelectedTab.RewindReplay30SecondsCommand}"
-                                ToolTip="Rewind 30 seconds" />
-                        <Slider x:Name="ReplaySeekSlider"
-                                Grid.Column="2"
-                                Style="{StaticResource ReplaySeekSliderStyle}"
-                                Minimum="0"
-                                Maximum="{Binding SelectedTab.ReplaySeekMaximum}"
-                                Value="{Binding SelectedTab.ReplaySeekSliderValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                IsEnabled="{Binding SelectedTab.CanSeekReplay}"
-                                IsMoveToPointEnabled="True"
-                                VerticalAlignment="Center"
-                                Margin="8,0"
-                                PreviewMouseLeftButtonUp="ReplaySeekSlider_Commit"
-                                KeyUp="ReplaySeekSlider_KeyUp"
-                                ToolTip="{Binding SelectedTab.ReplaySeekToolTip}" />
-                        <Button Grid.Column="3"
-                                Content="+30s"
-                                Style="{StaticResource ReplayStepButton}"
-                                Command="{Binding SelectedTab.FastForwardReplay30SecondsCommand}"
-                                ToolTip="Fast forward 30 seconds" />
-                         <TextBlock Grid.Column="4"
-                                    Text="{Binding SelectedTab.ReplayDurationText}"
-                                    Visibility="{Binding SelectedTab.IsReplayMode, Converter={StaticResource BoolToVisibility}}"
-                                    Foreground="{StaticResource TextMutedBrush}"
-                                    FontSize="12"
-                                    VerticalAlignment="Center"
-                                   TextAlignment="Left"
-                                   Margin="12,0,0,0" />
-                        <StackPanel Grid.Column="5"
-                                     Orientation="Horizontal"
-                                     VerticalAlignment="Center"
-                                     Margin="12,0,0,0">
-                            <Button Content="Live"
-                                    Style="{StaticResource ReplayLiveButton}"
-                                    Command="{Binding SelectedTab.ReturnToLiveCommand}"
-                                    ToolTip="Return to live playback" />
-                        </StackPanel>
-                    </Grid>
-                </Border>
 
             </Grid>
         </DockPanel>
 
         <Border x:Name="TopControlsBar"
+                shell:WindowChrome.IsHitTestVisibleInChrome="True"
                 Grid.Row="1"
                 Background="{StaticResource PanelBrush}"
                 BorderBrush="{StaticResource LineBrush}"
                 BorderThickness="0,0,0,1">
-            <Grid>
+            <controls:ResponsiveGrid x:Name="TopControlLayout" CompactWidth="700">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Button Grid.Column="0"
-                        Content="&#xE80F;"
-                        Style="{StaticResource TopHomeButton}"
-                        Command="{Binding SelectHomeCommand}"
-                        ToolTip="Home"
-                         VerticalAlignment="Center"
-                         Margin="10,0,4,0" />
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,4,0">
+                    <Button Content="&#xE80F;"
+                            Style="{StaticResource TopHomeButton}"
+                            Command="{Binding SelectHomeCommand}"
+                            ToolTip="Home"
+                            AutomationProperties.Name="Home" />
+                </StackPanel>
 
-                <StackPanel x:Name="HomeNavigation"
+                <ToolBar x:Name="HomeNavigation" Style="{StaticResource ResponsiveToolBar}"
                             Grid.Column="1"
-                            Orientation="Horizontal"
                             VerticalAlignment="Center"
                             Margin="10,0"
                             Visibility="{Binding IsHomeSelected, Converter={StaticResource BoolToVisibility}}">
@@ -3292,7 +3324,46 @@
                     <Button Style="{StaticResource RecentHomeSegmentButton}"
                             Content="Recent"
                             Command="{Binding ShowRecentHomePageCommand}" />
-                </StackPanel>
+                </ToolBar>
+
+                <DockPanel Grid.Column="1" Margin="8,0" VerticalAlignment="Center">
+                    <DockPanel.Style>
+                        <Style TargetType="DockPanel">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsCompact, ElementName=TopControlLayout}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DockPanel.Style>
+                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}"
+                            Content="&#xE711;" Width="20" MinHeight="20" Padding="0"
+                            Tag="{Binding SelectedTabStripItem}" Click="CloseTabButton_Click"
+                            ToolTip="Close selected tab" AutomationProperties.Name="Close selected tab" />
+                    <ComboBox x:Name="CompactTabSelector" MinWidth="0" MinHeight="0" Height="34" Padding="4,0"
+                              ItemsSource="{Binding TabStripItems}" SelectedItem="{Binding SelectedTabStripItem}"
+                              FontSize="11"
+                              ToolTip="{Binding SelectedTabStripItem.ToolTip}" AutomationProperties.Name="Stream tabs">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel LastChildFill="True">
+                                    <TextBlock x:Name="TabNeverMuteIcon" DockPanel.Dock="Right"
+                                               Style="{StaticResource NeverMuteTabIndicator}" />
+                                    <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+                                </DockPanel>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ComboBoxItem}}}" Value="True">
+                                        <Setter TargetName="TabNeverMuteIcon" Property="Foreground" Value="#FFFFFF" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </DockPanel>
 
                 <ListBox x:Name="TabListBox"
                          Grid.Column="1"
@@ -3309,6 +3380,9 @@
                             <Setter Property="Visibility" Value="Visible" />
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsCompact, ElementName=TopControlLayout}" Value="True">
                                     <Setter Property="Visibility" Value="Collapsed" />
                                 </DataTrigger>
                             </Style.Triggers>
@@ -3395,12 +3469,15 @@
                                         </Grid>
                                     </controls:RoundedClipBorder>
                                     <StackPanel Width="122">
-                                        <TextBlock x:Name="TabTitleTextBox"
-                                                   Text="{Binding Title}"
-                                                   FontSize="11"
-                                                   FontWeight="SemiBold"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   Width="122" />
+                                        <DockPanel LastChildFill="True">
+                                            <TextBlock x:Name="TabNeverMuteIcon" DockPanel.Dock="Right"
+                                                       Style="{StaticResource NeverMuteTabIndicator}" />
+                                            <TextBlock x:Name="TabTitleTextBox"
+                                                       Text="{Binding Title}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
                                         <DockPanel Margin="0,2,0,0" LastChildFill="True">
                                             <Border x:Name="TabViewerCountBox"
                                                     DockPanel.Dock="Right"
@@ -3460,6 +3537,7 @@
                                     <Setter TargetName="TabChrome" Property="Background" Value="{StaticResource SelectedTabBrush}" />
                                     <Setter TargetName="TabChrome" Property="BorderBrush" Value="{StaticResource SelectedTabBorderBrush}" />
                                     <Setter TargetName="TabTitleTextBox" Property="Foreground" Value="#FFFFFF" />
+                                    <Setter TargetName="TabNeverMuteIcon" Property="Foreground" Value="#FFFFFF" />
                                     <Setter TargetName="TabStatusTextBlock" Property="Foreground" Value="{StaticResource SelectedTabMutedTextBrush}" />
                                     <Setter TargetName="TabViewerCountBox" Property="Background" Value="#0D3B23" />
                                     <Setter TargetName="TabViewerCountBox" Property="BorderBrush" Value="{StaticResource SelectedTabBorderBrush}" />
@@ -3471,28 +3549,18 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,11,0">
-                    <StackPanel Orientation="Horizontal">
-                        <StackPanel.Style>
-                            <Style TargetType="{x:Type StackPanel}">
-                                <Setter Property="Visibility" Value="Visible" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                    </StackPanel.Style>
+                <ToolBar x:Name="PlaybackActionsToolBar" Grid.Column="2"
+                         Style="{StaticResource ResponsiveToolBar}" Margin="4,0,6,0">
                         <Button x:Name="TopPlayPauseButton"
-                                Style="{StaticResource PauseResumeIconButton}"
+                                Style="{StaticResource PlaybackPauseResumeIconButton}"
                                 Command="{Binding PauseSelectedCommand}"
                                 ToolTip="Pause or resume playback"
                                 AutomationProperties.Name="Pause or resume playback" />
-                        <Button Style="{StaticResource TopControlIconButton}"
+                        <Button Style="{StaticResource PlaybackTopControlIconButton}"
                                 Content="&#xE72C;"
                                 Command="{Binding ReloadSelectedCommand}"
                                 ToolTip="Reload stream" />
-                        <Button Style="{StaticResource TopControlIconButton}"
+                        <Button Style="{StaticResource PlaybackTopControlIconButton}"
                                 Content="Clip"
                                 FontFamily="Segoe UI"
                                 FontSize="11"
@@ -3500,45 +3568,65 @@
                                 Command="{Binding CreateClipCommand}"
                                 ToolTip="{Binding ClipButtonToolTip}"
                                 AutomationProperties.Name="Create Twitch clip" />
-                        <Button x:Name="TopReplayToggleButton"
-                                Style="{StaticResource ReplaySeekBarToggleIconButton}"
-                                Content="&#xE121;"
-                                Command="{Binding ToggleReplaySeekBarCommand}"
-                                ToolTip="{Binding ReplaySeekBarToggleToolTip}"
-                                AutomationProperties.Name="Toggle replay controls" />
-                        <Button Style="{StaticResource ChatToggleIconButton}"
+                        <Button Style="{StaticResource PlaybackChatToggleIconButton}"
                                 Content="&#xE8F2;"
                                 Command="{Binding ToggleChatCommand}"
                                 ToolTip="Show or hide chat" />
-                        <Button Style="{StaticResource MultiStreamToggleIconButton}"
-                                Content="&#xE8A9;"
+                        <Button x:Name="TopMultiStreamButton"
+                                Style="{StaticResource PlaybackMultiStreamToggleIconButton}"
                                 Command="{Binding ToggleMultiStreamCommand}"
-                                ToolTip="{Binding MultiStreamToggleToolTip}" />
+                                ToolTip="{Binding MultiStreamToggleToolTip}"
+                                AutomationProperties.Name="Toggle multi-stream grid">
+                            <Grid Width="18" Height="18" IsHitTestVisible="False">
+                                <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.5">
+                                    <Path.Data>
+                                        <RectangleGeometry Rect="1,1,6,6" RadiusX="1.5" RadiusY="1.5" />
+                                    </Path.Data>
+                                </Path>
+                                <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.5">
+                                    <Path.Data>
+                                        <GeometryGroup>
+                                            <RectangleGeometry Rect="11,1,6,6" RadiusX="1.5" RadiusY="1.5" />
+                                            <RectangleGeometry Rect="1,11,6,6" RadiusX="1.5" RadiusY="1.5" />
+                                            <RectangleGeometry Rect="11,11,6,6" RadiusX="1.5" RadiusY="1.5" />
+                                        </GeometryGroup>
+                                    </Path.Data>
+                                </Path>
+                            </Grid>
+                        </Button>
                         <Button x:Name="TopFullscreenButton"
-                                Style="{StaticResource TopControlIconButton}"
+                                Style="{StaticResource PlaybackTopControlIconButton}"
                                 Content="&#xE740;"
                                 Click="FullscreenButton_Click"
                                 ToolTip="Fullscreen stream"
                                 AutomationProperties.Name="Fullscreen stream" />
                         <Button x:Name="TopTheatreButton"
-                                Style="{StaticResource TopControlIconButton}"
+                                Style="{StaticResource PlaybackTopControlIconButton}"
                                 Content="&#xE7F4;"
                                 Click="TheatreButton_Click"
                                 ToolTip="Theatre mode"
                                 AutomationProperties.Name="Theatre mode" />
-                    </StackPanel>
                     <Button Style="{StaticResource SettingsToggleIconButton}"
                             Content="&#xE713;"
                             Command="{Binding ToggleSettingsCommand}"
                             ToolTip="Open settings" />
                     <Button x:Name="TopMuteButton"
                             Content="&#xE74F;"
-                            ToolTip="Mute or unmute"
                             Click="MuteButton_Click"
+                            ToolTipService.ShowOnDisabled="True"
                             AutomationProperties.Name="Mute or unmute">
                         <Button.Style>
                             <Style TargetType="{x:Type Button}" BasedOn="{StaticResource MuteToggleIconButton}">
+                                <Setter Property="IsEnabled" Value="{Binding HasSelectedTab}" />
+                                <Setter Property="ToolTip" Value="Mute or unmute" />
                                 <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SelectedTab.NeverMute}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False" />
+                                        <Setter Property="ToolTip" Value="Turn off Never mute for this tab to allow muting." />
+                                    </DataTrigger>
                                     <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
                                         <Setter Property="Visibility" Value="Collapsed" />
                                     </DataTrigger>
@@ -3546,8 +3634,15 @@
                             </Style>
                         </Button.Style>
                     </Button>
-                </StackPanel>
-            </Grid>
+                    <ToggleButton x:Name="TopNeverMuteButton"
+                                  Style="{StaticResource NeverMuteToggleButton}"
+                                  Content="Never mute"
+                                  IsChecked="{Binding SelectedTab.NeverMute, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  IsEnabled="{Binding HasSelectedTab}"
+                                  AutomationProperties.Name="Never mute tab"
+                                  AutomationProperties.HelpText="When enabled, this tab stays unmuted. Turn it off to allow muting." />
+                </ToolBar>
+            </controls:ResponsiveGrid>
         </Border>
 
         <Border x:Name="SettingsPanel"
@@ -3555,17 +3650,66 @@
                 Grid.Row="2"
                 Background="{DynamicResource StudioBaseBrush}"
                 Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolToVisibility}}">
-            <Grid>
+            <Border.Resources>
+                <DataTemplate x:Key="SettingsWrappedToggleContent">
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                </DataTemplate>
+            </Border.Resources>
+            <!-- Compact settings scroll as one page so the header and footer cannot
+                 consume the space needed to reach the fields in a short window. -->
+            <controls:ResponsiveGrid x:Name="SettingsLayout" CompactWidth="760" CompactHeight="540">
+            <ScrollViewer x:Name="SettingsViewport"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto">
+            <Grid Width="{Binding ViewportWidth, ElementName=SettingsViewport}" MinWidth="300">
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Setter Property="Height" Value="{Binding ViewportHeight, ElementName=SettingsViewport}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                <Setter Property="Height" Value="Auto" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition>
+                        <ColumnDefinition.Style>
+                            <Style TargetType="ColumnDefinition">
+                                <Setter Property="Width" Value="220" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                        <Setter Property="Width" Value="0" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ColumnDefinition.Style>
+                    </ColumnDefinition>
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-                <Border Grid.Column="0"
+                <Border Grid.Column="0" Grid.RowSpan="2"
                         Background="{DynamicResource StudioSurface0Brush}"
                         BorderBrush="{DynamicResource StudioBorderBrush}"
                         BorderThickness="0,0,1,0">
-                    <Grid Margin="14,22,14,18">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <ScrollViewer x:Name="SettingsSidebarScrollViewer"
+                                  Padding="14,22,14,18"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                    <Grid MinHeight="{Binding ViewportHeight, ElementName=SettingsSidebarScrollViewer}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -3651,31 +3795,90 @@
                             </StackPanel>
                         </Button>
                     </Grid>
+                    </ScrollViewer>
                 </Border>
 
-                <Grid Grid.Column="1">
+                <Grid Grid.Column="1" Grid.Row="0" Margin="12,10">
+                    <Grid.Style>
+                        <Style TargetType="Grid">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Grid.Style>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ComboBox x:Name="CompactSettingsCategorySelector"
+                              SelectedItem="{Binding SelectedSettingsCategory, Mode=TwoWay}"
+                              AutomationProperties.Name="Settings category">
+                        <x:Static Member="vm:SettingsCategory.General" />
+                        <x:Static Member="vm:SettingsCategory.Playback" />
+                        <x:Static Member="vm:SettingsCategory.Accounts" />
+                        <x:Static Member="vm:SettingsCategory.Chat" />
+                        <x:Static Member="vm:SettingsCategory.Hotkeys" />
+                        <x:Static Member="vm:SettingsCategory.Advanced" />
+                    </ComboBox>
+                    <Button Grid.Column="1"
+                            Content="&#xE8BB;" FontFamily="Segoe MDL2 Assets"
+                            Margin="8,0,0,0"
+                            Command="{Binding ToggleSettingsCommand}"
+                            ToolTip="Back to studio"
+                            AutomationProperties.Name="Back to studio" />
+                </Grid>
+
+                <Grid Grid.Column="1" Grid.Row="1">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="76" />
+                        <RowDefinition>
+                            <RowDefinition.Style>
+                                <Style TargetType="RowDefinition">
+                                    <Setter Property="Height" Value="76" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                            <Setter Property="Height" Value="Auto" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </RowDefinition.Style>
+                        </RowDefinition>
                     </Grid.RowDefinitions>
 
                     <ScrollViewer x:Name="SettingsContentScrollViewer"
                                   Grid.Row="0"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled"
+                                  HorizontalScrollBarVisibility="Auto"
                                   HorizontalContentAlignment="Left">
-                        <Grid Width="{Binding ElementName=SettingsContentScrollViewer, Path=ViewportWidth}">
+                        <ScrollViewer.Style>
+                            <Style TargetType="ScrollViewer">
+                                <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                        <Setter Property="VerticalScrollBarVisibility" Value="Disabled" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ScrollViewer.Style>
+                        <Grid Width="{Binding ElementName=SettingsContentScrollViewer, Path=ViewportWidth}" MinWidth="300">
                             <Grid MaxWidth="1040"
-                                  Margin="28,24,28,32"
                                   HorizontalAlignment="Stretch">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Setter Property="Margin" Value="28,24,28,32" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                                <Setter Property="Margin" Value="12,16,12,20" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
                             <StackPanel x:Name="GeneralSettingsPage"
                                         Visibility="{Binding IsGeneralSettingsSelected, Converter={StaticResource BoolToVisibility}}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="18" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <controls:ResponsiveColumnsPanel>
+
 
                                     <Border Grid.Column="0"
                                             Style="{StaticResource SettingsSectionCard}"
@@ -3696,10 +3899,12 @@
                                                       SelectedValue="{Binding Settings.Theme}"
                                                       Margin="0,0,0,16"
                                                       ToolTip="Choose a color theme for the application." />
-                                            <CheckBox Content="Keep home card right-side gap"
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.KeepHomeCardRightGap}"
-                                                      ToolTip="Leave unused space at the right edge of Live, VOD, and Browse card rows." />
+                                                      ToolTip="Leave unused space at the right edge of Live, VOD, and Browse card rows."
+                                                      Content="Keep home card right-side gap"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                         </StackPanel>
                                     </Border>
 
@@ -3709,11 +3914,13 @@
                                         <StackPanel>
                                             <TextBlock Text="Followed channels" Style="{StaticResource SettingsCardHeaderStyle}" />
                                             <CheckBox x:Name="WindowsToastNotificationsCheckBox"
-                                                      Content="Windows toast notifications"
+
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.FollowedChannels.NotifyWhenLive}"
                                                       Margin="0,0,0,16"
-                                                      ToolTip="Show a Windows toast when a followed channel goes live. Checks every minute while the app is running, including when it is minimized to the tray." />
+                                                      ToolTip="Show a Windows toast when a followed channel goes live. Checks every minute while the app is running, including when it is minimized to the tray."
+                                                      Content="Windows toast notifications"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                             <TextBlock Text="Kick channel slugs" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding KickFollowedChannelsText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="True"
@@ -3723,17 +3930,13 @@
                                                      ToolTip="One Kick channel slug or URL per line. Twitch follows use Twitch authorization." />
                                         </StackPanel>
                                     </Border>
-                                </Grid>
+                                </controls:ResponsiveColumnsPanel>
                             </StackPanel>
 
                             <StackPanel x:Name="PlaybackSettingsPage"
                                         Visibility="{Binding IsPlaybackSettingsSelected, Converter={StaticResource BoolToVisibility}}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="18" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <controls:ResponsiveColumnsPanel>
+
                                     <Border Grid.Column="0"
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
@@ -3752,18 +3955,24 @@
                                                       SelectedValue="{Binding Settings.VideoRendererMode}"
                                                       Margin="0,0,0,16"
                                                       ToolTip="Automatic prefers Direct3D 11 for normal playback and uses GDI when native chat overlays need compatibility." />
-                                            <CheckBox Content="Low latency options"
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.LowLatency}"
-                                                      Margin="0,0,0,8" />
-                                            <CheckBox Content="Keep inactive tabs running"
+                                                      Margin="0,0,0,8"
+                                                      Content="Low latency options"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.KeepInactiveTabsRunning}"
                                                       Margin="0,0,0,8"
-                                                      ToolTip="When disabled, hidden live tabs close their player connection and reconnect at the live edge when shown again, while keeping Streamlink and chat ready. Replay/VOD and behind-live tabs preserve their position." />
-                                            <CheckBox Content="Multi-stream grid"
+                                                      ToolTip="When disabled, hidden live tabs close their player connection and reconnect at the live edge when shown again, while keeping Streamlink and chat ready. Replay/VOD and behind-live tabs preserve their position."
+                                                      Content="Keep inactive tabs running"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
-                                                      IsChecked="{Binding IsMultiStreamEnabled}" />
+                                                      IsChecked="{Binding IsMultiStreamEnabled}"
+                                                      Content="Multi-stream grid"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                         </StackPanel>
                                     </Border>
                                     <Border Grid.Column="2"
@@ -3774,28 +3983,28 @@
                                             <TextBlock Text="Use platform playback to revisit moments without leaving the studio."
                                                        Style="{StaticResource SettingsPageDescriptionStyle}"
                                                        Margin="0,0,0,14" />
-                                            <CheckBox Content="Enable platform replay seekbar"
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.Replay.Enabled}"
                                                       Margin="0,0,0,8"
-                                                      ToolTip="Use platform VOD/replay playback when a current replay is available." />
-                                            <CheckBox Content="Try private Kick replay lookup"
+                                                      ToolTip="Use platform VOD/replay playback when a current replay is available."
+                                                      Content="Enable platform replay seekbar"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.Replay.AttemptPrivateKickReplayResolution}"
-                                                      ToolTip="Best-effort Kick website probing; private page data may change." />
+                                                      ToolTip="Best-effort Kick website probing; private page data may change."
+                                                      Content="Try private Kick replay lookup"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                         </StackPanel>
                                     </Border>
-                                </Grid>
+                                </controls:ResponsiveColumnsPanel>
                             </StackPanel>
 
                             <StackPanel x:Name="AccountsSettingsPage"
                                         Visibility="{Binding IsAccountsSettingsSelected, Converter={StaticResource BoolToVisibility}}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="18" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <controls:ResponsiveColumnsPanel>
+
                                     <Border Grid.Column="0"
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
@@ -3824,13 +4033,13 @@
                                             <TextBox Text="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" ToolTip="Redirect URL: http://localhost:39178" />
                                             <TextBlock Text="OAuth token" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding Settings.Chat.TwitchOAuthToken, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,16" ToolTip="The oauth: or Bearer prefix is optional." />
-                                            <StackPanel Orientation="Horizontal">
+                                            <WrapPanel Orientation="Horizontal">
                                                 <Button Content="Connect Twitch"
                                                         Style="{StaticResource StudioPrimaryButtonStyle}"
                                                         Command="{Binding AuthorizeTwitchCommand}"
                                                         MinWidth="124" />
                                                 <Button Content="Clear token" Command="{Binding ClearTwitchTokenCommand}" MinWidth="92" Margin="8,0,0,0" />
-                                            </StackPanel>
+                                            </WrapPanel>
                                         </StackPanel>
                                     </Border>
                                     <Border Grid.Column="2"
@@ -3863,29 +4072,27 @@
                                             <TextBox Text="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
                                             <TextBlock Text="Client secret" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding Settings.Chat.KickClientSecret, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,16" ToolTip="Saved in settings; treat it as account-sensitive." />
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                            <WrapPanel Orientation="Horizontal" Margin="0,0,0,14">
                                                 <Button Content="Connect Kick"
                                                         Style="{StaticResource StudioPrimaryButtonStyle}"
                                                         Command="{Binding AuthorizeKickCommand}"
                                                         MinWidth="116" />
                                                 <Button Content="Clear token" Command="{Binding ClearKickTokenCommand}" MinWidth="92" Margin="8,0,0,0" />
-                                            </StackPanel>
-                                            <CheckBox Content="Send Kick messages as bot"
+                                            </WrapPanel>
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
-                                                      IsChecked="{Binding Settings.Chat.KickSendAsBot}" />
+                                                      IsChecked="{Binding Settings.Chat.KickSendAsBot}"
+                                                      Content="Send Kick messages as bot"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                         </StackPanel>
                                     </Border>
-                                </Grid>
+                                </controls:ResponsiveColumnsPanel>
                             </StackPanel>
 
                             <StackPanel x:Name="ChatSettingsPage"
                                         Visibility="{Binding IsChatSettingsSelected, Converter={StaticResource BoolToVisibility}}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="18" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <controls:ResponsiveColumnsPanel>
+
                                     <Border Grid.Column="0"
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
@@ -3895,10 +4102,12 @@
                                             <ComboBox ItemsSource="{Binding ChatLayoutOptions}"
                                                       SelectedItem="{Binding Settings.Chat.Layout}"
                                                       Margin="0,0,0,12" />
-                                            <CheckBox Content="Connect to chat automatically"
+                                            <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.Chat.ConnectAutomatically}"
-                                                      Margin="0,0,0,16" />
+                                                      Margin="0,0,0,16"
+                                                      Content="Connect to chat automatically"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                             <DockPanel Margin="0,0,0,4">
                                                 <Border DockPanel.Dock="Right"
                                                         Background="{DynamicResource StudioSurface2Brush}"
@@ -3967,7 +4176,7 @@
                                                        Margin="0,12,0,0" />
                                         </StackPanel>
                                     </Border>
-                                </Grid>
+                                </controls:ResponsiveColumnsPanel>
                             </StackPanel>
 
                             <StackPanel x:Name="HotkeysSettingsPage"
@@ -3983,32 +4192,45 @@
                                                 VerticalAlignment="Center"
                                                 AutomationProperties.Name="Reset all hotkeys to defaults" />
                                         <StackPanel>
-                                            <TextBlock Text="Keyboard shortcuts"
+                                            <TextBlock Text="Shortcuts"
                                                        Style="{StaticResource SettingsCardHeaderStyle}"
+                                                       TextWrapping="Wrap"
                                                        Margin="0,0,0,8" />
-                                            <TextBlock Text="Click a binding, then press any non-modifier key or key combination. If a shortcut is already assigned, the two bindings swap. Typing and editing keys pause while a text field is active, and Windows-reserved combinations may be unavailable."
+                                            <TextBlock Text="Click a binding, then press a key combination, Mouse4, or Mouse5. If a shortcut is already assigned, the two bindings swap. Typing and editing keys pause while a text field is active, and Windows-reserved combinations may be unavailable."
                                                        Style="{StaticResource SettingsPageDescriptionStyle}" />
                                         </StackPanel>
                                     </DockPanel>
                                 </Border>
 
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="18" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <controls:ResponsiveColumnsPanel>
+
 
                                     <Border Grid.Column="0"
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
                                         <StackPanel>
-                                            <TextBlock Text="Tab navigation" Style="{StaticResource SettingsCardHeaderStyle}" />
-                                            <Grid Margin="0,0,0,18">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
+                                            <TextBlock Text="Navigation" Style="{StaticResource SettingsCardHeaderStyle}" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Back to previous page" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="Return to the previous page or stream, including from Settings."
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                               Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="GoBackHotkeyRecorder"
+                                                                               Grid.Column="1"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.GoBack, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultGoBack}"
+                                                                               Tag="GoBack"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Back to previous page hotkey" />
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1"
+                                                    Background="{DynamicResource StudioBorderBrush}"
+                                                    Margin="0,0,0,18" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+
                                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                                     <TextBlock Text="Previous tab" FontWeight="SemiBold" />
                                                     <TextBlock Text="Select the tab to the left."
@@ -4023,15 +4245,12 @@
                                                                                Tag="PreviousTab"
                                                                                GestureChanging="HotkeyRecorder_GestureChanging"
                                                                                ActionName="Previous tab hotkey" />
-                                            </Grid>
+                                            </controls:ResponsiveColumnsPanel>
                                             <Border Height="1"
                                                     Background="{DynamicResource StudioBorderBrush}"
                                                     Margin="0,0,0,18" />
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
+                                            <controls:ResponsiveColumnsPanel MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+
                                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                                     <TextBlock Text="Next tab" FontWeight="SemiBold" />
                                                     <TextBlock Text="Select the tab to the right."
@@ -4046,7 +4265,7 @@
                                                                                Tag="NextTab"
                                                                                GestureChanging="HotkeyRecorder_GestureChanging"
                                                                                ActionName="Next tab hotkey" />
-                                            </Grid>
+                                            </controls:ResponsiveColumnsPanel>
                                         </StackPanel>
                                     </Border>
 
@@ -4055,11 +4274,65 @@
                                             VerticalAlignment="Top">
                                         <StackPanel>
                                             <TextBlock Text="Workspace" Style="{StaticResource SettingsCardHeaderStyle}" />
-                                            <Grid Margin="0,0,0,18">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Toggle multi-stream grid" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="Switch between the grid and a single stream."
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                               Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="ToggleMultiStreamHotkeyRecorder"
+                                                                               Grid.Column="1"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.ToggleMultiStream, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultToggleMultiStream}"
+                                                                               Tag="ToggleMultiStream"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Toggle multi-stream grid hotkey" />
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1"
+                                                    Background="{DynamicResource StudioBorderBrush}"
+                                                    Margin="0,0,0,18" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Volume up" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="Raise the selected stream volume by 5%."
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                               Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="VolumeUpHotkeyRecorder"
+                                                                               Grid.Column="1"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.VolumeUp, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultVolumeUp}"
+                                                                               Tag="VolumeUp"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Volume up hotkey" />
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1"
+                                                    Background="{DynamicResource StudioBorderBrush}"
+                                                    Margin="0,0,0,18" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Volume down" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="Lower the selected stream volume by 5%."
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                               Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="VolumeDownHotkeyRecorder"
+                                                                               Grid.Column="1"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.VolumeDown, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultVolumeDown}"
+                                                                               Tag="VolumeDown"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Volume down hotkey" />
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1"
+                                                    Background="{DynamicResource StudioBorderBrush}"
+                                                    Margin="0,0,0,18" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+
                                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                                     <TextBlock Text="Toggle replay seek bar"
                                                                FontWeight="SemiBold"
@@ -4076,15 +4349,12 @@
                                                                                Tag="ToggleReplaySeekBar"
                                                                                GestureChanging="HotkeyRecorder_GestureChanging"
                                                                                ActionName="Toggle replay seek bar hotkey" />
-                                            </Grid>
+                                            </controls:ResponsiveColumnsPanel>
                                             <Border Height="1"
                                                     Background="{DynamicResource StudioBorderBrush}"
                                                     Margin="0,0,0,18" />
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
+                                            <controls:ResponsiveColumnsPanel MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+
                                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                                     <TextBlock Text="Exit fullscreen / stop auto-scroll"
                                                                FontWeight="SemiBold"
@@ -4101,20 +4371,16 @@
                                                                                Tag="DismissFullscreenOrAutoScroll"
                                                                                GestureChanging="HotkeyRecorder_GestureChanging"
                                                                                ActionName="Exit fullscreen or stop auto-scroll hotkey" />
-                                            </Grid>
+                                            </controls:ResponsiveColumnsPanel>
                                         </StackPanel>
                                     </Border>
-                                </Grid>
+                                </controls:ResponsiveColumnsPanel>
                             </StackPanel>
 
                             <StackPanel x:Name="AdvancedSettingsPage"
                                         Visibility="{Binding IsAdvancedSettingsSelected, Converter={StaticResource BoolToVisibility}}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="18" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <controls:ResponsiveColumnsPanel>
+
                                     <Border Grid.Column="0"
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
@@ -4149,6 +4415,12 @@
                                         <Border Style="{StaticResource SettingsSectionCard}">
                                             <StackPanel>
                                                 <TextBlock Text="Updates" Style="{StaticResource SettingsCardHeaderStyle}" />
+                                                <CheckBox
+                                                          IsChecked="{Binding Settings.Updates.AutomaticChecksEnabled}"
+                                                          Style="{StaticResource SettingsToggleStyle}"
+                                                          Margin="0,0,0,12"
+                                                          Content="Check automatically after startup"
+                                                          ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                                 <Button Style="{StaticResource StudioPrimaryButtonStyle}"
                                                         Command="{Binding UpdateAppCommand}"
                                                         MinWidth="156"
@@ -4161,25 +4433,10 @@
                                                                    FontSize="13"
                                                                    Margin="0,0,9,0"
                                                                    VerticalAlignment="Center" />
-                                                        <TextBlock Text="Update from GitHub" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding AppUpdateActionText}" VerticalAlignment="Center" />
                                                     </StackPanel>
                                                 </Button>
                                                 <TextBlock Text="{Binding AppUpdateStatus}"
-                                                           Style="{StaticResource SettingsPageDescriptionStyle}" />
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Style="{StaticResource SettingsSectionCard}">
-                                            <StackPanel>
-                                                <TextBlock Text="Kick webhooks" Style="{StaticResource SettingsCardHeaderStyle}" />
-                                                <CheckBox Content="Listen for official Kick chat webhooks"
-                                                          Style="{StaticResource SettingsToggleStyle}"
-                                                          IsChecked="{Binding Settings.Chat.KickWebhookListenerEnabled}"
-                                                          Margin="0,0,0,14" />
-                                                <TextBlock Text="Local listener port" Style="{StaticResource StudioFieldLabelStyle}" />
-                                                <TextBox Text="{Binding Settings.Chat.KickWebhookListenerPort, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,14" />
-                                                <TextBlock Text="Local forwarding target" Style="{StaticResource StudioFieldLabelStyle}" />
-                                                <TextBox Text="{Binding KickWebhookLocalUrl, Mode=OneWay}" IsReadOnly="True" Margin="0,0,0,8" />
-                                                <TextBlock Text="{Binding KickWebhookListenerStatus}"
                                                            Style="{StaticResource SettingsPageDescriptionStyle}" />
                                             </StackPanel>
                                         </Border>
@@ -4194,7 +4451,7 @@
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>
-                                </Grid>
+                                </controls:ResponsiveColumnsPanel>
                             </StackPanel>
                             </Grid>
                         </Grid>
@@ -4205,12 +4462,22 @@
                             Background="{DynamicResource StudioSurface0Brush}"
                             BorderBrush="{DynamicResource StudioBorderBrush}"
                             BorderThickness="0,1,0,0">
-                        <DockPanel Margin="28,0">
+                        <DockPanel>
+                            <DockPanel.Style>
+                                <Style TargetType="DockPanel">
+                                    <Setter Property="Margin" Value="28,0" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                            <Setter Property="Margin" Value="12,10" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DockPanel.Style>
                             <Button x:Name="SettingsSaveButton"
                                     DockPanel.Dock="Right"
                                     Style="{StaticResource StudioPrimaryButtonStyle}"
                                     Command="{Binding SaveSettingsCommand}"
-                                    MinWidth="148"
+                                    MinWidth="0"
                                     VerticalAlignment="Center"
                                     AutomationProperties.Name="Save settings">
                                 <StackPanel Orientation="Horizontal">
@@ -4223,6 +4490,15 @@
                                 </StackPanel>
                             </Button>
                             <Grid VerticalAlignment="Center">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="10" />
                                     <ColumnDefinition Width="*" />
@@ -4246,6 +4522,8 @@
                     </Border>
                 </Grid>
             </Grid>
+            </ScrollViewer>
+            </controls:ResponsiveGrid>
         </Border>
 
     </Grid>

@@ -90,7 +90,7 @@
                                            FontWeight="SemiBold"
                                            Margin="0,0,0,12" />
                                 <TextBlock Text="1. Create or choose a Twitch/Kick developer app." Margin="0,0,0,8" />
-                                <TextBlock Text="2. Enter the app identifier here and use the platform's browser authorization." Margin="0,0,0,8" />
+                                <TextBlock Text="2. Enter the required app credentials here and use the platform's browser authorization." Margin="0,0,0,8" />
                                 <TextBlock Text="3. The app validates and saves the resulting account connection locally." />
                             </StackPanel>
                         </Border>
@@ -215,14 +215,7 @@
                                    Margin="0,0,0,12" />
                         <TextBlock Text="{Binding KickAccountStatus}"
                                    TextWrapping="Wrap"
-                                   Foreground="{DynamicResource StudioSuccessTextBrush}"
-                                   Margin="0,0,0,12" />
-                        <Button Content="Connect Kick"
-                                Click="ConnectKickButtonClick"
-                                IsEnabled="{Binding CanConnectKick}"
-                                Style="{StaticResource StudioPrimaryButtonStyle}"
-                                HorizontalAlignment="Left"
-                                MinWidth="140" />
+                                   Foreground="{DynamicResource StudioSuccessTextBrush}" />
                     </StackPanel>
 
                     <StackPanel Visibility="{Binding IsCompleteVisible, Converter={StaticResource BoolToVisibility}}">
@@ -278,14 +271,14 @@
                         IsEnabled="{Binding IsNotBusy}"
                         Style="{StaticResource StudioPrimaryButtonStyle}"
                         MinWidth="96" />
-                <Button Content="Skip Twitch"
-                        Click="NextButtonClick"
+                <Button Content="{Binding TwitchFooterActionText}"
+                        Click="TwitchFooterActionButtonClick"
                         Visibility="{Binding IsTwitchVisible, Converter={StaticResource BoolToVisibility}}"
                         IsEnabled="{Binding IsNotBusy}"
-                        MinWidth="104"
+                        MinWidth="124"
                         Margin="0,0,8,0" />
-                <Button Content="Skip Kick"
-                        Click="NextButtonClick"
+                <Button Content="{Binding KickFooterActionText}"
+                        Click="KickFooterActionButtonClick"
                         Visibility="{Binding IsKickVisible, Converter={StaticResource BoolToVisibility}}"
                         IsEnabled="{Binding IsNotBusy}"
                         MinWidth="96"

@@ -2,6 +2,8 @@ internal static class RegressionTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
+        .. ChatUiResponsivenessTestCatalog.All,
+        .. TwitchVodEmoteIdentityTestCatalog.All,
         ("Kick identity snapshots remain serializable during concurrent updates", KickIdentitySnapshotsAreAtomicAsync),
         ("Live chat supervisor retries forever resets after stability and drains", LiveChatSupervisorRetriesAndDrainsAsync),
         ("Async command releases its gate when predicates and events throw", AsyncCommandReleasesGateOnCallbackFailureAsync),
@@ -12,19 +14,14 @@ internal static class RegressionTestCatalog
         ("Stale native overlay resize callback cannot replace a newer session", NativeOverlayResizeRejectsStaleCallbackAsync),
         ("Native overlay probe single-flights transient failures and keys definitive results by identity", NativeOverlayProbeCachingAsync),
         ("Stream input channel try parser rejects invalid input without throwing", StreamInputTryFromChannel),
-        ("Kick subscription disposal cancels drains and closes admission", KickSubscriptionDisposalDrainsAsync),
-        ("Kick replay cache enforces age and byte retention while preserving current day", KickReplayCacheRetention),
-        ("TwitchDownloader cache scans beyond 5000 and backfills a later seek", TwitchCacheScansAndBackfillsAsync),
         ("VLC audio requests publish atomic immutable snapshots", VlcAudioRequestsPublishAtomicSnapshots),
         ("Hotkey gestures accept arbitrary keys and require exact modifiers", HotkeyGesturesAcceptArbitraryKeys),
         ("Hotkey policy falls back swaps duplicates and protects text input", HotkeyPolicyFallsBackSwapsAndSuppresses),
         ("Hotkey settings expose stable defaults and reset every binding", HotkeySettingsDefaultsAndReset),
         ("Hotkey recorder captures without native input and preserves two-way binding", HotkeyRecorderCapturesAndUpdatesBindingAsync),
         ("Configured hotkeys route through main window preview input", ConfiguredHotkeyRoutesThroughMainWindowAsync),
-        ("App updater starts bundled installer script when available", AppUpdaterStartsBundledInstallerScriptAsync),
-        ("App updater keeps app open when installed version matches GitHub latest", AppUpdaterKeepsAppOpenWhenCurrentVersionMatchesLatestAsync),
-        ("App updater downloads and launches checksum-verified MSI", AppUpdaterDownloadsAndLaunchesVerifiedMsiAsync),
-        ("App updater rejects MSI checksum mismatch before launch", AppUpdaterRejectsMsiChecksumMismatchAsync),
+        ("Setup wizard footer actions follow entered account credentials", SetupWizardFooterActionsFollowAccountCredentialsAsync),
+        ("Setup wizard Kick step requires client secret before footer connects", SetupWizardKickStepRequiresClientSecretAsync),
         ("Update command reports status and requests shutdown after launch", UpdateCommandReportsStatusAndRequestsShutdownAsync),
         ("Update command keeps app open when updater reports latest version", UpdateCommandKeepsAppOpenWhenUpdaterReportsLatestAsync),
         ("Installer OS gates allow 64-bit Windows 10 and 11 without build-specific blocks", InstallerOsGatesAllow64BitWindows10And11)
@@ -273,9 +270,9 @@ internal static class RegressionTestCatalog
 
             InvokeHotkeyRecorderMethod(recorder, "OnClick");
             Assert.True(recorder.IsCapturing);
-            Assert.Contains("Press a key combination", recorder.Content?.ToString() ?? "");
+            Assert.Contains("Press a key or side button", recorder.Content?.ToString() ?? "");
             Assert.Contains(
-                "press a key combination",
+                "press a key or side button",
                 System.Windows.Automation.AutomationProperties.GetName(recorder));
 
             var source = new HeadlessPresentationSource { RootVisual = recorder };
@@ -394,245 +391,101 @@ internal static class RegressionTestCatalog
         });
     }
 
-    private static async Task AppUpdaterStartsBundledInstallerScriptAsync()
+    private static Task SetupWizardFooterActionsFollowAccountCredentialsAsync()
     {
-        var root = Path.Combine(Path.GetTempPath(), "svs-updater-script-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
+        return TestSta.RunOffscreenAsync(() =>
         {
-            var scriptPath = Path.Combine(root, "install.ps1");
-            await File.WriteAllTextAsync(scriptPath, "# test installer");
-            var requests = new List<Uri>();
-            var launched = new List<ProcessStartInfo>();
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-            {
-                requests.Add(request.RequestUri!);
-                return request.RequestUri!.AbsoluteUri switch
-                {
-                    "https://api.github.com/repos/owner/repo/releases/latest" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(
-                            CreateLatestReleaseJson(msiSize: 1, checksumSize: 1),
-                            Encoding.UTF8,
-                            "application/json")
-                    },
-                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                };
-            }));
-            using var updater = new GitHubReleaseAppUpdateService(
-                new MemoryLogger(),
-                httpClient,
-                "owner/repo",
-                root,
-                Path.Combine(root, "updates"),
-                startInfo =>
-                {
-                    launched.Add(startInfo);
-                    return true;
-                },
-                getCurrentInstalledVersion: () => "1.0.6");
+            var settings = new AppSettings();
+            var wizard = new SetupWizardWindow(settings, new FakeSettingsService(settings), new MemoryLogger());
+            var changed = new List<string>();
+            wizard.PropertyChanged += (_, e) => changed.Add(e.PropertyName ?? "");
 
-            var result = await updater.StartLatestReleaseUpdateAsync();
-
-            Assert.True(result.RequestApplicationShutdown);
-            Assert.Contains("installer script", result.Message);
-            Assert.Equal(1, requests.Count);
-            Assert.Equal(1, launched.Count);
-            var startInfo = launched[0];
-            Assert.Equal("powershell.exe", startInfo.FileName);
-            Assert.Equal(false, startInfo.UseShellExecute);
-            var arguments = startInfo.ArgumentList.ToArray();
-            AssertArgumentValue(arguments, "-File", scriptPath);
-            AssertArgumentValue(arguments, "-InstallDir", root);
-            AssertArgumentValue(arguments, "-GitHubRepository", "owner/repo");
-            AssertArgumentValue(arguments, "-AppSource", "GitHub");
-            Assert.True(arguments.Contains("-ForceStopApp"));
-            Assert.True(arguments.Contains("-Launch"));
-        }
-        finally
-        {
-            if (Directory.Exists(root))
+            try
             {
-                Directory.Delete(root, recursive: true);
+                Assert.Equal("Continue", wizard.TwitchFooterActionText);
+                Assert.Equal("Continue", wizard.KickFooterActionText);
+
+                settings.Chat.TwitchClientId = "twitch-client-id";
+                Assert.Equal("Connect Twitch", wizard.TwitchFooterActionText);
+                Assert.True(changed.Contains(nameof(SetupWizardWindow.TwitchFooterActionText), StringComparer.Ordinal));
+
+                changed.Clear();
+                settings.Chat.TwitchOAuthToken = "oauth:connected";
+                Assert.Equal("Continue", wizard.TwitchFooterActionText);
+                Assert.True(changed.Contains(nameof(SetupWizardWindow.TwitchFooterActionText), StringComparer.Ordinal));
+
+                settings.Chat.KickClientId = "kick-client-id";
+                Assert.Equal("Continue", wizard.KickFooterActionText);
+
+                changed.Clear();
+                settings.Chat.KickClientSecret = "kick-client-secret";
+                Assert.Equal("Connect Kick", wizard.KickFooterActionText);
+                Assert.True(changed.Contains(nameof(SetupWizardWindow.KickFooterActionText), StringComparer.Ordinal));
+
+                changed.Clear();
+                settings.Chat.KickOAuthToken = "kick-connected";
+                Assert.Equal("Continue", wizard.KickFooterActionText);
+                Assert.True(changed.Contains(nameof(SetupWizardWindow.KickFooterActionText), StringComparer.Ordinal));
             }
-        }
+            finally
+            {
+                wizard.Close();
+            }
+
+            return Task.CompletedTask;
+        });
     }
 
-    private static async Task AppUpdaterKeepsAppOpenWhenCurrentVersionMatchesLatestAsync()
+    private static Task SetupWizardKickStepRequiresClientSecretAsync()
     {
-        var root = Path.Combine(Path.GetTempPath(), "svs-updater-current-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
+        return TestSta.RunOffscreenAsync(() =>
         {
-            var requests = new List<Uri>();
-            var launched = false;
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-            {
-                requests.Add(request.RequestUri!);
-                return request.RequestUri!.AbsoluteUri switch
-                {
-                    "https://api.github.com/repos/owner/repo/releases/latest" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(
-                            CreateLatestReleaseJson(msiSize: 1, checksumSize: 1),
-                            Encoding.UTF8,
-                            "application/json")
-                    },
-                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                };
-            }));
-            using var updater = new GitHubReleaseAppUpdateService(
-                new MemoryLogger(),
-                httpClient,
-                "owner/repo",
-                root,
-                Path.Combine(root, "updates"),
-                _ =>
-                {
-                    launched = true;
-                    return true;
-                },
-                getCurrentInstalledVersion: () => "1.0.7.0");
+            var settings = new AppSettings();
+            var wizard = new SetupWizardWindow(settings, new FakeSettingsService(settings), new MemoryLogger());
 
-            var result = await updater.StartLatestReleaseUpdateAsync();
-
-            Assert.Equal(false, result.RequestApplicationShutdown);
-            Assert.Contains("latest version", result.Message);
-            Assert.Contains("1.0.7", result.Message);
-            Assert.Equal(1, requests.Count);
-            Assert.Equal(false, launched);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
+            try
             {
-                Directory.Delete(root, recursive: true);
+                var contentRoot = wizard.Content as DependencyObject;
+                Assert.NotNull(contentRoot);
+                Assert.True(
+                    FindSetupWizardLogicalDescendants<TextBlock>(contentRoot!)
+                        .Any(text => string.Equals(text.Text, "Client Secret", StringComparison.Ordinal)),
+                    "The first-run Kick step must ask for a Client Secret.");
+
+                var secretBox = wizard.FindName("KickClientSecretBox") as PasswordBox;
+                Assert.NotNull(secretBox);
+                settings.Chat.KickClientId = "kick-client-id";
+                Assert.Equal("Continue", wizard.KickFooterActionText);
+                Assert.Equal(false, wizard.CanConnectKick);
+
+                secretBox!.Password = "kick-client-secret";
+
+                Assert.Equal("kick-client-secret", settings.Chat.KickClientSecret);
+                Assert.Equal("Connect Kick", wizard.KickFooterActionText);
+                Assert.True(wizard.CanConnectKick);
             }
-        }
+            finally
+            {
+                wizard.Close();
+            }
+
+            return Task.CompletedTask;
+        });
     }
 
-    private static async Task AppUpdaterDownloadsAndLaunchesVerifiedMsiAsync()
+    private static IEnumerable<T> FindSetupWizardLogicalDescendants<T>(DependencyObject root)
+        where T : DependencyObject
     {
-        var root = Path.Combine(Path.GetTempPath(), "svs-updater-msi-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
         {
-            var msiBytes = Encoding.UTF8.GetBytes("verified msi bytes");
-            var checksumText = $"{GetSha256(msiBytes)} *StreamlinkVlcStudio-Setup.msi{Environment.NewLine}";
-            var checksumBytes = Encoding.UTF8.GetBytes(checksumText);
-            var requests = new List<Uri>();
-            var launched = new List<ProcessStartInfo>();
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+            if (child is T match)
             {
-                requests.Add(request.RequestUri!);
-                return request.RequestUri!.AbsoluteUri switch
-                {
-                    "https://api.github.com/repos/owner/repo/releases/latest" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(
-                            CreateLatestReleaseJson(msiBytes.Length, checksumBytes.Length),
-                            Encoding.UTF8,
-                            "application/json")
-                    },
-                    "https://downloads.example/StreamlinkVlcStudio-Setup.msi" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new ByteArrayContent(msiBytes)
-                    },
-                    "https://downloads.example/SHA256SUMS.txt" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new ByteArrayContent(checksumBytes)
-                    },
-                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                };
-            }));
-            using var updater = new GitHubReleaseAppUpdateService(
-                new MemoryLogger(),
-                httpClient,
-                "owner/repo",
-                root,
-                Path.Combine(root, "updates"),
-                startInfo =>
-                {
-                    launched.Add(startInfo);
-                    return true;
-                },
-                getCurrentInstalledVersion: () => "1.0.6");
-
-            var result = await updater.StartLatestReleaseUpdateAsync();
-
-            Assert.True(result.RequestApplicationShutdown);
-            Assert.Contains("downloaded and verified", result.Message);
-            Assert.Equal(3, requests.Count);
-            Assert.Equal(1, launched.Count);
-            var msiPath = launched[0].FileName;
-            Assert.True(msiPath.EndsWith("StreamlinkVlcStudio-Setup.msi", StringComparison.Ordinal));
-            Assert.True(File.Exists(msiPath));
-            Assert.Equal(msiBytes.Length, new FileInfo(msiPath).Length);
-            Assert.Equal(true, launched[0].UseShellExecute);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
+                yield return match;
             }
-        }
-    }
 
-    private static async Task AppUpdaterRejectsMsiChecksumMismatchAsync()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "svs-updater-bad-hash-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var msiBytes = Encoding.UTF8.GetBytes("tampered msi bytes");
-            var checksumText = $"{new string('0', 64)} *StreamlinkVlcStudio-Setup.msi{Environment.NewLine}";
-            var checksumBytes = Encoding.UTF8.GetBytes(checksumText);
-            var launched = false;
-            using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
-                request.RequestUri!.AbsoluteUri switch
-                {
-                    "https://api.github.com/repos/owner/repo/releases/latest" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(
-                            CreateLatestReleaseJson(msiBytes.Length, checksumBytes.Length),
-                            Encoding.UTF8,
-                            "application/json")
-                    },
-                    "https://downloads.example/StreamlinkVlcStudio-Setup.msi" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new ByteArrayContent(msiBytes)
-                    },
-                    "https://downloads.example/SHA256SUMS.txt" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new ByteArrayContent(checksumBytes)
-                    },
-                    _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                }));
-            using var updater = new GitHubReleaseAppUpdateService(
-                new MemoryLogger(),
-                httpClient,
-                "owner/repo",
-                root,
-                Path.Combine(root, "updates"),
-                _ =>
-                {
-                    launched = true;
-                    return true;
-                },
-                getCurrentInstalledVersion: () => "1.0.6");
-
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => updater.StartLatestReleaseUpdateAsync());
-
-            Assert.Contains("checksum mismatch", exception.Message);
-            Assert.Equal(false, launched);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
+            foreach (var descendant in FindSetupWizardLogicalDescendants<T>(child))
             {
-                Directory.Delete(root, recursive: true);
+                yield return descendant;
             }
         }
     }
@@ -707,41 +560,6 @@ internal static class RegressionTestCatalog
         {
             await viewModel.DisposeAsync().AsTask();
         }
-    }
-
-    private static void AssertArgumentValue(IReadOnlyList<string> arguments, string name, string expectedValue)
-    {
-        var index = Array.IndexOf(arguments.ToArray(), name);
-        Assert.True(index >= 0 && index + 1 < arguments.Count);
-        Assert.Equal(expectedValue, arguments[index + 1]);
-    }
-
-    private static string CreateLatestReleaseJson(int msiSize, int checksumSize)
-    {
-        return $$"""
-        {
-          "tag_name": "release-7-run-8",
-          "draft": false,
-          "prerelease": false,
-          "assets": [
-            {
-              "name": "StreamlinkVlcStudio-Setup.msi",
-              "size": {{msiSize}},
-              "browser_download_url": "https://downloads.example/StreamlinkVlcStudio-Setup.msi"
-            },
-            {
-              "name": "SHA256SUMS.txt",
-              "size": {{checksumSize}},
-              "browser_download_url": "https://downloads.example/SHA256SUMS.txt"
-            }
-          ]
-        }
-        """;
-    }
-
-    private static string GetSha256(byte[] bytes)
-    {
-        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
     private static Task RunOnHeadlessStaAsync(Action action)
@@ -1257,141 +1075,6 @@ internal static class RegressionTestCatalog
         Assert.True(settings.TryGetKickBroadcasterUserId("channel-15", out _));
     }
 
-    private static async Task KickSubscriptionDisposalDrainsAsync()
-    {
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var service = new KickEventSubscriptionService(
-            new MemoryLogger(),
-            appAccessTokenProvider: async (_, _, cancellationToken) =>
-            {
-                entered.TrySetResult();
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                return "unreachable";
-            });
-        var operation = service.EnsureChatMessageSentSubscriptionAsync(
-            StreamInputParser.FromChannel(PlatformKind.Kick, "streamer"),
-            new ChatSettings());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-        await service.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
-        await Assert.ThrowsAsync<OperationCanceledException>(() => operation);
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
-            service.EnsureChatMessageSentSubscriptionAsync(
-                StreamInputParser.FromChannel(PlatformKind.Kick, "streamer"),
-                new ChatSettings()));
-    }
-
-    private static Task KickReplayCacheRetention()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", $"kick-retention-{Guid.NewGuid():N}");
-        var channelRoot = Path.Combine(root, "streamer");
-        Directory.CreateDirectory(channelRoot);
-        var now = new DateTimeOffset(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
-        var expired = Path.Combine(channelRoot, "20260701.jsonl");
-        var priorDay = Path.Combine(channelRoot, "20260815.jsonl");
-        var currentDay = Path.Combine(channelRoot, "20260816.jsonl");
-        File.WriteAllBytes(expired, new byte[8]);
-        File.WriteAllBytes(priorDay, new byte[16]);
-        File.WriteAllBytes(currentDay, new byte[32]);
-        File.SetLastWriteTimeUtc(expired, now.AddDays(-45).UtcDateTime);
-        File.SetLastWriteTimeUtc(priorDay, now.AddDays(-1).UtcDateTime);
-        File.SetLastWriteTimeUtc(currentDay, now.UtcDateTime);
-        var logger = new MemoryLogger();
-        try
-        {
-            var store = new KickOfficialChatReplayStore(
-                root,
-                logger,
-                new ManualTimeProvider(now),
-                TimeSpan.FromDays(30),
-                maximumCacheBytes: 20,
-                pruneInterval: TimeSpan.FromMinutes(15));
-
-            Assert.Equal(false, File.Exists(expired));
-            Assert.Equal(false, File.Exists(priorDay));
-            Assert.True(File.Exists(currentDay));
-            var result = store.PruneForTest();
-            Assert.True(result.Ran);
-            Assert.True(result.ProtectedDataExceedsLimit);
-            Assert.True(logger.Entries.Any(entry =>
-                entry.Message.Contains("prevents", StringComparison.OrdinalIgnoreCase)));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-
-        return Task.CompletedTask;
-    }
-
-    private static async Task TwitchCacheScansAndBackfillsAsync()
-    {
-        var replayId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
-        var cacheDirectory = ReplayChatProvider.GetDefaultReplayChatCacheDirectory(PlatformKind.Twitch);
-        Directory.CreateDirectory(cacheDirectory);
-        var cachePath = Path.Combine(cacheDirectory, $"{replayId}_chat.json");
-        var comments = Enumerable.Range(0, 5_001)
-            .Select(index => new
-            {
-                _id = $"cached-{index}",
-                content_offset_seconds = index,
-                commenter = new { display_name = $"Viewer{index}" },
-                message = new { body = $"cached message {index}" }
-            })
-            .ToArray();
-        await File.WriteAllTextAsync(cachePath, JsonSerializer.Serialize(new { comments }));
-
-        var requestCount = 0;
-        using var httpClient = new HttpClient(new FakeHttpMessageHandler(_ =>
-        {
-            Interlocked.Increment(ref requestCount);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(
-                    """
-                    [{"data":{"video":{"comments":{"pageInfo":{"hasNextPage":false},"edges":[
-                      {"cursor":"later","node":{"id":"gql-later","contentOffsetSeconds":5600,"createdAt":"2026-08-16T12:00:00Z","commenter":{"displayName":"LaterViewer"},"message":{"body":"later seek chat"}}}
-                    ]}}}}]
-                    """,
-                    Encoding.UTF8,
-                    "application/json")
-            };
-        }));
-        var provider = new ReplayChatProvider(httpClient);
-        var replay = new ReplaySessionInfo(
-            PlatformKind.Twitch,
-            "streamer",
-            $"https://www.twitch.tv/videos/{replayId}",
-            replayId,
-            new DateTimeOffset(2026, 8, 16, 10, 0, 0, TimeSpan.Zero),
-            TimeSpan.FromHours(2),
-            true,
-            "");
-        try
-        {
-            var cache = ReplayChatProvider.LoadTwitchChat(replay);
-            Assert.True(cache.IsAvailable, cache.UnavailableReason);
-            Assert.Equal(5_001, cache.Messages.Count);
-            Assert.Equal(TimeSpan.Zero, cache.LoadedFromOffset);
-            Assert.Equal(TimeSpan.FromSeconds(5_000), cache.LoadedThroughOffset);
-
-            var result = await provider.LoadTwitchChatAsync(
-                replay,
-                new AppSettings(),
-                TimeSpan.FromSeconds(5_600));
-            Assert.True(result.IsAvailable, result.UnavailableReason);
-            Assert.Equal(5_002, result.Messages.Count);
-            Assert.Equal("later seek chat", result.Messages[^1].Message.Message);
-            Assert.Equal(TimeSpan.FromSeconds(5_540), result.LoadedFromOffset);
-            Assert.Equal(TimeSpan.FromSeconds(5_840), result.LoadedThroughOffset);
-            Assert.Equal(1, requestCount);
-        }
-        finally
-        {
-            File.Delete(cachePath);
-        }
-    }
-
     private static string FindRepoRoot()
     {
         foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
@@ -1416,11 +1099,50 @@ internal static class RegressionTestCatalog
     {
         public int CallCount { get; private set; }
 
-        public Task<AppUpdateStartResult> StartLatestReleaseUpdateAsync(CancellationToken cancellationToken = default)
+        public AppUpdateState State { get; } = result.RequestApplicationShutdown
+            ? CreateReadyState()
+            : AppUpdateState.Idle;
+
+        public Task<AppUpdateCheckResult> CheckAsync(
+            UpdateCheckReason reason,
+            CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             CallCount++;
-            return Task.FromResult(result);
+            return Task.FromResult(new AppUpdateCheckResult(
+                true,
+                false,
+                false,
+                AppInstallKind.Managed,
+                null,
+                result.Message,
+                DateTimeOffset.UtcNow));
+        }
+
+        public Task<AppUpdateLaunchResult> ApplyAndRestartAsync(
+            PreparedAppUpdate update,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CallCount++;
+            return Task.FromResult(new AppUpdateLaunchResult(true, result.Message));
+        }
+
+        private static AppUpdateState CreateReadyState()
+        {
+            var asset = new AppUpdateAsset("test", new Uri("https://example.test/test"), 1, new string('0', 64));
+            var release = new AppUpdateRelease(
+                new Version(9, 9, 9),
+                "v9.9.9",
+                new string('a', 40),
+                "test/repository",
+                new Uri("https://example.test/release"),
+                1,
+                asset,
+                asset,
+                new Dictionary<string, string>());
+            var prepared = new PreparedAppUpdate(Guid.NewGuid(), release, "test", "test", "test", DateTimeOffset.UtcNow);
+            return new(AppUpdatePhase.Ready, "Ready", release, prepared);
         }
     }
 

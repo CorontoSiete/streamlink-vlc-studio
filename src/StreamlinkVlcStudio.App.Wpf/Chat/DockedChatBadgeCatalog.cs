@@ -27,13 +27,14 @@ internal sealed class DockedChatBadgeCatalog
     private readonly CatalogLoadCoordinator loadCoordinator;
     private string twitchClientId = "";
     private string twitchOAuthToken = "";
-    private int catalogChangedQueued;
+    private readonly CatalogChangeNotifier catalogChangeNotifier;
 
     public static DockedChatBadgeCatalog Shared { get; } = new();
 
     internal DockedChatBadgeCatalog()
     {
         loadCoordinator = new CatalogLoadCoordinator(scopeEvicted: EvictCatalogScope);
+        catalogChangeNotifier = new CatalogChangeNotifier(this);
     }
 
     public event EventHandler? CatalogChanged;
@@ -330,19 +331,7 @@ internal sealed class DockedChatBadgeCatalog
             await LoadBundledBadges(BundledBadgeAssets.FindKickBadgeManifestPath(), AddKickBadge).ConfigureAwait(false));
     }
 
-    private void QueueCatalogChanged()
-    {
-        if (Interlocked.Exchange(ref catalogChangedQueued, 1) != 0)
-        {
-            return;
-        }
-
-        _ = Task.Run(() =>
-        {
-            Interlocked.Exchange(ref catalogChangedQueued, 0);
-            CatalogLoadCoordinator.RaiseSafely(CatalogChanged, this);
-        });
-    }
+    private void QueueCatalogChanged() => catalogChangeNotifier.Queue(() => CatalogChanged);
 
     private async Task<bool> LoadBundledBadges(
         string? manifestPath,

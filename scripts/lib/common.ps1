@@ -613,35 +613,3 @@ function Promote-ValidatedFileSetAtomically {
         }
     }
 }
-
-function Invoke-IExpress {
-    <#
-    .SYNOPSIS
-    Runs Windows `iexpress.exe /N /Q` against the supplied SED path.
-
-    .PARAMETER SedPath
-    Path to the SED (self-extracting definition) file to compile.
-
-    .PARAMETER WorkingDirectory
-    Directory that iexpress uses to resolve relative source files.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$SedPath,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory)
-
-    $iexpress = Get-Command "iexpress.exe" -ErrorAction SilentlyContinue
-    if ($null -eq $iexpress) {
-        throw "IExpress was not found. This packaging step requires Windows iexpress.exe."
-    }
-
-    $process = Start-Process `
-        -FilePath $iexpress.Source `
-        -WorkingDirectory $WorkingDirectory `
-        -ArgumentList @("/N", "/Q", (Split-Path -Leaf $SedPath)) `
-        -Wait `
-        -PassThru `
-        -NoNewWindow
-    if ($process.ExitCode -ne 0) {
-        throw "IExpress failed with exit code $($process.ExitCode)."
-    }
-}

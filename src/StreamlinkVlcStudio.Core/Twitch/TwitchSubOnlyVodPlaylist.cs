@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Security;
@@ -151,33 +150,7 @@ public static partial class TwitchSubOnlyVodPlaylist
 
         // Sub-only VODs 404 on the "-unmuted" segment names; "-muted" always exists.
         var mutedContent = playlistContent.Replace("-unmuted", "-muted", StringComparison.Ordinal);
-        var lines = mutedContent.Split('\n');
-        var builder = new StringBuilder(mutedContent.Length + 256);
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i].TrimEnd('\r');
-            if (i == 0)
-            {
-                line = line.TrimStart('\uFEFF');
-            }
-
-            // Skip the artificial empty entry produced by a trailing newline.
-            if (line.Length == 0 && i == lines.Length - 1)
-            {
-                break;
-            }
-
-            if (line.Length > 0)
-            {
-                builder.Append(line[0] == '#'
-                    ? RewriteTagLine(line, playlistUri)
-                    : AbsolutizeUri(line.Trim(), playlistUri));
-            }
-
-            builder.Append('\n');
-        }
-
-        return builder.ToString();
+        return TwitchPlaylistUriRewriter.Rewrite(mutedContent, playlistUri, static uri => uri.AbsoluteUri);
     }
 
     private static int IndexOfQualityKey(string key)
@@ -191,68 +164,6 @@ public static partial class TwitchSubOnlyVodPlaylist
         }
 
         return -1;
-    }
-
-    private static string RewriteTagLine(string line, Uri playlistUri)
-    {
-        const string marker = "URI=";
-        var attributeStart = FindExactAttribute(line, marker);
-        if (attributeStart < 0)
-        {
-            return line;
-        }
-
-        var quoteIndex = attributeStart + marker.Length;
-        if (quoteIndex >= line.Length || line[quoteIndex] != '"')
-        {
-            throw new InvalidDataException("The playlist contained a malformed URI attribute.");
-        }
-
-        var start = quoteIndex + 1;
-        var end = line.IndexOf('"', start);
-        if (end < 0)
-        {
-            throw new InvalidDataException("The playlist contained an unterminated URI attribute.");
-        }
-
-        var uri = line[start..end];
-        return string.Concat(line[..start], AbsolutizeUri(uri, playlistUri), line[end..]);
-    }
-
-    private static int FindExactAttribute(string line, string marker)
-    {
-        var searchIndex = 0;
-        while (searchIndex < line.Length)
-        {
-            var index = line.IndexOf(marker, searchIndex, StringComparison.OrdinalIgnoreCase);
-            if (index < 0)
-            {
-                return -1;
-            }
-
-            if (index == 0 || line[index - 1] is ':' or ',')
-            {
-                return index;
-            }
-
-            searchIndex = index + marker.Length;
-        }
-
-        return -1;
-    }
-
-    private static string AbsolutizeUri(string uri, Uri playlistUri)
-    {
-        if (!ProviderUriPolicy.TryResolveReplayUri(
-                uri,
-                playlistUri,
-                PlatformKind.Twitch,
-                out var resolved))
-        {
-            throw new InvalidDataException("The playlist contained an unapproved media URI.");
-        }
-
-        return resolved.AbsoluteUri;
     }
 
     private static string EncodePathSegment(string? value) =>

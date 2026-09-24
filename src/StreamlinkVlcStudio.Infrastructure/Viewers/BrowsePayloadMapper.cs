@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
@@ -10,9 +11,7 @@ internal static class BrowsePayloadMapper
 {
     public static IEnumerable<BrowseCategory> ReadTwitchCategories(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -37,9 +36,7 @@ internal static class BrowsePayloadMapper
 
     public static IEnumerable<BrowseLiveStream> ReadTwitchStreams(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -48,7 +45,7 @@ internal static class BrowsePayloadMapper
         {
             var login = GetOptionalString(item, "user_login").Trim();
             if (string.IsNullOrWhiteSpace(login) ||
-                !TryCreateTarget(PlatformKind.Twitch, login, out var target))
+                !StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var target))
             {
                 continue;
             }
@@ -72,9 +69,7 @@ internal static class BrowsePayloadMapper
 
     public static TwitchStreamViewerCountReadResult ReadTwitchStreamViewerCounts(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return new TwitchStreamViewerCountReadResult(
                 [],
@@ -116,9 +111,7 @@ internal static class BrowsePayloadMapper
 
     public static IEnumerable<BrowseCategory> ReadKickCategories(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -179,9 +172,7 @@ internal static class BrowsePayloadMapper
         string requestedCategoryId,
         string requestedCategoryName)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -195,7 +186,7 @@ internal static class BrowsePayloadMapper
 
             var slug = GetOptionalString(item, "slug").Trim();
             if (string.IsNullOrWhiteSpace(slug) ||
-                !TryCreateTarget(PlatformKind.Kick, slug, out var target))
+                !StreamInputParser.TryFromChannel(PlatformKind.Kick, slug, out var target))
             {
                 continue;
             }
@@ -228,9 +219,7 @@ internal static class BrowsePayloadMapper
 
     public static IEnumerable<BrowseCategory> ReadKickLiveStreamCategories(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             yield break;
         }
@@ -288,20 +277,6 @@ internal static class BrowsePayloadMapper
         }
 
         return tags;
-    }
-
-    private static bool TryCreateTarget(PlatformKind platform, string channel, out StreamTarget target)
-    {
-        try
-        {
-            target = StreamInputParser.FromChannel(platform, channel);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            target = null!;
-            return false;
-        }
     }
 
     internal sealed record TwitchStreamViewerCountReadResult(

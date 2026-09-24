@@ -96,9 +96,15 @@ internal static class TestSta
         }
     }
 
-    public static Task RunAsync(Func<Task> action)
+    public static Task RunAsync(Func<Task> action) => RunAsync(action, requiresInteractiveDesktop: true);
+
+    // Bitmap decoding and offscreen WPF rendering need a dispatcher, but no visible window.
+    // Keep these regressions active when CI skips tests that interact with the desktop.
+    public static Task RunOffscreenAsync(Func<Task> action) => RunAsync(action, requiresInteractiveDesktop: false);
+
+    private static Task RunAsync(Func<Task> action, bool requiresInteractiveDesktop)
     {
-        if (string.Equals(
+        if (requiresInteractiveDesktop && string.Equals(
                 Environment.GetEnvironmentVariable("SVS_SKIP_INTERACTIVE_WINDOW_TESTS"),
                 "true",
                 StringComparison.OrdinalIgnoreCase))
@@ -426,6 +432,10 @@ internal static class NativeWindowTest
         return (GetWindowLong(handle, gwlExStyle) & wsExTopmost) != 0;
     }
 
+    public static int GetWindowStyle(IntPtr handle) => GetWindowLong(handle, -16);
+
+    public static IntPtr GetTopChildWindow(IntPtr parentHandle) => GetWindow(parentHandle, 5);
+
     public static IntPtr MakeMouseLParam(int x, int y)
     {
         return new IntPtr(unchecked((short)x & 0xFFFF | ((short)y << 16)));
@@ -707,6 +717,24 @@ internal static class NativeWindowTest
     [DllImport("user32", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DestroyWindow(IntPtr hwnd);
+
+    [DllImport("user32")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowEnabled(IntPtr hwnd);
+
+    [DllImport("user32")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(IntPtr hwnd);
+
+    [DllImport("user32")]
+    public static extern IntPtr GetParent(IntPtr hwnd);
+
+    [DllImport("user32")]
+    private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
 
     private const int SwpNoZOrder = 0x0004;
 
@@ -1011,33 +1039,6 @@ internal static class Assert
         {
             throw new InvalidOperationException($"Expected '{actual}' not to contain '{unexpectedSubstring}'.");
         }
-    }
-}
-
-internal static class KickWebhookTestSignature
-{
-    public static void AddKickHeaders(
-        HttpRequestMessage request,
-        RSA rsa,
-        string eventType,
-        string messageId,
-        string timestamp,
-        byte[] bodyBytes)
-    {
-        var signedPrefix = Encoding.UTF8.GetBytes($"{messageId}.{timestamp}.");
-        var signedBytes = new byte[signedPrefix.Length + bodyBytes.Length];
-        Buffer.BlockCopy(signedPrefix, 0, signedBytes, 0, signedPrefix.Length);
-        Buffer.BlockCopy(bodyBytes, 0, signedBytes, signedPrefix.Length, bodyBytes.Length);
-        var signature = Convert.ToBase64String(rsa.SignData(
-            signedBytes,
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1));
-
-        request.Headers.TryAddWithoutValidation("Kick-Event-Type", eventType);
-        request.Headers.TryAddWithoutValidation("Kick-Event-Version", "1");
-        request.Headers.TryAddWithoutValidation("Kick-Event-Message-Id", messageId);
-        request.Headers.TryAddWithoutValidation("Kick-Event-Message-Timestamp", timestamp);
-        request.Headers.TryAddWithoutValidation("Kick-Event-Signature", signature);
     }
 }
 
@@ -1936,18 +1937,16 @@ internal static class TestViewModels
         IFollowedStreamsService? followedStreamsService = null,
         IStreamMetadataService? streamMetadataService = null,
         IReplayResolver? replayResolver = null,
-        IReplayChatProvider? replayChatProvider = null,
+        IVodChatProvider? vodChatProvider = null,
         TimeSpan? recentThumbnailRefreshInterval = null,
         TimeSpan? streamSearchDebounceInterval = null,
         ITwitchVodService? twitchVodService = null,
         TimeSpan? twitchVodSearchDebounceInterval = null,
         IBrowseService? browseService = null,
         TimeSpan? browseCategorySearchDebounceInterval = null,
-        IKickChatHistoryProvider? kickChatHistoryProvider = null,
         TimeSpan? followedChannelsRefreshInterval = null,
         IStreamSearchService? streamSearchService = null,
         IKickVodService? kickVodService = null,
-        IKickEventSubscriptionService? kickEventSubscriptionService = null,
         ILiveNotificationService? liveNotificationService = null,
         ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver = null,
         ITwitchClipService? twitchClipService = null,
@@ -1968,18 +1967,16 @@ internal static class TestViewModels
             FollowedStreamsService = followedStreamsService,
             StreamMetadataService = streamMetadataService,
             ReplayResolver = replayResolver,
-            ReplayChatProvider = replayChatProvider,
+            VodChatProvider = vodChatProvider,
             RecentThumbnailRefreshInterval = recentThumbnailRefreshInterval,
             StreamSearchDebounceInterval = streamSearchDebounceInterval,
             TwitchVodService = twitchVodService,
             TwitchVodSearchDebounceInterval = twitchVodSearchDebounceInterval,
             BrowseService = browseService,
             BrowseCategorySearchDebounceInterval = browseCategorySearchDebounceInterval,
-            KickChatHistoryProvider = kickChatHistoryProvider,
             FollowedChannelsRefreshInterval = followedChannelsRefreshInterval,
             StreamSearchService = streamSearchService,
             KickVodService = kickVodService,
-            KickEventSubscriptionService = kickEventSubscriptionService,
             LiveNotificationService = liveNotificationService,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver,
             TwitchClipService = twitchClipService,
@@ -2000,10 +1997,8 @@ internal static class TestViewModels
         int initialVolume = StreamTabViewModel.DefaultVolume,
         IViewerCountService? viewerCountService = null,
         IReplayResolver? replayResolver = null,
-        IReplayChatProvider? replayChatProvider = null,
+        IVodChatProvider? vodChatProvider = null,
         TimeSpan? twitchLiveDvrPromotionPollInterval = null,
-        IKickChatHistoryProvider? kickChatHistoryProvider = null,
-        IKickEventSubscriptionService? kickEventSubscriptionService = null,
         ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver = null) =>
         new(new StreamTabViewModelDependencies
         {
@@ -2017,10 +2012,8 @@ internal static class TestViewModels
             InitialVolume = initialVolume,
             ViewerCountService = viewerCountService,
             ReplayResolver = replayResolver,
-            ReplayChatProvider = replayChatProvider,
+            VodChatProvider = vodChatProvider,
             TwitchLiveDvrPromotionPollInterval = twitchLiveDvrPromotionPollInterval,
-            KickChatHistoryProvider = kickChatHistoryProvider,
-            KickEventSubscriptionService = kickEventSubscriptionService,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver
         });
 }
@@ -2277,7 +2270,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
             Muted = audioState != PlaybackAudioState.Audible;
         }
 
-        AudioTrackEnabled = audioState == PlaybackAudioState.Audible;
+        AudioTrackEnabled = audioState != PlaybackAudioState.HardMuted;
         LogAudioCall(volume, audioState);
         ApplySharedAudioState();
     }
@@ -2568,110 +2561,6 @@ internal readonly record struct ChatBackfillRangeRequest(
     DateTimeOffset FromTimestampUtc,
     DateTimeOffset ThroughTimestampUtc);
 
-internal sealed class FakeKickChatHistoryProvider : IKickChatHistoryProvider
-{
-    private readonly object gate = new();
-    private readonly List<KickHistoryBackfillRequest> requests = [];
-    public List<ChatMessage> BackfillMessages { get; } = [];
-    public bool FilterMessagesToRequest { get; set; } = true;
-    public bool? BackfillCoveredRequestedRange { get; set; }
-    public DateTimeOffset? BackfillCoveredFromTimestampUtc { get; set; }
-    public DateTimeOffset? BackfillCoveredThroughTimestampUtc { get; set; }
-    public Func<FakeKickChatHistoryProvider, StreamTarget, ChatSettings, DateTimeOffset, DateTimeOffset, CancellationToken, Task<ChatHistoryBackfillResult>>? BackfillHandler { get; set; }
-
-    public IReadOnlyList<KickHistoryBackfillRequest> Requests
-    {
-        get
-        {
-            lock (gate)
-            {
-                return requests.ToArray();
-            }
-        }
-    }
-
-    public Task<ChatHistoryBackfillResult> BackfillRecentChatRangeAsync(
-        StreamTarget target,
-        ChatSettings settings,
-        DateTimeOffset fromTimestampUtc,
-        DateTimeOffset throughTimestampUtc,
-        CancellationToken cancellationToken = default)
-    {
-        fromTimestampUtc = fromTimestampUtc.ToUniversalTime();
-        throughTimestampUtc = throughTimestampUtc.ToUniversalTime();
-        if (throughTimestampUtc < fromTimestampUtc)
-        {
-            throughTimestampUtc = fromTimestampUtc;
-        }
-
-        lock (gate)
-        {
-            requests.Add(new KickHistoryBackfillRequest(target, fromTimestampUtc, throughTimestampUtc));
-        }
-
-        if (BackfillHandler is { } handler)
-        {
-            return handler(this, target, settings, fromTimestampUtc, throughTimestampUtc, cancellationToken);
-        }
-
-        var messages = BackfillMessages
-            .OrderBy(message => message.Timestamp)
-            .Where(message =>
-            {
-                if (!FilterMessagesToRequest)
-                {
-                    return true;
-                }
-
-                var timestampUtc = message.Timestamp.ToUniversalTime();
-                return timestampUtc >= fromTimestampUtc && timestampUtc <= throughTimestampUtc;
-            })
-            .ToArray();
-
-        DateTimeOffset? coveredFromTimestampUtc = null;
-        DateTimeOffset? coveredThroughTimestampUtc = null;
-        if (BackfillCoveredFromTimestampUtc is { } configuredFrom &&
-            BackfillCoveredThroughTimestampUtc is { } configuredThrough)
-        {
-            coveredFromTimestampUtc = configuredFrom.ToUniversalTime();
-            coveredThroughTimestampUtc = configuredThrough.ToUniversalTime();
-            if (coveredThroughTimestampUtc < coveredFromTimestampUtc)
-            {
-                coveredThroughTimestampUtc = coveredFromTimestampUtc;
-            }
-        }
-        else if (BackfillCoveredRequestedRange == true)
-        {
-            coveredFromTimestampUtc = fromTimestampUtc;
-            coveredThroughTimestampUtc = throughTimestampUtc;
-        }
-        else if (messages.Length > 0)
-        {
-            coveredFromTimestampUtc = fromTimestampUtc;
-            coveredThroughTimestampUtc = messages.Max(message => message.Timestamp).ToUniversalTime();
-            if (coveredThroughTimestampUtc < fromTimestampUtc)
-            {
-                coveredThroughTimestampUtc = fromTimestampUtc;
-            }
-        }
-
-        var coveredRequestedRange = BackfillCoveredRequestedRange ??
-            (coveredFromTimestampUtc <= fromTimestampUtc && coveredThroughTimestampUtc >= throughTimestampUtc);
-        return Task.FromResult(new ChatHistoryBackfillResult(
-            Attempted: true,
-            LoadedMessageCount: messages.Length,
-            CoveredRequestedRange: coveredRequestedRange,
-            CoveredFromTimestampUtc: coveredFromTimestampUtc,
-            CoveredThroughTimestampUtc: coveredThroughTimestampUtc,
-            Messages: messages));
-    }
-}
-
-internal readonly record struct KickHistoryBackfillRequest(
-    StreamTarget Target,
-    DateTimeOffset FromTimestampUtc,
-    DateTimeOffset ThroughTimestampUtc);
-
 internal sealed class FakeReplayResolver : IReplayResolver
 {
     private readonly object gate = new();
@@ -2745,17 +2634,30 @@ internal sealed class BlockingReplayResolver : IReplayResolver
     }
 }
 
-internal sealed class FakeReplayChatProvider : IReplayChatProvider
+/// <summary>
+/// A scripted <see cref="IVodChatProvider"/>. Each queued chunk answers one fetch; once the queue
+/// is empty every further fetch reports the trailing outcome so a pump cannot spin on new content.
+/// </summary>
+internal sealed class FakeVodChatProvider : IVodChatProvider
 {
-    private readonly ReplayChatLoadResult result;
     private readonly object gate = new();
-    private readonly List<ReplaySessionInfo> requests = [];
-    private readonly List<TimeSpan> offsets = [];
+    private readonly Queue<VodChatFetchResult> scripted = new();
+    private readonly List<TimeSpan> requestedOffsets = [];
+    private readonly List<ReplaySessionInfo> requestedReplays = [];
 
-    public FakeReplayChatProvider(ReplayChatLoadResult result)
+    public FakeVodChatProvider(params VodChatFetchResult[] results)
     {
-        this.result = result;
+        foreach (var result in results)
+        {
+            scripted.Enqueue(result);
+        }
     }
+
+    /// <summary>Returned once the scripted chunks run out. Defaults to "nothing more to load".</summary>
+    public VodChatFetchResult TrailingResult { get; set; } =
+        VodChatFetchResult.Completed([], TimeSpan.FromDays(1));
+
+    public TaskCompletionSource FirstFetchStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public int CallCount
     {
@@ -2763,102 +2665,112 @@ internal sealed class FakeReplayChatProvider : IReplayChatProvider
         {
             lock (gate)
             {
-                return requests.Count;
+                return requestedOffsets.Count;
             }
         }
     }
 
-    public IReadOnlyList<ReplaySessionInfo> Requests
+    public IReadOnlyList<TimeSpan> RequestedOffsets
     {
         get
         {
             lock (gate)
             {
-                return requests.ToArray();
+                return requestedOffsets.ToArray();
             }
         }
     }
 
-    public IReadOnlyList<TimeSpan> Offsets
+    public IReadOnlyList<ReplaySessionInfo> RequestedReplays
     {
         get
         {
             lock (gate)
             {
-                return offsets.ToArray();
+                return requestedReplays.ToArray();
             }
         }
     }
 
-    public Task<ReplayChatLoadResult> LoadChatAsync(
+    public void Enqueue(VodChatFetchResult result)
+    {
+        lock (gate)
+        {
+            scripted.Enqueue(result);
+        }
+    }
+
+    public Task<VodChatFetchResult> FetchAsync(
         ReplaySessionInfo replay,
         AppSettings settings,
-        TimeSpan offset,
+        TimeSpan fromOffset,
         CancellationToken cancellationToken = default)
     {
+        VodChatFetchResult result;
         lock (gate)
         {
-            requests.Add(replay);
-            offsets.Add(offset);
+            requestedOffsets.Add(fromOffset);
+            requestedReplays.Add(replay);
+            result = scripted.Count > 0 ? scripted.Dequeue() : TrailingResult;
         }
 
+        FirstFetchStarted.TrySetResult();
         return Task.FromResult(result);
+    }
+
+    /// <summary>
+    /// One scripted chunk that also ends the feed, which is how most tests want a fake to behave:
+    /// deliver these messages, then stop asking.
+    /// </summary>
+    public static VodChatFetchResult Once(
+        IReadOnlyList<VodChatMessage> messages,
+        TimeSpan? fromOffset = null,
+        TimeSpan? throughOffset = null)
+    {
+        var covered = throughOffset
+            ?? (messages.Count > 0
+                ? messages[messages.Count - 1].Offset + TimeSpan.FromSeconds(1)
+                : (fromOffset ?? TimeSpan.Zero) + TimeSpan.FromSeconds(1));
+        return VodChatFetchResult.Completed(messages, covered);
+    }
+
+    /// <summary>Builds a chunk of messages spaced one second apart from <paramref name="from"/>.</summary>
+    public static VodChatFetchResult Chunk(
+        ReplaySessionInfo replay,
+        TimeSpan from,
+        int count,
+        string idPrefix)
+    {
+        var messages = new List<VodChatMessage>(count);
+        for (var index = 0; index < count; index++)
+        {
+            var offset = from + TimeSpan.FromSeconds(index);
+            messages.Add(new VodChatMessage(
+                offset,
+                new ChatMessage(
+                    replay.Platform,
+                    replay.Channel,
+                    idPrefix + "-viewer",
+                    idPrefix + " " + index.ToString(CultureInfo.InvariantCulture),
+                    (replay.StreamStartedAtUtc ?? DateTimeOffset.UnixEpoch) + offset,
+                    MessageId: idPrefix + "-" + index.ToString(CultureInfo.InvariantCulture))));
+        }
+
+        return VodChatFetchResult.Loaded(messages, from + TimeSpan.FromSeconds(count));
     }
 }
 
-internal sealed class FakeKickEventSubscriptionService : IKickEventSubscriptionService
-{
-    private readonly KickEventSubscriptionEnsureResult result;
-    private readonly object gate = new();
-    private readonly List<StreamTarget> requests = [];
-
-    public FakeKickEventSubscriptionService(KickEventSubscriptionEnsureResult result)
-    {
-        this.result = result;
-    }
-
-    public int CallCount
-    {
-        get
-        {
-            lock (gate)
-            {
-                return requests.Count;
-            }
-        }
-    }
-
-    public IReadOnlyList<StreamTarget> Requests
-    {
-        get
-        {
-            lock (gate)
-            {
-                return requests.ToArray();
-            }
-        }
-    }
-
-    public Task<KickEventSubscriptionEnsureResult> EnsureChatMessageSentSubscriptionAsync(
-        StreamTarget target,
-        ChatSettings settings,
-        CancellationToken cancellationToken = default)
-    {
-        lock (gate)
-        {
-            requests.Add(target);
-        }
-
-        return Task.FromResult(result);
-    }
-}
-
-internal sealed class BlockingReplayChatProvider : IReplayChatProvider
+/// <summary>
+/// A VOD chat provider whose first two fetches block until released, for exercising ordering
+/// between an in-flight fetch and a later seek.
+/// </summary>
+internal sealed class BlockingVodChatProvider : IVodChatProvider
 {
     private readonly object gate = new();
     private readonly TaskCompletionSource firstLoadRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource secondLoadRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private int callCount;
+    private readonly List<TimeSpan> requestedOffsets = [];
+    private readonly List<ReplaySessionInfo> requestedReplays = [];
 
     public TaskCompletionSource FirstLoadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource SecondLoadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2871,74 +2783,96 @@ internal sealed class BlockingReplayChatProvider : IReplayChatProvider
         {
             lock (gate)
             {
-                return callCount;
+                return requestedOffsets.Count;
+            }
+        }
+    }
+
+    public IReadOnlyList<TimeSpan> RequestedOffsets
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requestedOffsets.ToArray();
+            }
+        }
+    }
+
+    public IReadOnlyList<ReplaySessionInfo> RequestedReplays
+    {
+        get
+        {
+            lock (gate)
+            {
+                return requestedReplays.ToArray();
             }
         }
     }
 
     public void ReleaseFirstLoad()
     {
-        firstLoadRelease.SetResult();
+        firstLoadRelease.TrySetResult();
     }
 
     public void ReleaseSecondLoad()
     {
-        secondLoadRelease.SetResult();
+        secondLoadRelease.TrySetResult();
     }
 
-    public async Task<ReplayChatLoadResult> LoadChatAsync(
+    public async Task<VodChatFetchResult> FetchAsync(
         ReplaySessionInfo replay,
         AppSettings settings,
-        TimeSpan offset,
+        TimeSpan fromOffset,
         CancellationToken cancellationToken = default)
     {
         int currentCall;
         lock (gate)
         {
-            callCount++;
-            currentCall = callCount;
+            requestedOffsets.Add(fromOffset);
+            requestedReplays.Add(replay);
+            currentCall = requestedOffsets.Count;
         }
 
         if (currentCall == 1)
         {
-            FirstLoadStarted.SetResult();
-            using var cancellationRegistration = cancellationToken.Register(
+            FirstLoadStarted.TrySetResult();
+            using var registration = cancellationToken.Register(
                 () => FirstLoadCancellationRequested.TrySetResult());
             await firstLoadRelease.Task;
-            var result = CreateResult(replay, offset, "seek A chat", "seek-a-chat");
-            FirstLoadReturned.SetResult();
+            var result = CreateResult(replay, fromOffset, "seek A chat", "seek-a-chat");
+            FirstLoadReturned.TrySetResult();
             return result;
         }
 
         if (currentCall == 2)
         {
-            SecondLoadStarted.SetResult();
+            SecondLoadStarted.TrySetResult();
             await secondLoadRelease.Task.WaitAsync(cancellationToken);
-            return CreateResult(replay, offset, "seek B chat", "seek-b-chat");
+            return CreateResult(replay, fromOffset, "seek B chat", "seek-b-chat");
         }
 
-        return ReplayChatLoadResult.Available([], TimeSpan.Zero, replay.Duration);
+        return VodChatFetchResult.Completed([], replay.Duration);
     }
 
-    private static ReplayChatLoadResult CreateResult(
+    private static VodChatFetchResult CreateResult(
         ReplaySessionInfo replay,
         TimeSpan offset,
         string message,
         string messageId)
     {
-        return ReplayChatLoadResult.Available(
+        return VodChatFetchResult.Completed(
             [
-                new ReplayChatMessage(
+                new VodChatMessage(
                     offset,
                     new ChatMessage(
                         replay.Platform,
                         replay.Channel,
                         "viewer",
                         message,
-                        DateTimeOffset.UtcNow,
+                        (replay.StreamStartedAtUtc ?? DateTimeOffset.UnixEpoch) + offset,
                         MessageId: messageId))
             ],
-            offset - TimeSpan.FromMinutes(1),
-            offset + TimeSpan.FromMinutes(1));
+            offset + TimeSpan.FromSeconds(1));
     }
 }

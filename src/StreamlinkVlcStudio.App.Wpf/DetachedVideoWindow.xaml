@@ -80,6 +80,108 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="DetachedVideoContextMenu" TargetType="{x:Type ContextMenu}">
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="5" />
+            <Setter Property="HasDropShadow" Value="True" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ContextMenu}">
+                        <Border x:Name="MenuChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <StackPanel IsItemsHost="True"
+                                        KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DetachedVideoMenuItem" TargetType="{x:Type MenuItem}">
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="9,6,12,6" />
+            <Setter Property="MinWidth" Value="132" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type MenuItem}">
+                        <Border x:Name="ItemChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                SnapsToDevicePixels="True">
+                            <Grid Margin="{TemplateBinding Padding}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="18" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Grid Width="14"
+                                      Height="14"
+                                      HorizontalAlignment="Left"
+                                      VerticalAlignment="Center">
+                                    <Border x:Name="CheckBackground"
+                                            Background="{DynamicResource StudioAccentPressedBrush}"
+                                            BorderBrush="{DynamicResource StudioAccentBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            Visibility="Collapsed" />
+                                    <Path x:Name="CheckMark"
+                                          Width="9"
+                                          Height="7"
+                                          Data="M0,3.25 L3.25,6.5 L9,0"
+                                          Stroke="#FFFFFFFF"
+                                          StrokeThickness="1.6"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          Visibility="Collapsed" />
+                                </Grid>
+
+                                <ContentPresenter Grid.Column="1"
+                                                  Margin="5,0,0,0"
+                                                  ContentSource="Header"
+                                                  RecognizesAccessKey="True"
+                                                  VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemChrome" Property="Background" Value="{DynamicResource StudioSurface3Brush}" />
+                                <Setter TargetName="ItemChrome" Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckBackground" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         </ResourceDictionary>
     </Window.Resources>
 
@@ -158,10 +260,12 @@
               Background="#000000"
               ContextMenuOpening="VideoHost_ContextMenuOpening">
             <Grid.ContextMenu>
-                <ContextMenu x:Name="VideoContextMenu">
+                <ContextMenu x:Name="VideoContextMenu"
+                             Style="{StaticResource DetachedVideoContextMenu}">
                     <MenuItem x:Name="ShowTopBarMenuItem"
                               Header="Show top bar"
                               IsCheckable="True"
+                              Style="{StaticResource DetachedVideoMenuItem}"
                               Click="ShowTopBarMenuItem_Click" />
                 </ContextMenu>
             </Grid.ContextMenu>
@@ -186,14 +290,21 @@
                 </ItemsControl.ItemContainerStyle>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <controls:VideoSurface Loaded="VideoSurface_Loaded"
-                                               Unloaded="VideoSurface_Unloaded"
-                                               SurfaceMouseLeftButtonPressed="VideoSurface_MouseLeftButtonPressed"
-                                               MouseWheelScrolled="VideoSurface_MouseWheelScrolled"
-                                               MouseLeftButtonDoubleClicked="VideoSurface_MouseLeftButtonDoubleClicked"
-                                               HorizontalAlignment="Stretch"
-                                               VerticalAlignment="Stretch"
-                                               Tag="{Binding Tab}" />
+                        <Grid>
+                            <controls:VideoSurface x:Name="DetachedVideoSurface"
+                                                   Loaded="VideoSurface_Loaded"
+                                                   Unloaded="VideoSurface_Unloaded"
+                                                   SurfaceMouseLeftButtonPressed="VideoSurface_MouseLeftButtonPressed"
+                                                   MouseWheelScrolled="VideoSurface_MouseWheelScrolled"
+                                                   MouseLeftButtonDoubleClicked="VideoSurface_MouseLeftButtonDoubleClicked"
+                                                   HorizontalAlignment="Stretch"
+                                                   VerticalAlignment="Stretch"
+                                                   Tag="{Binding Tab}" />
+                            <controls:ReplaySeekOverlay Width="0"
+                                                        Height="0"
+                                                        DataContext="{Binding Tab}"
+                                                        PlacementTarget="{Binding ElementName=DetachedVideoSurface}" />
+                        </Grid>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -208,9 +319,9 @@
               Panel.ZIndex="10"
               MouseLeftButtonDown="BottomResizeGrip_MouseLeftButtonDown">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="36" />
+                <ColumnDefinition Width="24" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="36" />
+                <ColumnDefinition Width="24" />
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0"

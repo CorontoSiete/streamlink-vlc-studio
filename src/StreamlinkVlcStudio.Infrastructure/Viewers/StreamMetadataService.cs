@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
@@ -218,9 +219,7 @@ public sealed class StreamMetadataService : IStreamMetadataService
 
     private static StreamMetadataResult ReadTwitchMetadata(StreamTarget target, JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return new StreamMetadataResult(
                 StreamMetadataState.Unavailable,
@@ -257,9 +256,7 @@ public sealed class StreamMetadataService : IStreamMetadataService
 
     private static StreamMetadataResult ReadKickMetadata(StreamTarget target, JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return new StreamMetadataResult(
                 StreamMetadataState.Unavailable,
@@ -327,9 +324,7 @@ public sealed class StreamMetadataService : IStreamMetadataService
 
     private static string ReadKickBroadcasterUserId(StreamTarget target, JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return "";
         }

@@ -9,6 +9,12 @@ internal sealed class TwitchGraphQlTransport(HttpClient httpClient)
 {
     internal const string Endpoint = "https://gql.twitch.tv/gql";
 
+    /// <summary>
+    /// Creates the random <c>X-Device-Id</c> the Twitch web client sends with GraphQL requests.
+    /// </summary>
+    internal static string CreateDeviceId() =>
+        Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+
     internal async Task<JsonDocument> SendAsync(
         string payload,
         string clientId,

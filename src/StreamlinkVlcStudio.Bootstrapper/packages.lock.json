@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows10.0.19041": {
+      "WixToolset.BootstrapperApplicationApi": {
+        "type": "Direct",
+        "requested": "[6.0.2, )",
+        "resolved": "6.0.2",
+        "contentHash": "k3Cpr12y4HFrgrBDFUhXCaJoMMz9iiE1qBAl83aqtGRllSKf04hvtX5P1t2dWh6V0Cm2Zh6vlfVnV5r4/IwLOw=="
+      }
+    },
+    "net10.0-windows10.0.19041/win-x64": {
+      "WixToolset.BootstrapperApplicationApi": {
+        "type": "Direct",
+        "requested": "[6.0.2, )",
+        "resolved": "6.0.2",
+        "contentHash": "k3Cpr12y4HFrgrBDFUhXCaJoMMz9iiE1qBAl83aqtGRllSKf04hvtX5P1t2dWh6V0Cm2Zh6vlfVnV5r4/IwLOw=="
+      }
+    }
+  }
+}

@@ -35,6 +35,29 @@
     return url.protocol === "http:" || url.protocol === "https:";
   }
 
+  // Anchors such as <a href="#"> or <a href="#panel"> stay on the current document.
+  // Their resolved href keeps the current pathname, so channelFromUrl would otherwise
+  // classify an in-page control as a link to the channel already being viewed and the
+  // click handler would cancel the page's own behaviour.
+  function isSameDocumentFragmentLink(rawHref, resolvedUrl, currentUrl) {
+    if (!String(rawHref || "").includes("#")) {
+      return false;
+    }
+
+    let resolved;
+    let current;
+    try {
+      resolved = new URL(String(resolvedUrl || ""));
+      current = new URL(String(currentUrl || ""));
+    } catch {
+      return false;
+    }
+
+    return resolved.origin === current.origin &&
+      resolved.pathname === current.pathname &&
+      resolved.search === current.search;
+  }
+
   function hasKnownPlatformHostWithoutScheme(value) {
     const text = String(value || "").trim();
     if (!text || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
@@ -263,6 +286,7 @@
     captureStatusFromResponse,
     findChannelPointClaimElements,
     isChannelPointClaimElement,
+    isSameDocumentFragmentLink,
     isTwitchChannelRoute,
     isTwitchHost,
     platformNameFromUrl

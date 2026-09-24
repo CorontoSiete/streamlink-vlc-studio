@@ -28,8 +28,8 @@ public static class KickOAuthService
         ChatSettings settings,
         CancellationToken cancellationToken = default)
     {
-        var clientId = RequireSetting(settings.KickClientId, "Kick Client ID");
-        var clientSecret = RequireSetting(settings.KickClientSecret, "Kick Client Secret");
+        var clientId = OAuthTokenHelpers.RequireSetting(settings.KickClientId, "Kick Client ID", "Kick");
+        var clientSecret = OAuthTokenHelpers.RequireSetting(settings.KickClientSecret, "Kick Client Secret", "Kick");
         var state = CreateBase64UrlSecret(32);
         var codeVerifier = CreateBase64UrlSecret(32);
         var codeChallenge = CreateCodeChallenge(codeVerifier);
@@ -53,9 +53,9 @@ public static class KickOAuthService
         ChatSettings settings,
         CancellationToken cancellationToken = default)
     {
-        var clientId = RequireSetting(settings.KickClientId, "Kick Client ID");
-        var clientSecret = RequireSetting(settings.KickClientSecret, "Kick Client Secret");
-        var refreshToken = RequireSetting(settings.KickRefreshToken, "Kick refresh token");
+        var clientId = OAuthTokenHelpers.RequireSetting(settings.KickClientId, "Kick Client ID", "Kick");
+        var clientSecret = OAuthTokenHelpers.RequireSetting(settings.KickClientSecret, "Kick Client Secret", "Kick");
+        var refreshToken = OAuthTokenHelpers.RequireSetting(settings.KickRefreshToken, "Kick refresh token", "Kick");
 
         using var httpClient = HttpClientFactory.CreateDefault();
         using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
@@ -413,11 +413,7 @@ public static class KickOAuthService
             ["code_challenge_method"] = "S256"
         };
 
-        var builder = new StringBuilder(AuthorizationEndpoint);
-        builder.Append('?');
-        builder.Append(string.Join('&', query.Select(pair =>
-            $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")));
-        return new Uri(builder.ToString());
+        return OAuthTokenHelpers.BuildAuthorizationUri(AuthorizationEndpoint, query);
     }
 
     private static async Task<string> WaitForAuthorizationCodeAsync(
@@ -448,16 +444,6 @@ public static class KickOAuthService
     {
         return settings.KickTokenExpiresAtUtc is { } expiresAt &&
             expiresAt <= DateTimeOffset.UtcNow.Add(RefreshSkew);
-    }
-
-    private static string RequireSetting(string value, string name)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new InvalidOperationException($"{name} is required for Kick authorization.");
-        }
-
-        return value.Trim();
     }
 
     private sealed record KickAppAccessTokenCache(

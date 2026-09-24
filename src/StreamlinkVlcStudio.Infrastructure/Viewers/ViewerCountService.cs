@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
@@ -135,9 +136,7 @@ public sealed class ViewerCountService : IViewerCountService
 
     private static ViewerCountResult ReadTwitchViewerCount(StreamTarget target, JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return new ViewerCountResult(ViewerCountState.Unavailable, null, "Twitch viewer count response did not include stream data.");
         }
@@ -172,9 +171,7 @@ public sealed class ViewerCountService : IViewerCountService
 
     private static ViewerCountResult ReadKickViewerCount(StreamTarget target, JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
             return new ViewerCountResult(ViewerCountState.Unavailable, null, "Kick viewer count response did not include channel data.");
         }

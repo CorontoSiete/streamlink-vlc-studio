@@ -4,10 +4,12 @@
     <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Core\StreamlinkVlcStudio.Core.csproj" />
     <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Infrastructure\StreamlinkVlcStudio.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj" />
+    <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Maintenance\StreamlinkVlcStudio.Maintenance.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <ApplicationManifest>..\..\src\StreamlinkVlcStudio.App.Wpf\app.manifest</ApplicationManifest>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.10240.0</SupportedOSPlatformVersion>
     <!-- This direct override is intentional: the WPF toast dependency otherwise restores vulnerable 4.7.0. -->

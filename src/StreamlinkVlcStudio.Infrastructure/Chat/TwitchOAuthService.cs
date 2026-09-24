@@ -23,7 +23,7 @@ public static class TwitchOAuthService
         ChatSettings settings,
         CancellationToken cancellationToken = default)
     {
-        var clientId = RequireSetting(settings.TwitchClientId, "Twitch Client ID");
+        var clientId = OAuthTokenHelpers.RequireSetting(settings.TwitchClientId, "Twitch Client ID", "Twitch");
         var state = CreateBase64UrlSecret(32);
         var authorizationUri = BuildAuthorizationUri(clientId, state);
 
@@ -168,11 +168,7 @@ public static class TwitchOAuthService
             ["state"] = state
         };
 
-        var builder = new StringBuilder(AuthorizationEndpoint);
-        builder.Append('?');
-        builder.Append(string.Join('&', query.Select(pair =>
-            $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")));
-        return new Uri(builder.ToString());
+        return OAuthTokenHelpers.BuildAuthorizationUri(AuthorizationEndpoint, query);
     }
 
     private static async Task<TwitchBrowserToken> WaitForAuthorizationTokenAsync(
@@ -283,16 +279,6 @@ public static class TwitchOAuthService
         return query.TryGetValue("expires_in", out var expiresIn)
             ? OAuthTokenHelpers.TryGetExpiresAt(expiresIn)
             : null;
-    }
-
-    private static string RequireSetting(string value, string name)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new InvalidOperationException($"{name} is required for Twitch authorization.");
-        }
-
-        return value.Trim();
     }
 
     private static HashSet<string> ReadScopes(IReadOnlyDictionary<string, string> query)

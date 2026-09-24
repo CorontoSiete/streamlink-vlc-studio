@@ -63,6 +63,13 @@ if ([string]::IsNullOrWhiteSpace($releaseContractPath)) {
     throw "Release contract was not found beside the installer or in the source tree."
 }
 $script:ReleaseContract = Read-ReleaseContract $releaseContractPath
+$script:UpdateManifestPublicModulusBase64 = 'wu8er7em+OztL4N8JMJxb8TgmfKC75H2iEOjtdQW0xtZ/Wl2YEoerIv0eZxso7CNvHQevwbtQT+1qWYN6hxfiNl1x1G9dztdMqNfevzD67xfzdrnFJZZ8gGN0cNHhIVJzsbtiOzMrqfmg6pH0sTxdwEz6RXlPbqMa53+Ao/cI26SNJLoWeuFr8TM6L7zVChhjx3ma2uVHIdtenHB3Te7ZeAcRMrJ6SIZ5EGZ+GlF3vjzxvZp6DaC+OeW0QaGYsmlLXgOmgwFtj065yvjoOKlC1mkFxhHZYLtETO9IJpeqpEDpu57yQI5NPL77yuHd+26AwtMTintSJhZ9nnARp28yLypzp9MdFXF+vfDWNO55cDIxImCjrynajvnGp+Gq45IWpxMoyLoqOi2BvVJ3QrficGku0Fs4goB42+VT53XXFzbfVmSsp4n2emFFYEx8qJmttBjLJOy8JGE9FD+A0+gEOnv1XIq3dGOLOLjWP3W0WLq7iky6toi+/Xnbk3NEm7p'
+$script:UpdateManifestKeyId = 'e10eae5e531d0099f523d2bc24eb5c14855d4ee01c556deafbbb8eff3c79af2c'
+if ([string]$script:ReleaseContract.release.manifestSignature.keyId -cne $script:UpdateManifestKeyId -or
+    [int]$script:ReleaseContract.release.manifestSignature.keyBits -ne 3072 -or
+    [string]$script:ReleaseContract.release.manifestSignature.algorithm -cne 'RSA-PSS-SHA256') {
+    throw 'The bundled installer trust root does not match the release contract.'
+}
 $script:UserAgent = "StreamlinkVlcStudioInstaller/1.0 (+https://github.com/$GitHubRepository)"
 $script:TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("StreamlinkVlcStudio-installer-" + [Guid]::NewGuid().ToString("N"))
 $script:RebootRequired = $false
@@ -225,6 +232,133 @@ function Select-ReleaseAsset($Release, [string[]]$Patterns, [string]$Description
     }
 
     throw "No $Description asset matched '$($Patterns -join "', '")'. Available assets: $available"
+}
+
+function Select-UniqueReleaseAssetExact($Release, [string]$Name) {
+    $matches = @($Release.assets | Where-Object { [string]$_.name -ceq $Name })
+    if ($matches.Count -ne 1) {
+        throw "Final release must contain exactly one '$Name' asset; found $($matches.Count)."
+    }
+    foreach ($propertyName in @('url', 'browser_download_url')) {
+        $uri = $null
+        if (-not [Uri]::TryCreate([string]$matches[0].$propertyName, [UriKind]::Absolute, [ref]$uri) -or
+            -not [string]::Equals($uri.Scheme, [Uri]::UriSchemeHttps, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "GitHub release asset '$Name' has a non-HTTPS $propertyName."
+        }
+    }
+    $matches[0]
+}
+
+function Assert-ExactPublicReleaseAssets($Release) {
+    $expectedNames = @($script:ReleaseContract.releaseSet | ForEach-Object { [string]$_.name })
+    $actualNames = @($Release.assets | ForEach-Object { [string]$_.name })
+    if ($actualNames.Count -ne $expectedNames.Count) {
+        throw "Final release asset count does not match the signed release contract. Expected $($expectedNames.Count); found $($actualNames.Count)."
+    }
+    foreach ($name in $expectedNames) {
+        Select-UniqueReleaseAssetExact $Release $name | Out-Null
+    }
+    $unexpected = @($actualNames | Where-Object { $_ -cnotin $expectedNames })
+    if ($unexpected.Count -gt 0) {
+        throw "Final release contains assets outside the closed release contract: $($unexpected -join ', ')."
+    }
+}
+
+function Read-VerifiedUpdateManifest(
+    $Release,
+    [string]$ManifestPath,
+    [string]$SignaturePath,
+    [string]$Repository) {
+    $manifestBytes = [IO.File]::ReadAllBytes($ManifestPath)
+    if ($manifestBytes.Length -eq 0 -or
+        ($manifestBytes.Length -ge 3 -and $manifestBytes[0] -eq 0xEF -and $manifestBytes[1] -eq 0xBB -and $manifestBytes[2] -eq 0xBF)) {
+        throw 'Update manifest must be non-empty UTF-8 without a byte-order mark.'
+    }
+    $signatureBytes = [IO.File]::ReadAllBytes($SignaturePath)
+    if ($signatureBytes.Length -ne 384) {
+        throw "Detached update-manifest signature must be exactly 384 bytes; found $($signatureBytes.Length)."
+    }
+
+    $rsa = [Security.Cryptography.RSACng]::new()
+    try {
+        $rsa.ImportParameters([Security.Cryptography.RSAParameters]@{
+            Modulus = [Convert]::FromBase64String($script:UpdateManifestPublicModulusBase64)
+            Exponent = [byte[]](1, 0, 1)
+        })
+        if ($rsa.KeySize -ne 3072 -or
+            -not $rsa.VerifyData(
+                $manifestBytes,
+                $signatureBytes,
+                [Security.Cryptography.HashAlgorithmName]::SHA256,
+                [Security.Cryptography.RSASignaturePadding]::Pss)) {
+            throw 'The RSA-PSS/SHA-256 update-manifest signature is invalid.'
+        }
+    } finally {
+        $rsa.Dispose()
+    }
+
+    # No manifest field is read before the detached signature succeeds.
+    $manifestText = [Text.UTF8Encoding]::new($false, $true).GetString($manifestBytes)
+    $manifest = $manifestText | ConvertFrom-Json
+    $requiredProperties = @(
+        'schemaVersion', 'protocolVersion', 'channel', 'prerelease', 'version',
+        'tag', 'commit', 'repository', 'releasePage', 'keyId',
+        'dependencyMinimums', 'setup', 'zip')
+    foreach ($name in $requiredProperties) {
+        if ($null -eq $manifest.PSObject.Properties[$name]) {
+            throw "Signed update manifest omits required field '$name'."
+        }
+    }
+    $identity = Get-StableReleaseIdentity `
+        -Tag ([string]$manifest.tag) `
+        -MinimumVersion ([string]$script:ReleaseContract.release.minimumVersion)
+    $releasePage = "https://github.com/$Repository/releases/tag/$($identity.Tag)"
+    if ($manifest.schemaVersion -ne 1 -or
+        [int]$manifest.protocolVersion -ne [int]$script:ReleaseContract.release.updaterProtocolVersion -or
+        [string]$manifest.channel -cne 'stable' -or
+        $manifest.prerelease -isnot [bool] -or [bool]$manifest.prerelease -or
+        [string]$manifest.version -cne $identity.VersionText -or
+        [string]$manifest.tag -cne [string]$Release.tag_name -or
+        [string]$manifest.commit -notmatch '^[0-9a-f]{40}$' -or
+        [string]$manifest.repository -cne $Repository -or
+        [string]$manifest.releasePage -cne $releasePage -or
+        [string]$manifest.keyId -cne $script:UpdateManifestKeyId) {
+        throw 'Signed update manifest identity is inconsistent with the final GitHub release.'
+    }
+    if ([string]$manifest.dependencyMinimums.streamlink -cne [string]$script:DependencyManifest.dependencies.streamlink.version -or
+        [string]$manifest.dependencyMinimums.vlc -cne [string]$script:DependencyManifest.dependencies.vlc.version) {
+        throw 'Signed update manifest dependency minimums do not match the bundled dependency manifest.'
+    }
+
+    foreach ($description in @(
+            [pscustomobject]@{ Value = $manifest.setup; Name = 'StreamlinkVlcStudio-Setup.exe' },
+            [pscustomobject]@{ Value = $manifest.zip; Name = 'StreamlinkVlcStudio-release.zip' })) {
+        $asset = Select-UniqueReleaseAssetExact $Release $description.Name
+        [long]$signedLength = 0
+        if ([string]$description.Value.name -cne $description.Name -or
+            -not [long]::TryParse(
+                [Convert]::ToString($description.Value.length, [Globalization.CultureInfo]::InvariantCulture),
+                [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$signedLength) -or
+            $signedLength -le 0 -or $signedLength -gt 1GB -or
+            $signedLength -ne [long]$asset.size -or
+            [string]$description.Value.sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Signed update asset metadata is invalid for $($description.Name)."
+        }
+    }
+    $manifest
+}
+
+function Assert-SignedManifestFile([string]$Path, $SignedAsset) {
+    $item = Get-Item -LiteralPath $Path
+    $actualHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($item.Name -cne [string]$SignedAsset.name -or
+        $item.Length -ne [long]$SignedAsset.length -or
+        $actualHash -cne [string]$SignedAsset.sha256) {
+        throw "Downloaded release package does not match signed name, length, and SHA-256: $($item.Name)."
+    }
+    Write-Detail "Verified signed SHA-256 $actualHash for $($item.Name)"
 }
 
 function Select-AppArtifact($ArtifactsResponse, [string]$Commit) {
@@ -724,16 +858,25 @@ function Install-AppFromGitHubRelease {
         throw "Could not read the latest GitHub release for $GitHubRepository. Original error: $($_.Exception.Message)"
     }
 
-    if ($release.draft -or $release.prerelease) {
+    if ($release.draft -or $release.prerelease -or [string]$release.tag_name -notmatch '^v') {
         throw "Latest GitHub release is not a final published release: $($release.tag_name)"
     }
-    $asset = Select-ReleaseAsset $release $AppAssetPatterns "Streamlink VLC Studio app"
-    $checksumAsset = Select-ReleaseAsset $release @("^SHA256SUMS\.txt$") "release checksum manifest"
+    Assert-ExactPublicReleaseAssets $release
+    $asset = Select-UniqueReleaseAssetExact $release 'StreamlinkVlcStudio-release.zip'
+    $checksumAsset = Select-UniqueReleaseAssetExact $release 'SHA256SUMS.txt'
+    $manifestAsset = Select-UniqueReleaseAssetExact $release 'UPDATE-MANIFEST.json'
+    $signatureAsset = Select-UniqueReleaseAssetExact $release 'UPDATE-MANIFEST.sig'
     $downloadPath = Get-TempDownloadPath $asset.name
     $checksumPath = Get-TempDownloadPath ("release-" + [Guid]::NewGuid().ToString("N") + "-SHA256SUMS.txt")
+    $manifestPath = Get-TempDownloadPath ("release-" + [Guid]::NewGuid().ToString("N") + "-UPDATE-MANIFEST.json")
+    $signaturePath = Get-TempDownloadPath ("release-" + [Guid]::NewGuid().ToString("N") + "-UPDATE-MANIFEST.sig")
 
     New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
-    Save-GitHubAsset $asset $downloadPath
+    Save-GitHubAsset $manifestAsset $manifestPath 1MB
+    Save-GitHubAsset $signatureAsset $signaturePath 16KB
+    $manifest = Read-VerifiedUpdateManifest $release $manifestPath $signaturePath $GitHubRepository
+    Save-GitHubAsset $asset $downloadPath ([long]$manifest.zip.length)
+    Assert-SignedManifestFile $downloadPath $manifest.zip
     Save-GitHubAsset $checksumAsset $checksumPath $script:MaximumChecksumBytes
     if ((Get-Item -LiteralPath $checksumPath).Length -gt 1MB) {
         throw "Release checksum manifest is unexpectedly large."
@@ -771,8 +914,8 @@ function Install-AppFromGitHubArtifact {
     Save-GitHubDownloadUrl $artifact.archive_download_url $downloadPath $artifactBytes $artifactBytes
     $artifactExtract = Join-Path $script:TempRoot ("artifact-" + [Guid]::NewGuid().ToString("N"))
     Expand-ValidatedZipArchive $downloadPath $artifactExtract
-    $checksumMatches = @(Get-ChildItem -LiteralPath $artifactExtract -Recurse -File -Filter "SHA256SUMS.txt")
-    $releaseMatches = @(Get-ChildItem -LiteralPath $artifactExtract -Recurse -File -Filter "StreamlinkVlcStudio-release.zip")
+    $checksumMatches = @(Get-ChildItem -LiteralPath $artifactExtract -Recurse -File -Force -Filter "SHA256SUMS.txt")
+    $releaseMatches = @(Get-ChildItem -LiteralPath $artifactExtract -Recurse -File -Force -Filter "StreamlinkVlcStudio-release.zip")
     if ($checksumMatches.Count -ne 1 -or $releaseMatches.Count -ne 1) {
         throw "Trusted developer artifact must contain exactly one release zip and one SHA256SUMS.txt."
     }
@@ -799,7 +942,7 @@ function Install-App {
         $githubError = $_.Exception.Message
         $localPayloadRoot = Find-LocalAppPayloadRoot
         if (-not [string]::IsNullOrWhiteSpace($localPayloadRoot)) {
-            Write-Detail "GitHub latest app install failed; using local package instead. $githubError"
+            Write-Warning "The signed GitHub release could not be used, so the app payload beside install.ps1 is being installed WITHOUT signature or checksum verification. Verify StreamlinkVlcStudio-release.zip against SHA256SUMS.txt yourself before trusting this installation. Reason: $githubError"
             return Install-AppFromLocalPayload
         }
 

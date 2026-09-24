@@ -23,6 +23,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private ReplaySettings replay = new();
     private HotkeySettings hotkeys = new();
     private FollowedChannelsSettings followedChannels = new();
+    private UpdateSettings updates = new();
     private List<RecentStreamSettings> recentStreams = [];
     private Dictionary<string, int> streamVolumes = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, double> streamVlcOverlayFontSizes = new(StringComparer.OrdinalIgnoreCase);
@@ -323,5 +324,11 @@ public sealed class AppSettings : NotifyPropertyChangedObject
             screen.Top,
             screen.Width,
             screen.Height);
+    }
+
+    public UpdateSettings Updates
+    {
+        get => updates;
+        set => SetProperty(ref updates, value ?? new());
     }
 }

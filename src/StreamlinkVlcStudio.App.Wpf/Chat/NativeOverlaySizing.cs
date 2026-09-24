@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.IO;
 using StreamlinkVlcStudio.Core.Settings;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
@@ -44,5 +46,57 @@ internal static class NativeOverlaySizing
         var sourceHeight = videoHeight > 0 ? videoHeight : ReferenceVideoHeight;
         var scaled = ((long)value * sourceHeight + ReferenceVideoHeight / 2) / ReferenceVideoHeight;
         return (int)Math.Clamp(scaled, 1, int.MaxValue);
+    }
+
+    /// <summary>
+    /// Parses the integers out of a small overlay state file. Values are always read with the
+    /// invariant culture so the renderer and the shell agree on every machine.
+    /// </summary>
+    internal static int[] ParseInts(string text)
+    {
+        return (text ?? "")
+            .Split([' ', '\t', '\r', '\n', ':', ',', '{', '}'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(token => int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : (int?)null)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Reads a persisted overlay size. <paramref name="referenceSize"/> reports whether the file
+    /// stores reference (1080p-normalized) pixels rather than absolute ones.
+    /// </summary>
+    internal static bool TryReadSizeFile(string path, out int width, out int height, out bool referenceSize)
+    {
+        width = 0;
+        height = 0;
+        referenceSize = false;
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            var text = File.ReadAllText(path);
+            var values = ParseInts(text);
+            if (values.Length < 2)
+            {
+                return false;
+            }
+
+            width = values[0];
+            height = values[1];
+            referenceSize =
+                text.Contains("reference", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("normalized", StringComparison.OrdinalIgnoreCase);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
     }
 }

@@ -278,13 +278,16 @@ internal static partial class ApplicationTestCatalog
         await tab.DisposeAsync();
         return;
     }),
-    ("replay chat results normalize null message collections", () =>
+    ("VOD chat results normalize null message collections", () =>
     {
-        var result = ReplayChatLoadResult.Available(null);
-
-        Assert.True(result.IsAvailable);
-        Assert.NotNull(result.Messages);
-        Assert.Equal(0, result.Messages.Count);
+        Assert.NotNull(VodChatFetchResult.Loaded(null, TimeSpan.FromSeconds(1)).Messages);
+        Assert.Equal(0, VodChatFetchResult.Loaded(null, TimeSpan.FromSeconds(1)).Messages.Count);
+        Assert.NotNull(VodChatFetchResult.Completed(null, TimeSpan.FromSeconds(1)).Messages);
+        Assert.Equal(0, VodChatFetchResult.Unsupported("").Messages.Count);
+        // A blank reason still has to explain itself to the viewer.
+        Assert.True(VodChatFetchResult.Unsupported("  ").Reason.Length > 0);
+        Assert.True(VodChatFetchResult.Failed("").Reason.Length > 0);
+        Assert.Equal("trimmed", VodChatFetchResult.Failed("  trimmed  ").Reason);
         return Task.CompletedTask;
     }),
     ("chat backfill results normalize null and default message collections", () =>
@@ -1167,9 +1170,9 @@ internal static partial class ApplicationTestCatalog
             ResolveStreamUrlOverride = (_, _) => throw new InvalidOperationException(
                 "error: This video is only available to subscribers")
         };
-        var replayChatProvider = new FakeReplayChatProvider(ReplayChatLoadResult.Available(
+        var vodChatProvider = new FakeVodChatProvider(FakeVodChatProvider.Once(
         [
-            new ReplayChatMessage(
+            new VodChatMessage(
                 TimeSpan.Zero,
                 new ChatMessage(
                     PlatformKind.Twitch,
@@ -1207,7 +1210,7 @@ internal static partial class ApplicationTestCatalog
             new FakeChatClientFactory(),
             new MemoryLogger(),
             action => action(),
-            replayChatProvider: replayChatProvider,
+            vodChatProvider: vodChatProvider,
             twitchSubOnlyVodResolver: subOnlyResolver);
         var settings = new AppSettings
         {
@@ -1219,14 +1222,14 @@ internal static partial class ApplicationTestCatalog
 
         await tab.StartAsync(settings);
         await TestWait.UntilAsync(
-            () => replayChatProvider.CallCount > 0,
+            () => vodChatProvider.CallCount > 0,
             TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, subOnlyResolver.Requests.Count);
-        Assert.Equal(1, replayChatProvider.CallCount);
-        Assert.Equal("123456", replayChatProvider.Requests[0].ReplayId);
-        Assert.Equal("streamer", replayChatProvider.Requests[0].Channel);
-        Assert.Equal(TimeSpan.FromHours(1), replayChatProvider.Requests[0].Duration);
+        Assert.Equal(1, vodChatProvider.CallCount);
+        Assert.Equal("123456", vodChatProvider.RequestedReplays[0].ReplayId);
+        Assert.Equal("streamer", vodChatProvider.RequestedReplays[0].Channel);
+        Assert.Equal(TimeSpan.FromHours(1), vodChatProvider.RequestedReplays[0].Duration);
         Assert.True(tab.IsReplaySeekEnabled);
 
         await tab.DisposeAsync();

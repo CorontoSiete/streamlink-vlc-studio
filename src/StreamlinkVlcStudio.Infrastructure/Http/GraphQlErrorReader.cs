@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
 
 namespace StreamlinkVlcStudio.Infrastructure.Http;
@@ -21,9 +22,7 @@ internal static class GraphQlErrorReader
             return "";
         }
 
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("errors", out var errors) ||
-            errors.ValueKind != JsonValueKind.Array)
+        if (!JsonElementReader.TryGetArray(root, "errors", out var errors))
         {
             return "";
         }

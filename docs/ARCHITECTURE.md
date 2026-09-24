@@ -36,11 +36,12 @@ Tradeoffs considered:
   - Followed live streams adapter for Twitch Helix and configured Kick channel slugs.
   - Twitch/Kick channel search adapter and Twitch/Kick VOD adapters.
   - Twitch subscriber-only VOD/replay fallback resolver using public storyboard-derived CloudFront playlists.
+  - Twitch muted-VOD repair: `TwitchMutedVodPlaybackGateway` inspects each Twitch VOD playlist before libVLC opens it and, only when it lists muted segments, plays it through the loopback `TwitchMutedVodRepairProxy` (see "Muted Twitch VOD Repair").
   - Twitch IRC adapter with anonymous read-only mode and OAuth send mode.
   - Isolated Kick chat adapter with public Pusher reading and OAuth API sending.
-  - Official Kick webhook listener, signature verifier, replay-chat cache, and event subscription manager.
+  - `VodChatProvider`, a thin router over one fetcher per platform: Twitch VOD comments paged by content offset, Kick recent messages paged backwards by timestamp cursor.
   - One Twitch GraphQL transport and one Kick website JSON/fallback reader shared by replay, chat, VOD, and browsing callers.
-  - `ReplayResolver`, `ReplayChatProvider`, and `BrowseService` remain compatibility façades; browse payload mapping, Twitch rate-limit coordination, replay URL validation, and Kick webhook authentication/replay protection are separate components.
+  - `ReplayResolver` and `BrowseService` remain compatibility façades; browse payload mapping, Twitch rate-limit coordination, and replay URL validation are separate components.
 
 - `StreamlinkVlcStudio.App.Wpf`
   - WPF shell.
@@ -126,10 +127,56 @@ Clicking a home card opens the same `StreamTarget` flow used by browser capture 
 - Twitch VOD browsing uses Helix `users` and `videos`, supports type filters and cursor-based load more, and requires Twitch OAuth plus a matching Client ID.
 - Kick VOD browsing reads `kick.com/api/v2/channels/{slug}/videos` with browser-style headers and the same curl fallback pattern used for Kick website reads. It is best-effort because the endpoint is part of Kick's website surface.
 - VOD rows are represented by a platform-aware view model that builds explicit `StreamTargetKind.TwitchVod` or `StreamTargetKind.KickVod` targets.
-- Twitch VOD tabs resolve the selected Twitch URL through Streamlink `--stream-url` before libVLC playback, then load replay chat by VOD ID when available.
+- Twitch VOD tabs resolve the selected Twitch URL through Streamlink `--stream-url` before libVLC playback, then replay chat by VOD ID.
 - Live tabs use the same storyboard-derived CloudFront fallback when seeking into a subscriber-only matching Twitch VOD and Streamlink cannot resolve it.
-- Kick VOD tabs play the returned HLS source directly in libVLC without Streamlink URL resolution. When the VOD item includes a start time, replay chat is loaded from the verified official Kick `chat.message.sent` webhook cache under `%APPDATA%\StreamlinkVlcStudio\replay-chat\kick-official`.
+- Kick VOD tabs play the returned HLS source directly in libVLC without Streamlink URL resolution. When the VOD item includes a start time, chat is replayed from Kick's public recent-messages endpoint, aligned to that start time.
 - Explicit VOD tabs disable live viewer polling, live chat sending, return-to-live behavior, and Recent-stream writes.
+
+## Muted Twitch VOD Repair
+
+Twitch silences copyrighted audio by remuxing the affected VOD segments (`N-muted.ts`). In those
+segments one transport-stream packet every two seconds carries a program clock reference and
+presentation timestamp of 2^33-1 (an unset "-1"), so the stream clock leaps forward 26.5 hours and
+back. libVLC's HLS demuxer paces itself on those values: it believes a day of media is buffered,
+stops fetching segments, and holds every track behind a clock that never arrives. Playback froze
+about two seconds into the first muted segment -- typically a muted intro at the very start of a
+VOD -- while libVLC kept reporting `Playing`, so nothing in the app could notice.
+
+This is a libVLC defect that VLC 3.0.18 fixed. Measured against one muted VOD: 3.0.12, 3.0.14,
+3.0.16 and 3.0.17.4 freeze at the same frame; 3.0.18 and 3.0.23 (the release pinned in
+`dependencies/windows-installers.json`) play it unaided. Removing only the timestamp still froze
+3.0.12, removing only the clock reference dropped a frame every two seconds, and removing both
+played cleanly. The repair is therefore a compatibility shim for users whose configured VLC
+predates 3.0.18, not part of normal playback.
+
+- `LibVlcPlaybackEngine` asks an `IPlaybackMediaSourceGateway` for the source to open, which covers
+  explicit VOD tabs, replay-seek reloads on live tabs, and the engine's own video-output rebinds.
+  It passes the version of the libVLC it actually loaded (`LibVlcVersion`, from
+  `libvlc_get_version`). The returned `PlaybackMediaSource` is owned by the engine and released
+  with the media.
+- `TwitchMutedVodPlaybackGateway` returns the original URL untouched when libVLC is 3.0.18 or
+  newer; an unknown version is treated as affected. Otherwise it only considers media playlists on
+  approved Twitch hosts and the local playlist written by the subscriber-only fallback. It reads
+  the playlist once (eight-second budget); without muted segments the original URL is played
+  unchanged. Any failure also falls back to the original URL, so playback is never worse off than
+  before -- and the warning says that the freeze can return and that updating VLC avoids it.
+- `TwitchMutedVodRepairProxy` listens on `127.0.0.1` on an ephemeral port. It serves the playlist
+  with muted segments rewritten to `/{token}/s/{index}.ts` and every other URI as its absolute
+  Twitch URL, so unaffected segments never flow through the app. Segment URLs are indexes into a
+  per-session table filled from validated playlists; upstream requests reuse
+  `ValidatedReplayHttpClient`, and the 128-bit session token is revoked when the media is released.
+  Reading a request is cheap, so up to 256 connections may be open, but only a request naming a
+  live session enters the 64-slot pool that fetches from Twitch: a caller without a token cannot
+  starve the player. A transient accept failure is retried; if the accept loop does end, the next
+  session restarts the listener on the same port so sessions that are still playing recover.
+- Known limits, all visible in `studio.log` under `MutedVodRepair`: a VOD that is still growing can
+  gain muted segments after it started playing directly; muted segments of fragmented-MP4 VODs are
+  not repaired (the defect was only observed in MPEG-TS); and a muted segment in which nothing was
+  found to repair is reported once per session, in case Twitch changes the layout.
+- `TwitchMutedSegmentSanitizer` (Core, pure) removes the two invalid fields. Both are optional in
+  MPEG-TS, so later header fields slide up and the freed bytes become stuffing: packet size,
+  payload offset, and segment length never change, which keeps the upstream `Content-Length` valid.
+  `TwitchMutedSegmentRepairCopier` streams the repair so playback starts on the first packets.
 
 ## Clip Flow
 
@@ -165,7 +212,7 @@ Sixty stable seconds reset the backoff; explicit disconnect/disposal cancels and
   - Validates the configured user access token before docked chat sending.
   - Sends docked chat through Kick's public chat API using the configured user access token.
   - Native VLC overlay reading works anonymously. Native VLC overlay typing uses the current Kick user access token when one is configured.
-  - Official Kick VOD chat is cache-backed: a local listener accepts only signed `chat.message.sent` webhooks, stores them by channel/day, and replay tabs align cached messages by VOD start time. When the listener is enabled, Kick tabs also create or verify the official event subscription for the broadcaster through `/public/v1/events/subscriptions` using the configured Kick app credentials. Kick's current official REST/OpenAPI surface has no historical VOD chat/messages endpoint.
+  - Kick VOD chat needs no credentials. Kick's official REST/OpenAPI surface has no VOD chat endpoint, but the public `/api/v2/channels/{id}/messages` resource that the live client already uses also serves history — observed to reach back at least 90 days. Its `cursor` is a Unix-microsecond timestamp and pages *backwards*, so a chunk is gathered by walking back from the end of the chunk to its start and then reversing.
   - Failure is non-fatal and shown as a system chat message.
 
 Kick's public chat surface changes more often than Twitch IRC. That is why the adapter is small, replaceable, and not allowed to block playback.
@@ -253,7 +300,7 @@ mutating dictionary.
 - `.dependency-audit/` and `.nuget/` are ignored generated caches. The repository must not be initialized
   as a Git checkout merely to run validation.
 - `shared/release-contract.json` defines the one valid payload root, required browser/native/runtime
-  files, canonical output paths, and exact six-asset release set. Package, installer, staging, and CI
+  files, pinned RSA-PSS update trust root, canonical output paths, and exact seven-asset release set. Package, installer, staging, and CI
   entrypoints consume that contract rather than maintaining independent asset lists.
 - Windows dependency manifests use `length` as the canonical byte-count field. Native overlay staging
   verifies a closed manifest set, including hidden files, before copying exactly the verified provenance.
