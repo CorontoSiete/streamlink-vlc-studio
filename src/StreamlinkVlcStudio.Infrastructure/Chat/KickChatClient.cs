@@ -145,7 +145,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
                 await ValidateSendTokenAsync(token, cancellationToken);
                 RaiseStatusChanged("Kick OAuth token has chat send access.");
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 logger.Write(AppLogLevel.Warning, "KickChat", "Kick token validation failed; chat will be read-only.", ex);
                 RaiseStatusChanged($"Kick token validation failed: {ex.Message}");
@@ -1090,7 +1090,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
         {
             return await KickOAuthService.TryResolveBroadcasterUserIdAsync(channel, settings, logger, cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(AppLogLevel.Warning, "KickChat", $"Kick API channel lookup failed for {channel}.", ex);
         }
@@ -1170,7 +1170,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
             logger.Write(AppLogLevel.Info, "KickChat", "Refreshed expired Kick OAuth token.");
             return refreshedToken;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(AppLogLevel.Warning, "KickChat", "Failed to refresh expired Kick OAuth token.", ex);
             return null;

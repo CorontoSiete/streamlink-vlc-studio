@@ -1,10 +1,12 @@
+using StreamlinkVlcStudio.Infrastructure.Threading;
+
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 internal sealed class TabStartController(int maximumConcurrency) : IDisposable
 {
     private readonly object gate = new();
     private readonly HashSet<Guid> activeStarts = [];
-    private readonly SemaphoreSlim startSlots = new(maximumConcurrency, maximumConcurrency);
+    private readonly AsyncOperationGate startSlots = new(maximumConcurrency);
     private bool disposed;
 
     public bool IsActive(Guid tabId)
@@ -38,20 +40,13 @@ internal sealed class TabStartController(int maximumConcurrency) : IDisposable
     {
         ArgumentNullException.ThrowIfNull(operation);
 
-        var acquired = false;
         try
         {
-            await startSlots.WaitAsync(cancellationToken);
-            acquired = true;
+            using var lease = await startSlots.EnterAsync(cancellationToken);
             await operation(cancellationToken);
         }
         finally
         {
-            if (acquired)
-            {
-                startSlots.Release();
-            }
-
             End(tabId);
         }
     }
@@ -75,8 +70,7 @@ internal sealed class TabStartController(int maximumConcurrency) : IDisposable
 
             disposed = true;
             activeStarts.Clear();
+            startSlots.Dispose();
         }
-
-        startSlots.Dispose();
     }
 }

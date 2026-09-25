@@ -130,7 +130,11 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers, M
     public static bool Matches(string? configuredGesture, string defaultGesture, HotkeyGesture input)
         => ParseOrDefault(configuredGesture, defaultGesture) == input;
 
-    public string Serialize()
+    public string Serialize() => Format(MouseButton is null ? Key.ToString() : GetMouseButtonName(), "+");
+
+    public string ToDisplayString() => Format(MouseButton is null ? GetKeyDisplayName(Key) : GetMouseButtonName(), " + ");
+
+    private string Format(string keyName, string separator)
     {
         var parts = new List<string>(5);
         if (Modifiers.HasFlag(ModifierKeys.Control))
@@ -153,35 +157,8 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers, M
             parts.Add("Win");
         }
 
-        parts.Add(MouseButton is null ? Key.ToString() : GetMouseButtonName());
-        return string.Join('+', parts);
-    }
-
-    public string ToDisplayString()
-    {
-        var parts = new List<string>(5);
-        if (Modifiers.HasFlag(ModifierKeys.Control))
-        {
-            parts.Add("Ctrl");
-        }
-
-        if (Modifiers.HasFlag(ModifierKeys.Alt))
-        {
-            parts.Add("Alt");
-        }
-
-        if (Modifiers.HasFlag(ModifierKeys.Shift))
-        {
-            parts.Add("Shift");
-        }
-
-        if (Modifiers.HasFlag(ModifierKeys.Windows))
-        {
-            parts.Add("Win");
-        }
-
-        parts.Add(MouseButton is null ? GetKeyDisplayName(Key) : GetMouseButtonName());
-        return string.Join(" + ", parts);
+        parts.Add(keyName);
+        return string.Join(separator, parts);
     }
 
     private string GetMouseButtonName() => MouseButton switch

@@ -43,8 +43,7 @@ internal static class BrowsePayloadMapper
 
         foreach (var item in data.EnumerateArray())
         {
-            var login = GetOptionalString(item, "user_login").Trim();
-            if (string.IsNullOrWhiteSpace(login) ||
+            if (!TryGetNonEmptyString(item, "user_login", out var login) ||
                 !StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var target))
             {
                 continue;

@@ -1,6 +1,5 @@
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Logging;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Core.Json;
@@ -30,11 +29,11 @@ internal static class TwitchProfileImageLookup
             var query = string.Join(
                 "&",
                 batch.Select(login => $"login={Uri.EscapeDataString(login)}"));
-            using var request = new HttpRequestMessage(
+            using var request = TwitchApiRequest.Create(
                 HttpMethod.Get,
-                $"https://api.twitch.tv/helix/users?{query}");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            request.Headers.TryAddWithoutValidation("Client-Id", clientId);
+                $"https://api.twitch.tv/helix/users?{query}",
+                accessToken,
+                clientId);
 
             using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
             var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);

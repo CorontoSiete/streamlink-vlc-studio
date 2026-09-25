@@ -1,4 +1,3 @@
-using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
@@ -66,7 +65,7 @@ public sealed class ViewerCountService : IViewerCountService
 
         var clientId = await TwitchClientIdResolver.ResolveAsync(
             settings,
-            GetSnapshotHttpClient(),
+            snapshotProvider.HttpClientForCredentialValidation,
             token,
             logger,
             "Viewers",
@@ -96,7 +95,7 @@ public sealed class ViewerCountService : IViewerCountService
         }
 
         using var document = JsonDocument.Parse(response.Body);
-        return ReadTwitchViewerCount(target, document.RootElement);
+        return ReadViewerCount(target, document.RootElement);
     }
 
     private async Task<ViewerCountResult> GetKickViewerCountAsync(
@@ -131,104 +130,35 @@ public sealed class ViewerCountService : IViewerCountService
         }
 
         using var document = JsonDocument.Parse(response.Body);
-        return ReadKickViewerCount(target, document.RootElement);
+        return ReadViewerCount(target, document.RootElement);
     }
 
-    private static ViewerCountResult ReadTwitchViewerCount(StreamTarget target, JsonElement root)
+    private static ViewerCountResult ReadViewerCount(StreamTarget target, JsonElement root)
     {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
+        var payload = LiveChannelPayloadReader.Read(target.Platform, target.Channel, root);
+        if (payload.State == LiveChannelState.Offline)
         {
-            return new ViewerCountResult(ViewerCountState.Unavailable, null, "Twitch viewer count response did not include stream data.");
+            return new(ViewerCountState.Offline, null, $"{target.Platform} stream is offline.");
         }
 
-        foreach (var item in data.EnumerateArray())
+        var viewerCount = TryGetInt32(payload.Stream, "viewer_count");
+        if (payload.State != LiveChannelState.Available || viewerCount is null or < 0)
         {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (item.TryGetProperty("user_login", out var login) &&
-                login.ValueKind == JsonValueKind.String &&
-                !string.Equals(login.GetString(), target.Channel, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (TryGetInt32(item, "viewer_count") is { } viewerCount)
-            {
-                return new ViewerCountResult(
-                    ViewerCountState.Available,
-                    viewerCount,
-                    "Twitch viewer count updated.",
-                    GetOptionalString(item, "game_name"),
-                    GetOptionalString(item, "title"));
-            }
+            return new(ViewerCountState.Unavailable, null,
+                $"{target.Platform} viewer count response did not include valid stream data.");
         }
 
-        return new ViewerCountResult(ViewerCountState.Offline, null, "Twitch stream is offline.");
+        var twitch = target.Platform == PlatformKind.Twitch;
+        return new ViewerCountResult(
+            ViewerCountState.Available,
+            viewerCount,
+            $"{target.Platform} viewer count updated.",
+            twitch ? GetOptionalString(payload.Channel, "game_name")
+                : TryReadNestedString(payload.Channel, "category", "name"),
+            twitch ? GetOptionalString(payload.Stream, "title")
+                : FirstNonEmpty(
+                    GetOptionalString(payload.Channel, "stream_title"),
+                    GetOptionalString(payload.Stream, "stream_title"),
+                    GetOptionalString(payload.Stream, "title")));
     }
-
-    private static ViewerCountResult ReadKickViewerCount(StreamTarget target, JsonElement root)
-    {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
-        {
-            return new ViewerCountResult(ViewerCountState.Unavailable, null, "Kick viewer count response did not include channel data.");
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (item.TryGetProperty("slug", out var slug) &&
-                slug.ValueKind == JsonValueKind.String &&
-                !string.Equals(slug.GetString(), target.Channel, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (!item.TryGetProperty("stream", out var stream) ||
-                stream.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-            {
-                return new ViewerCountResult(ViewerCountState.Offline, null, "Kick stream is offline.");
-            }
-
-            if (stream.ValueKind != JsonValueKind.Object)
-            {
-                return new ViewerCountResult(ViewerCountState.Unavailable, null, "Kick stream data had an unexpected shape.");
-            }
-
-            if (TryGetBool(stream, "is_live") is false)
-            {
-                return new ViewerCountResult(ViewerCountState.Offline, null, "Kick stream is offline.");
-            }
-
-            if (TryGetInt32(stream, "viewer_count") is { } viewerCount)
-            {
-                // Kick reports the category on the channel object, next to "stream", not inside it.
-                return new ViewerCountResult(
-                    ViewerCountState.Available,
-                    viewerCount,
-                    "Kick viewer count updated.",
-                    TryReadNestedString(item, "category", "name"),
-                    FirstNonEmpty(
-                        GetOptionalString(item, "stream_title"),
-                        GetOptionalString(stream, "stream_title"),
-                        GetOptionalString(stream, "title")));
-            }
-
-            return new ViewerCountResult(ViewerCountState.Unavailable, null, "Kick stream data did not include viewer_count.");
-        }
-
-        return new ViewerCountResult(ViewerCountState.Offline, null, "Kick stream is offline.");
-    }
-
-    private HttpClient GetSnapshotHttpClient()
-    {
-        return snapshotProvider.HttpClientForCredentialValidation;
-    }
-
 }

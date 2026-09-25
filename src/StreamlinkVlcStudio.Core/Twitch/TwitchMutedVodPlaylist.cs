@@ -29,12 +29,6 @@ public static class TwitchMutedVodPlaylist
     private const string VariantStreamTag = "#EXT-X-STREAM-INF";
     private const string EndListTag = "#EXT-X-ENDLIST";
 
-    public static bool ContainsMutedSegments(string? playlistContent) =>
-        Inspect(playlistContent).MutedSegments > 0;
-
-    public static int CountMutedSegments(string? playlistContent) =>
-        Inspect(playlistContent).MutedSegments;
-
     public static TwitchMutedVodPlaylistInspection Inspect(string? playlistContent)
     {
         if (string.IsNullOrEmpty(playlistContent))

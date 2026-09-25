@@ -9,7 +9,7 @@ internal static class KickHttpHeaders
         if (!httpClient.DefaultRequestHeaders.UserAgent.Any())
         {
             httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamStudio/0.1");
         }
 
         if (!httpClient.DefaultRequestHeaders.Accept.Any())

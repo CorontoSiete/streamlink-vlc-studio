@@ -1,5 +1,6 @@
 using System.Text;
 using StreamlinkVlcStudio.Infrastructure.Limits;
+using StreamlinkVlcStudio.Infrastructure.Text;
 
 namespace StreamlinkVlcStudio.Infrastructure.Http;
 
@@ -35,10 +36,7 @@ internal static class BoundedHttpContentReader
             .ReadOrThrowAsync(content, maxBytes, cancellationToken)
             .ConfigureAwait(false);
         var encoding = ResolveEncoding(content);
-        var preamble = encoding.GetPreamble();
-        var offset = preamble.Length > 0 && bytes.AsSpan().StartsWith(preamble)
-            ? preamble.Length
-            : 0;
+        var offset = EncodingPreamble.GetLength(bytes, encoding);
         return encoding.GetString(bytes, offset, bytes.Length - offset);
     }
 

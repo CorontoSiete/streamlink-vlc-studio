@@ -111,6 +111,12 @@ internal static partial class ApplicationTestCatalog
         }
     }
 
+    static Task WaitForDockedChatMessageAsync(StreamTabViewModel tab, string message) =>
+        TestWait.UntilAsync(
+            () => tab.DockedChatMessages.Any(item => item.Message == message),
+            TimeSpan.FromSeconds(5),
+            $"Docked chat did not display '{message}'.");
+
     static void InvokeReplayClockUpdate(StreamTabViewModel tab)
     {
         var updateClock = typeof(StreamTabViewModel).GetMethod(
@@ -215,7 +221,7 @@ internal static partial class ApplicationTestCatalog
 
     static string CreateTempTestDirectory()
     {
-        var root = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(Path.GetTempPath(), "StreamStudioTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         return root;
     }
@@ -228,7 +234,7 @@ internal static partial class ApplicationTestCatalog
         }
 
         var fullPath = Path.GetFullPath(directory);
-        var tempRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests"));
+        var tempRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "StreamStudioTests"));
         Assert.True(
             fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase),
             $"Refusing to delete unexpected temp directory '{fullPath}'.");
@@ -317,7 +323,7 @@ internal static partial class ApplicationTestCatalog
         Assert.True(!string.IsNullOrWhiteSpace(localAppData), "Expected a LocalApplicationData path.");
         var expectedRoot = Path.GetFullPath(Path.Combine(
             localAppData,
-            "StreamlinkVlcStudio",
+            StreamlinkVlcStudio.Core.AppIdentity.ProductDirectoryName,
             "BundledBadgeAssets",
             badgeDirectory)).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
             Path.DirectorySeparatorChar;
@@ -827,6 +833,27 @@ internal static partial class ApplicationTestCatalog
         }
     }
 
+    static void AssertVideoRendererChildStyles(IntPtr handle)
+    {
+        const int wsChild = 0x40000000;
+        const int wsPopup = unchecked((int)0x80000000);
+        const int wsClipChildren = 0x02000000;
+        const int wsClipSiblings = 0x04000000;
+        const int wsExToolWindow = 0x00000080;
+        const int wsExAppWindow = 0x00040000;
+        const int wsExNoActivate = 0x08000000;
+
+        var style = NativeWindowTest.GetWindowStyle(handle);
+        var extendedStyle = NativeWindowTest.GetWindowExStyle(handle);
+        Assert.True((style & wsChild) != 0, "VLC renderer descendants must remain child HWNDs of the app window.");
+        Assert.True((style & wsPopup) == 0, "VLC renderer descendants must not advertise popup-window identity.");
+        Assert.True((style & wsClipChildren) != 0, "VLC renderer descendants must clip their own children inside the video host.");
+        Assert.True((style & wsClipSiblings) != 0, "VLC renderer descendants must not overpaint sibling overlay HWNDs.");
+        Assert.True((extendedStyle & wsExToolWindow) != 0, "VLC renderer descendants must stay out of app/window picker lists.");
+        Assert.True((extendedStyle & wsExNoActivate) != 0, "VLC renderer descendants must not independently activate during native capture/input.");
+        Assert.True((extendedStyle & wsExAppWindow) == 0, "VLC renderer descendants must not force an independent app-window identity.");
+    }
+
     static Border[] AddHomeCardPanelChildren(HomeCardWrapPanel panel, int count)
     {
         var cards = new Border[count];
@@ -872,7 +899,7 @@ internal static partial class ApplicationTestCatalog
         }
     }
 
-    static void RemoveMainWindowAutomaticStartup(MainWindow window)
+    internal static void RemoveMainWindowAutomaticStartup(MainWindow window)
     {
         RemoveMainWindowHandler<System.Windows.RoutedEventHandler>(window, nameof(System.Windows.Window.Loaded), "MainWindowLoaded");
         RemoveMainWindowHandler<EventHandler>(window, nameof(System.Windows.Window.SourceInitialized), "MainWindowSourceInitialized");

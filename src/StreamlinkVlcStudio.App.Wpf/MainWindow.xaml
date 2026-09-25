@@ -9,7 +9,7 @@
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Twitch &amp; Kick player"
-        Icon="/StreamlinkVlcStudio.App.Wpf;component/Assets/Twitch.ico"
+        Icon="/StreamStudio;component/Assets/Twitch.ico"
         Width="1320"
         Height="820"
         Background="{DynamicResource StudioBaseBrush}"
@@ -18,9 +18,11 @@
         WindowStyle="None"
         WindowStartupLocation="CenterScreen">
     <shell:WindowChrome.WindowChrome>
+        <!-- A nonzero DWM frame avoids WindowChrome rebuilding a clipping region
+             on each resize, which briefly clears embedded native video. -->
         <shell:WindowChrome CaptionHeight="40"
                             CornerRadius="0"
-                            GlassFrameThickness="0"
+                            GlassFrameThickness="1"
                             ResizeBorderThickness="6"
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
@@ -1573,6 +1575,10 @@
                         <Button Content="Later"
                                 Command="{Binding LaterUpdateCommand}"
                                 Style="{StaticResource StudioButtonStyle}" Margin="0,4,0,0" />
+                        <Button Content="Cancel download"
+                                Command="{Binding CancelUpdateCommand}"
+                                Visibility="{Binding CanCancelUpdate, Converter={StaticResource BoolToVisibility}}"
+                                Style="{StaticResource StudioButtonStyle}" Margin="8,4,0,0" />
                     </WrapPanel>
                     <StackPanel VerticalAlignment="Center" Margin="0,0,12,4">
                         <TextBlock Text="Application update" FontWeight="SemiBold" TextWrapping="Wrap" />
@@ -1869,7 +1875,7 @@
                                     </Border>
                                 </Grid>
                                 <TextBlock Grid.Row="1"
-                                           Text="{Binding BrowserClickStatus}"
+                                           Text="Search Twitch or Kick to open a stream"
                                            Foreground="{StaticResource TextMutedBrush}"
                                            FontSize="10"
                                            TextWrapping="NoWrap"
@@ -2767,8 +2773,7 @@
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
                                                         <Button Style="{StaticResource HomeCardButton}"
-                                                                Command="{Binding SelectCommand}"
-                                                                Click="BrowseCategoryButton_Click">
+                                                                Command="{Binding SelectCommand}">
                                                             <Grid>
                                                                 <Grid.RowDefinitions>
                                                                     <RowDefinition Height="174" />
@@ -3520,6 +3525,13 @@
                                 </DockPanel>
                             </Border>
                             <DataTemplate.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsGroup}" Value="False" />
+                                        <Condition Binding="{Binding PrimaryTab.Target.IsExplicitVod}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter TargetName="TabViewerCountIcon" Property="Visibility" Value="Collapsed" />
+                                </MultiDataTrigger>
                                 <DataTrigger Binding="{Binding IsGroup}" Value="True">
                                     <Setter TargetName="TabChrome" Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
                                     <Setter TargetName="TabChrome" Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
@@ -4030,9 +4042,15 @@
                                             <TextBlock Text="Username" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding Settings.Chat.TwitchUsername, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
                                             <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" ToolTip="Redirect URL: http://localhost:39178" />
+                                            <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=LostFocus}"
+                                                         AutomationProperties.Name="Twitch client ID"
+                                                         Margin="0,0,0,12" ToolTip="Redirect URL: http://localhost:39178" />
                                             <TextBlock Text="OAuth token" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.TwitchOAuthToken, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,16" ToolTip="The oauth: or Bearer prefix is optional." />
+                                            <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchOAuthToken, UpdateSourceTrigger=LostFocus}"
+                                                         AutomationProperties.Name="Twitch OAuth token"
+                                                         Margin="0,0,0,16" ToolTip="The oauth: or Bearer prefix is optional." />
                                             <WrapPanel Orientation="Horizontal">
                                                 <Button Content="Connect Twitch"
                                                         Style="{StaticResource StudioPrimaryButtonStyle}"
@@ -4040,6 +4058,60 @@
                                                         MinWidth="124" />
                                                 <Button Content="Clear token" Command="{Binding ClearTwitchTokenCommand}" MinWidth="92" Margin="8,0,0,0" />
                                             </WrapPanel>
+                                            <StackPanel x:Name="TwitchBonusesPanel" Margin="0,22,0,0">
+                                                <TextBlock Text="Channel-point bonuses" Style="{StaticResource StudioFieldLabelStyle}" />
+                                                <CheckBox Content="Automatically claim Twitch bonuses"
+                                                          IsChecked="{Binding Enabled}" Margin="0,4,0,10" />
+                                                <Border Padding="10,8" CornerRadius="6" BorderThickness="1" Margin="0,0,0,10">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource StudioTextDimBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasSavedSession}" Value="True">
+                                                                    <Setter Property="BorderBrush" Value="{DynamicResource StudioSuccessBrush}" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding RequiresSignIn}" Value="True">
+                                                                    <Setter Property="BorderBrush" Value="{DynamicResource StudioDangerBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock x:Name="TwitchBonusSignInStatus" Text="{Binding SignInStatus}"
+                                                               FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                </Border>
+                                                <TextBlock Text="Sign in separately to Twitch below. Available bonuses are claimed through chat while a live stream is open or paused, without a second video stream. Chat-only access does not guarantee new watch-time bonuses. Stopping, closing, or replaying closes the bonus chat."
+                                                           TextWrapping="Wrap" Margin="0,0,0,12" />
+                                                <WrapPanel>
+                                                    <Button Content="Sign in for bonuses" Command="{Binding SignInCommand}" Margin="0,0,8,8" />
+                                                    <Button Content="Sign out of bonuses" Command="{Binding SignOutCommand}" Margin="0,0,8,8" />
+                                                    <Button Content="Open selected bonus chat" Command="{Binding OpenPageCommand}" Margin="0,0,8,8"
+                                                            ToolTip="Optional: inspect your balance or handle a Twitch consent prompt. Use Sign in for bonuses to sign in again. Automatic claims keep running after this window closes." />
+                                                    <Button Content="Retry bonuses" Command="{Binding RetryCommand}" Margin="0,0,0,8" />
+                                                </WrapPanel>
+                                                <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                <TextBlock Text="Confirmed bonuses by channel" Style="{StaticResource StudioFieldLabelStyle}" Margin="0,18,0,6" />
+                                                <TextBlock Text="Successful bonus claims in this app, including the bonus chat window. Totals are saved across restarts and sign-ins; earlier claims cannot be recovered."
+                                                           TextWrapping="Wrap" Foreground="{DynamicResource StudioTextSecondaryBrush}" Margin="0,0,0,8" />
+                                                <TextBlock Text="Open a live Twitch channel to see its count."
+                                                           Visibility="{Binding HasNoChannelClaims, Converter={StaticResource BoolToVisibility}}"
+                                                           TextWrapping="Wrap" />
+                                                <ItemsControl x:Name="TwitchBonusChannelClaims" ItemsSource="{Binding ChannelClaims}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Grid Margin="0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="{Binding Channel}" TextWrapping="Wrap" Margin="0,0,12,0" />
+                                                                <TextBlock Grid.Column="1" Text="{Binding Count, StringFormat={}{0:N0} claimed}" FontWeight="SemiBold" />
+                                                            </Grid>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                                <TextBlock Text="{Binding HistorySaveStatus}" TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource StudioDangerBrush}" Margin="0,6,0,0" />
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
                                     <Border Grid.Column="2"
@@ -4067,11 +4139,20 @@
                                             <TextBlock Text="Username" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding Settings.Chat.KickUsername, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
                                             <TextBlock Text="User access token" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.KickOAuthToken, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
+                                            <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickOAuthToken, UpdateSourceTrigger=LostFocus}"
+                                                         AutomationProperties.Name="Kick user access token"
+                                                         Margin="0,0,0,12" />
                                             <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
+                                            <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=LostFocus}"
+                                                         AutomationProperties.Name="Kick client ID"
+                                                         Margin="0,0,0,12" />
                                             <TextBlock Text="Client secret" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.KickClientSecret, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,16" ToolTip="Saved in settings; treat it as account-sensitive." />
+                                            <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientSecret, UpdateSourceTrigger=LostFocus}"
+                                                         AutomationProperties.Name="Kick client secret"
+                                                         Margin="0,0,0,16" ToolTip="Saved in settings; treat it as account-sensitive." />
                                             <WrapPanel Orientation="Horizontal" Margin="0,0,0,14">
                                                 <Button Content="Connect Kick"
                                                         Style="{StaticResource StudioPrimaryButtonStyle}"
@@ -4419,8 +4500,17 @@
                                                           IsChecked="{Binding Settings.Updates.AutomaticChecksEnabled}"
                                                           Style="{StaticResource SettingsToggleStyle}"
                                                           Margin="0,0,0,12"
-                                                          Content="Check automatically after startup"
+                                                          Content="Check automatically while Stream Studio is open"
                                                           ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                                <CheckBox IsChecked="{Binding Settings.Updates.AutomaticDownloadsEnabled}"
+                                                          IsEnabled="{Binding Settings.Updates.AutomaticChecksEnabled}"
+                                                          Style="{StaticResource SettingsToggleStyle}"
+                                                          Margin="0,0,0,8"
+                                                          Content="Download verified updates automatically"
+                                                          ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                                <TextBlock Text="For Setup installations. Downloads can be canceled, and you choose when to restart and install."
+                                                           Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                           Margin="0,0,0,12" />
                                                 <Button Style="{StaticResource StudioPrimaryButtonStyle}"
                                                         Command="{Binding UpdateAppCommand}"
                                                         MinWidth="156"
@@ -4436,6 +4526,18 @@
                                                         <TextBlock Text="{Binding AppUpdateActionText}" VerticalAlignment="Center" />
                                                     </StackPanel>
                                                 </Button>
+                                                <Button Style="{StaticResource StudioButtonStyle}"
+                                                        Command="{Binding CheckForUpdatesCommand}"
+                                                        Content="Check for updates"
+                                                        Visibility="{Binding IsUpdateRefreshVisible, Converter={StaticResource BoolToVisibility}}"
+                                                        HorizontalAlignment="Left"
+                                                        Margin="0,0,0,12" />
+                                                <Button Style="{StaticResource StudioButtonStyle}"
+                                                        Command="{Binding CancelUpdateCommand}"
+                                                        Content="Cancel download"
+                                                        HorizontalAlignment="Left"
+                                                        Margin="0,0,0,12"
+                                                        Visibility="{Binding CanCancelUpdate, Converter={StaticResource BoolToVisibility}}" />
                                                 <TextBlock Text="{Binding AppUpdateStatus}"
                                                            Style="{StaticResource SettingsPageDescriptionStyle}" />
                                             </StackPanel>

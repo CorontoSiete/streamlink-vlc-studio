@@ -18,7 +18,7 @@ internal static class InfrastructureRuntimeTestCatalog
         ("infrastructure runtime: bounded HTTP sender does not prebuffer response bodies", BoundedHttpSenderUsesHeadersOnlyAsync),
         ("infrastructure runtime: Kick website JSON shares bounded curl fallback", KickWebsiteJsonFallbackIsSharedAsync),
         ("infrastructure runtime: GraphQL errors share batched and response message parsing", GraphQlErrorsAreShared),
-        ("infrastructure runtime: file logger flush completes when its writer faults", FileLoggerFaultedFlushAsync),
+        ("infrastructure runtime: failed file logger completes flushes and stops admission", FileLoggerFaultedFlushAsync),
         ("infrastructure runtime: live snapshot TTL begins when loading completes", LiveSnapshotTtlStartsAtCompletionAsync),
         ("infrastructure runtime: browse retry delays clamp and timestamp math saturates", BrowseRetryMathIsBounded),
         ("infrastructure runtime: bounded stream lines drain oversized records", BoundedStreamLinesDrainOversizedRecordsAsync),
@@ -97,23 +97,26 @@ internal static class InfrastructureRuntimeTestCatalog
             null,
             await oversized.ReadAsync("https://kick.com/api/test", "https://kick.com/", CancellationToken.None));
 
-        using var failedClient = new HttpClient(new RuntimeHttpHandler((_, _) =>
-            Task.FromException<HttpResponseMessage>(new HttpRequestException("network failed"))));
-        var networkFallbackCalls = 0;
-        var networkFallback = new KickWebsiteJsonReader(
-            failedClient,
-            new MemoryLogger(),
-            "Test",
-            TimeSpan.FromSeconds(1),
-            (_, _, _) =>
-            {
-                networkFallbackCalls++;
-                return Task.FromResult<string?>("{\"source\":\"curl\"}");
-            });
-        Assert.Equal(
-            "{\"source\":\"curl\"}",
-            await networkFallback.ReadAsync("https://kick.com/api/test", "https://kick.com/", CancellationToken.None));
-        Assert.Equal(1, networkFallbackCalls);
+        foreach (var failure in new Exception[] { new HttpRequestException("network failed"), new OperationCanceledException("HTTP deadline") })
+        {
+            using var failedClient = new HttpClient(new RuntimeHttpHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(failure)));
+            var networkFallbackCalls = 0;
+            var networkFallback = new KickWebsiteJsonReader(
+                failedClient,
+                new MemoryLogger(),
+                "Test",
+                TimeSpan.FromSeconds(1),
+                (_, _, _) =>
+                {
+                    networkFallbackCalls++;
+                    return Task.FromResult<string?>("{\"source\":\"curl\"}");
+                });
+            Assert.Equal(
+                "{\"source\":\"curl\"}",
+                await networkFallback.ReadAsync("https://kick.com/api/test", "https://kick.com/", CancellationToken.None));
+            Assert.Equal(1, networkFallbackCalls);
+        }
 
         using var blankClient = new HttpClient(new RuntimeHttpHandler((_, _) => Task.FromResult(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("   ") })));
@@ -187,6 +190,11 @@ internal static class InfrastructureRuntimeTestCatalog
             var error = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => logger.FlushAsync().WaitAsync(TimeSpan.FromSeconds(1)));
             Assert.Contains("writer failed", error.Message);
+
+            logger.Write(AppLogLevel.Info, "Test", "after writer failure");
+            Assert.Equal(0, logger.PendingEntryCount);
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => logger.FlushAsync().WaitAsync(TimeSpan.FromSeconds(1)));
         }
         finally
         {
@@ -262,11 +270,11 @@ internal static class InfrastructureRuntimeTestCatalog
 
     private static Task BrowseRetryMathIsBounded()
     {
-        Assert.Equal(TimeSpan.Zero, BrowseService.ClampTwitchRateLimitDelay(TimeSpan.FromSeconds(-1)));
-        Assert.Equal(TimeSpan.FromMinutes(1), BrowseService.ClampTwitchRateLimitDelay(TimeSpan.MaxValue));
+        Assert.Equal(TimeSpan.Zero, TwitchRateLimitCoordinator.ClampDelay(TimeSpan.FromSeconds(-1)));
+        Assert.Equal(TimeSpan.FromMinutes(1), TwitchRateLimitCoordinator.ClampDelay(TimeSpan.MaxValue));
         Assert.Equal(
             DateTimeOffset.MaxValue,
-            BrowseService.SaturatingAdd(DateTimeOffset.MaxValue, TimeSpan.FromMilliseconds(1)));
+            TwitchRateLimitCoordinator.SaturatingAdd(DateTimeOffset.MaxValue, TimeSpan.FromMilliseconds(1)));
         return Task.CompletedTask;
     }
 

@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using StreamlinkVlcStudio.Core.Settings;
 
@@ -46,7 +48,7 @@ internal static class HotkeyBindingPolicy
         IInputElement? focusedElement)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        if (!TabNavigationKeyPolicy.IsTextEditingElement(focusedElement))
+        if (focusedElement is not (TextBoxBase { Visibility: Visibility.Visible } or PasswordBox { Visibility: Visibility.Visible }))
         {
             return false;
         }
@@ -57,6 +59,9 @@ internal static class HotkeyBindingPolicy
         return (gesture.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Windows)) == 0 &&
             IsTextEditingKey(gesture.Key);
     }
+
+    public static bool CanNavigateTabs(bool isFullscreen, bool isFullscreenModeActive, bool isSettingsOpen) =>
+        isFullscreen ? isFullscreenModeActive : !isSettingsOpen;
 
     public static string GetEffectiveGesture(HotkeySettings settings, AppHotkeyAction action)
     {

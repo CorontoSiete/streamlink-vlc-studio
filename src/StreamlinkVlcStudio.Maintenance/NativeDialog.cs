@@ -17,7 +17,7 @@ internal static partial class NativeDialog
         return MessageBox(
             IntPtr.Zero,
             message,
-            "Streamlink VLC Studio Maintenance",
+            "Stream Studio Maintenance",
             MbYesNo | MbIconQuestion | MbDefaultButton2) == IdYes;
     }
 
@@ -26,7 +26,7 @@ internal static partial class NativeDialog
         _ = MessageBox(
             IntPtr.Zero,
             message,
-            "Streamlink VLC Studio Maintenance",
+            "Stream Studio Maintenance",
             MbOk | MbIconInformation);
     }
 
@@ -35,7 +35,7 @@ internal static partial class NativeDialog
         _ = MessageBox(
             IntPtr.Zero,
             message,
-            "Streamlink VLC Studio Maintenance",
+            "Stream Studio Maintenance",
             MbOk | MbIconError);
     }
 

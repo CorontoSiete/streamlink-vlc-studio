@@ -7,8 +7,8 @@ namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewModel
 {
-    private readonly TwitchVodItem? twitchVod;
-    private readonly KickVodItem? kickVod;
+    private TwitchVodItem? twitchVod;
+    private KickVodItem? kickVod;
 
     public VodViewModel(
         TwitchVodItem vod,
@@ -76,6 +76,63 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
     public bool IsTwitchVodAccessUnknown => twitchVod?.AccessKind == TwitchVodAccessKind.Unknown;
 
     public string Id => twitchVod?.Id ?? FirstNonEmpty(kickVod?.Uuid, kickVod?.Id, kickVod?.LiveStreamId);
+
+    internal string Identity => twitchVod is { } twitch ? GetIdentity(twitch) : GetIdentity(kickVod!);
+
+    internal static string GetIdentity(TwitchVodItem vod) =>
+        GetIdentity(PlatformKind.Twitch, vod.Id, vod.ChannelLogin);
+
+    internal static string GetIdentity(KickVodItem vod) =>
+        GetIdentity(PlatformKind.Kick, FirstNonEmpty(vod.Uuid, vod.Id, vod.LiveStreamId), vod.ChannelSlug);
+
+    private static string GetIdentity(PlatformKind platform, string id, string channel) =>
+        $"{platform}:{(string.IsNullOrWhiteSpace(id) ? channel : id).Trim()}";
+
+    internal void Update(TwitchVodItem vod) => Update(vod, null);
+
+    internal void Update(KickVodItem vod) => Update(null, vod);
+
+    private void Update(TwitchVodItem? twitch, KickVodItem? kick)
+    {
+        if (twitchVod == twitch && kickVod == kick) return;
+        var previous = (Target, Platform, Id, Title, ChannelDisplayName, ThumbnailUrl, ProfileImageUrl,
+            DurationText, TypeText, PublishedText, ViewCountText, IsSubscriberOnly, IsTwitchVodAccessUnknown);
+        twitchVod = twitch;
+        kickVod = kick;
+        NotifyChanged(previous.Target, Target, nameof(Target));
+        if (previous.Platform != Platform)
+        {
+            OnPropertyChanged(nameof(Platform));
+            OnPropertyChanged(nameof(PlatformText));
+        }
+        NotifyChanged(previous.Id, Id, nameof(Id));
+        NotifyChanged(previous.Title, Title, nameof(Title));
+        NotifyChanged(previous.ChannelDisplayName, ChannelDisplayName, nameof(ChannelDisplayName));
+        if (previous.ThumbnailUrl != ThumbnailUrl)
+        {
+            OnPropertyChanged(nameof(ThumbnailUrl));
+            OnPropertyChanged(nameof(HasThumbnail));
+        }
+        if (previous.ProfileImageUrl != ProfileImageUrl)
+        {
+            OnPropertyChanged(nameof(ProfileImageUrl));
+            OnPropertyChanged(nameof(HasProfileImage));
+        }
+        NotifyChanged(previous.IsSubscriberOnly, IsSubscriberOnly, nameof(IsSubscriberOnly));
+        NotifyChanged(previous.IsTwitchVodAccessUnknown, IsTwitchVodAccessUnknown, nameof(IsTwitchVodAccessUnknown));
+        NotifyChanged(previous.DurationText, DurationText, nameof(DurationText));
+        NotifyChanged(previous.TypeText, TypeText, nameof(TypeText));
+        NotifyChanged(previous.PublishedText, PublishedText, nameof(PublishedText));
+        NotifyChanged(previous.ViewCountText, ViewCountText, nameof(ViewCountText));
+        if (previous.DurationText != DurationText || previous.TypeText != TypeText ||
+            previous.PublishedText != PublishedText || previous.ViewCountText != ViewCountText)
+            OnPropertyChanged(nameof(MetadataText));
+    }
+
+    private void NotifyChanged<T>(T previous, T current, string propertyName)
+    {
+        if (!EqualityComparer<T>.Default.Equals(previous, current)) OnPropertyChanged(propertyName);
+    }
 
     public string Title
     {

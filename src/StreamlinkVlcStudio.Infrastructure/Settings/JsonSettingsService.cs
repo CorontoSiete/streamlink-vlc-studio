@@ -3,9 +3,13 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Io;
+using StreamlinkVlcStudio.Infrastructure.Text;
 
 namespace StreamlinkVlcStudio.Infrastructure.Settings;
 
@@ -24,21 +28,50 @@ public sealed class JsonSettingsService : ISettingsService
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
+        AllowDuplicateProperties = false,
         Converters = { new JsonStringEnumConverter() }
     };
     private readonly SemaphoreSlim operationGate = new(1, 1);
 
     public JsonSettingsService(string? settingsPath = null)
     {
-        SettingsPath = settingsPath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "StreamlinkVlcStudio",
-            "settings.json");
+        SettingsPath = settingsPath ?? ResolveDefaultSettingsPath();
     }
 
     public string SettingsPath { get; }
 
     public string? LastLoadWarning { get; private set; }
+
+    private static string ResolveDefaultSettingsPath()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var settingsPath = Path.Combine(appData, AppIdentity.ProductDirectoryName, "settings.json");
+        var legacySettingsPath = Path.Combine(appData, AppIdentity.LegacyProductDirectoryName, "settings.json");
+        TryCopyLegacySettingsForward(legacySettingsPath, settingsPath);
+        return settingsPath;
+    }
+
+    private static void TryCopyLegacySettingsForward(string legacySettingsPath, string settingsPath)
+    {
+        try
+        {
+            if (File.Exists(settingsPath) || !File.Exists(legacySettingsPath))
+            {
+                return;
+            }
+
+            var directory = Path.GetDirectoryName(settingsPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.Copy(legacySettingsPath, settingsPath, overwrite: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+        }
+    }
 
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -73,7 +106,7 @@ public sealed class JsonSettingsService : ISettingsService
                 {
                     protectedSecretsWereCorrupt = true;
                     secrets = new SettingsSecrets();
-                    var backupPath = BackupCorruptProtectedSettings(SettingsPath);
+                    var backupPath = TryPreserveSettingsFile(SettingsPath, "protected-secrets-corrupt", copy: true);
                     LastLoadWarning = backupPath is null
                         ? "Saved account secrets could not be decrypted and were cleared. Reconnect Twitch and Kick in Settings."
                         : $"Saved account secrets could not be decrypted and were cleared. Reconnect Twitch and Kick in Settings. A backup was preserved at {backupPath}.";
@@ -96,7 +129,10 @@ public sealed class JsonSettingsService : ISettingsService
         }
         catch (Exception ex) when (ex is JsonException or PayloadTooLargeException)
         {
-            MoveInvalidSettingsFileAside(SettingsPath);
+            var backupPath = TryPreserveSettingsFile(SettingsPath, "invalid", copy: false);
+            LastLoadWarning = backupPath is null
+                ? $"Saved settings were invalid or exceeded the size limit; defaults were loaded. The original file could not be moved from {SettingsPath}."
+                : $"Saved settings were invalid or exceeded the size limit; defaults were loaded. A backup was preserved at {backupPath}.";
             return new AppSettings();
         }
         finally
@@ -139,18 +175,15 @@ public sealed class JsonSettingsService : ISettingsService
         var bytes = await BoundedByteReader
             .ReadOrThrowAsync(stream, MaximumSettingsBytes, cancellationToken)
             .ConfigureAwait(false);
-        return JsonNode.Parse(bytes) as JsonObject
+        var offset = EncodingPreamble.GetLength(bytes, Encoding.UTF8);
+        return JsonNode.Parse(
+            bytes.AsSpan(offset),
+            documentOptions: new JsonDocumentOptions { AllowDuplicateProperties = false }) as JsonObject
             ?? throw new JsonException("Settings root must be a JSON object.");
     }
 
     private async Task SaveCoreAsync(AppSettings settings, CancellationToken cancellationToken)
     {
-        var directory = Path.GetDirectoryName(SettingsPath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
         var root = JsonSerializer.SerializeToNode(settings, SerializerOptions) as JsonObject
             ?? throw new JsonException("Settings could not be serialized as a JSON object.");
         RemoveSecretProperties(root);
@@ -169,49 +202,13 @@ public sealed class JsonSettingsService : ISettingsService
                 $"Settings exceeded the {MaximumSettingsBytes:N0}-byte limit.");
         }
 
-        var targetDirectory = string.IsNullOrWhiteSpace(directory)
-            ? Directory.GetCurrentDirectory()
-            : directory;
-        var tempPath = Path.Combine(
-            targetDirectory,
-            $"{Path.GetFileName(SettingsPath)}.{Guid.NewGuid():N}.tmp");
-
         try
         {
-            await using (var stream = new FileStream(
-                             tempPath,
-                             FileMode.CreateNew,
-                             FileAccess.Write,
-                             FileShare.None,
-                             bufferSize: 81_920,
-                             FileOptions.Asynchronous | FileOptions.WriteThrough))
-            {
-                await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                stream.Flush(flushToDisk: true);
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            if (File.Exists(SettingsPath))
-            {
-                try
-                {
-                    File.Replace(tempPath, SettingsPath, null, ignoreMetadataErrors: true);
-                }
-                catch (FileNotFoundException)
-                {
-                    File.Move(tempPath, SettingsPath);
-                }
-            }
-            else
-            {
-                File.Move(tempPath, SettingsPath);
-            }
-        }
-        catch
-        {
-            TryDeleteTempFile(tempPath);
-            throw;
+            await AtomicFile.WriteAsync(
+                SettingsPath,
+                (stream, token) => stream.WriteAsync(payload, token).AsTask(),
+                cancellationToken,
+                flushToDisk: true).ConfigureAwait(false);
         }
         finally
         {
@@ -304,22 +301,26 @@ public sealed class JsonSettingsService : ISettingsService
         out string actualName,
         out JsonNode? value)
     {
+        actualName = "";
+        value = null;
         foreach (var property in parent)
         {
             if (string.Equals(property.Key, propertyName, StringComparison.OrdinalIgnoreCase))
             {
+                if (actualName.Length > 0)
+                {
+                    throw new JsonException($"Settings contain duplicate '{propertyName}' properties.");
+                }
+
                 actualName = property.Key;
                 value = property.Value;
-                return true;
             }
         }
 
-        actualName = "";
-        value = null;
-        return false;
+        return actualName.Length > 0;
     }
 
-    private static string? BackupCorruptProtectedSettings(string settingsPath)
+    private static string? TryPreserveSettingsFile(string settingsPath, string reason, bool copy)
     {
         var directory = Path.GetDirectoryName(settingsPath);
         var targetDirectory = string.IsNullOrWhiteSpace(directory)
@@ -328,10 +329,17 @@ public sealed class JsonSettingsService : ISettingsService
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
         var backupPath = Path.Combine(
             targetDirectory,
-            $"{Path.GetFileName(settingsPath)}.protected-secrets-corrupt-{timestamp}-{Guid.NewGuid():N}");
+            $"{Path.GetFileName(settingsPath)}.{reason}-{timestamp}-{Guid.NewGuid():N}");
         try
         {
-            File.Copy(settingsPath, backupPath, overwrite: false);
+            if (copy)
+            {
+                File.Copy(settingsPath, backupPath, overwrite: false);
+            }
+            else
+            {
+                File.Move(settingsPath, backupPath);
+            }
             return backupPath;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -340,46 +348,4 @@ public sealed class JsonSettingsService : ISettingsService
         }
     }
 
-    private static void TryDeleteTempFile(string tempPath)
-    {
-        try
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-    }
-
-    private static void MoveInvalidSettingsFileAside(string settingsPath)
-    {
-        var directory = Path.GetDirectoryName(settingsPath);
-        var targetDirectory = string.IsNullOrWhiteSpace(directory)
-            ? Directory.GetCurrentDirectory()
-            : directory;
-        var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
-        var backupPath = Path.Combine(
-            targetDirectory,
-            $"{Path.GetFileName(settingsPath)}.invalid-{timestamp}-{Guid.NewGuid():N}");
-
-        try
-        {
-            File.Move(settingsPath, backupPath);
-        }
-        catch (IOException)
-        {
-            // Loading defaults is still safer than failing application startup when
-            // another process has the invalid settings file open.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // The original file is left in place so the user can recover it manually.
-        }
-    }
 }

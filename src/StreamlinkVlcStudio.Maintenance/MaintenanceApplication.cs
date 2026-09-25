@@ -13,7 +13,7 @@ internal static class MaintenanceApplication
     private const int ExitInvalidArguments = 87;
     private const int ExitCancelled = 1602;
     private const string UninstallRegistryPath =
-        @"Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamlinkVlcStudio";
+        @"Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamStudio";
 
     internal static int Run(string[] args)
     {
@@ -45,20 +45,17 @@ internal static class MaintenanceApplication
             var installDirectory = ResolveInstallDirectory();
             _ = InstallOwnership.Load(installDirectory);
             if (!options.Quiet && !NativeDialog.Confirm(
-                    "Uninstall Streamlink VLC Studio?\n\nStreamlink and VLC will remain installed."))
+                    "Uninstall Stream Studio?\n\n" +
+                    (options.PurgeUserData
+                        ? "This will remove this Windows account's Stream Studio settings, cache, and temporary data.\n\n"
+                        : "Personal data will be preserved because --preserve-user-data was supplied.\n\n") +
+                    "Streamlink and VLC will remain installed."))
             {
                 log.Write("The user canceled uninstall before any changes were made.");
                 return ExitCancelled;
             }
 
             var purgeUserData = options.PurgeUserData;
-            if (!options.Quiet && !purgeUserData)
-            {
-                purgeUserData = NativeDialog.Confirm(
-                    "Also delete this Windows account's Streamlink VLC Studio settings, cache, and temporary data?\n\n" +
-                    "No is the default. Streamlink, VLC, other profiles, and their data are never removed.");
-            }
-
             if (!StageLauncher.TryLaunch(
                     installDirectory,
                     purgeUserData,
@@ -100,7 +97,7 @@ internal static class MaintenanceApplication
             WaitForOriginalProcess(options.ParentProcessId, log);
 
             var ownership = InstallOwnership.Load(options.InstallDirectory!);
-            var appPath = Path.Combine(ownership.Root, "StreamlinkVlcStudio.exe");
+            var appPath = Path.Combine(ownership.Root, "StreamStudio.exe");
             var shutdownRequested = RunAppMaintenanceMode(
                 appPath,
                 "--maintenance-request-shutdown",
@@ -151,16 +148,9 @@ internal static class MaintenanceApplication
     private static int RunDataOnly(CommandLineOptions options, MaintenanceLog log)
     {
         var purge = options.PurgeUserData;
-        if (!purge && !options.Quiet)
-        {
-            purge = NativeDialog.Confirm(
-                "Delete this Windows account's Streamlink VLC Studio settings, cache, and temporary data?\n\n" +
-                "No is the default. Streamlink, VLC, application files, other profiles, and their data are never removed.");
-        }
-
         if (!purge)
         {
-            log.Write("Personal-data cleanup was not selected; no data was removed.");
+            log.Write("Personal-data cleanup was disabled; no data was removed.");
             return options.Quiet ? ExitSuccess : ExitCancelled;
         }
 
@@ -231,7 +221,7 @@ internal static class MaintenanceApplication
             if (!options.Quiet)
             {
                 NativeDialog.ShowError(
-                    $"Streamlink VLC Studio was removed, but some personal data could not be cleaned up.\n\n" +
+                    $"Stream Studio was removed, but some personal data could not be cleaned up.\n\n" +
                     $"Retained-path report: {report}\nLog: {log.Path}");
             }
 
@@ -245,7 +235,7 @@ internal static class MaintenanceApplication
                 ? "Personal data for this Windows account was also removed."
                 : "Personal data was preserved.";
             NativeDialog.ShowInformation(
-                $"Streamlink VLC Studio was removed.\n\n{dataMessage}\nStreamlink and VLC were retained.\n\nLog: {log.Path}");
+                $"Stream Studio was removed.\n\n{dataMessage}\nStreamlink and VLC were retained.\n\nLog: {log.Path}");
         }
 
         return cleanupIncomplete ? ExitCleanupIncomplete : ExitSuccess;
@@ -347,7 +337,7 @@ internal static class MaintenanceApplication
 
 internal static class StageLauncher
 {
-    private const string StageDirectoryPrefix = "StreamlinkVlcStudio-Maintenance-Stage-";
+    private const string StageDirectoryPrefix = "StreamStudio-Maintenance-Stage-";
     private const string StageTokenFileName = ".stage-token";
 
     internal static bool TryLaunch(
@@ -373,7 +363,7 @@ internal static class StageLauncher
 
         var nonce = Guid.NewGuid().ToString("N");
         var stageDirectory = Path.Combine(tempRoot, StageDirectoryPrefix + nonce);
-        var stageExecutable = Path.Combine(stageDirectory, "StreamlinkVlcStudio.Maintenance.exe");
+        var stageExecutable = Path.Combine(stageDirectory, "StreamStudio.Maintenance.exe");
         try
         {
             Directory.CreateDirectory(stageDirectory);
@@ -473,6 +463,30 @@ internal static class StageLauncher
         {
             log.Write($"The staged maintenance executable remains in the temporary directory: {processPath}");
         }
+
+        try
+        {
+            var stageDirectory = Path.GetDirectoryName(PathSafety.Normalize(processPath));
+            var tempRoot = PathSafety.Normalize(Path.GetTempPath());
+            var stageName = string.IsNullOrWhiteSpace(stageDirectory) ? "" : Path.GetFileName(stageDirectory);
+            if (!string.IsNullOrWhiteSpace(stageDirectory) &&
+                PathSafety.IsSameOrUnder(stageDirectory, tempRoot) &&
+                stageName.StartsWith(StageDirectoryPrefix, StringComparison.Ordinal) &&
+                Guid.TryParseExact(stageName[StageDirectoryPrefix.Length..], "N", out _) &&
+                !PathSafety.ContainsReparsePoint(stageDirectory) &&
+                NativeDialog.ScheduleDeleteOnReboot(stageDirectory, null, 0x00000004))
+            {
+                log.Write($"Scheduled staged maintenance directory for deletion at reboot: {stageDirectory}");
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
+        {
+            log.Write($"Could not schedule staged maintenance directory cleanup: {exception.Message}");
+        }
     }
 
     private static void TryRemoveFailedStage(string stageDirectory)
@@ -483,7 +497,7 @@ internal static class StageLauncher
                 Path.GetFileName(stageDirectory).StartsWith(StageDirectoryPrefix, StringComparison.Ordinal) &&
                 !PathSafety.ContainsReparsePoint(stageDirectory))
             {
-                foreach (var fileName in new[] { "StreamlinkVlcStudio.Maintenance.exe", StageTokenFileName })
+                foreach (var fileName in new[] { "StreamStudio.Maintenance.exe", StageTokenFileName })
                 {
                     var path = Path.Combine(stageDirectory, fileName);
                     if (PathSafety.TryGetAttributes(path, out var attributes) &&

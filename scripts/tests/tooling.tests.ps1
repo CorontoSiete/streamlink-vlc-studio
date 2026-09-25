@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $scriptRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot '..'))
 . (Join-Path $scriptRoot 'lib\common.ps1')
+. (Join-Path $scriptRoot 'lib\install-state.ps1')
 . (Join-Path $scriptRoot 'lib\dependency-manifest.ps1')
 . (Join-Path $scriptRoot 'lib\native-overlay.ps1')
 . (Join-Path $scriptRoot 'lib\release-contract.ps1')
@@ -26,7 +27,7 @@ function Assert-Throws([scriptblock]$Action, [string]$Pattern) {
     throw "Expected an exception matching '$Pattern'."
 }
 
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('StreamlinkVlcStudio-tooling-tests-' + [Guid]::NewGuid().ToString('N'))
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('StreamStudio-tooling-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
     $manifest = Read-WindowsDependencyManifest (Join-Path $repoRoot 'dependencies\windows-installers.json')
@@ -81,9 +82,53 @@ try {
         Assert-True (-not (Test-SafeWindowsPathSegment $unsafeName)) "Unsafe Windows file name was accepted: $unsafeName"
     }
     foreach ($unsafeRelativePath in @('payload/./app.exe', 'payload//app.exe', 'payload/app.exe.', 'payload/app.exe:stream')) {
-        Assert-True (-not (Test-SafeContractRelativePath $unsafeRelativePath)) "Unsafe contract path was accepted: $unsafeRelativePath"
+        Assert-True (-not (Test-SafeWindowsRelativePath $unsafeRelativePath)) "Unsafe contract path was accepted: $unsafeRelativePath"
     }
     Write-Host 'PASS tooling: Windows leaf names and contract paths are canonical'
+
+    $ownershipRoot = Join-Path $testRoot 'ownership'
+    New-Item -ItemType Directory -Path $ownershipRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ownershipRoot 'app.exe'), 'fixture')
+    foreach ($unsafeRelativePath in @(
+            'app.exe.', 'payload/./app.exe', 'payload//app.exe', 'payload/app.exe:stream',
+            'payload/../app.exe', 'payload/.. /app.exe', 'payload/CON.txt', 'payload/app.exe ')) {
+        Assert-Throws {
+            Write-InstallOwnershipState -Directory $ownershipRoot -ManagedRelativePaths @($unsafeRelativePath) | Out-Null
+        } 'Unsafe managed installation path'
+    }
+    Write-InstallOwnershipState -Directory $ownershipRoot | Out-Null
+    foreach ($unsafeRelativePath in @('app.exe.', 'app.exe:stream', 'payload/./app.exe', 'payload//app.exe')) {
+        $ownershipManifestPath = Join-Path $ownershipRoot '.stream-studio-files.json'
+        $ownershipMarkerPath = Join-Path $ownershipRoot '.stream-studio-owner.json'
+        $ownershipManifest = Get-Content -LiteralPath $ownershipManifestPath -Raw | ConvertFrom-Json
+        $ownershipManifest.files[0].path = $unsafeRelativePath
+        Write-JsonAtomically $ownershipManifestPath $ownershipManifest
+        $ownershipMarker = Get-Content -LiteralPath $ownershipMarkerPath -Raw | ConvertFrom-Json
+        $ownershipMarker.manifestSha256 = Get-InstallFileSha256 $ownershipManifestPath
+        Write-JsonAtomically $ownershipMarkerPath $ownershipMarker
+        Assert-Throws { Read-InstallOwnershipState $ownershipRoot | Out-Null } 'unsafe or duplicate path'
+    }
+    Write-Host 'PASS tooling: installation ownership rejects noncanonical Windows paths'
+
+    New-Item -ItemType Directory -Path (Join-Path $ownershipRoot 'lib') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ownershipRoot 'lib\runtime.dll'), 'fixture')
+    Write-InstallOwnershipState -Directory $ownershipRoot -ManagedRelativePaths @('lib/runtime.dll', 'lib\runtime.dll') | Out-Null
+    $ownership = Read-InstallOwnershipState $ownershipRoot
+    Assert-True (@($ownership.Manifest.files).Count -eq 1) 'Separator aliases produced duplicate managed files.'
+    $ownership.Manifest.files[0].path = 'lib\runtime.dll'
+    Write-JsonAtomically $ownershipManifestPath $ownership.Manifest
+    $ownership.Owner.manifestSha256 = Get-InstallFileSha256 $ownershipManifestPath
+    Write-JsonAtomically $ownershipMarkerPath $ownership.Owner
+    $ownership = Read-InstallOwnershipState $ownershipRoot
+    Assert-True ($ownership.Paths.Contains('lib/runtime.dll')) 'Managed-file lookup did not normalize directory separators.'
+    $ownership.Manifest.files = @($ownership.Manifest.files) + @([pscustomobject]@{
+        path = 'lib/runtime.dll'; length = 7; sha256 = $ownership.Manifest.files[0].sha256
+    })
+    Write-JsonAtomically $ownershipManifestPath $ownership.Manifest
+    $ownership.Owner.manifestSha256 = Get-InstallFileSha256 $ownershipManifestPath
+    Write-JsonAtomically $ownershipMarkerPath $ownership.Owner
+    Assert-Throws { Read-InstallOwnershipState $ownershipRoot | Out-Null } 'unsafe or duplicate path'
+    Write-Host 'PASS tooling: installation ownership normalizes and deduplicates directory separators'
 
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -232,22 +277,10 @@ try {
     $ambiguous = Join-Path $testRoot 'ambiguous-payload'
     New-Item -ItemType Directory -Path (Join-Path $ambiguous 'one') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $ambiguous 'two') -Force | Out-Null
-    [IO.File]::WriteAllText((Join-Path $ambiguous 'one\StreamlinkVlcStudio.exe'), 'one')
-    [IO.File]::WriteAllText((Join-Path $ambiguous 'two\StreamlinkVlcStudio.exe'), 'two')
+    [IO.File]::WriteAllText((Join-Path $ambiguous 'one\StreamStudio.exe'), 'one')
+    [IO.File]::WriteAllText((Join-Path $ambiguous 'two\StreamStudio.exe'), 'two')
     Assert-Throws { Resolve-ReleasePayloadRoot $ambiguous $contract | Out-Null } 'exactly one'
     Write-Host 'PASS tooling: ambiguous payload roots are rejected'
-
-    $routeRoot = Join-Path $testRoot 'routes'
-    New-Item -ItemType Directory -Path (Join-Path $routeRoot 'shared') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $routeRoot 'browser-extension') -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'shared\platform-routes.json') -Destination (Join-Path $routeRoot 'shared\platform-routes.json')
-    & (Join-Path $scriptRoot 'generate-browser-route-policy.ps1') -RepositoryRoot $routeRoot
-    & (Join-Path $scriptRoot 'generate-browser-route-policy.ps1') -RepositoryRoot $routeRoot -Check
-    [IO.File]::AppendAllText((Join-Path $routeRoot 'browser-extension\platform-routes.generated.js'), "`n// stale")
-    Assert-Throws {
-        & (Join-Path $scriptRoot 'generate-browser-route-policy.ps1') -RepositoryRoot $routeRoot -Check
-    } 'stale'
-    Write-Host 'PASS tooling: stale generated browser routes are rejected'
 
     $releaseRepo = Join-Path $testRoot 'release-repo'
     New-Item -ItemType Directory -Path $releaseRepo | Out-Null

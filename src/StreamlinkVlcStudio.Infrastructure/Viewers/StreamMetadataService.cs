@@ -1,4 +1,3 @@
-using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
@@ -118,7 +117,7 @@ public sealed class StreamMetadataService : IStreamMetadataService
         }
 
         using var document = JsonDocument.Parse(response.Body);
-        var metadata = ReadTwitchMetadata(target, document.RootElement);
+        var metadata = ReadMetadata(target, LiveChannelPayloadReader.Read(target.Platform, target.Channel, document.RootElement));
         if (metadata.State != StreamMetadataState.Available ||
             !string.IsNullOrWhiteSpace(metadata.ProfileImageUrl))
         {
@@ -182,14 +181,15 @@ public sealed class StreamMetadataService : IStreamMetadataService
         }
 
         using var document = JsonDocument.Parse(response.Body);
-        var metadata = ReadKickMetadata(target, document.RootElement);
+        var payload = LiveChannelPayloadReader.Read(target.Platform, target.Channel, document.RootElement);
+        var metadata = ReadMetadata(target, payload);
         if (metadata.State != StreamMetadataState.Available ||
             !string.IsNullOrWhiteSpace(metadata.ProfileImageUrl))
         {
             return metadata;
         }
 
-        var broadcasterUserId = ReadKickBroadcasterUserId(target, document.RootElement);
+        var broadcasterUserId = GetOptionalString(payload.Channel, "broadcaster_user_id");
         if (string.IsNullOrWhiteSpace(broadcasterUserId))
         {
             return metadata;
@@ -217,32 +217,23 @@ public sealed class StreamMetadataService : IStreamMetadataService
         }
     }
 
-    private static StreamMetadataResult ReadTwitchMetadata(StreamTarget target, JsonElement root)
+    private static StreamMetadataResult ReadMetadata(StreamTarget target, LiveChannelPayload payload)
     {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
+        if (payload.State == LiveChannelState.Offline)
         {
-            return new StreamMetadataResult(
-                StreamMetadataState.Unavailable,
-                "",
-                "",
-                "Twitch stream metadata response did not include stream data.");
+            return new(StreamMetadataState.Offline, "", "", $"{target.Platform} stream is offline.");
         }
 
-        foreach (var item in data.EnumerateArray())
+        if (payload.State != LiveChannelState.Available)
         {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
+            return new(StreamMetadataState.Unavailable, "", "",
+                $"{target.Platform} stream metadata response did not include valid stream data.");
+        }
 
-            if (item.TryGetProperty("user_login", out var login) &&
-                login.ValueKind == JsonValueKind.String &&
-                !string.Equals(login.GetString(), target.Channel, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            return new StreamMetadataResult(
+        var item = payload.Channel;
+        if (target.Platform == PlatformKind.Twitch)
+        {
+            return new(
                 StreamMetadataState.Available,
                 NormalizeImageUrl(GetOptionalString(item, "thumbnail_url"), "440", "248"),
                 FirstNonEmpty(GetOptionalString(item, "user_name"), target.Channel),
@@ -251,98 +242,16 @@ public sealed class StreamMetadataService : IStreamMetadataService
                 GetOptionalString(item, "profile_image_url"));
         }
 
-        return new StreamMetadataResult(StreamMetadataState.Offline, "", "", "Twitch stream is offline.");
+        return new(
+            StreamMetadataState.Available,
+            NormalizeImageUrl(FirstNonEmpty(
+                GetOptionalString(payload.Stream, "thumbnail"),
+                GetOptionalString(item, "thumbnail"))),
+            FirstNonEmpty(GetOptionalString(item, "slug"), target.Channel),
+            "Kick stream metadata updated.",
+            TryReadNestedString(item, "category", "name"),
+            NormalizeImageUrl(FirstNonEmpty(
+                GetOptionalString(item, "profile_picture"),
+                GetOptionalString(item, "profile_pic"))));
     }
-
-    private static StreamMetadataResult ReadKickMetadata(StreamTarget target, JsonElement root)
-    {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
-        {
-            return new StreamMetadataResult(
-                StreamMetadataState.Unavailable,
-                "",
-                "",
-                "Kick stream metadata response did not include channel data.");
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (item.TryGetProperty("slug", out var slug) &&
-                slug.ValueKind == JsonValueKind.String &&
-                !string.Equals(slug.GetString(), target.Channel, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (!item.TryGetProperty("stream", out var stream) ||
-                stream.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-            {
-                return new StreamMetadataResult(StreamMetadataState.Offline, "", "", "Kick stream is offline.");
-            }
-
-            if (stream.ValueKind != JsonValueKind.Object)
-            {
-                return new StreamMetadataResult(
-                    StreamMetadataState.Unavailable,
-                    "",
-                    "",
-                    "Kick stream data had an unexpected shape.");
-            }
-
-            if (TryGetBool(stream, "is_live") == false)
-            {
-                return new StreamMetadataResult(StreamMetadataState.Offline, "", "", "Kick stream is offline.");
-            }
-
-            var category = "";
-            if (item.TryGetProperty("category", out var categoryElement) &&
-                categoryElement.ValueKind == JsonValueKind.Object)
-            {
-                category = GetOptionalString(categoryElement, "name");
-            }
-
-            return new StreamMetadataResult(
-                StreamMetadataState.Available,
-                NormalizeImageUrl(FirstNonEmpty(
-                    GetOptionalString(stream, "thumbnail"),
-                    GetOptionalString(item, "thumbnail"))),
-                FirstNonEmpty(GetOptionalString(item, "slug"), target.Channel),
-                "Kick stream metadata updated.",
-                category,
-                NormalizeImageUrl(FirstNonEmpty(
-                    GetOptionalString(item, "profile_picture"),
-                    GetOptionalString(item, "profile_pic"))));
-        }
-
-        return new StreamMetadataResult(StreamMetadataState.Offline, "", "", "Kick stream is offline.");
-    }
-
-    private static string ReadKickBroadcasterUserId(StreamTarget target, JsonElement root)
-    {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
-        {
-            return "";
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            if (!string.Equals(
-                    GetOptionalString(item, "slug"),
-                    target.Channel,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            return GetOptionalString(item, "broadcaster_user_id");
-        }
-
-        return "";
-    }
-
 }

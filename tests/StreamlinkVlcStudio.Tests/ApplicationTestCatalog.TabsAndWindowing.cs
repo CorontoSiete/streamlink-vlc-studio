@@ -906,14 +906,10 @@ internal static partial class ApplicationTestCatalog
         var subSourceMethod = engineType.GetMethod(
             "BuildOverlaySubSourceOption",
             BindingFlags.Static | BindingFlags.NonPublic);
-        var optionsMethod = engineType.GetMethod(
-            "BuildLibVlcOptions",
-            BindingFlags.Static | BindingFlags.NonPublic);
         Assert.NotNull(subSourceMethod);
-        Assert.NotNull(optionsMethod);
 
         var option = (string)subSourceMethod!.Invoke(null, ["svs_test", @"C:\state\overlay.txt"])!;
-        var options = (IReadOnlyList<string>)optionsMethod!.Invoke(null, null)!;
+        var options = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi);
 
         Assert.Contains("show-placeholder=0", option);
         Assert.DoesNotContain("show-placeholder=1", option);
@@ -1180,18 +1176,14 @@ internal static partial class ApplicationTestCatalog
                 .ToArray();
             Assert.True(entries.Contains("vlc-overlay/build/libmyoverlay_plugin.dll", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("vlc-overlay/build/vlc_chat_overlay.exe", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("browser-extension/manifest.json", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("browser-extension/background.js", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("browser-extension/content-core.js", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("browser-extension/content.js", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("StreamlinkVlcStudio.exe", StringComparer.OrdinalIgnoreCase));
+            Assert.Equal(false, entries.Any(entry => entry.StartsWith("browser-extension/", StringComparison.OrdinalIgnoreCase)));
+            Assert.True(entries.Contains("StreamStudio.exe", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("Uninstall.exe", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("install.ps1", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("README.md", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("install.txt", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("THIRD-PARTY-NOTICES.md", StringComparer.OrdinalIgnoreCase));
             Assert.True(entries.Contains("Microsoft.IdentityModel.Tokens.dll", StringComparer.OrdinalIgnoreCase));
-            Assert.True(entries.Contains("browser-extension/README.md", StringComparer.OrdinalIgnoreCase));
             Assert.Equal(false, entries.Contains("debug.log", StringComparer.OrdinalIgnoreCase));
             Assert.Equal(false, entries.Contains("settings.json", StringComparer.OrdinalIgnoreCase));
             Assert.Equal(false, entries.Contains("oauth-token.json", StringComparer.OrdinalIgnoreCase));
@@ -1290,7 +1282,7 @@ internal static partial class ApplicationTestCatalog
 
             Assert.Equal(0, result.ExitCode);
             Assert.Equal("", result.Error.Trim());
-            Assert.True(File.Exists(Path.Combine(output, "StreamlinkVlcStudio.exe")));
+            Assert.True(File.Exists(Path.Combine(output, "StreamStudio.exe")));
             Assert.True(output.StartsWith(artifactExtract, StringComparison.OrdinalIgnoreCase));
         }
         finally
@@ -1340,7 +1332,7 @@ internal static partial class ApplicationTestCatalog
             var scriptPath = Path.Combine(repoRoot, "scripts", "build-installer.ps1");
             var payloadDir = Path.Combine(root, "payload");
             Directory.CreateDirectory(payloadDir);
-            File.WriteAllText(Path.Combine(payloadDir, "StreamlinkVlcStudio.exe"), "fake exe");
+            File.WriteAllText(Path.Combine(payloadDir, "StreamStudio.exe"), "fake exe");
             var releaseZip = Path.Combine(root, "release.zip");
             ZipFile.CreateFromDirectory(payloadDir, releaseZip);
             var outputRoot = Path.Combine(root, "output");
@@ -1426,7 +1418,7 @@ internal static partial class ApplicationTestCatalog
             var scriptPath = Path.Combine(repoRoot, "scripts", "build-installer.ps1");
             var payloadDir = Path.Combine(root, "payload with spaces");
             Directory.CreateDirectory(payloadDir);
-            File.WriteAllText(Path.Combine(payloadDir, "StreamlinkVlcStudio.exe"), "fake exe");
+            File.WriteAllText(Path.Combine(payloadDir, "StreamStudio.exe"), "fake exe");
             File.WriteAllText(Path.Combine(payloadDir, "install.ps1"), "param()");
             var releaseZip = Path.Combine(root, "StreamlinkVlcStudio-release.zip");
             ZipFile.CreateFromDirectory(payloadDir, releaseZip);
@@ -1512,12 +1504,7 @@ internal static partial class ApplicationTestCatalog
     }),
     ("libVLC options use non-DXGI video output with hardware decode", () =>
     {
-        var buildOptions = typeof(LibVlcPlaybackEngine).GetMethod(
-            "BuildLibVlcOptions",
-            BindingFlags.Static | BindingFlags.NonPublic);
-        Assert.NotNull(buildOptions);
-
-        var options = (IReadOnlyList<string>)buildOptions!.Invoke(null, null)!;
+        var options = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi);
 
         Assert.True(options.Any(option => option == "--vout=wingdi"));
         Assert.Equal(false, options.Any(option =>
@@ -1525,6 +1512,11 @@ internal static partial class ApplicationTestCatalog
             option.Contains("dxgi", StringComparison.OrdinalIgnoreCase)));
         Assert.True(options.Any(option => option == "--avcodec-hw=any"));
         Assert.Equal(false, options.Any(option => option == "--avcodec-hw=none"));
+        var overlayOptions = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi, usesNativeOverlay: true);
+        Assert.True(overlayOptions.Contains("--avcodec-hw=none"));
+        Assert.Equal(false, overlayOptions.Contains("--avcodec-hw=any"));
+        Assert.Equal("none", LibVlcRendererSelection.GetHardwareDecodingOption(VideoRendererMode.Gdi, usesNativeOverlay: true));
+        Assert.Equal("any", LibVlcRendererSelection.GetHardwareDecodingOption(VideoRendererMode.Direct3D11, usesNativeOverlay: false));
         return Task.CompletedTask;
     }),
     ("reuses cached Kick overlay channel info for launch keys", async () =>
@@ -1597,7 +1589,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         viewModel.SelectedTab!.SetVideoHandle(new IntPtr(1234));
         await TestWait.UntilAsync(
             () => playbackFactory.CreateCount == 1 &&
@@ -1636,11 +1628,11 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         var firstTab = viewModel.SelectedTab!;
         viewModel.SelectedVlcOverlayFontSize = 24;
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
         var secondTab = viewModel.SelectedTab!;
         Assert.Equal(15d, viewModel.SelectedVlcOverlayFontSize);
         viewModel.SelectedVlcOverlayFontSize = 18;

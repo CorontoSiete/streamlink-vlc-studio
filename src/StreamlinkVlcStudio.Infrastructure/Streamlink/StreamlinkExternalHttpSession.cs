@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Streamlink;
@@ -56,23 +57,7 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
         {
         }
 
-        var handlers = LogLineReceived;
-        if (handlers is null)
-        {
-            return;
-        }
-
-        foreach (EventHandler<string> handler in handlers.GetInvocationList())
-        {
-            try
-            {
-                handler(this, line);
-            }
-            catch (Exception ex)
-            {
-                logger.Write(AppLogLevel.Warning, "Streamlink", "A Streamlink log subscriber failed.", ex);
-            }
-        }
+        SafeEventDispatcher.Invoke(LogLineReceived, this, line, logger, "Streamlink", nameof(LogLineReceived));
     }
 
     internal void AttachOutputPumps(Task standardOutput, Task standardError)

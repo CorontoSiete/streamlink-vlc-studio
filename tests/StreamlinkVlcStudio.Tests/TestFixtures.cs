@@ -72,7 +72,7 @@ internal static class TestSta
                         app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
                         {
                             Source = new Uri(
-                                "pack://application:,,,/StreamlinkVlcStudio.App.Wpf;component/Themes/StudioTheme.xaml")
+                                "pack://application:,,,/StreamStudio;component/Themes/StudioTheme.xaml")
                         });
                         StreamlinkVlcStudio.App.Wpf.Themes.ThemeManager.ApplyTheme(AppTheme.Dark);
                     }
@@ -236,39 +236,6 @@ internal static class BitmapAssert
     }
 }
 
-internal static class BrowserCaptureTestClient
-{
-    public static Task<HttpResponseMessage> PostCaptureAsync(HttpClient httpClient, int port, string url)
-    {
-        return httpClient.PostAsync(
-            $"http://127.0.0.1:{port}/capture",
-            new StringContent($$"""{"url":"{{url}}"}""", Encoding.UTF8, "application/json"));
-    }
-
-    public static HttpRequestMessage CreatePostRequest(int port, string url, string origin)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/capture")
-        {
-            Content = new StringContent($$"""{"url":"{{url}}"}""", Encoding.UTF8, "application/json")
-        };
-        Assert.True(request.Headers.TryAddWithoutValidation("Origin", origin));
-        return request;
-    }
-
-    public static async Task<string> SendRawRequestAsync(int port, string request)
-    {
-        using var client = new System.Net.Sockets.TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port).WaitAsync(TimeSpan.FromSeconds(1));
-        await using var stream = client.GetStream();
-        var requestBytes = Encoding.ASCII.GetBytes(request);
-        await stream.WriteAsync(requestBytes).AsTask().WaitAsync(TimeSpan.FromSeconds(1));
-        await stream.FlushAsync().WaitAsync(TimeSpan.FromSeconds(1));
-
-        using var reader = new StreamReader(stream, Encoding.ASCII);
-        return await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(2));
-    }
-}
-
 internal static class TestWait
 {
     public static async Task UntilAsync(
@@ -301,6 +268,10 @@ internal static class NativeOverlayControllerTest
     private const uint OverlayMagic = 0x564C4F56;
     private const uint OverlayVersion = 1;
     private const int EventMessageSize = 16;
+    private const int ImageFileHeaderSize = 20;
+    private const int ImageSectionHeaderSize = 40;
+    private const int CoffSymbolSize = 18;
+    private const int MaximumInputTextBytes = 512;
 
     public const uint ChatInputFocusEvent = 4;
 
@@ -343,6 +314,140 @@ internal static class NativeOverlayControllerTest
             $"Could not send native overlay event {eventType} to pipe '{pipeName}'.",
             lastException);
     }
+
+    public static string ReadInputText(Process process, string controllerPath)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        ArgumentException.ThrowIfNullOrWhiteSpace(controllerPath);
+
+        var rva = ResolveCoffSymbolRva(controllerPath, "g_input_text");
+        var baseAddress = process.MainModule?.BaseAddress ??
+            throw new InvalidOperationException("Could not read the native overlay controller base address.");
+        var address = IntPtr.Add(baseAddress, checked((int)rva));
+        var buffer = new byte[MaximumInputTextBytes];
+        if (!ReadProcessMemory(process.Handle, address, buffer, buffer.Length, out var bytesRead) ||
+            bytesRead == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Could not read the native overlay controller input buffer.");
+        }
+
+        var length = Array.IndexOf(buffer, (byte)0);
+        if (length < 0)
+        {
+            length = Math.Min(buffer.Length, bytesRead.ToInt32());
+        }
+
+        return Encoding.UTF8.GetString(buffer, 0, length);
+    }
+
+    private static uint ResolveCoffSymbolRva(string path, string symbolName)
+    {
+        var image = File.ReadAllBytes(path);
+        if (image.Length < 0x40 ||
+            image[0] != 'M' ||
+            image[1] != 'Z')
+        {
+            throw new InvalidDataException("The native overlay controller is not a PE image.");
+        }
+
+        var peOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(0x3c, 4)));
+        var coffOffset = peOffset + 4;
+        if (coffOffset + ImageFileHeaderSize > image.Length ||
+            BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(peOffset, 4)) != 0x00004550u)
+        {
+            throw new InvalidDataException("The native overlay controller PE header is invalid.");
+        }
+
+        var sectionCount = BinaryPrimitives.ReadUInt16LittleEndian(image.AsSpan(coffOffset + 2, 2));
+        var symbolTableOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(coffOffset + 8, 4)));
+        var symbolCount = BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(coffOffset + 12, 4));
+        var optionalHeaderSize = BinaryPrimitives.ReadUInt16LittleEndian(image.AsSpan(coffOffset + 16, 2));
+        var sectionTableOffset = coffOffset + ImageFileHeaderSize + optionalHeaderSize;
+        var sections = new uint[sectionCount];
+        for (var index = 0; index < sections.Length; index++)
+        {
+            var sectionOffset = sectionTableOffset + index * ImageSectionHeaderSize;
+            if (sectionOffset + ImageSectionHeaderSize > image.Length)
+            {
+                throw new InvalidDataException("The native overlay controller section table is invalid.");
+            }
+
+            sections[index] = BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(sectionOffset + 12, 4));
+        }
+
+        var stringTableOffset = checked(symbolTableOffset + (int)symbolCount * CoffSymbolSize);
+        if (symbolTableOffset <= 0 ||
+            stringTableOffset + 4 > image.Length)
+        {
+            throw new InvalidDataException("The native overlay controller symbol table is unavailable.");
+        }
+
+        for (var index = 0u; index < symbolCount;)
+        {
+            var entryOffset = checked(symbolTableOffset + (int)index * CoffSymbolSize);
+            if (entryOffset + CoffSymbolSize > image.Length)
+            {
+                throw new InvalidDataException("The native overlay controller symbol table is invalid.");
+            }
+
+            var name = ReadCoffSymbolName(image, entryOffset, stringTableOffset);
+            var value = BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(entryOffset + 8, 4));
+            var sectionNumber = BinaryPrimitives.ReadInt16LittleEndian(image.AsSpan(entryOffset + 12, 2));
+            var auxiliaryCount = image[entryOffset + 17];
+            if (string.Equals(name, symbolName, StringComparison.Ordinal))
+            {
+                if (sectionNumber <= 0 || sectionNumber > sections.Length)
+                {
+                    throw new InvalidDataException($"The native overlay controller symbol '{symbolName}' has no section.");
+                }
+
+                return checked(sections[sectionNumber - 1] + value);
+            }
+
+            index += 1u + auxiliaryCount;
+        }
+
+        throw new InvalidDataException($"The native overlay controller symbol '{symbolName}' was not found.");
+    }
+
+    private static string ReadCoffSymbolName(byte[] image, int entryOffset, int stringTableOffset)
+    {
+        var inlineName = image.AsSpan(entryOffset, 8);
+        if (BinaryPrimitives.ReadUInt32LittleEndian(inlineName[..4]) == 0)
+        {
+            var stringOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(inlineName[4..]));
+            var offset = stringTableOffset + stringOffset;
+            if (offset < stringTableOffset + 4 || offset >= image.Length)
+            {
+                throw new InvalidDataException("The native overlay controller symbol string table is invalid.");
+            }
+
+            var end = Array.IndexOf(image, (byte)0, offset);
+            if (end < 0)
+            {
+                throw new InvalidDataException("The native overlay controller symbol name is unterminated.");
+            }
+
+            return Encoding.UTF8.GetString(image, offset, end - offset);
+        }
+
+        var length = inlineName.IndexOf((byte)0);
+        if (length < 0)
+        {
+            length = inlineName.Length;
+        }
+
+        return Encoding.UTF8.GetString(inlineName[..length]);
+    }
+
+    [DllImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ReadProcessMemory(
+        IntPtr process,
+        IntPtr baseAddress,
+        byte[] buffer,
+        int size,
+        out IntPtr bytesRead);
 }
 
 internal static class NativeWindowTest
@@ -395,6 +500,34 @@ internal static class NativeWindowTest
         return handle;
     }
 
+    public static IntPtr CreateVisibleOwnedPopupWindow(
+        IntPtr ownerHandle,
+        string className = "static",
+        string windowName = "")
+    {
+        const int wsPopup = unchecked((int)0x80000000);
+        const int wsVisible = 0x10000000;
+        var handle = CreateWindowEx(
+            0,
+            className,
+            windowName,
+            wsPopup | wsVisible,
+            0,
+            0,
+            80,
+            60,
+            ownerHandle,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero);
+        if (handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Failed to create native test owned popup window.");
+        }
+
+        return handle;
+    }
+
     public static string GetClassName(IntPtr handle)
     {
         var buffer = new StringBuilder(256);
@@ -433,6 +566,8 @@ internal static class NativeWindowTest
     }
 
     public static int GetWindowStyle(IntPtr handle) => GetWindowLong(handle, -16);
+
+    public static int GetWindowExStyle(IntPtr handle) => GetWindowLong(handle, -20);
 
     public static IntPtr GetTopChildWindow(IntPtr parentHandle) => GetWindow(parentHandle, 5);
 
@@ -661,6 +796,32 @@ internal static class NativeWindowTest
         }
     }
 
+    public static void SendVirtualKeySequence(params (ushort VirtualKey, bool KeyUp)[] keys)
+    {
+        const uint inputKeyboard = 1;
+        const uint keyEventKeyUp = 0x0002;
+        var inputs = keys
+            .Select(key => new NativeInput
+            {
+                Type = inputKeyboard,
+                Union = new NativeInputUnion
+                {
+                    Keyboard = new NativeKeyboardInput
+                    {
+                        VirtualKey = key.VirtualKey,
+                        ScanCode = checked((ushort)MapVirtualKey(key.VirtualKey, 0)),
+                        Flags = key.KeyUp ? keyEventKeyUp : 0
+                    }
+                }
+            })
+            .ToArray();
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeInput>());
+        if (sent != inputs.Length)
+        {
+            throw new InvalidOperationException($"Failed to send virtual-key input ({sent}/{inputs.Length}).");
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeInput
     {
@@ -823,6 +984,9 @@ internal static class NativeWindowTest
 
     [DllImport("user32", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, NativeInput[] inputs, int inputSize);
+
+    [DllImport("user32")]
+    private static extern uint MapVirtualKey(uint code, uint mapType);
 }
 
 internal static class WpfVisualTest
@@ -2090,6 +2254,7 @@ internal sealed record FakePlaybackAudioCall(FakePlaybackEngine Engine, int Volu
 
 internal sealed class FakePlaybackEngine : IPlaybackEngine
 {
+    public Action? DisposeAction { get; init; }
     private readonly List<IntPtr> videoHandleHistory = [];
     private readonly List<Uri> playedUris = [];
     public event EventHandler? VideoOutputRebound;
@@ -2109,6 +2274,9 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public TimeSpan Duration { get; set; } = TimeSpan.FromHours(2);
     public bool Seekable { get; set; } = true;
     public TimeSpan? ResumeJumpsToPosition { get; set; }
+    public TimeSpan? LastStartPosition { get; private set; }
+    public int ResumeCount { get; private set; }
+    public bool PreservesReplayPositionOnResume { get; set; }
     public bool AudioTrackEnabled { get; private set; } = true;
     public bool IgnoreSetMutedUntilPlayed { get; init; }
     public bool IgnoreAudibleWhilePaused { get; init; }
@@ -2171,6 +2339,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
 
     public Task ResumeAsync(CancellationToken cancellationToken = default)
     {
+        ResumeCount++;
         Paused = false;
         if (ResumeJumpsToPosition is { } jump)
         {
@@ -2178,6 +2347,20 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
         }
 
         return Task.CompletedTask;
+    }
+
+    public async Task<bool> TryResumeReplayAsync(CancellationToken cancellationToken = default)
+    {
+        if (!PreservesReplayPositionOnResume) return false;
+        await ResumeAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default)
+    {
+        LastStartPosition = position;
+        await PlayAsync(mediaUri, volume, audioState, cancellationToken);
+        await SeekAsync(position, cancellationToken);
     }
 
     public Task SeekAsync(TimeSpan position, CancellationToken cancellationToken = default)
@@ -2299,6 +2482,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
 
     public void Dispose()
     {
+        DisposeAction?.Invoke();
     }
 }
 

@@ -7,6 +7,8 @@ namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 
 internal sealed class TwitchGraphQlTransport(HttpClient httpClient)
 {
+    // Public Twitch web identity shared by anonymous GraphQL callers; this is not an account secret.
+    internal const string PublicClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     internal const string Endpoint = "https://gql.twitch.tv/gql";
 
     /// <summary>

@@ -31,7 +31,7 @@ internal sealed class TwitchSeekPreviewClient
             variables = new { id = videoId }
         });
         using var metadata = await new TwitchGraphQlTransport(httpClient).SendAsync(
-            payload, "kimne78kx3ncx6brgo4mv6wki5h1ko", TwitchGraphQlTransport.CreateDeviceId(),
+            payload, TwitchGraphQlTransport.PublicClientId, TwitchGraphQlTransport.CreateDeviceId(),
             cancellationToken).ConfigureAwait(false);
         if (!metadata.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             !data.TryGetProperty("video", out var video) || video.ValueKind != JsonValueKind.Object ||

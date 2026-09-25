@@ -97,6 +97,27 @@ function Test-SafeWindowsPathSegment {
     $deviceName -notmatch $devicePattern
 }
 
+function Test-SafeWindowsRelativePath {
+    param([AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        [IO.Path]::IsPathRooted($Path)) {
+        return $false
+    }
+
+    $normalized = $Path.Replace('\', '/')
+    if ([IO.Path]::IsPathRooted($normalized)) {
+        return $false
+    }
+    foreach ($segment in @($normalized -split '/')) {
+        if (-not (Test-SafeWindowsPathSegment $segment)) {
+            return $false
+        }
+    }
+
+    $true
+}
+
 function Assert-NoReparsePointInExistingPath {
     <#
     .SYNOPSIS

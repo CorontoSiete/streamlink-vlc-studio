@@ -1,7 +1,7 @@
 <Window x:Class="StreamlinkVlcStudio.App.Wpf.SetupWizardWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Streamlink VLC Studio setup"
+        Title="Stream Studio setup"
         Width="760"
         Height="660"
         MinWidth="700"
@@ -47,7 +47,7 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="Welcome to Streamlink VLC Studio"
+                <TextBlock Text="Welcome to Stream Studio"
                            Style="{StaticResource StudioSectionTitleStyle}"
                            FontSize="25" />
                 <TextBlock Text="Finish the account connection now so you can start watching immediately."
@@ -221,7 +221,7 @@
                     <StackPanel Visibility="{Binding IsCompleteVisible, Converter={StaticResource BoolToVisibility}}">
                         <TextBlock Text="You are ready to watch"
                                    Style="{StaticResource StudioSectionTitleStyle}" />
-                        <TextBlock Text="Your choices are saved in the app's local settings. You can start with a Twitch or Kick URL from the home page, or use the browser extension after loading it from the release folder."
+                        <TextBlock Text="Your choices are saved in the app's local settings. Start with a Twitch or Kick URL or channel name in the home search bar, or open a stream from your followed channels."
                                    TextWrapping="Wrap"
                                    Foreground="{DynamicResource StudioTextMutedBrush}"
                                    Margin="0,0,0,18" />

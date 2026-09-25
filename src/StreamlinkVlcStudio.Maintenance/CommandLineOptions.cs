@@ -13,7 +13,7 @@ internal sealed record CommandLineOptions(
     internal static CommandLineOptions Parse(string[] args)
     {
         var quiet = false;
-        var purgeUserData = false;
+        var purgeUserData = true;
         var purgeUserDataOnly = false;
         var staged = false;
         string? installDirectory = null;
@@ -31,6 +31,10 @@ internal sealed record CommandLineOptions(
             else if (Matches(argument, "/purge-user-data", "--purge-user-data"))
             {
                 purgeUserData = true;
+            }
+            else if (Matches(argument, "/preserve-user-data", "--preserve-user-data"))
+            {
+                purgeUserData = false;
             }
             else if (Matches(argument, "--purge-user-data-only"))
             {

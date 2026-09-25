@@ -16,6 +16,8 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
     private int progress;
     private bool purgeUserData;
     private bool cancelRequested;
+    private bool isRollingBack;
+    private bool canRetry;
     private bool resultSucceeded;
     private bool resultWarning;
     private bool canLaunch;
@@ -29,7 +31,8 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         InstallCommand = new RelayCommand(application.Install, () => Page == BootstrapperPage.Install);
         RepairCommand = new RelayCommand(application.Repair, () => Page == BootstrapperPage.Maintenance);
         UninstallCommand = new RelayCommand(application.Uninstall, () => Page == BootstrapperPage.Maintenance);
-        CancelCommand = new RelayCommand(application.RequestCancel, () => Page == BootstrapperPage.Progress && !CancelRequested);
+        CancelCommand = new RelayCommand(application.RequestCancel, () => Page == BootstrapperPage.Progress && !CancelRequested && !IsRollingBack);
+        RetryCommand = new RelayCommand(application.Retry, () => Page == BootstrapperPage.Result && CanRetry);
         CloseCommand = new RelayCommand(application.Close, () => Page != BootstrapperPage.Progress);
         OpenLogCommand = new RelayCommand(application.OpenLog, () => CanOpenLog);
         LaunchCommand = new RelayCommand(application.LaunchApplication, () => CanLaunch);
@@ -50,6 +53,8 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
     public ICommand UninstallCommand { get; }
 
     public ICommand CancelCommand { get; }
+
+    public ICommand RetryCommand { get; }
 
     public ICommand CloseCommand { get; }
 
@@ -144,6 +149,24 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         }
     }
 
+    public bool IsRollingBack
+    {
+        get => isRollingBack;
+        set
+        {
+            if (Set(ref isRollingBack, value)) ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
+        }
+    }
+
+    public bool CanRetry
+    {
+        get => canRetry;
+        set
+        {
+            if (Set(ref canRetry, value)) ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
+        }
+    }
+
     public bool ResultSucceeded
     {
         get => resultSucceeded;
@@ -198,6 +221,7 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         ((RelayCommand)RepairCommand).RaiseCanExecuteChanged();
         ((RelayCommand)UninstallCommand).RaiseCanExecuteChanged();
         ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
+        ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
         ((RelayCommand)CloseCommand).RaiseCanExecuteChanged();
     }
 

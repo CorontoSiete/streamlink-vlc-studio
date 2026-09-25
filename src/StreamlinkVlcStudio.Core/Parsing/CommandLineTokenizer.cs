@@ -6,7 +6,7 @@ namespace StreamlinkVlcStudio.Core.Parsing;
 
 public static class CommandLineTokenizer
 {
-    private const string SyntheticExecutableName = "StreamlinkVlcStudio.exe";
+    private const string SyntheticExecutableName = "StreamStudio.exe";
 
     public static IReadOnlyList<string> Tokenize(string value)
     {
@@ -55,7 +55,7 @@ public static class CommandLineTokenizer
         }
     }
 
-    // Mirrors the documented Microsoft C runtime rules on non-Windows hosts so Core remains
+    // Mirrors CommandLineToArgvW rules on non-Windows hosts so Core remains
     // testable and custom argument behavior does not change across build environments.
     private static List<string> TokenizePortable(string value)
     {
@@ -63,7 +63,7 @@ public static class CommandLineTokenizer
         var index = 0;
         while (true)
         {
-            while (index < value.Length && char.IsWhiteSpace(value[index]))
+            while (index < value.Length && IsArgumentSeparator(value[index]))
             {
                 index++;
             }
@@ -77,7 +77,7 @@ public static class CommandLineTokenizer
             var inQuotes = false;
             while (index < value.Length)
             {
-                if (char.IsWhiteSpace(value[index]) && !inQuotes)
+                if (IsArgumentSeparator(value[index]) && !inQuotes)
                 {
                     break;
                 }
@@ -116,7 +116,7 @@ public static class CommandLineTokenizer
                 }
 
                 current.Append('\\', slashCount);
-                if (index >= value.Length || (char.IsWhiteSpace(value[index]) && !inQuotes))
+                if (index >= value.Length || (IsArgumentSeparator(value[index]) && !inQuotes))
                 {
                     break;
                 }
@@ -127,6 +127,8 @@ public static class CommandLineTokenizer
             result.Add(current.ToString());
         }
     }
+
+    private static bool IsArgumentSeparator(char value) => value is ' ' or '\t';
 
     [DllImport("shell32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);

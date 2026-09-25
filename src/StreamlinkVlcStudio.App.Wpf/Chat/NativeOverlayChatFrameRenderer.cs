@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
@@ -89,7 +88,8 @@ internal static class NativeOverlayChatFrameRenderer
             messageOffset,
             imageCachePinOwner,
             renderContext);
-        CopyPbgraToRgba(rendered.Bitmap, frame.AsSpan(NativeOverlayProtocolCodec.HeaderSize));
+        rendered.Bitmap.CopyPixels(frame, checked(width * 4), NativeOverlayProtocolCodec.HeaderSize);
+        NativeOverlayPixelConverter.ConvertPbgraToRgba(frame.AsSpan(NativeOverlayProtocolCodec.HeaderSize));
         return new NativeOverlayChatFrame(
             frame,
             rendered.HasAnimatedContent,
@@ -135,7 +135,17 @@ internal static class NativeOverlayChatFrameRenderer
             Orientation = Orientation.Vertical,
             VerticalAlignment = VerticalAlignment.Bottom
         };
-        stack.Children.Clear();
+        // Animation changes image sources, not the message list. Reparenting the same
+        // rows each frame invalidates the whole WPF layout and text formatting tree.
+        var sameChildren = stack.Children.Count == messageBlocks.Count;
+        for (var index = 0; sameChildren && index < messageBlocks.Count; index++)
+        {
+            sameChildren = ReferenceEquals(stack.Children[index], messageBlocks[index]);
+        }
+        if (!sameChildren)
+        {
+            stack.Children.Clear();
+        }
 
         for (var index = 0; index < messageBlocks.Count; index++)
         {
@@ -145,7 +155,10 @@ internal static class NativeOverlayChatFrameRenderer
                 0,
                 0,
                 index + 1 < messageBlocks.Count ? layout.Presentation.MessageGap : 0);
-            stack.Children.Add(messageBlock);
+            if (!sameChildren)
+            {
+                stack.Children.Add(messageBlock);
+            }
         }
 
         var root = renderContext?.PrepareRoot(
@@ -197,7 +210,8 @@ internal static class NativeOverlayChatFrameRenderer
             root.UpdateLayout();
         }
 
-        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        var bitmap = renderContext?.PrepareBitmap(width, height) ??
+            new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(root);
         return new RenderedChatMessages(
             bitmap,
@@ -241,11 +255,16 @@ internal static class NativeOverlayChatFrameRenderer
                 return measured;
             }
 
-            var block = renderContext?.GetMessageBlock(messages[index], layout.Presentation) ??
-                CreateMessageBlock(messages[index], layout.Presentation);
-            block.Height = double.NaN;
-            block.Measure(new Size(availableWidth, double.PositiveInfinity));
-            measured = (block, Math.Max(1, (int)Math.Ceiling(block.DesiredSize.Height)));
+            if (renderContext is not null)
+            {
+                measured = renderContext.MeasureMessageBlock(messages[index], layout.Presentation, availableWidth);
+            }
+            else
+            {
+                var block = CreateMessageBlock(messages[index], layout.Presentation);
+                block.Measure(new Size(availableWidth, double.PositiveInfinity));
+                measured = (block, Math.Max(1, (int)Math.Ceiling(block.DesiredSize.Height)));
+            }
             measuredBlocks[index] = measured;
             return measured;
         }
@@ -503,48 +522,6 @@ internal static class NativeOverlayChatFrameRenderer
         return message;
     }
 
-    private static void CopyPbgraToRgba(BitmapSource bitmap, Span<byte> destination)
-    {
-        var width = bitmap.PixelWidth;
-        var height = bitmap.PixelHeight;
-        var stride = checked((int)((long)width * 4L));
-        var pixelBytes = checked((int)((long)stride * height));
-        var pixels = ArrayPool<byte>.Shared.Rent(pixelBytes);
-        try
-        {
-            bitmap.CopyPixels(pixels, stride, 0);
-
-            var outputIndex = 0;
-            for (var index = 0; index < pixelBytes; index += 4)
-            {
-                var b = pixels[index];
-                var g = pixels[index + 1];
-                var r = pixels[index + 2];
-                var a = pixels[index + 3];
-                if (a is > 0 and < 255)
-                {
-                    r = Unpremultiply(r, a);
-                    g = Unpremultiply(g, a);
-                    b = Unpremultiply(b, a);
-                }
-
-                destination[outputIndex++] = r;
-                destination[outputIndex++] = g;
-                destination[outputIndex++] = b;
-                destination[outputIndex++] = a;
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(pixels);
-        }
-    }
-
-    private static byte Unpremultiply(byte value, byte alpha)
-    {
-        return (byte)Math.Clamp((value * 255 + alpha / 2) / alpha, 0, 255);
-    }
-
     private sealed record RenderedChatMessages(
         RenderTargetBitmap Bitmap,
         bool HasAnimatedContent,
@@ -558,6 +535,7 @@ internal sealed class NativeReplayOverlayFrameRenderContext
     private const int MaximumCachedMessageBlocks = 512;
     private readonly Dictionary<ChatMessage, DockedChatMessageTextBlock> messageBlocks =
         new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<DockedChatMessageTextBlock, (int Width, int Height, Thickness Margin)> measurements = [];
     private NativeOverlayChatPresentation? presentation;
     private long contentVersion = long.MinValue;
 
@@ -568,6 +546,7 @@ internal sealed class NativeReplayOverlayFrameRenderContext
     };
 
     private Border? root;
+    private RenderTargetBitmap? bitmap;
 
     internal void EnsureContentVersion(long nextContentVersion)
     {
@@ -578,6 +557,39 @@ internal sealed class NativeReplayOverlayFrameRenderContext
 
         contentVersion = nextContentVersion;
         messageBlocks.Clear();
+        measurements.Clear();
+    }
+
+    internal RenderTargetBitmap PrepareBitmap(int width, int height)
+    {
+        if (bitmap is null || bitmap.PixelWidth != width || bitmap.PixelHeight != height)
+        {
+            bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        }
+        else
+        {
+            // Transparent pixels must erase the previous frame, including after scrolling.
+            bitmap.Clear();
+        }
+        return bitmap;
+    }
+
+    internal (DockedChatMessageTextBlock Block, int Height) MeasureMessageBlock(
+        ChatMessage message, NativeOverlayChatPresentation nextPresentation, int width)
+    {
+        var block = GetMessageBlock(message, nextPresentation);
+        if (block.IsMeasureValid && measurements.TryGetValue(block, out var previous) &&
+            previous.Width == width && previous.Margin == block.Margin)
+        {
+            return (block, previous.Height);
+        }
+        block.Height = double.NaN;
+        block.Measure(new Size(width, double.PositiveInfinity));
+        var height = Math.Max(1, (int)Math.Ceiling(block.DesiredSize.Height));
+        // DesiredSize includes the row margin, which changes when a row becomes
+        // the last visible message. Retain the existing measured spacing exactly.
+        measurements[block] = (width, height, block.Margin);
+        return (block, height);
     }
 
     internal Border PrepareRoot(int width, int height, Thickness padding)
@@ -605,6 +617,7 @@ internal sealed class NativeReplayOverlayFrameRenderContext
         {
             presentation = nextPresentation;
             messageBlocks.Clear();
+            measurements.Clear();
         }
 
         if (messageBlocks.TryGetValue(message, out var block))
@@ -617,6 +630,7 @@ internal sealed class NativeReplayOverlayFrameRenderContext
         if (messageBlocks.Count > MaximumCachedMessageBlocks)
         {
             var oldest = messageBlocks.Keys.First();
+            measurements.Remove(messageBlocks[oldest]);
             messageBlocks.Remove(oldest);
         }
 

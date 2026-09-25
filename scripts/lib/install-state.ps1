@@ -1,6 +1,6 @@
-$script:InstallOwnerFileName = ".streamlink-vlc-studio-owner.json"
-$script:InstallManifestFileName = ".streamlink-vlc-studio-files.json"
-$script:InstallProductId = "streamlink-vlc-studio"
+$script:InstallOwnerFileName = ".stream-studio-owner.json"
+$script:InstallManifestFileName = ".stream-studio-files.json"
+$script:InstallProductId = "stream-studio"
 
 function Get-InstallRelativePath([string]$Root, [string]$Path) {
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/'))
@@ -10,16 +10,6 @@ function Get-InstallRelativePath([string]$Root, [string]$Path) {
         throw "Path is outside installation root. Root: $rootFull Path: $pathFull"
     }
     $pathFull.Substring($prefix.Length).Replace('\', '/')
-}
-
-function Test-SafeInstallRelativePath([string]$RelativePath) {
-    if ([string]::IsNullOrWhiteSpace($RelativePath) -or
-        [IO.Path]::IsPathRooted($RelativePath) -or
-        $RelativePath.IndexOf([char]0) -ge 0 -or
-        $RelativePath -match '(^|[\\/])\.\.([\\/]|$)') {
-        return $false
-    }
-    $true
 }
 
 function Get-SafeInstallFiles([string]$Directory) {
@@ -103,10 +93,12 @@ function Write-InstallOwnershipState {
     $candidateFiles = if ($null -eq $ManagedRelativePaths) {
         @(Get-SafeInstallFiles $root)
     } else {
-        @($ManagedRelativePaths | Sort-Object -Unique | ForEach-Object {
-            if (-not (Test-SafeInstallRelativePath $_)) {
+        @($ManagedRelativePaths | ForEach-Object {
+            if (-not (Test-SafeWindowsRelativePath $_)) {
                 throw "Unsafe managed installation path: '$_'"
             }
+            $_.Replace('\', '/')
+        } | Sort-Object -Unique | ForEach-Object {
             $managedPath = Join-Path $root $_
             if (-not (Test-Path -LiteralPath $managedPath -PathType Leaf)) {
                 throw "Managed installation file is missing: $_"
@@ -173,7 +165,7 @@ function Read-InstallOwnershipState([string]$Directory) {
         $owner.product -ne $script:InstallProductId -or $manifest.product -ne $script:InstallProductId -or
         [string]::IsNullOrWhiteSpace([string]$owner.installId) -or
         $owner.installId -ne $manifest.installId) {
-        throw "Installation ownership state does not identify Streamlink VLC Studio: $root"
+        throw "Installation ownership state does not identify Stream Studio: $root"
     }
     $actualManifestHash = Get-InstallFileSha256 $manifestPath
     if (-not [string]::Equals($actualManifestHash, [string]$owner.manifestSha256, [StringComparison]::OrdinalIgnoreCase)) {
@@ -182,8 +174,8 @@ function Read-InstallOwnershipState([string]$Directory) {
 
     $paths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in @($manifest.files)) {
-        $relative = [string]$entry.path
-        if (-not (Test-SafeInstallRelativePath $relative) -or -not $paths.Add($relative)) {
+        $relative = ([string]$entry.path).Replace('\', '/')
+        if (-not (Test-SafeWindowsRelativePath $relative) -or -not $paths.Add($relative)) {
             throw "Installation manifest contains an unsafe or duplicate path: '$relative'"
         }
     }
@@ -192,18 +184,18 @@ function Read-InstallOwnershipState([string]$Directory) {
 
 function Test-ExactLegacyInstall([string]$Directory) {
     $root = [IO.Path]::GetFullPath($Directory)
-    if (-not (Test-Path -LiteralPath (Join-Path $root "StreamlinkVlcStudio.exe") -PathType Leaf) -or
+    if (-not (Test-Path -LiteralPath (Join-Path $root "StreamStudio.exe") -PathType Leaf) -or
         -not (Test-Path -LiteralPath (Join-Path $root "Uninstall.exe") -PathType Leaf)) {
         return $false
     }
 
     $allowedTopLevel = @(
-        "StreamlinkVlcStudio.exe",
+        "StreamStudio.exe",
         "Uninstall.exe",
         "THIRD-PARTY-NOTICES.md",
         "install.ps1",
         "native-overlay-provenance.json",
-        "browser-extension",
+        "browser-extension", # Recognize extension files left by older installations.
         "vlc-overlay",
         "lib",
         "dependencies"

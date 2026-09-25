@@ -60,18 +60,33 @@ public sealed class BrowseCategoryViewModel : ObservableObject
 
     public void SetViewerCount(int viewerCount)
     {
-        if (category.ViewerCount == viewerCount)
-        {
-            return;
-        }
+        if (category.ViewerCount != viewerCount) Update(category with { ViewerCount = viewerCount });
+    }
 
-        category = category with
-        {
-            ViewerCount = viewerCount
-        };
+    internal void Update(BrowseCategory updated)
+    {
+        var previous = category;
+        var tagsChanged = !previous.Tags.SequenceEqual(updated.Tags);
+        if (previous.Platform == updated.Platform && previous.Id == updated.Id &&
+            previous.Name == updated.Name && previous.ThumbnailUrl == updated.ThumbnailUrl &&
+            previous.ViewerCount == updated.ViewerCount && !tagsChanged) return;
+        category = updated;
         OnPropertyChanged(nameof(Category));
-        OnPropertyChanged(nameof(ViewerCountText));
-        OnPropertyChanged(nameof(MetadataText));
+        if (previous.Platform != updated.Platform)
+        {
+            OnPropertyChanged(nameof(Platform));
+            OnPropertyChanged(nameof(PlatformText));
+        }
+        if (previous.Id != updated.Id) OnPropertyChanged(nameof(Id));
+        if (previous.Name != updated.Name) OnPropertyChanged(nameof(Name));
+        if (previous.ThumbnailUrl != updated.ThumbnailUrl)
+        {
+            OnPropertyChanged(nameof(ThumbnailUrl));
+            OnPropertyChanged(nameof(HasThumbnail));
+        }
+        if (previous.ViewerCount != updated.ViewerCount) OnPropertyChanged(nameof(ViewerCountText));
+        if (previous.ViewerCount != updated.ViewerCount || previous.Platform != updated.Platform || tagsChanged)
+            OnPropertyChanged(nameof(MetadataText));
     }
 
     private static string FormatViewerCountLabel(int value)

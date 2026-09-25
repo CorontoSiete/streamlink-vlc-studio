@@ -4,7 +4,7 @@
         xmlns:controls="clr-namespace:StreamlinkVlcStudio.App.Wpf.Controls"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="{Binding WindowTitle}"
-         Icon="/StreamlinkVlcStudio.App.Wpf;component/Assets/Twitch.ico"
+         Icon="/StreamStudio;component/Assets/Twitch.ico"
          Width="520"
          Height="326.5"
         MinWidth="320"
@@ -18,9 +18,10 @@
         WindowStartupLocation="Manual"
         WindowStyle="None">
     <shell:WindowChrome.WindowChrome>
+        <!-- Keep DWM composition active while resizing embedded native video. -->
         <shell:WindowChrome CaptionHeight="34"
                             CornerRadius="0"
-                            GlassFrameThickness="0"
+                            GlassFrameThickness="1"
                             ResizeBorderThickness="6"
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>

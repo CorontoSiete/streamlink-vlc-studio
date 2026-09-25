@@ -7,9 +7,9 @@ public sealed record ManagedInstallFile(string RelativePath, long Length, string
 
 public sealed class InstallOwnership
 {
-    public const string OwnerFileName = ".streamlink-vlc-studio-owner.json";
-    public const string ManifestFileName = ".streamlink-vlc-studio-files.json";
-    private const string ProductId = "streamlink-vlc-studio";
+    public const string OwnerFileName = ".stream-studio-owner.json";
+    public const string ManifestFileName = ".stream-studio-files.json";
+    private const string ProductId = "stream-studio";
     private const int MaximumStateBytes = 16 * 1024 * 1024;
     private const int MaximumManagedFiles = 100_000;
 
@@ -97,7 +97,7 @@ public sealed class InstallOwnership
         var files = new List<ManagedInstallFile>(filesElement.GetArrayLength());
         foreach (var element in filesElement.EnumerateArray())
         {
-            var relativePath = RequiredString(element, "path");
+            var relativePath = RequiredString(element, "path").Replace('\\', '/');
             if (!PathSafety.IsSafeManifestRelativePath(relativePath) || !seen.Add(relativePath))
             {
                 throw new InvalidDataException($"Unsafe or duplicate managed path: {relativePath}");

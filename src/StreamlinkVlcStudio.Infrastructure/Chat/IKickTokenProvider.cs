@@ -22,7 +22,7 @@ internal sealed class KickTokenProvider : IKickTokenProvider
 
     private readonly object gate = new();
     private readonly Dictionary<string, CacheEntry> cache = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Task<string?>> inFlight = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Task<TokenResolution>> inFlight = new(StringComparer.Ordinal);
     private readonly Func<ChatSettings, IAppLogger, CancellationToken, Task<string?>> resolveAsync;
 
     internal static KickTokenProvider Shared { get; } = new();
@@ -57,30 +57,51 @@ internal sealed class KickTokenProvider : IKickTokenProvider
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(logger);
-        var key = CreateCacheKey(settings);
-        Task<string?> operation;
+        cancellationToken.ThrowIfCancellationRequested();
+        // Resolution may refresh tokens. Work on a private copy so a late response cannot
+        // overwrite an account edited or disconnected while the request was in flight.
+        var credentials = KickCredentialSnapshot.Capture(settings);
+        var key = credentials.CacheKey;
+        Task<TokenResolution> operation;
         lock (gate)
         {
             var now = DateTimeOffset.UtcNow;
             if (cache.TryGetValue(key, out var cached) && cached.ExpiresAtUtc > now)
             {
                 cache[key] = cached with { LastAccessUtc = now };
-                return cached.Token;
+                operation = Task.FromResult(cached.Resolution);
             }
-
-            cache.Remove(key);
-            if (!inFlight.TryGetValue(key, out operation!))
+            else
             {
-                operation = ResolveAndCacheAsync(settings, logger, key);
-                inFlight[key] = operation;
-                RemoveInFlightWhenCompleted(key, operation);
+                cache.Remove(key);
+                if (!inFlight.TryGetValue(key, out operation!))
+                {
+                    operation = ResolveAndCacheAsync(credentials.ToSettings(), logger, key);
+                    inFlight[key] = operation;
+                    RemoveInFlightWhenCompleted(key, operation);
+                }
             }
         }
 
-        return await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var result = await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            // Every surviving waiter, including one served from the cache after cancellation,
+            // receives rotated refresh credentials if its original account is still selected.
+            if (result.RefreshedTokens is { } refreshed && result.CredentialKey != key &&
+                credentials.Matches(settings))
+            {
+                settings.KickOAuthToken = refreshed.AccessToken;
+                settings.KickRefreshToken = refreshed.RefreshToken;
+                settings.KickTokenExpiresAtUtc = refreshed.ExpiresAtUtc;
+            }
+        }
+
+        return result.Token;
     }
 
-    private async Task<string?> ResolveAndCacheAsync(
+    private async Task<TokenResolution> ResolveAndCacheAsync(
         ChatSettings settings,
         IAppLogger logger,
         string originalKey)
@@ -90,20 +111,26 @@ internal sealed class KickTokenProvider : IKickTokenProvider
         {
             token = await resolveAsync(settings, logger, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // Shared acquisition has no caller token. HTTP deadlines are failed lookups;
+            // each waiter's cancellation is still enforced by ResolveAsync.
             logger.Write(AppLogLevel.Warning, "KickOAuth", "Kick access-token resolution failed.", ex);
             token = null;
         }
 
         var now = DateTimeOffset.UtcNow;
         var expiresAt = GetCacheExpiry(settings, token, now);
+        var credentials = KickCredentialSnapshot.Capture(settings);
+        var currentKey = credentials.CacheKey;
+        // Retain rotated tokens for surviving/future waiters, not a copy of the client secret.
+        var result = new TokenResolution(token, currentKey, currentKey == originalKey ? null :
+            new RefreshedTokens(credentials.AccessToken, credentials.RefreshToken, credentials.ExpiresAtUtc));
         lock (gate)
         {
-            var currentKey = CreateCacheKey(settings);
             if (expiresAt > now)
             {
-                var entry = new CacheEntry(token, expiresAt, now);
+                var entry = new CacheEntry(result, expiresAt, now);
                 cache[originalKey] = entry;
                 cache[currentKey] = entry;
             }
@@ -116,7 +143,7 @@ internal sealed class KickTokenProvider : IKickTokenProvider
             TrimCacheLocked();
         }
 
-        return token;
+        return result;
     }
 
     private static DateTimeOffset GetCacheExpiry(
@@ -153,7 +180,7 @@ internal sealed class KickTokenProvider : IKickTokenProvider
         return safeTokenExpiry < maximum ? safeTokenExpiry : maximum;
     }
 
-    private void RemoveInFlightWhenCompleted(string key, Task<string?> operation)
+    private void RemoveInFlightWhenCompleted(string key, Task<TokenResolution> operation)
     {
         _ = operation.ContinueWith(
             completed =>
@@ -198,18 +225,12 @@ internal sealed class KickTokenProvider : IKickTokenProvider
         }
     }
 
-    private static string CreateCacheKey(ChatSettings settings)
-    {
-        return OAuthTokenHelpers.CreateCredentialFingerprint(
-            settings.KickOAuthToken.Trim(),
-            settings.KickRefreshToken.Trim(),
-            settings.KickClientId.Trim(),
-            settings.KickClientSecret.Trim(),
-            settings.KickTokenExpiresAtUtc?.UtcTicks.ToString() ?? "");
-    }
+    private sealed record RefreshedTokens(string AccessToken, string RefreshToken, DateTimeOffset? ExpiresAtUtc);
+
+    private sealed record TokenResolution(string? Token, string CredentialKey, RefreshedTokens? RefreshedTokens);
 
     private sealed record CacheEntry(
-        string? Token,
+        TokenResolution Resolution,
         DateTimeOffset ExpiresAtUtc,
         DateTimeOffset LastAccessUtc);
 }

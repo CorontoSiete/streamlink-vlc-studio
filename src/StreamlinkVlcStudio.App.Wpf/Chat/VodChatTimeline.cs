@@ -25,6 +25,7 @@ internal sealed class VodChatTimeline
     private readonly List<VodChatMessage> messages = [];
     private readonly HashSet<string> messageKeys = new(StringComparer.Ordinal);
     private int cursor;
+    private TimeSpan seekBoundary = TimeSpan.MinValue;
 
     public int Count
     {
@@ -57,6 +58,7 @@ internal sealed class VodChatTimeline
             messages.Clear();
             messageKeys.Clear();
             cursor = 0;
+            seekBoundary = TimeSpan.MinValue;
         }
     }
 
@@ -107,6 +109,7 @@ internal sealed class VodChatTimeline
     {
         lock (gate)
         {
+            seekBoundary = offset;
             cursor = LowerBoundCore(offset);
         }
     }
@@ -164,9 +167,10 @@ internal sealed class VodChatTimeline
             ? messages.Count
             : UpperBoundCore(message.Offset);
         messages.Insert(index, message);
-        if (index < cursor)
+        if (index < cursor || message.Offset < seekBoundary)
         {
-            // Already behind the read cursor, so it belongs to chat the viewer has passed.
+            // Preserve the absolute seek boundary even when the list was empty (or ended
+            // before the target) when seeking. Late pages still belong to their original time.
             cursor++;
         }
 

@@ -39,7 +39,7 @@ internal static class RegressionTestCatalog
         var launchCondition = (string?)launch.Attribute("Condition") ?? "";
         Assert.Equal("Installed OR VersionNT64 >= 603", launchCondition);
         Assert.Equal(
-            "Streamlink VLC Studio requires 64-bit Windows 10 or later.",
+            "Stream Studio requires 64-bit Windows 10 or later.",
             (string?)launch.Attribute("Message") ?? "");
         Assert.DoesNotContain("WindowsBuild", launchCondition);
         Assert.DoesNotContain("17763", launchCondition);
@@ -494,7 +494,7 @@ internal static class RegressionTestCatalog
     {
         var settings = new AppSettings();
         var logger = new MemoryLogger();
-        var updater = new FakeAppUpdateService(new AppUpdateStartResult("Updater launched.", true));
+        var updater = new FakeAppUpdateService("Updater launched.", updateReady: true);
         var shutdownRequests = 0;
         var viewModel = TestViewModels.CreateMain(
             settings,
@@ -530,7 +530,7 @@ internal static class RegressionTestCatalog
     {
         var settings = new AppSettings();
         var logger = new MemoryLogger();
-        var updater = new FakeAppUpdateService(new AppUpdateStartResult("You're on the latest version (1.0.7).", false));
+        var updater = new FakeAppUpdateService("You're on the latest version (1.0.7).", updateReady: false);
         var shutdownRequests = 0;
         var viewModel = TestViewModels.CreateMain(
             settings,
@@ -733,7 +733,7 @@ internal static class RegressionTestCatalog
 
     private static async Task NativeOverlayResizeRejectsStaleCallbackAsync()
     {
-        var root = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", $"resize-race-{Guid.NewGuid():N}");
+        var root = Path.Combine(Path.GetTempPath(), "StreamStudioTests", $"resize-race-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var statePath = Path.Combine(root, "overlay-position");
         var targetPath = $"{statePath}.size";
@@ -1095,11 +1095,11 @@ internal static class RegressionTestCatalog
         throw new InvalidOperationException("Could not locate repository root.");
     }
 
-    private sealed class FakeAppUpdateService(AppUpdateStartResult result) : IAppUpdateService
+    private sealed class FakeAppUpdateService(string message, bool updateReady) : IAppUpdateService
     {
         public int CallCount { get; private set; }
 
-        public AppUpdateState State { get; } = result.RequestApplicationShutdown
+        public AppUpdateState State { get; } = updateReady
             ? CreateReadyState()
             : AppUpdateState.Idle;
 
@@ -1115,7 +1115,7 @@ internal static class RegressionTestCatalog
                 false,
                 AppInstallKind.Managed,
                 null,
-                result.Message,
+                message,
                 DateTimeOffset.UtcNow));
         }
 
@@ -1125,7 +1125,7 @@ internal static class RegressionTestCatalog
         {
             cancellationToken.ThrowIfCancellationRequested();
             CallCount++;
-            return Task.FromResult(new AppUpdateLaunchResult(true, result.Message));
+            return Task.FromResult(new AppUpdateLaunchResult(true, message));
         }
 
         private static AppUpdateState CreateReadyState()

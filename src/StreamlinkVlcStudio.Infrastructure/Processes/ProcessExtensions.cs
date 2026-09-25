@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 
@@ -53,6 +54,15 @@ internal static class ProcessExtensions
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+        cancellationToken.ThrowIfCancellationRequested();
+        // Validate the timer budget before starting a child that would otherwise survive
+        // a CancelAfter failure outside the process-cleanup block.
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(timeout);
+        if (startInfo.UseShellExecute || !startInfo.RedirectStandardOutput || !startInfo.RedirectStandardError)
+        {
+            throw new ArgumentException("The process must redirect stdout and stderr without shell execution.", nameof(startInfo));
+        }
 
         using var process = new Process { StartInfo = startInfo };
         if (!process.Start())
@@ -66,8 +76,6 @@ internal static class ProcessExtensions
         var standardErrorCollector = new BoundedProcessOutputCollector(PayloadLimits.ProcessOutputBytes);
         var standardOutputTask = ReadOutputAsync(process.StandardOutput.BaseStream, standardOutputCollector);
         var standardErrorTask = ReadOutputAsync(process.StandardError.BaseStream, standardErrorCollector);
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(timeout);
 
         try
         {

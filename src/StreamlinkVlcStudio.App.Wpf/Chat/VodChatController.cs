@@ -52,8 +52,10 @@ internal sealed class VodChatController : IAsyncDisposable
     private readonly VodChatTimeline timeline = new();
     private readonly object gate = new();
     private readonly Queue<ChatMessage> bufferedLiveMessages = new();
+    private readonly HashSet<Session> activeSessions = [];
 
     private Session? session;
+    private Task? disposalTask;
     private bool disposed;
 
     public VodChatController(IVodChatProvider? provider, IAppLogger logger)
@@ -152,11 +154,20 @@ internal sealed class VodChatController : IAsyncDisposable
             started = new Session(replay, settings, getDuration, resumeFrom, position);
             session = started;
             timeline.MoveCursorTo(resumeFrom);
-            FlushBufferedLiveMessagesCore(started);
+            if (FlushBufferedLiveMessagesCore(started) is { } firstBufferedOffset && firstBufferedOffset < resumeFrom)
+            {
+                // Initial metadata may arrive after live chat. Keep that already-captured feed
+                // available on first attachment; subsequent explicit seeks use their own window.
+                timeline.MoveCursorTo(firstBufferedOffset);
+            }
+            activeSessions.Add(started);
+            // Publish the pump together with the session. Stop/disposal must never observe
+            // a placeholder task and dispose the source before the worker reads its token.
+            var token = started.Cancellation.Token;
+            started.Pump = Task.Run(() => RunPumpAsync(started, token));
         }
 
         replaced?.Cancel();
-        started.Pump = Task.Run(() => RunPumpAsync(started, started.Cancellation.Token));
     }
 
     /// <summary>
@@ -178,12 +189,7 @@ internal sealed class VodChatController : IAsyncDisposable
                 return;
             }
 
-            current.Replay = replay;
-            current.Unsupported = false;
-            current.Exhausted = false;
-            current.NoticeText = "";
-            current.NoticePending = false;
-            current.ConsecutiveFailures = 0;
+            current.Promote(replay);
         }
     }
 
@@ -228,9 +234,8 @@ internal sealed class VodChatController : IAsyncDisposable
             }
 
             current.Position = position;
+            return timeline.TakeMessagesDueAt(position, maximumMessages);
         }
-
-        return timeline.TakeMessagesDueAt(position, maximumMessages);
     }
 
     /// <summary>
@@ -296,42 +301,45 @@ internal sealed class VodChatController : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        Session? stopped;
+        Session[] stopped;
+        TaskCompletionSource completion;
         lock (gate)
         {
-            if (disposed)
+            if (disposalTask is not null)
             {
-                return;
+                return new ValueTask(disposalTask);
             }
 
             disposed = true;
-            stopped = session;
+            stopped = activeSessions.ToArray();
             session = null;
+            timeline.Clear();
             bufferedLiveMessages.Clear();
+            completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            disposalTask = completion.Task;
         }
 
-        if (stopped is null)
-        {
-            return;
-        }
+        _ = CompleteDisposalAsync(stopped, completion);
+        return new ValueTask(completion.Task);
+    }
 
-        stopped.Cancel();
+    private static async Task CompleteDisposalAsync(Session[] stopped, TaskCompletionSource completion)
+    {
         try
         {
-            await stopped.Pump.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
+            foreach (var state in stopped)
+            {
+                state.Cancel();
+            }
+
+            await Task.WhenAll(stopped.Select(state => state.Pump)).ConfigureAwait(false);
+            completion.TrySetResult();
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Debug, "VodChat", "VOD chat pump failed during disposal.", ex);
-        }
-        finally
-        {
-            stopped.Dispose();
+            completion.TrySetException(ex);
         }
     }
 
@@ -346,29 +354,21 @@ internal sealed class VodChatController : IAsyncDisposable
                     return;
                 }
 
-                if (!TryGetNextFetchOffset(state, out var fromOffset))
+                if (!TryBeginFetch(state, out var request))
                 {
                     await Task.Delay(IdlePollDelay, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                if (provider is null)
-                {
-                    SetNotice(state, "No VOD chat provider is configured.");
-                    state.Exhausted = true;
-                    continue;
-                }
-
-                var epoch = state.FrontierEpoch;
                 VodChatFetchResult result;
-                SetFetchInFlight(state, true);
                 try
                 {
-                    result = await provider
-                        .FetchAsync(state.Replay, state.Settings, fromOffset, cancellationToken)
-                        .ConfigureAwait(false);
+                    result = provider is null
+                        ? VodChatFetchResult.Unsupported("No VOD chat provider is configured.")
+                        : await provider.FetchAsync(request.Replay, request.Settings, request.FromOffset, cancellationToken)
+                            .ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     return;
                 }
@@ -377,18 +377,9 @@ internal sealed class VodChatController : IAsyncDisposable
                     result = VodChatFetchResult.Failed($"VOD chat request failed: {ex.Message}");
                     logger.Write(AppLogLevel.Debug, "VodChat", "VOD chat request threw.", ex);
                 }
-                finally
-                {
-                    SetFetchInFlight(state, false);
-                }
 
-                if (!IsCurrent(state))
-                {
-                    return;
-                }
-
-                ApplyResult(state, result, fromOffset, epoch);
-                if (result.Outcome == VodChatFetchOutcome.Failed)
+                var applied = ApplyResult(state, result, request.FromOffset, request.Epoch);
+                if (applied && result.Outcome == VodChatFetchOutcome.Failed)
                 {
                     await Task.Delay(FailureRetryDelay, cancellationToken).ConfigureAwait(false);
                 }
@@ -401,19 +392,51 @@ internal sealed class VodChatController : IAsyncDisposable
         {
             logger.Write(AppLogLevel.Warning, "VodChat", "The VOD chat pump stopped unexpectedly.", ex);
         }
+        finally
+        {
+            // Each pump owns its source, including pumps retired by Stop or replacement.
+            state.Dispose();
+            lock (gate)
+            {
+                state.FetchInFlight = false;
+                activeSessions.Remove(state);
+            }
+        }
     }
 
-    private void ApplyResult(
+    private bool ApplyResult(
         Session state,
         VodChatFetchResult result,
         TimeSpan fromOffset,
         long epoch)
     {
+        lock (gate)
+        {
+            state.FetchInFlight = false;
+            if (disposed || !ReferenceEquals(session, state))
+            {
+                return false;
+            }
+
+            ApplyResultCore(state, result, fromOffset, epoch);
+            return epoch == state.FrontierEpoch;
+        }
+    }
+
+    private void ApplyResultCore(Session state, VodChatFetchResult result, TimeSpan fromOffset, long epoch)
+    {
         // Downloaded messages are keyed to absolute offsets, so they stay valid even if the viewer
-        // seeked while the request was in flight. Only the frontier is generation-sensitive.
+        // seeked while the request was in flight. Fetch status and the frontier belong to a generation.
         if (result.Messages.Count > 0)
         {
             timeline.AddRange(result.Messages, MaximumTimelineMessages);
+        }
+
+        if (epoch != state.FrontierEpoch)
+        {
+            // Old pages can contribute chat at absolute offsets, but their completion,
+            // failure and unsupported flags describe the old fetch position/source.
+            return;
         }
 
         switch (result.Outcome)
@@ -421,7 +444,7 @@ internal sealed class VodChatController : IAsyncDisposable
             case VodChatFetchOutcome.Loaded:
             case VodChatFetchOutcome.Completed:
                 state.ConsecutiveFailures = 0;
-                AdvanceFrontier(state, fromOffset, result.CoveredThroughOffset, epoch);
+                state.AdvanceFrontier(fromOffset, result.CoveredThroughOffset);
                 if (result.Outcome == VodChatFetchOutcome.Completed)
                 {
                     state.Exhausted = true;
@@ -454,44 +477,28 @@ internal sealed class VodChatController : IAsyncDisposable
         }
     }
 
-    private void SetFetchInFlight(Session state, bool inFlight)
-    {
-        lock (gate)
-        {
-            state.FetchInFlight = inFlight;
-        }
-    }
-
-    private void AdvanceFrontier(Session state, TimeSpan fromOffset, TimeSpan coveredThrough, long epoch)
-    {
-        lock (gate)
-        {
-            state.AdvanceFrontier(fromOffset, coveredThrough, epoch);
-        }
-    }
-
     /// <summary>Decides whether another chunk is needed right now, and from where.</summary>
-    private bool TryGetNextFetchOffset(Session state, out TimeSpan fromOffset)
+    private bool TryBeginFetch(Session state, out FetchRequest request)
     {
-        TimeSpan position;
+        var duration = SafeGetDuration(state);
         lock (gate)
         {
-            fromOffset = state.Frontier;
-            position = state.Position;
-            if (state.Unsupported || state.Exhausted)
+            request = default;
+            if (disposed || !ReferenceEquals(session, state) || state.Unsupported || state.Exhausted ||
+                (duration > TimeSpan.Zero && state.Frontier >= duration) ||
+                state.Frontier > state.Position + LookAhead)
             {
                 return false;
             }
-        }
 
-        var duration = SafeGetDuration(state);
-        if (duration > TimeSpan.Zero && fromOffset >= duration)
-        {
-            return false;
+            state.FetchInFlight = true;
+            request = new FetchRequest(state.Replay, state.Settings, state.Frontier, state.FrontierEpoch);
+            return true;
         }
-
-        return fromOffset <= position + LookAhead;
     }
+
+    private readonly record struct FetchRequest(
+        ReplaySessionInfo Replay, AppSettings Settings, TimeSpan FromOffset, long Epoch);
 
     private TimeSpan SafeGetDuration(Session state)
     {
@@ -572,20 +579,26 @@ internal sealed class VodChatController : IAsyncDisposable
         }
     }
 
-    private void FlushBufferedLiveMessagesCore(Session state)
+    private TimeSpan? FlushBufferedLiveMessagesCore(Session state)
     {
         if (bufferedLiveMessages.Count == 0 ||
             state.Replay.StreamStartedAtUtc is null)
         {
-            return;
+            return null;
         }
 
+        TimeSpan? firstOffset = null;
         foreach (var message in bufferedLiveMessages)
         {
-            TryCaptureCore(state, message, out _);
+            if (TryCaptureCore(state, message, out var offset) && offset is { } capturedOffset &&
+                (firstOffset is null || capturedOffset < firstOffset.Value))
+            {
+                firstOffset = capturedOffset;
+            }
         }
 
         bufferedLiveMessages.Clear();
+        return firstOffset;
     }
 
     private static TimeSpan Floor(TimeSpan value) => value < TimeSpan.Zero ? TimeSpan.Zero : value;
@@ -670,13 +683,19 @@ internal sealed class VodChatController : IAsyncDisposable
             NoticePending = NoticeText.Length > 0;
         }
 
-        public void AdvanceFrontier(TimeSpan fromOffset, TimeSpan coveredThrough, long epoch)
+        public void Promote(ReplaySessionInfo replay)
         {
-            if (epoch != FrontierEpoch)
-            {
-                return;
-            }
+            Replay = replay;
+            FrontierEpoch++;
+            Unsupported = false;
+            Exhausted = false;
+            NoticeText = "";
+            NoticePending = false;
+            ConsecutiveFailures = 0;
+        }
 
+        public void AdvanceFrontier(TimeSpan fromOffset, TimeSpan coveredThrough)
+        {
             // The fetchers guarantee forward movement; this is belt-and-braces against a stall.
             var next = coveredThrough > fromOffset ? coveredThrough : fromOffset + TimeSpan.FromSeconds(1);
             if (next > Frontier)

@@ -11,6 +11,14 @@
     <RequireBundledVlcOverlay Condition="'$(RequireBundledVlcOverlay)' == ''">true</RequireBundledVlcOverlay>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Vlc\BundledReplayPause\libstudio_replay_pause_plugin.dll" />
+    <Content Include="..\..\native\replay-pause\*" Link="native\replay-pause\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\scripts\build-replay-pause.ps1" Link="scripts\build-replay-pause.ps1"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
   <ItemGroup Condition="Exists('$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll') and Exists('$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe')">
     <EmbeddedResource Include="$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll">
       <LogicalName>StreamlinkVlcStudio.Infrastructure.Vlc.BundledOverlay.build.libmyoverlay_plugin.dll</LogicalName>

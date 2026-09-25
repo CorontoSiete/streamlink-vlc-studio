@@ -111,8 +111,8 @@ internal static partial class ApplicationTestCatalog
             "StartTabInBackground",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(start);
-        start!.Invoke(viewModel, [tab, false, false]);
-        start.Invoke(viewModel, [tab, false, false]);
+        start!.Invoke(viewModel, [tab, false]);
+        start.Invoke(viewModel, [tab, false]);
 
         Assert.Equal(2, dispatchAttempts);
         await viewModel.DisposeAsync();
@@ -187,7 +187,9 @@ internal static partial class ApplicationTestCatalog
         controller.MultiViewGroups.Add([first, second]);
         controller.PictureInPictureGroups.Add([first, second]);
         controller.PictureInPictureVisibleGroups.Add([first, second]);
-        controller.RemoveTabs([first]);
+        Assert.True(controller.RemoveFromMultiViewGroups([first]));
+        Assert.True(controller.RemoveFromPictureInPictureGroups([first]));
+        Assert.True(controller.RemoveFromPictureInPictureVisibleGroups([first]));
         Assert.Equal(0, controller.MultiViewGroups.Count);
         Assert.Equal(0, controller.PictureInPictureGroups.Count);
         Assert.Equal(0, controller.PictureInPictureVisibleGroups.Count);
@@ -201,7 +203,7 @@ internal static partial class ApplicationTestCatalog
         using var controller = new TabPlaybackPolicyController(
             action => action(),
             () => false,
-            () =>
+            _ =>
             {
                 passes++;
                 throw new InvalidOperationException("policy failure");
@@ -368,7 +370,7 @@ internal static partial class ApplicationTestCatalog
                 1 => new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
-                        "{\"data\":[{\"id\":\"123456\"}]}",
+                        "{\"data\":[{\"id\":\"123456\",\"login\":\"some-channel\"}]}",
                         Encoding.UTF8,
                         "application/json")
                 },
@@ -457,7 +459,7 @@ internal static partial class ApplicationTestCatalog
                 },
                 1 => new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("{\"data\":[{\"id\":\"123456\"}]}", Encoding.UTF8, "application/json")
+                    Content = new StringContent("{\"data\":[{\"id\":\"123456\",\"login\":\"some-channel\"}]}", Encoding.UTF8, "application/json")
                 },
                 2 => new HttpResponseMessage(HttpStatusCode.Accepted)
                 {
@@ -1328,254 +1330,6 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(0, subOnlyResolver.Requests.Count);
         Assert.Equal(PlaybackStatus.Error, tab.Status);
         await tab.DisposeAsync();
-    }),
-    ("reads extension capture payload URL", () =>
-    {
-        Assert.True(BrowserCaptureServer.TryReadCaptureUrl("""{"url":" https://www.twitch.tv/xqc "}""", out var url));
-        Assert.Equal("https://www.twitch.tv/xqc", url);
-        return Task.CompletedTask;
-    }),
-    ("browser capture accepts multiple requests before handlers finish", async () =>
-    {
-        var logger = new MemoryLogger();
-        var firstHandlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondHandlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseHandlers = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handledUrls = new List<string>();
-        var handledUrlsGate = new object();
-
-        await using var server = new BrowserCaptureServer(async url =>
-        {
-            int count;
-            lock (handledUrlsGate)
-            {
-                handledUrls.Add(url);
-                count = handledUrls.Count;
-            }
-
-            if (count == 1)
-            {
-                firstHandlerStarted.TrySetResult();
-            }
-            else if (count == 2)
-            {
-                secondHandlerStarted.TrySetResult();
-            }
-
-            await releaseHandlers.Task;
-        }, logger, port: 0);
-
-        Assert.True(server.Start());
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-
-        try
-        {
-            var firstResponseTask = BrowserCaptureTestClient.PostCaptureAsync(httpClient, server.ListenerPort, "https://www.twitch.tv/xqc");
-            await firstHandlerStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
-
-            var secondResponseTask = BrowserCaptureTestClient.PostCaptureAsync(httpClient, server.ListenerPort, "https://www.twitch.tv/summit1g");
-            await secondHandlerStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
-
-            using var firstResponse = await firstResponseTask.WaitAsync(TimeSpan.FromMilliseconds(500));
-            using var secondResponse = await secondResponseTask.WaitAsync(TimeSpan.FromMilliseconds(500));
-
-            Assert.Equal(HttpStatusCode.Accepted, firstResponse.StatusCode);
-            Assert.Equal(HttpStatusCode.Accepted, secondResponse.StatusCode);
-            Assert.SequenceEqual(
-                new[] { "https://www.twitch.tv/xqc", "https://www.twitch.tv/summit1g" },
-                handledUrls);
-        }
-        finally
-        {
-            releaseHandlers.TrySetResult();
-        }
-    }),
-    ("browser capture disposal drains active handlers and prevents restart", async () =>
-    {
-        var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var server = new BrowserCaptureServer(async _ =>
-        {
-            handlerStarted.TrySetResult();
-            await releaseHandler.Task;
-        }, new MemoryLogger(), port: 0);
-
-        Assert.True(server.Start());
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        Task disposalTask = Task.CompletedTask;
-        try
-        {
-            using var response = await BrowserCaptureTestClient.PostCaptureAsync(
-                httpClient,
-                server.ListenerPort,
-                "https://www.twitch.tv/xqc");
-            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-            await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-            disposalTask = server.DisposeAsync().AsTask();
-            await Task.Delay(50);
-            Assert.Equal(false, disposalTask.IsCompleted);
-
-            releaseHandler.TrySetResult();
-            await disposalTask.WaitAsync(TimeSpan.FromSeconds(1));
-            Assert.Equal(false, server.Start());
-        }
-        finally
-        {
-            releaseHandler.TrySetResult();
-            await disposalTask;
-        }
-    }),
-    ("browser capture accepts extension origins and returns scoped CORS headers", async () =>
-    {
-        var handledUrl = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var server = new BrowserCaptureServer(
-            url =>
-            {
-                handledUrl.TrySetResult(url);
-                return Task.CompletedTask;
-            },
-            new MemoryLogger(),
-            port: 0);
-
-        Assert.True(server.Start());
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        using var request = BrowserCaptureTestClient.CreatePostRequest(
-            server.ListenerPort,
-            "https://www.twitch.tv/xqc",
-            "chrome-extension://abcdefghijklmnop");
-        using var response = await httpClient.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        Assert.SequenceEqual(
-            new[] { "chrome-extension://abcdefghijklmnop" },
-            response.Headers.GetValues("Access-Control-Allow-Origin"));
-        Assert.True(response.Headers.Vary.Contains("Origin", StringComparer.OrdinalIgnoreCase));
-        Assert.Equal(
-            "https://www.twitch.tv/xqc",
-            await handledUrl.Task.WaitAsync(TimeSpan.FromSeconds(1)));
-    }),
-    ("browser capture rejects webpage origins before dispatch", async () =>
-    {
-        var dispatchCount = 0;
-        await using var server = new BrowserCaptureServer(
-            _ =>
-            {
-                Interlocked.Increment(ref dispatchCount);
-                return Task.CompletedTask;
-            },
-            new MemoryLogger(),
-            port: 0);
-
-        Assert.True(server.Start());
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        using var request = BrowserCaptureTestClient.CreatePostRequest(
-            server.ListenerPort,
-            "https://www.twitch.tv/xqc",
-            "https://malicious.example");
-        using var response = await httpClient.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        Assert.Equal(false, response.Headers.Contains("Access-Control-Allow-Origin"));
-        await Task.Delay(50);
-        Assert.Equal(0, Volatile.Read(ref dispatchCount));
-    }),
-    ("browser capture rejects malformed and duplicate Origin headers", async () =>
-    {
-        Assert.True(BrowserCaptureServer.IsAllowedRequestOrigin(null));
-        Assert.True(BrowserCaptureServer.IsAllowedRequestOrigin("moz-extension://extension-id"));
-        Assert.Equal(false, BrowserCaptureServer.IsAllowedRequestOrigin("null"));
-        Assert.Equal(false, BrowserCaptureServer.IsAllowedRequestOrigin("chrome-extension://extension-id/path"));
-        Assert.Equal(false, BrowserCaptureServer.IsAllowedRequestOrigin("https://www.twitch.tv"));
-
-        await using var server = new BrowserCaptureServer(_ => Task.CompletedTask, new MemoryLogger(), port: 0);
-        Assert.True(server.Start());
-        var response = await BrowserCaptureTestClient.SendRawRequestAsync(
-            server.ListenerPort,
-            "POST /capture HTTP/1.1\r\n" +
-            $"Host: 127.0.0.1:{server.ListenerPort}\r\n" +
-            "Origin: chrome-extension://first-extension\r\n" +
-            "Origin: chrome-extension://second-extension\r\n" +
-            "Content-Type: application/json\r\n" +
-            "Content-Length: 30\r\n" +
-            "Connection: close\r\n\r\n" +
-            "{\"url\":\"https://kick.com/xqc\"}");
-
-        Assert.True(response.StartsWith("HTTP/1.1 400 Bad Request", StringComparison.Ordinal));
-
-        var malformedContentLengthResponse = await BrowserCaptureTestClient.SendRawRequestAsync(
-            server.ListenerPort,
-            "POST /capture HTTP/1.1\r\n" +
-            $"Host: 127.0.0.1:{server.ListenerPort}\r\n" +
-            "Content-Type: application/json\r\n" +
-            "Content-Length: invalid\r\n" +
-            "Connection: close\r\n\r\n" +
-            "{\"url\":\"https://kick.com/xqc\"}");
-
-        Assert.True(malformedContentLengthResponse.StartsWith("HTTP/1.1 400 Bad Request", StringComparison.Ordinal));
-    }),
-    ("browser capture validates canonical live URLs and HTTP framing", async () =>
-    {
-        var dispatchCount = 0;
-        await using var server = new BrowserCaptureServer(
-            _ =>
-            {
-                Interlocked.Increment(ref dispatchCount);
-                return Task.CompletedTask;
-            },
-            new MemoryLogger(),
-            port: 0);
-        Assert.True(server.Start());
-
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        foreach (var url in new[]
-        {
-            "https://www.twitch.tv/videos/123456",
-            "https://www.twitch.tv/xqc?from=home",
-            " https://www.twitch.tv/xqc ",
-            "https://example.com/xqc",
-            "http://www.twitch.tv/xqc"
-        })
-        {
-            using var response = await BrowserCaptureTestClient.PostCaptureAsync(httpClient, server.ListenerPort, url);
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        }
-
-        var malformedJsonResponse = await BrowserCaptureTestClient.SendRawRequestAsync(
-            server.ListenerPort,
-            "POST /capture HTTP/1.1\r\n" +
-            "Content-Length: 5\r\n" +
-            "Connection: close\r\n\r\n" +
-            "oops!");
-        Assert.True(malformedJsonResponse.StartsWith("HTTP/1.1 400 Bad Request", StringComparison.Ordinal));
-
-        var transferEncodingResponse = await BrowserCaptureTestClient.SendRawRequestAsync(
-            server.ListenerPort,
-            "POST /capture HTTP/1.1\r\n" +
-            "Transfer-Encoding: chunked\r\n" +
-            "Content-Length: 0\r\n" +
-            "Connection: close\r\n\r\n");
-        Assert.True(transferEncodingResponse.StartsWith("HTTP/1.1 501 Not Implemented", StringComparison.Ordinal));
-
-        var oversizedResponse = await BrowserCaptureTestClient.SendRawRequestAsync(
-            server.ListenerPort,
-            "POST /capture HTTP/1.1\r\n" +
-            "Content-Length: 20000\r\n" +
-            "Connection: close\r\n\r\n");
-        Assert.True(oversizedResponse.StartsWith("HTTP/1.1 413 Payload Too Large", StringComparison.Ordinal));
-
-        Assert.Equal(0, Volatile.Read(ref dispatchCount));
-    }),
-    ("normalizes out-of-range browser capture ports", async () =>
-    {
-        await using var server = new BrowserCaptureServer(_ => Task.CompletedTask, new MemoryLogger(), port: 65_536);
-        var requestedPortField = typeof(BrowserCaptureServer).GetField(
-            "requestedPort",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-
-        Assert.NotNull(requestedPortField);
-        Assert.Equal(BrowserCaptureServer.Port, (int)requestedPortField!.GetValue(server)!);
-        Assert.Equal(BrowserCaptureServer.Port, server.ListenerPort);
     }),
     ("low-level mouse hook ignores mouse move without active drag", () =>
     {

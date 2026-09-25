@@ -964,33 +964,14 @@ internal sealed class DockedChatBadgeCatalog
 
     private static async Task<JsonDocument?> TryGetJsonAsync(string url, string? referer = null)
     {
-        try
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (!string.IsNullOrWhiteSpace(referer) &&
+            Uri.TryCreate(referer, UriKind.Absolute, out var refererUri))
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            if (!string.IsNullOrWhiteSpace(referer) &&
-                Uri.TryCreate(referer, UriKind.Absolute, out var refererUri))
-            {
-                request.Headers.Referrer = refererUri;
-            }
-
-            using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var bytes = await BoundedByteReader.ReadAsync(response.Content, MaxJsonBytes).ConfigureAwait(false);
-            if (bytes is null)
-            {
-                return null;
-            }
-
-            return JsonDocument.Parse(bytes);
+            request.Headers.Referrer = refererUri;
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
-        {
-            return null;
-        }
+
+        return await OptionalHttpJsonReader.SendAsync(SharedHttpClient, request, MaxJsonBytes).ConfigureAwait(false);
     }
 
     private async Task<JsonDocument?> TryGetTwitchHelixJsonAsync(string path)
@@ -1010,29 +991,10 @@ internal sealed class DockedChatBadgeCatalog
             return null;
         }
 
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {oauthToken}");
-            using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var bytes = await BoundedByteReader.ReadAsync(response.Content, MaxJsonBytes).ConfigureAwait(false);
-            if (bytes is null)
-            {
-                return null;
-            }
-
-            return JsonDocument.Parse(bytes);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
-        {
-            return null;
-        }
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {oauthToken}");
+        return await OptionalHttpJsonReader.SendAsync(SharedHttpClient, request, MaxJsonBytes).ConfigureAwait(false);
     }
 
     private static async Task<JsonDocument?> TryGetKickChannelJsonWithCurlAsync(string channel)

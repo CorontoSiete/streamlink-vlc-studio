@@ -4,7 +4,7 @@ param(
     [string]$OverlaySource,
     [string]$OutputRoot,
     [string]$ReleaseZip,
-    [string]$SetupFileName = "StreamlinkVlcStudio-Setup.msi",
+    [string]$SetupFileName = "StreamStudio-Setup.msi",
     [string]$BootstrapperFileName = "StreamlinkVlcStudio-Setup.exe",
     [string]$DependencyManifest,
     [ValidateRange(5, 600)]
@@ -25,11 +25,6 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
 . (Join-Path $scriptRoot "lib\authenticode.ps1")
 $releaseContract = Read-ReleaseContract (Join-Path $repoRoot "shared\release-contract.json")
 $authenticode = Get-AuthenticodeSigningConfiguration
-
-& (Join-Path $scriptRoot "generate-browser-route-policy.ps1") -RepositoryRoot $repoRoot -Check
-if (-not $?) {
-    throw "Generated browser route policy validation failed."
-}
 
 function Test-ThreePartProductVersion([string]$Version) {
     if ($Version -notmatch "^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$") {
@@ -180,7 +175,7 @@ function Save-DependencyFile {
 
     Write-Info "Downloading $Uri..."
     $headers = @{
-        "User-Agent" = "StreamlinkVlcStudioInstallerBuilder/1.0 (+https://github.com/CorontoSiete/streamlink-vlc-studio)"
+        "User-Agent" = "StreamStudioInstallerBuilder/1.0 (+https://github.com/CorontoSiete/streamlink-vlc-studio)"
     }
     $dependencyToValidate = $Dependency
     $result = Save-HttpFileAtomically `
@@ -211,7 +206,7 @@ function Write-ManagedBootstrapperPayloadFragment {
         throw "Managed bootstrapper application payload directory was not found: $root"
     }
 
-    $entryExe = Join-Path $root "StreamlinkVlcStudio.Bootstrapper.exe"
+    $entryExe = Join-Path $root "StreamStudio.Bootstrapper.exe"
     $payloadFiles = @(
         Get-ChildItem -LiteralPath $root -Recurse -File -Force |
             Where-Object {
@@ -378,7 +373,7 @@ try {
     if ($authenticode.Enabled) {
         Invoke-AuthenticodeSigning `
             -Path @(
-                (Join-Path $payloadRoot 'StreamlinkVlcStudio.exe'),
+                (Join-Path $payloadRoot 'StreamStudio.exe'),
                 (Join-Path $payloadRoot 'Uninstall.exe')) `
             -Configuration $authenticode
     }
@@ -447,12 +442,12 @@ try {
     $vlcInfo = $dependencyManifestData.dependencies.vlc
     $vlcVersion = ([string]$vlcInfo.version).Trim()
     if ($vlcVersion -notmatch '^\d+(?:\.\d+){1,3}$') {
-        throw "The locked VLC version is not a valid MSI product version: $vlcVersion"
+        throw "The locked VLC version is not a valid installer version: $vlcVersion"
     }
-    $vlcMsiPath = Join-Path $dependencyRoot ([string]$vlcInfo.fileName)
+    $vlcInstallerPath = Join-Path $dependencyRoot ([string]$vlcInfo.fileName)
     Save-DependencyFile `
         -Uri $vlcInfo.url `
-        -DestinationPath $vlcMsiPath `
+        -DestinationPath $vlcInstallerPath `
         -Dependency $vlcInfo
 
     $dotnet = Resolve-DotNetTool
@@ -494,13 +489,13 @@ try {
         throw "Managed bootstrapper application publish failed with exit code $LASTEXITCODE."
     }
 
-    $bootstrapperApplicationExe = Join-Path $bootstrapperApplicationRoot "StreamlinkVlcStudio.Bootstrapper.exe"
-    $bootstrapperApplicationDll = Join-Path $bootstrapperApplicationRoot "StreamlinkVlcStudio.Bootstrapper.dll"
+    $bootstrapperApplicationExe = Join-Path $bootstrapperApplicationRoot "StreamStudio.Bootstrapper.exe"
+    $bootstrapperApplicationDll = Join-Path $bootstrapperApplicationRoot "StreamStudio.Bootstrapper.dll"
     foreach ($requiredBootstrapperFile in @(
             $bootstrapperApplicationExe,
             $bootstrapperApplicationDll,
-            (Join-Path $bootstrapperApplicationRoot "StreamlinkVlcStudio.Bootstrapper.deps.json"),
-            (Join-Path $bootstrapperApplicationRoot "StreamlinkVlcStudio.Bootstrapper.runtimeconfig.json"),
+            (Join-Path $bootstrapperApplicationRoot "StreamStudio.Bootstrapper.deps.json"),
+            (Join-Path $bootstrapperApplicationRoot "StreamStudio.Bootstrapper.runtimeconfig.json"),
             (Join-Path $bootstrapperApplicationRoot "WixToolset.BootstrapperApplicationApi.dll"),
             (Join-Path $bootstrapperApplicationRoot "mbanative.dll"))) {
         if (-not (Test-Path -LiteralPath $requiredBootstrapperFile -PathType Leaf) -or
@@ -545,8 +540,8 @@ try {
         throw "Native maintenance helper publish failed with exit code $LASTEXITCODE."
     }
 
-    $publishedMaintenanceExe = Join-Path $maintenancePublishRoot "StreamlinkVlcStudio.Maintenance.exe"
-    $bundledMaintenanceExe = Join-Path $bootstrapperApplicationRoot "StreamlinkVlcStudio.Maintenance.exe"
+    $publishedMaintenanceExe = Join-Path $maintenancePublishRoot "StreamStudio.Maintenance.exe"
+    $bundledMaintenanceExe = Join-Path $bootstrapperApplicationRoot "StreamStudio.Maintenance.exe"
     if (-not (Test-Path -LiteralPath $publishedMaintenanceExe -PathType Leaf) -or
         (Get-Item -LiteralPath $publishedMaintenanceExe).Length -eq 0) {
         throw "Native maintenance helper was not created: $publishedMaintenanceExe"
@@ -582,7 +577,7 @@ try {
         "-d", ("BootstrapperApplicationDir=" + $bootstrapperApplicationRoot),
         "-d", ("StreamlinkInstaller=" + $streamlinkInstallerPath),
         "-d", ("StreamlinkMinimumVersion=" + $streamlinkMinimumVersion),
-        "-d", ("VlcMsi=" + $vlcMsiPath),
+        "-d", ("VlcInstaller=" + $vlcInstallerPath),
         "-d", ("VlcVersion=" + $vlcVersion),
         "-pdbtype", "none",
         "-o", $stagedBootstrapperPath,
@@ -602,8 +597,8 @@ try {
     if ($authenticode.Enabled) {
         # Burn caches its detached engine for elevated repair/uninstall. Sign that
         # engine first, reattach it, and only then sign the complete compressed bundle.
-        $enginePath = Join-Path $buildRoot 'StreamlinkVlcStudio-BurnEngine.exe'
-        $reattachedPath = Join-Path $buildRoot 'StreamlinkVlcStudio-Setup.signed.exe'
+        $enginePath = Join-Path $buildRoot 'StreamStudio-BurnEngine.exe'
+        $reattachedPath = Join-Path $buildRoot 'StreamStudio-Setup.signed.exe'
         & $wixPath burn detach $stagedBootstrapperPath -engine $enginePath | Out-Host
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $enginePath -PathType Leaf)) {
             throw "WiX Burn engine detach failed with exit code $LASTEXITCODE."

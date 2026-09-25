@@ -1,6 +1,6 @@
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
-using static StreamlinkVlcStudio.Core.Text.StringValues;
+using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
@@ -23,23 +23,15 @@ public sealed class TwitchPredictionEventSubParser
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (!root.TryGetProperty("metadata", out var metadata) ||
-                metadata.ValueKind != JsonValueKind.Object)
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("metadata", out var metadata) ||
+                !TryGetNonEmptyString(metadata, "message_id", out var messageId) ||
+                string.IsNullOrWhiteSpace(messageId) || messageId.Length > MaxMessageIdLength ||
+                !TryGetNonEmptyString(metadata, "message_type", out var messageType) ||
+                !root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
             {
                 return false;
             }
-
-            var messageId = TwitchPredictionJson.GetOptionalString(metadata, "message_id");
-            if (messageId.Length > MaxMessageIdLength)
-            {
-                return false;
-            }
-
-            var messageType = TwitchPredictionJson.GetOptionalString(metadata, "message_type");
-            var duplicate = !string.IsNullOrWhiteSpace(messageId) && IsDuplicate(messageId);
-            var payload = root.TryGetProperty("payload", out var payloadElement) && payloadElement.ValueKind == JsonValueKind.Object
-                ? payloadElement
-                : default;
 
             string? sessionId = null;
             int? keepaliveTimeoutSeconds = null;
@@ -47,40 +39,43 @@ public sealed class TwitchPredictionEventSubParser
             string? revocationStatus = null;
             TwitchPrediction? prediction = null;
 
-            if (messageType.Equals("session_welcome", StringComparison.OrdinalIgnoreCase) &&
-                payload.ValueKind == JsonValueKind.Object &&
-                payload.TryGetProperty("session", out var session))
+            if (messageType.Equals("session_welcome", StringComparison.OrdinalIgnoreCase))
             {
-                sessionId = TwitchPredictionJson.GetOptionalString(session, "id");
-                reconnectUrl = NullIfEmpty(TwitchPredictionJson.GetOptionalString(session, "reconnect_url"));
+                if (!payload.TryGetProperty("session", out var session) ||
+                    !TryGetNonEmptyString(session, "id", out sessionId) || string.IsNullOrWhiteSpace(sessionId))
+                    return false;
                 var keepalive = TwitchPredictionJson.GetOptionalInt32(session, "keepalive_timeout_seconds");
                 keepaliveTimeoutSeconds = keepalive > 0 ? keepalive : null;
             }
-            else if (messageType.Equals("session_reconnect", StringComparison.OrdinalIgnoreCase) &&
-                payload.ValueKind == JsonValueKind.Object &&
-                payload.TryGetProperty("session", out var reconnectSession))
+            else if (messageType.Equals("session_reconnect", StringComparison.OrdinalIgnoreCase))
             {
-                reconnectUrl = NullIfEmpty(TwitchPredictionJson.GetOptionalString(reconnectSession, "reconnect_url"));
+                if (!payload.TryGetProperty("session", out var session) ||
+                    !TryGetNonEmptyString(session, "reconnect_url", out reconnectUrl) || string.IsNullOrWhiteSpace(reconnectUrl))
+                    return false;
             }
-            else if (messageType.Equals("revocation", StringComparison.OrdinalIgnoreCase) &&
-                payload.ValueKind == JsonValueKind.Object &&
-                payload.TryGetProperty("subscription", out var revokedSubscription))
+            else if (messageType.Equals("revocation", StringComparison.OrdinalIgnoreCase))
             {
-                revocationStatus = NullIfEmpty(TwitchPredictionJson.GetOptionalString(revokedSubscription, "status"));
+                if (!payload.TryGetProperty("subscription", out var subscription) ||
+                    !TryGetNonEmptyString(subscription, "status", out revocationStatus) || string.IsNullOrWhiteSpace(revocationStatus))
+                    return false;
             }
-            else if (messageType.Equals("notification", StringComparison.OrdinalIgnoreCase) &&
-                !duplicate &&
-                payload.ValueKind == JsonValueKind.Object &&
-                payload.TryGetProperty("subscription", out var subscription) &&
-                payload.TryGetProperty("event", out var eventElement))
+            else if (messageType.Equals("notification", StringComparison.OrdinalIgnoreCase))
             {
-                var subscriptionType = TwitchPredictionJson.GetOptionalString(subscription, "type");
-                if (IsPredictionSubscription(subscriptionType))
-                {
-                    prediction = TwitchPredictionJson.ReadPrediction(eventElement, subscriptionType);
-                }
+                if (!payload.TryGetProperty("subscription", out var subscription) ||
+                    !TryGetNonEmptyString(subscription, "type", out var subscriptionType) ||
+                    !IsPredictionSubscription(subscriptionType) ||
+                    !payload.TryGetProperty("event", out var eventElement) ||
+                    (prediction = TwitchPredictionJson.ReadPrediction(eventElement, subscriptionType)) is null)
+                    return false;
+            }
+            else if (!messageType.Equals("session_keepalive", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
             }
 
+            // Only accepted messages consume deduplication IDs. A malformed delivery must
+            // not hide a later usable notification with the same ID.
+            var duplicate = IsDuplicate(messageId);
             message = new TwitchEventSubMessage(
                 messageId,
                 messageType,
@@ -89,7 +84,7 @@ public sealed class TwitchPredictionEventSubParser
                 keepaliveTimeoutSeconds,
                 reconnectUrl,
                 revocationStatus,
-                prediction);
+                duplicate ? null : prediction);
             return true;
         }
         catch (JsonException)

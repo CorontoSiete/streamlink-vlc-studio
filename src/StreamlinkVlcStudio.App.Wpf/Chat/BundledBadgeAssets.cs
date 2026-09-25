@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
+using StreamlinkVlcStudio.Core;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
@@ -218,7 +219,7 @@ internal static class BundledBadgeAssets
             localAppData = Path.GetTempPath();
         }
 
-        return Path.Combine(localAppData, "StreamlinkVlcStudio", "BundledBadgeAssets");
+        return Path.Combine(localAppData, AppIdentity.ProductDirectoryName, "BundledBadgeAssets");
     }
 
     private static bool TryNormalizeRelativeAssetPath(string? path, out string normalizedPath)

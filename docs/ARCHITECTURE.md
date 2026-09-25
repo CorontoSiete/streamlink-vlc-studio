@@ -46,7 +46,6 @@ Tradeoffs considered:
 - `StreamlinkVlcStudio.App.Wpf`
   - WPF shell.
   - Embedded HWND video surface.
-  - Browser extension capture of canonical, direct Twitch/Kick channel routes through a loopback HTTP listener; VOD and other non-channel routes are rejected. The native low-level mouse hook/UI Automation browser-click fallback is only enabled if that listener cannot start.
   - Per-tab view models.
   - Single-stream and paged multi-stream video layout for up to 16 streams per page.
   - Playback controls.
@@ -68,7 +67,7 @@ Tradeoffs considered:
     lifetimes, not WPF collections or serialized settings.
   - Native PiP hit testing goes through `IWindowHitTester` and `WindowHitTestPolicy`, allowing z-order
     decisions to be tested without calling `user32` and keeping detached-window teardown predictable.
-  - Home middle-button scroll calculations are owned by `HomeAutoScrollController`; the code-behind keeps compatibility forwarding methods for the existing event and test surface.
+  - Home middle-button scroll calculations are owned by `HomeAutoScrollController`; window events and tests call the shared policy directly.
   - Native overlay transport uses one complete-message codec with a 32 MiB limit, bounded control-reserved write budgeting, generation/sequence-checked resize persistence, and identity-keyed capability probes.
 
 - `StreamlinkVlcStudio.Tests`
@@ -76,14 +75,13 @@ Tradeoffs considered:
 
 ## Playback Flow
 
-1. User clicks a Twitch/Kick channel URL in a supported desktop browser.
-2. The content script prevents browser navigation and posts the channel URL to the desktop app's loopback capture listener.
-3. The WPF shell passes the URL to `StreamInputParser`.
-4. `StreamlinkService` starts Streamlink with `--player-external-http` bound to `127.0.0.1`.
-5. The service reads Streamlink stdout/stderr, captures the generated local HTTP URL, and returns a managed session.
-6. `LibVlcPlaybackEngine` initializes libVLC from the configured VLC directory.
-7. libVLC is pointed at the WPF `VideoSurface` HWND and plays Streamlink's local HTTP transport URL.
-8. Closing/reloading a tab disposes libVLC and kills the Streamlink process tree.
+1. The user enters a Twitch/Kick channel name or URL in Home search, or opens a Followed, Browse, or Recent card.
+2. `StreamInputParser` normalizes the input into a `StreamTarget`.
+3. `StreamlinkService` starts Streamlink with `--player-external-http` bound to `127.0.0.1`.
+4. The service reads Streamlink stdout/stderr, captures the generated local HTTP URL, and returns a managed session.
+5. `LibVlcPlaybackEngine` initializes libVLC from the configured VLC directory.
+6. libVLC is pointed at the WPF `VideoSurface` HWND and plays Streamlink's local HTTP transport URL.
+7. Closing/reloading a tab disposes libVLC and kills the Streamlink process tree.
 
 This keeps Streamlink responsible for platform stream resolution and HLS transport behavior while libVLC owns rendering and audio/video controls.
 
@@ -101,7 +99,7 @@ This keeps Streamlink responsible for platform stream resolution and HLS transpo
 
 Followed streams load once at startup and refresh every minute while the app is open, regardless of the selected Home page segment, active stream tab, or minimized/tray state.
 
-Clicking a home card opens the same `StreamTarget` flow used by browser capture and manual stream input.
+Clicking a home card opens the same `StreamTarget` flow used by manual stream input.
 
 ## Home Stream Search Flow
 
@@ -119,7 +117,7 @@ Clicking a home card opens the same `StreamTarget` flow used by browser capture 
 - Thumbnail URLs are persisted with recent entries when they come from a live followed-stream card or from platform metadata fetched after successful playback.
 - Opening the Recent page starts a five-minute metadata refresh timer; each tick refreshes visible Recent row thumbnails and live/offline indicators through platform metadata, preserves existing thumbnails when metadata is unavailable, and shows an unknown live status rather than inferring one.
 - Deleting a recent row removes that platform/channel from `AppSettings.RecentStreams`, clears its transient live-status cache entry, rebuilds the Recent view models, and saves settings.
-- Clicking a recent row opens the stored `StreamTarget` through the same candidate/open path used by followed-stream cards and browser capture.
+- Clicking a recent row opens the stored `StreamTarget` through the same candidate/open path used by followed-stream cards and manual stream input.
 
 ## Home VOD Flow
 
@@ -222,7 +220,7 @@ Kick's public chat surface changes more often than Twitch IRC. That is why the a
 Settings live at:
 
 ```text
-%APPDATA%\StreamlinkVlcStudio\settings.json
+%APPDATA%\StreamStudio\settings.json
 ```
 
 Non-secret settings remain readable JSON. `Chat.TwitchOAuthToken`,

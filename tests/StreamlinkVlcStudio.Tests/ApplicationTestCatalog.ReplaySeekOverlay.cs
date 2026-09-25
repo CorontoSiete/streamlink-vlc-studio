@@ -316,9 +316,16 @@ internal static partial class ApplicationTestCatalog
         var overlayHandle = overlaySource.Handle;
         const int wsChild = 0x40000000;
         const int wsPopup = unchecked((int)0x80000000);
+        const int wsExToolWindow = 0x00000080;
+        const int wsExAppWindow = 0x00040000;
+        const int wsExNoActivate = 0x08000000;
         var style = NativeWindowTest.GetWindowStyle(overlayHandle);
+        var extendedStyle = NativeWindowTest.GetWindowExStyle(overlayHandle);
         Assert.True((style & wsChild) != 0, "The seekbar must be a native child window.");
         Assert.True((style & wsPopup) == 0, "A floating popup cannot move atomically with the video.");
+        Assert.True((extendedStyle & wsExToolWindow) != 0, "The seekbar HWND must stay out of app/window picker lists.");
+        Assert.True((extendedStyle & wsExNoActivate) != 0, "The seekbar HWND must not independently activate during native capture/input.");
+        Assert.True((extendedStyle & wsExAppWindow) == 0, "The seekbar HWND must not force an independent app-window identity.");
         Assert.Equal(false, NativeWindowTest.IsTopmost(overlayHandle));
         Assert.Equal(fixture.Target.Handle, NativeWindowTest.GetParent(overlayHandle));
         Assert.Equal(fixture.OwnerHandle, NativeWindowHitTester.Instance.GetRootWindow(overlayHandle));
@@ -353,7 +360,7 @@ internal static partial class ApplicationTestCatalog
             // VLC creates its renderer after playback starts. That renderer must fill
             // the surface while the existing controls retain their smaller bounds.
             renderer = NativeWindowTest.CreateVisibleChildWindow(
-                fixture.Target.Handle, "StreamlinkVlcStudioVideoSurface");
+                fixture.Target.Handle, "StreamStudioVideoSurface");
             fixture.FlushBindings();
             Assert.Equal(NativeWindowTest.GetWindowBounds(fixture.Target.Handle),
                 NativeWindowTest.GetWindowBounds(renderer));
@@ -380,7 +387,7 @@ internal static partial class ApplicationTestCatalog
             // A fresh renderer forces the direct-child discovery path to run again.
             NativeWindowTest.DestroyWindow(renderer);
             renderer = NativeWindowTest.CreateVisibleChildWindow(
-                fixture.Target.Handle, "StreamlinkVlcStudioVideoSurface");
+                fixture.Target.Handle, "StreamStudioVideoSurface");
             fixture.Target.SyncNativeBounds();
             fixture.FlushBindings();
             Assert.Equal(surfaceAfterResize, NativeWindowTest.GetWindowBounds(renderer));
@@ -530,7 +537,7 @@ internal static partial class ApplicationTestCatalog
             // overlay: its production DispatcherTimer must discover these native hits.
             // WindowFromPoint intentionally skips Win32 static text controls. Use the
             // registered opaque video class, as the native double-click fixtures do.
-            renderer = NativeWindowTest.CreateVisibleChildWindow(surface.Handle, "StreamlinkVlcStudioVideoSurface");
+            renderer = NativeWindowTest.CreateVisibleChildWindow(surface.Handle, "StreamStudioVideoSurface");
             var surfaceBounds = NativeWindowTest.GetWindowBounds(surface.Handle);
             NativeWindowTest.SetWindowBounds(renderer, 0, 0, surfaceBounds.Width, surfaceBounds.Height);
             NativeWindowTest.SetCursorPosition(surfaceBounds.Left - 12, surfaceBounds.Top - 12);

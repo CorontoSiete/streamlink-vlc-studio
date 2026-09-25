@@ -16,7 +16,7 @@ public interface IAppUpdateService
 
 public enum UpdateCheckReason { Startup, Retry, Manual }
 public enum AppInstallKind { Managed, LegacyManaged, Zip, Unmanaged }
-public enum AppUpdatePhase { Idle, Checking, Available, Downloading, Verifying, Ready, Launching, Completed, NotifyOnly, Failed }
+public enum AppUpdatePhase { Idle, Checking, Available, Downloading, Verifying, Ready, Launching, Completed, NotifyOnly, Failed, DownloadFailed }
 
 public sealed record AppUpdateState(
     AppUpdatePhase Phase,
@@ -72,7 +72,3 @@ public sealed record AppUpdateCompletion(
     string? LogPath,
     string Message,
     DateTimeOffset CompletedAt);
-
-// Kept as a data-contract compatibility type for older test doubles and integrations.
-// It is intentionally no longer part of IAppUpdateService.
-public sealed record AppUpdateStartResult(string Message, bool RequestApplicationShutdown);

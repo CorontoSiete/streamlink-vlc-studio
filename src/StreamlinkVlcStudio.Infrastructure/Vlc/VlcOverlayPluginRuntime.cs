@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Processes;
@@ -143,7 +144,7 @@ public static class VlcOverlayBundledResourceExtractor
         var root = string.IsNullOrWhiteSpace(appDataDirectory)
             ? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "StreamlinkVlcStudio")
+                AppIdentity.ProductDirectoryName)
             : appDataDirectory.Trim();
         return Path.Combine(root, ExtractedOverlayDirectoryName);
     }
@@ -398,7 +399,7 @@ internal static class VlcOverlayPluginRuntimeFactory
         return string.IsNullOrWhiteSpace(appDataDirectory)
             ? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "StreamlinkVlcStudio")
+                AppIdentity.ProductDirectoryName)
             : appDataDirectory.Trim();
     }
 

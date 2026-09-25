@@ -2,15 +2,15 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
-    Name="Streamlink VLC Studio"
-    Manufacturer="Streamlink VLC Studio"
+    Name="Stream Studio"
+    Manufacturer="Stream Studio"
     Version="$(var.ProductVersion)"
     UpgradeCode="85EC9B91-312C-4B8E-A293-57D749B10C4B"
     Scope="perMachine">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Streamlink VLC Studio is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Stream Studio is already installed." />
     <Launch
       Condition="Installed OR VersionNT64 &gt;= 603"
-      Message="Streamlink VLC Studio requires 64-bit Windows 10 or later." />
+      Message="Stream Studio requires 64-bit Windows 10 or later." />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="DISABLEADVTSHORTCUTS" Value="1" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
@@ -18,10 +18,11 @@
     <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)License.rtf" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
+      <!-- The 1.7.0 updater verifies and restarts this exact installed path. -->
       <Directory Id="INSTALLFOLDER" Name="Streamlink VLC Studio" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="StartMenuProgramsFolder" Name="Streamlink VLC Studio" />
+      <Directory Id="StartMenuProgramsFolder" Name="Stream Studio" />
     </StandardDirectory>
 
     <Icon Id="StreamlinkVlcStudio.ico" SourceFile="$(var.AppIcon)" />
@@ -33,11 +34,12 @@
     <Component Id="MainExecutable" Directory="INSTALLFOLDER">
       <File
         Id="StreamlinkVlcStudioExecutable"
-        Source="$(var.PayloadDir)\StreamlinkVlcStudio.exe"
+        Source="$(var.PayloadDir)\StreamStudio.exe"
+        Name="StreamlinkVlcStudio.exe"
         KeyPath="yes">
         <Shortcut
           Id="StreamlinkVlcStudioStartMenuShortcut"
-          Name="Streamlink VLC Studio"
+          Name="Stream Studio"
           Description="Watch Twitch and Kick streams with Streamlink and VLC."
           Directory="StartMenuProgramsFolder"
           WorkingDirectory="INSTALLFOLDER"
@@ -53,17 +55,17 @@
       <RemoveFile
         Id="RemoveLegacyStartMenuShortcut"
         Directory="ProgramMenuFolder"
-        Name="Streamlink VLC Studio.lnk"
+        Name="Stream Studio.lnk"
         On="install" />
     </Component>
 
-    <Feature Id="MainFeature" Title="Streamlink VLC Studio" Level="1">
+    <Feature Id="MainFeature" Title="Stream Studio" Level="1">
       <Files Include="$(var.PayloadDir)\**" Directory="INSTALLFOLDER">
-        <Exclude Files="$(var.PayloadDir)\StreamlinkVlcStudio.exe" />
+        <Exclude Files="$(var.PayloadDir)\StreamStudio.exe" />
         <Exclude Files="$(var.PayloadDir)\install.ps1" />
         <Exclude Files="$(var.PayloadDir)\Uninstall.exe" />
-        <Exclude Files="$(var.PayloadDir)\.streamlink-vlc-studio-owner.json" />
-        <Exclude Files="$(var.PayloadDir)\.streamlink-vlc-studio-files.json" />
+        <Exclude Files="$(var.PayloadDir)\.stream-studio-owner.json" />
+        <Exclude Files="$(var.PayloadDir)\.stream-studio-files.json" />
         <Exclude Files="$(var.PayloadDir)\release-contract.json" />
         <Exclude Files="$(var.PayloadDir)\dependencies\**" />
         <Exclude Files="$(var.PayloadDir)\lib\**" />

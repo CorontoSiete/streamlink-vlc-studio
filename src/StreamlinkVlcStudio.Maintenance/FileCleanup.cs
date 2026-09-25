@@ -68,9 +68,11 @@ internal sealed record CleanupOutcome(
 
 internal static class ManagedInstallationCleaner
 {
-    private const string ApplicationFileName = "StreamlinkVlcStudio.exe";
+    private const string ApplicationFileName = "StreamStudio.exe";
     private const string UninstallerFileName = "Uninstall.exe";
     private const string UninstallRegistryPath =
+        @"Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamStudio";
+    private const string LegacyUninstallRegistryPath =
         @"Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamlinkVlcStudio";
 
     internal static CleanupOutcome Clean(InstallOwnership ownership, MaintenanceLog log)
@@ -121,7 +123,8 @@ internal static class ManagedInstallationCleaner
         {
             RemoveEmptyManagedDirectories(ownership, log);
             RemoveKnownShortcut(log);
-            registrationRemoved = RemoveRegistrationIfMatching(ownership.Root, log);
+            registrationRemoved = RemoveRegistrationIfMatching(UninstallRegistryPath, ownership.Root, log);
+            _ = RemoveRegistrationIfMatching(LegacyUninstallRegistryPath, ownership.Root, log);
         }
 
         return new CleanupOutcome(
@@ -272,28 +275,34 @@ internal static class ManagedInstallationCleaner
             return;
         }
 
-        var shortcut = Path.Combine(startMenu, "Programs", "Streamlink VLC Studio.lnk");
-        if (PathSafety.TryGetAttributes(shortcut, out var attributes) &&
-            PathSafety.IsPlainFile(attributes))
+        foreach (var shortcut in new[]
+                 {
+                     Path.Combine(startMenu, "Programs", "Stream Studio.lnk"),
+                     Path.Combine(startMenu, "Programs", "Streamlink VLC Studio.lnk")
+                 })
         {
-            try
+            if (PathSafety.TryGetAttributes(shortcut, out var attributes) &&
+                PathSafety.IsPlainFile(attributes))
             {
-                ClearReadOnly(shortcut, attributes);
-                File.Delete(shortcut);
-                log.Write($"Removed Start Menu shortcut: {shortcut}");
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                log.Write($"Could not remove Start Menu shortcut: {shortcut}. {exception.Message}");
+                try
+                {
+                    ClearReadOnly(shortcut, attributes);
+                    File.Delete(shortcut);
+                    log.Write($"Removed Start Menu shortcut: {shortcut}");
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    log.Write($"Could not remove Start Menu shortcut: {shortcut}. {exception.Message}");
+                }
             }
         }
     }
 
-    private static bool RemoveRegistrationIfMatching(string installRoot, MaintenanceLog log)
+    private static bool RemoveRegistrationIfMatching(string registryPath, string installRoot, MaintenanceLog log)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(UninstallRegistryPath, writable: false);
+            using var key = Registry.CurrentUser.OpenSubKey(registryPath, writable: false);
             if (key is null)
             {
                 return true;
@@ -307,8 +316,8 @@ internal static class ManagedInstallationCleaner
                 return false;
             }
 
-            Registry.CurrentUser.DeleteSubKeyTree(UninstallRegistryPath, throwOnMissingSubKey: false);
-            log.Write("Removed current-user uninstall registration.");
+            Registry.CurrentUser.DeleteSubKeyTree(registryPath, throwOnMissingSubKey: false);
+            log.Write($"Removed current-user uninstall registration: {registryPath}");
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -339,19 +348,39 @@ internal static class ManagedInstallationCleaner
 
 internal static class UserDataCleaner
 {
+    private const uint MoveFileDelayUntilReboot = 0x00000004;
+
     internal static IReadOnlyList<string> PurgeCurrentUserData(MaintenanceLog log)
     {
+        return PurgeRoots(PathSafety.GetUserDataRoots(), log, new[] { log.Path }, requireCanonicalRoots: true);
+    }
+
+    internal static IReadOnlyList<string> PurgeRootsForTest(
+        IEnumerable<string> roots,
+        MaintenanceLog log,
+        IEnumerable<string>? preservedPaths = null)
+    {
+        return PurgeRoots(roots, log, preservedPaths, requireCanonicalRoots: false);
+    }
+
+    private static IReadOnlyList<string> PurgeRoots(
+        IEnumerable<string> roots,
+        MaintenanceLog log,
+        IEnumerable<string>? preservedPaths,
+        bool requireCanonicalRoots)
+    {
         var retained = new List<string>();
-        foreach (var root in PathSafety.GetUserDataRoots())
+        var preserved = NormalizePreservedPaths(preservedPaths);
+        foreach (var root in roots)
         {
-            if (!PathSafety.IsExactUserDataRoot(root))
+            if (requireCanonicalRoots && !PathSafety.IsExactUserDataRoot(root))
             {
                 retained.Add(root);
                 log.Write($"Rejected noncanonical personal-data root: {root}");
                 continue;
             }
 
-            DeleteTreeWithoutFollowingReparsePoints(root, retained, log);
+            DeleteTreeWithoutFollowingReparsePoints(root, retained, log, preserved);
         }
 
         return retained.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -360,10 +389,17 @@ internal static class UserDataCleaner
     private static void DeleteTreeWithoutFollowingReparsePoints(
         string root,
         List<string> retained,
-        MaintenanceLog log)
+        MaintenanceLog log,
+        IReadOnlySet<string> preservedPaths)
     {
         if (!PathSafety.TryGetAttributes(root, out var rootAttributes))
         {
+            return;
+        }
+
+        if (IsPreservedPath(root, preservedPaths))
+        {
+            SchedulePreservedPathForCleanup(root, log);
             return;
         }
 
@@ -384,7 +420,14 @@ internal static class UserDataCleaner
             {
                 if (!DeleteDirectoryWithRetries(item.Path, log))
                 {
-                    retained.Add(item.Path);
+                    if (ContainsOnlyPreservedPaths(item.Path, preservedPaths))
+                    {
+                        SchedulePreservedPathForCleanup(item.Path, log);
+                    }
+                    else
+                    {
+                        retained.Add(item.Path);
+                    }
                 }
 
                 continue;
@@ -405,6 +448,12 @@ internal static class UserDataCleaner
 
             foreach (var child in children)
             {
+                if (IsPreservedPath(child, preservedPaths))
+                {
+                    SchedulePreservedPathForCleanup(child, log);
+                    continue;
+                }
+
                 if (!PathSafety.IsSameOrUnder(child, root) ||
                     !PathSafety.TryGetAttributes(child, out var attributes))
                 {
@@ -413,7 +462,7 @@ internal static class UserDataCleaner
 
                 if ((attributes & FileAttributes.ReparsePoint) != 0)
                 {
-                    if (!DeleteReparsePointWithRetries(child, attributes, log))
+                    if (!DeleteReparsePointWithRetries(child, log))
                     {
                         retained.Add(child);
                     }
@@ -432,36 +481,82 @@ internal static class UserDataCleaner
 
     private static bool DeletePersonalFileWithRetries(string path, MaintenanceLog log)
     {
-        return RetryDelete(
+        return DeleteRetry.Run(
             path,
             () =>
             {
-                var attributes = File.GetAttributes(path);
+                if (!PathSafety.TryGetAttributes(path, out var attributes))
+                {
+                    return true;
+                }
+
+                if (!PathSafety.IsPlainFile(attributes))
+                {
+                    log.Write($"Personal-data path changed type and was preserved: {path}");
+                    return false;
+                }
+
                 if ((attributes & FileAttributes.ReadOnly) != 0)
                 {
                     File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
                 }
 
-                File.Delete(path);
+                return true;
             },
-            log);
+            () => File.Delete(path),
+            log,
+            "Removed personal-data path",
+            "Personal-data path remained");
     }
 
     private static bool DeleteDirectoryWithRetries(string path, MaintenanceLog log)
     {
-        return RetryDelete(path, () => Directory.Delete(path, recursive: false), log);
-    }
-
-    private static bool DeleteReparsePointWithRetries(
-        string path,
-        FileAttributes attributes,
-        MaintenanceLog log)
-    {
-        return RetryDelete(
+        return DeleteRetry.Run(
             path,
             () =>
             {
-                if ((attributes & FileAttributes.Directory) != 0)
+                if (!PathSafety.TryGetAttributes(path, out var attributes))
+                {
+                    return true;
+                }
+
+                if (!PathSafety.IsPlainDirectory(attributes))
+                {
+                    log.Write($"Personal-data directory changed type and was preserved: {path}");
+                    return false;
+                }
+
+                return true;
+            },
+            () => Directory.Delete(path, recursive: false),
+            log,
+            "Removed personal-data path",
+            "Personal-data path remained");
+    }
+
+    private static bool DeleteReparsePointWithRetries(string path, MaintenanceLog log)
+    {
+        return DeleteRetry.Run(
+            path,
+            () =>
+            {
+                if (!PathSafety.TryGetAttributes(path, out var currentAttributes))
+                {
+                    return true;
+                }
+
+                if ((currentAttributes & FileAttributes.ReparsePoint) == 0)
+                {
+                    log.Write($"Personal-data reparse point changed type and was preserved: {path}");
+                    return false;
+                }
+
+                return true;
+            },
+            () =>
+            {
+                var currentAttributes = File.GetAttributes(path);
+                if ((currentAttributes & FileAttributes.Directory) != 0)
                 {
                     Directory.Delete(path, recursive: false);
                 }
@@ -470,17 +565,110 @@ internal static class UserDataCleaner
                     File.Delete(path);
                 }
             },
-            log);
-    }
-
-    private static bool RetryDelete(string path, Action delete, MaintenanceLog log)
-    {
-        return DeleteRetry.Run(
-            path,
-            () => true,
-            delete,
             log,
             "Removed personal-data path",
             "Personal-data path remained");
+    }
+
+    private static HashSet<string> NormalizePreservedPaths(IEnumerable<string>? paths)
+    {
+        var normalized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (paths is null)
+        {
+            return normalized;
+        }
+
+        foreach (var path in paths)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    normalized.Add(PathSafety.Normalize(path));
+                }
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or
+                    IOException or
+                    NotSupportedException or
+                    UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return normalized;
+    }
+
+    private static bool IsPreservedPath(string path, IReadOnlySet<string> preservedPaths)
+    {
+        if (preservedPaths.Count == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            return preservedPaths.Contains(PathSafety.Normalize(path));
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or
+                IOException or
+                NotSupportedException or
+                UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsOnlyPreservedPaths(string directory, IReadOnlySet<string> preservedPaths)
+    {
+        if (preservedPaths.Count == 0)
+        {
+            return false;
+        }
+
+        string[] children;
+        try
+        {
+            children = Directory.GetFileSystemEntries(directory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        foreach (var child in children)
+        {
+            if (IsPreservedPath(child, preservedPaths))
+            {
+                continue;
+            }
+
+            if (!PathSafety.TryGetAttributes(child, out var attributes) ||
+                !PathSafety.IsPlainDirectory(attributes) ||
+                !ContainsOnlyPreservedPaths(child, preservedPaths))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void SchedulePreservedPathForCleanup(string path, MaintenanceLog log)
+    {
+        if (!PathSafety.TryGetAttributes(path, out _))
+        {
+            return;
+        }
+
+        if (NativeDialog.ScheduleDeleteOnReboot(path, null, MoveFileDelayUntilReboot))
+        {
+            log.Write($"Scheduled preserved cleanup path for deletion at reboot: {path}");
+        }
+        else
+        {
+            log.Write($"Preserved active cleanup path: {path}");
+        }
     }
 }

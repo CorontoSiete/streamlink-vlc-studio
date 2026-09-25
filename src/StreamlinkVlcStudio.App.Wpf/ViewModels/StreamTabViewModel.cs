@@ -12,6 +12,7 @@ using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.App.Wpf.Chat;
 using StreamlinkVlcStudio.App.Wpf.Controls;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
@@ -20,7 +21,7 @@ using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
-using StreamlinkVlcStudio.Infrastructure.Processes;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
@@ -82,7 +83,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private readonly PlaybackResourceCoordinator playbackResourceCoordinator;
     private readonly PlaybackCleanupController playbackCleanupController;
     private readonly ChatClientEventCoordinator chatClientEventCoordinator;
-    private readonly BoundedProcessRunner processRunner = new();
     private readonly NativeOverlayCapabilityProbe nativeOverlayCapabilityProbe = new();
     private readonly object disposalGate = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
@@ -155,6 +155,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private long chatConnectionVersion;
     private long nativeOverlayStartupVersion;
     private long replaySeekOperationVersion;
+    private long replayClockPlaybackStateVersion;
     private TimeSpan? pendingResumeHoldPosition;
     private bool pendingResumeHoldAllowsLiveTransition;
     private ReplayClockSnapshot? pausedReplayClock;
@@ -423,10 +424,41 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         get => status;
         private set
         {
-            if (SetProperty(ref status, value))
+            if (status == value)
             {
-                OnPropertyChanged(nameof(StatusText));
+                return;
             }
+
+            // Capture when playback actually pauses, rather than on the next 500ms clock poll.
+            // The live timeline (and sometimes VLC's HLS clock) can keep moving while paused.
+            var pauseClock = value == PlaybackStatus.Paused && replaySession is { IsAvailable: true } replay
+                ? ResolveReplayClock(replay, Volatile.Read(ref replaySeekOperationVersion), IsReplaySeekInProgress)
+                : (ReplayClockSnapshot?)null;
+            lock (replayClockAnchorGate)
+            {
+                if (status == PlaybackStatus.Paused && value == PlaybackStatus.Playing &&
+                    IsReplayMode && replayClockAnchorAvailable && pausedReplayClock is { } heldClock)
+                {
+                    // Both sample validation and fallback estimation use this anchor. Rebase it
+                    // before publishing Playing so neither can count the paused wall-clock time.
+                    // Without an anchor, leave the first real VLC sample free to initialize it.
+                    SetReplayClockAnchor(heldClock.Position, heldClock.Duration,
+                        Volatile.Read(ref replaySeekOperationVersion), replayClockAnchorAwaitingSeekConfirmation);
+                    ResetReplayClockSampleTrackingCore();
+                }
+
+                pausedReplayClock = pauseClock;
+                if (pauseClock is { } capturedClock && pendingResumeHoldPosition.HasValue)
+                {
+                    pendingResumeHoldPosition = capturedClock.Position;
+                }
+
+                status = value;
+                Interlocked.Increment(ref replayClockPlaybackStateVersion);
+            }
+
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(StatusText));
         }
     }
 
@@ -1323,7 +1355,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             await StopViewerCountPollingAsync();
             if (Target.IsExplicitVod)
             {
-                SetViewerCountUnavailable("Viewer count polling is disabled for VOD playback.");
+                SetViewerCount("VOD", "Video on demand.");
             }
             else
             {
@@ -1603,35 +1635,15 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         return "";
     }
 
-    public async Task PauseOrResumeAsync()
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        try
-        {
-            await playbackTransitionGate.WaitAsync(lifetimeCancellation.Token);
-        }
-        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
-        {
-            return;
-        }
-
-        try
-        {
-            await PauseOrResumeCoreAsync();
-        }
-        finally
-        {
-            playbackTransitionGate.Release();
-        }
-    }
+    public Task PauseOrResumeAsync() => RunPlaybackTransitionAsync(PauseOrResumeCoreAsync);
 
     public bool PausedByTabSwitch { get; private set; }
 
-    public async Task PauseForTabSwitchAsync()
+    public Task PauseForTabSwitchAsync() => RunPlaybackTransitionAsync(PauseForTabSwitchCoreAsync);
+
+    public Task ResumeFromTabSwitchAsync() => RunPlaybackTransitionAsync(ResumeFromTabSwitchCoreAsync);
+
+    private async Task RunPlaybackTransitionAsync(Func<Task> transition)
     {
         if (disposed)
         {
@@ -1649,33 +1661,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            await PauseForTabSwitchCoreAsync();
-        }
-        finally
-        {
-            playbackTransitionGate.Release();
-        }
-    }
-
-    public async Task ResumeFromTabSwitchAsync()
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        try
-        {
-            await playbackTransitionGate.WaitAsync(lifetimeCancellation.Token);
-        }
-        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
-        {
-            return;
-        }
-
-        try
-        {
-            await ResumeFromTabSwitchCoreAsync();
+            await transition();
         }
         finally
         {
@@ -1952,42 +1938,41 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // The adaptive input filter confirms that the current replay retained its
+        // decoder and HLS buffer. Unpause that input without opening or seeking it.
+        if (IsReplayMode && await playbackEngine.TryResumeReplayAsync(cancellationToken))
+        {
+            Status = PlaybackStatus.Playing;
+            PausedByTabSwitch = false;
+            return;
+        }
+
+        // Decide while the old player is still paused. Unpausing it first can present the
+        // live edge; opening a replacement at zero then seeking presents the VOD beginning.
+        // Open directly at the held timestamp and publish Playing only after it is ready.
+        if (holdPosition is { } position &&
+            !Target.IsExplicitVod &&
+            replaySession is { IsAvailable: true } replay &&
+            (IsReplayMode || (allowLiveTransition && CanSeekReplay)))
+        {
+            var duration = GetCurrentReplayDuration(replay);
+            var targetOffset = ClampReplayOffset(position, duration);
+            if (duration - targetOffset > ResumeHoldLiveEdgeTolerance)
+            {
+                await SeekReplaySerializedAsync(
+                    position,
+                    cancellationToken,
+                    forceReload: true,
+                    holdExactPosition: true,
+                    playbackTransitionAlreadyHeld: true);
+                PausedByTabSwitch = false;
+                return;
+            }
+        }
+
         await playbackEngine.ResumeAsync(cancellationToken);
         Status = PlaybackStatus.Playing;
         PausedByTabSwitch = false;
-
-        // Hold the paused position. ResumeAsync above snaps a live / current-live-DVR HLS stream to the
-        // live edge, and an in-place backward seek right after resume is unreliable: libVLC rejects it as
-        // not-seekable or silently overrides it back to live (no exception, so the in-place fallback never
-        // fires). Reload the replay/DVR media and seek to the held offset -- the same reliable path the
-        // initial rewind uses. The playback URL was warmed at pause time (CapturePauseHold) so the reload
-        // resolves with no extra latency.
-        if (holdPosition is not { } position ||
-            Target.IsExplicitVod ||
-            replaySession is not { IsAvailable: true } replay)
-        {
-            return;
-        }
-
-        // Only skip the hold when the paused spot is still effectively at the live edge (a near-instant
-        // pause) -- resuming there is just live and a reload would be pointless. Any real pause holds the
-        // exact paused timestamp below via reload+seek (holdExactPosition bypasses the 15s snap-to-live).
-        var duration = GetCurrentReplayDuration(replay);
-        var targetOffset = ClampReplayOffset(position, duration);
-        if (duration - targetOffset <= ResumeHoldLiveEdgeTolerance)
-        {
-            return;
-        }
-
-        if (IsReplayMode || (allowLiveTransition && CanSeekReplay))
-        {
-            await SeekReplaySerializedAsync(
-                position,
-                cancellationToken,
-                forceReload: true,
-                holdExactPosition: true,
-                playbackTransitionAlreadyHeld: true);
-        }
     }
 
     public async Task StopAsync()
@@ -2062,16 +2047,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         ReplayElapsedText = StreamViewModelHelpers.FormatClockTime(TimeSpan.FromSeconds(ReplaySeekSliderValue));
     }
 
-    public void PreviewReplaySeek(double sliderOffsetSeconds)
-    {
-        if (!isReplaySeekPreviewActive)
-        {
-            return;
-        }
-
-        ReplaySeekSliderValue = sliderOffsetSeconds;
-    }
-
     public Task CommitReplaySeekPreviewAsync(double sliderOffsetSeconds, CancellationToken cancellationToken = default)
     {
         ReplaySeekSliderValue = sliderOffsetSeconds;
@@ -2128,8 +2103,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         // narrow gap between those writes as a stable, post-seek clock sample.
         IsReplaySeekInProgress = true;
         var operationVersion = Interlocked.Increment(ref replaySeekOperationVersion);
-        pausedReplayClock = null;
-        ResetReplayClockSampleTracking();
+        lock (replayClockAnchorGate)
+        {
+            pausedReplayClock = null;
+            ResetReplayClockSampleTrackingCore();
+        }
         ResetNativeReplayOverlayScrollState();
         SuspendNativeReplayOverlayResizePersistence();
         return operationVersion;
@@ -2143,7 +2121,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private void CancelReplaySeekOperation()
     {
         Interlocked.Increment(ref replaySeekOperationVersion);
-        pausedReplayClock = null;
+        lock (replayClockAnchorGate)
+        {
+            pausedReplayClock = null;
+        }
         IsReplaySeekInProgress = false;
     }
 
@@ -2350,18 +2331,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                         {
                             Status = PlaybackStatus.Starting;
                             var playStopwatch = Stopwatch.StartNew();
-                            await playbackEngine.PlayAsync(resolved.StreamUri, Volume, CurrentAudioState, cancellationToken);
+                            await playbackEngine.PlayFromAsync(resolved.StreamUri, targetOffset, Volume, CurrentAudioState, cancellationToken);
                             playStopwatch.Stop();
-                            LogReplayFirstSeekStage("PlayAsync", playStopwatch.Elapsed);
+                            LogReplayFirstSeekStage("PlayFromAsync (open at requested position)", playStopwatch.Elapsed);
                             await ClearNativeReplayOverlayForReplayTransitionAsync(
                                 replay,
                                 targetReplayWindowHasMessages,
                                 cancellationToken);
                             isDirectExplicitVodReplayPlayback = Target.IsExplicitVod;
-                            var seekStopwatch = Stopwatch.StartNew();
-                            await playbackEngine.SeekAsync(targetOffset, cancellationToken);
-                            seekStopwatch.Stop();
-                            LogReplayFirstSeekStage("SeekAsync", seekStopwatch.Elapsed);
                             currentReplayPlaybackKey = replayPlaybackKey;
                             SetReplayClockAnchor(
                                 targetOffset,
@@ -2376,8 +2353,22 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                             ApplyReplayClock(targetOffset, duration, isSeekable: true);
                             StartReplayClockPolling();
                         }
-                        catch
+                        catch (Exception ex)
                         {
+                            // Opening a replay starts it at its default position. If restoring the
+                            // requested timestamp fails, do not leave that new media playing from
+                            // the beginning while the seekbar still displays the requested offset.
+                            try
+                            {
+                                await playbackEngine.StopAsync(CancellationToken.None);
+                            }
+                            catch (Exception stopException)
+                            {
+                                logger.Write(AppLogLevel.Warning, "Replay", "Failed to stop an unsuccessful replay restore.", stopException);
+                            }
+
+                            Status = PlaybackStatus.Error;
+                            ErrorMessage = $"Replay position could not be restored: {ex.Message}";
                             await RunReplayTransitionWorkAsync(
                                 deferredTransitionWork.Where(work => work.RunOnPlaybackFailure).ToArray());
                             throw;
@@ -4156,12 +4147,25 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        replayClockPollingCancellation?.Cancel();
-        replayClockPollingCancellation?.Dispose();
+        StartPolling(ref replayClockPollingCancellation, ref replayClockPollingTask,
+            PollReplayClockAsync, "Replay", $"Replay clock cleanup failed for {Target.DisplayName}.");
+    }
 
-        var cancellation = new CancellationTokenSource();
-        replayClockPollingCancellation = cancellation;
-        replayClockPollingTask = Task.Run(() => PollReplayClockAsync(cancellation.Token));
+    private void StartPolling(
+        ref CancellationTokenSource? cancellation,
+        ref Task? pollingTask,
+        Func<CancellationToken, Task> poll,
+        string logCategory,
+        string failureMessage)
+    {
+        // Replaced requests may still be unwinding or may ignore cancellation. Keep their
+        // source alive until completion and observe cleanup even after replacing the task.
+        if (cancellation is not null)
+            playbackCleanupController.Observe(StopPollingAsync(cancellation, pollingTask, logCategory, failureMessage));
+
+        cancellation = new CancellationTokenSource();
+        var token = cancellation.Token;
+        pollingTask = Task.Run(() => poll(token));
     }
 
     private async Task StopReplayClockPollingAsync()
@@ -4247,22 +4251,24 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         // can complete between them, so carry the generation that produced this sample all the way
         // through instead of relying only on the later IsReplaySeekInProgress snapshot.
         var sampledSeekOperationVersion = Volatile.Read(ref replaySeekOperationVersion);
+        var sampledPlaybackStateVersion = Volatile.Read(ref replayClockPlaybackStateVersion);
         var seekWasInProgress = IsReplaySeekInProgress;
         var clock = ResolveReplayClock(
             replay,
             sampledSeekOperationVersion,
-            seekWasInProgress);
+            seekWasInProgress,
+            sampledPlaybackStateVersion);
         var sampleIsCurrent = !seekWasInProgress &&
-            IsReplayClockSampleCurrent(sampledSeekOperationVersion);
+            IsReplayClockSampleCurrent(sampledSeekOperationVersion, sampledPlaybackStateVersion);
 
         if (sampleIsCurrent)
         {
-            QueueReplayClockUiApply(clock, sampledSeekOperationVersion);
+            QueueReplayClockUiApply(clock, sampledSeekOperationVersion, sampledPlaybackStateVersion);
         }
 
         if (IsReplayMode && sampleIsCurrent)
         {
-            PumpVodChat(clock.Position, sampledSeekOperationVersion);
+            PumpVodChat(clock.Position, sampledSeekOperationVersion, sampledPlaybackStateVersion);
         }
         else if (sampleIsCurrent)
         {
@@ -4272,10 +4278,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private bool IsReplayClockSampleCurrent(long sampledSeekOperationVersion)
+    private bool IsReplayClockSampleCurrent(long sampledSeekOperationVersion, long? sampledPlaybackStateVersion = null)
     {
         return !IsReplaySeekInProgress &&
-            IsLatestReplaySeekOperation(sampledSeekOperationVersion);
+            IsLatestReplaySeekOperation(sampledSeekOperationVersion) &&
+            (sampledPlaybackStateVersion is null ||
+                sampledPlaybackStateVersion == Volatile.Read(ref replayClockPlaybackStateVersion));
     }
 
     /// <summary>
@@ -4307,10 +4315,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     /// Publishes the VOD chat playback has just reached through the same append path the live feed
     /// uses, and returns how many messages were published.
     /// </summary>
-    private int PumpVodChat(TimeSpan position, long? expectedSeekOperationVersion = null)
+    private int PumpVodChat(
+        TimeSpan position,
+        long? expectedSeekOperationVersion = null,
+        long? expectedPlaybackStateVersion = null)
     {
         if (expectedSeekOperationVersion is { } expectedVersion &&
-            !IsReplayClockSampleCurrent(expectedVersion))
+            !IsReplayClockSampleCurrent(expectedVersion, expectedPlaybackStateVersion))
         {
             return 0;
         }
@@ -4384,13 +4395,15 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void QueueReplayClockUiApply(
         ReplayClockSnapshot clock,
-        long sampledSeekOperationVersion)
+        long sampledSeekOperationVersion,
+        long sampledPlaybackStateVersion)
     {
         lock (replayClockUiGate)
         {
             pendingReplayClockUiSample = new ReplayClockUiUpdate(
                 clock,
-                sampledSeekOperationVersion);
+                sampledSeekOperationVersion,
+                sampledPlaybackStateVersion);
             if (replayClockUiDispatchQueued)
             {
                 return;
@@ -4465,7 +4478,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 }
             }
 
-            if (IsReplayClockSampleCurrent(update.Value.ReplaySeekOperationVersion))
+            if (IsReplayClockSampleCurrent(update.Value.ReplaySeekOperationVersion, update.Value.PlaybackStateVersion))
             {
                 var clock = update.Value.Clock;
                 ApplyReplayClock(clock.Position, clock.Duration, clock.IsSeekable);
@@ -4516,31 +4529,42 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private ReplayClockSnapshot ResolveReplayClock(
         ReplaySessionInfo replay,
         long sampledSeekOperationVersion,
-        bool sampleBeganDuringSeek)
+        bool sampleBeganDuringSeek,
+        long? sampledPlaybackStateVersion = null)
     {
-        // While paused, freeze the whole clock -- both the elapsed position and the total duration. A
-        // live stream keeps advancing (the engine clock drifts toward the live edge and the duration
-        // grows with wall-clock), so without this the timestamp would keep ticking up even though
-        // playback is stopped. Captured once on the first paused sample and held until playback resumes.
-        if (Status == PlaybackStatus.Paused)
+        var playbackStateVersion = sampledPlaybackStateVersion ?? Volatile.Read(ref replayClockPlaybackStateVersion);
+        lock (replayClockAnchorGate)
         {
-            return pausedReplayClock ??= ResolveLiveReplayClock(
-                replay,
-                sampledSeekOperationVersion,
-                sampleBeganDuringSeek);
+            if (Status == PlaybackStatus.Paused && pausedReplayClock is { } heldClock)
+            {
+                return heldClock;
+            }
         }
 
-        pausedReplayClock = null;
-        return ResolveLiveReplayClock(
+        var clock = ResolveLiveReplayClock(
             replay,
             sampledSeekOperationVersion,
-            sampleBeganDuringSeek);
+            sampleBeganDuringSeek,
+            playbackStateVersion);
+        lock (replayClockAnchorGate)
+        {
+            // Replay metadata may first become available after the pause. Only that case needs
+            // a lazy snapshot; an in-flight pre-pause sample must never replace a captured one.
+            if (Status == PlaybackStatus.Paused &&
+                playbackStateVersion == Volatile.Read(ref replayClockPlaybackStateVersion))
+            {
+                return pausedReplayClock ??= clock;
+            }
+        }
+
+        return clock;
     }
 
     private ReplayClockSnapshot ResolveLiveReplayClock(
         ReplaySessionInfo replay,
         long sampledSeekOperationVersion,
-        bool sampleBeganDuringSeek)
+        bool sampleBeganDuringSeek,
+        long sampledPlaybackStateVersion)
     {
         var duration = GetCurrentReplayDuration(replay);
         if (!IsReplayMode)
@@ -4565,7 +4589,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                     duration,
                     sampledSeekOperationVersion,
                     sampleBeganDuringSeek,
-                    observedAtUtc))
+                    observedAtUtc,
+                    sampledPlaybackStateVersion))
             {
                 return new ReplayClockSnapshot(position, duration, isSeekable);
             }
@@ -4686,7 +4711,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         TimeSpan duration,
         long seekGeneration,
         bool sampleBeganDuringSeek,
-        DateTimeOffset observedAtUtc)
+        DateTimeOffset observedAtUtc,
+        long sampledPlaybackStateVersion)
     {
         if (sampleBeganDuringSeek)
         {
@@ -4698,7 +4724,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             // BeginReplaySeekOperation publishes the in-progress flag before advancing the
             // generation. Rechecking both while holding the anchor lock prevents a sample that
             // began before a seek from replacing the new seek anchor after it is reset.
-            if (!IsReplayClockSampleCurrent(seekGeneration))
+            if (!IsReplayClockSampleCurrent(seekGeneration, sampledPlaybackStateVersion))
             {
                 return false;
             }
@@ -4758,14 +4784,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void ResetReplayClockSampleTracking()
-    {
-        lock (replayClockAnchorGate)
-        {
-            ResetReplayClockSampleTrackingCore();
-        }
-    }
-
     private void ResetReplayClockSampleTrackingCore()
     {
         replayClockAcceptedSampleAvailable = false;
@@ -4793,7 +4811,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private readonly record struct ReplayClockUiUpdate(
         ReplayClockSnapshot Clock,
-        long ReplaySeekOperationVersion);
+        long ReplaySeekOperationVersion,
+        long PlaybackStateVersion);
 
     private readonly record struct ReplayClockAnchorSnapshot(
         TimeSpan Offset,
@@ -5109,12 +5128,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        viewerCountPollingCancellation?.Cancel();
-        viewerCountPollingCancellation?.Dispose();
-
-        var cancellation = new CancellationTokenSource();
-        viewerCountPollingCancellation = cancellation;
-        viewerCountPollingTask = Task.Run(() => PollViewerCountAsync(settings, cancellation.Token));
+        StartPolling(ref viewerCountPollingCancellation, ref viewerCountPollingTask,
+            token => PollViewerCountAsync(settings, token), "Viewers",
+            $"Viewer count polling cleanup failed for {Target.DisplayName}.");
     }
 
     private async Task StopViewerCountPollingAsync()
@@ -5138,13 +5154,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        videoAspectRatioPollingCancellation?.Cancel();
-        videoAspectRatioPollingCancellation?.Dispose();
         ResetVideoAspectRatioPollingBackoff();
-
-        var cancellation = new CancellationTokenSource();
-        videoAspectRatioPollingCancellation = cancellation;
-        videoAspectRatioPollingTask = Task.Run(() => PollVideoAspectRatioAsync(cancellation.Token));
+        StartPolling(ref videoAspectRatioPollingCancellation, ref videoAspectRatioPollingTask,
+            PollVideoAspectRatioAsync, "Playback", $"Video aspect ratio polling cleanup failed for {Target.DisplayName}.");
     }
 
     private async Task StopVideoAspectRatioPollingAsync()
@@ -5283,7 +5295,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             try
             {
                 var result = await viewerCountService!.GetViewerCountAsync(Target, settings, cancellationToken);
-                ApplyViewerCountResult(result);
+                cancellationToken.ThrowIfCancellationRequested();
+                DispatchViewerCountUpdate(() => ApplyViewerCountResult(result), cancellationToken);
                 delay = result.State is ViewerCountState.Available or ViewerCountState.Offline
                     ? ViewerCountRefreshInterval
                     : ViewerCountRetryDelay;
@@ -5295,10 +5308,18 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             catch (Exception ex)
             {
                 logger.Write(AppLogLevel.Warning, "Viewers", $"Viewer count refresh failed for {Target.DisplayName}.", ex);
-                SetViewerCountUnavailable($"Viewer count unavailable: {ex.Message}");
+                DispatchViewerCountUpdate(() => ApplyViewerCount("N/A", $"Viewer count unavailable: {ex.Message}"), cancellationToken);
                 delay = ViewerCountRetryDelay;
             }
         }
+    }
+
+    private void DispatchViewerCountUpdate(Action update, CancellationToken cancellationToken)
+    {
+        dispatch(() =>
+        {
+            if (!disposed && !cancellationToken.IsCancellationRequested) update();
+        });
     }
 
     private void ApplyViewerCountResult(ViewerCountResult result)
@@ -5316,18 +5337,18 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         switch (result.State)
         {
             case ViewerCountState.Available when result.ViewerCount is { } viewerCount:
-                SetViewerCount(
+                ApplyViewerCount(
                     FormatViewerCount(viewerCount),
                     $"{viewerCount.ToString("N0", CultureInfo.CurrentCulture)} viewers. Updated {updatedAt:t}.");
                 break;
             case ViewerCountState.Offline:
-                SetViewerCount("--", $"{result.Message} Updated {updatedAt:t}.");
+                ApplyViewerCount("--", $"{result.Message} Updated {updatedAt:t}.");
                 break;
             case ViewerCountState.NotConfigured:
-                SetViewerCount("Auth", result.Message);
+                ApplyViewerCount("Auth", result.Message);
                 break;
             default:
-                SetViewerCount("N/A", result.Message);
+                ApplyViewerCount("N/A", result.Message);
                 break;
         }
     }
@@ -5342,13 +5363,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         SetViewerCount("N/A", toolTip);
     }
 
-    private void SetViewerCount(string text, string toolTip)
+    private void SetViewerCount(string text, string toolTip) => dispatch(() => ApplyViewerCount(text, toolTip));
+
+    private void ApplyViewerCount(string text, string toolTip)
     {
-        dispatch(() =>
-        {
-            ViewerCountText = text;
-            ViewerCountToolTip = toolTip;
-        });
+        ViewerCountText = text;
+        ViewerCountToolTip = toolTip;
     }
 
     private void SetCategoryName(string value)
@@ -5363,7 +5383,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             AppLogLevel.Info,
             "Playback",
             $"{Target.DisplayName} category is now {(normalized.Length == 0 ? "unset" : normalized)}.");
-        dispatch(() => CategoryName = normalized);
+        CategoryName = normalized;
     }
 
     private void SetStreamTitle(string value)
@@ -5374,7 +5394,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        dispatch(() => StreamTitle = normalized);
+        StreamTitle = normalized;
     }
 
     private static string FormatViewerCount(int viewerCount)
@@ -7024,7 +7044,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         var directory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "StreamlinkVlcStudio",
+            AppIdentity.ProductDirectoryName,
             "overlay-tokens");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, $"{platform}-{Guid.NewGuid():N}.txt");
@@ -7130,9 +7150,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.twitch.tv/helix/users?login={escapedChannel}");
             request.Headers.Authorization = new("Bearer", token);
             request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-            request.Headers.UserAgent.ParseAdd("StreamlinkVlcStudio/0.1");
+            request.Headers.UserAgent.ParseAdd("StreamStudio/0.1");
 
-            using var response = await httpClient.SendAsync(request, cancellationToken);
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 logger.Write(
@@ -7144,9 +7164,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
             var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
             using var document = JsonDocument.Parse(responseBody);
-            if (TryReadTwitchHelixUserId(document.RootElement, out var roomId))
+            if (TwitchUserPayloadReader.TryRead(document.RootElement, Target.Channel, out var user))
             {
-                return CacheResolvedTwitchOverlayRoomId(roomId);
+                var roomId = GetOptionalString(user, "id");
+                if (IsAsciiDigits(roomId)) return CacheResolvedTwitchOverlayRoomId(roomId);
             }
 
             logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Twitch room ID lookup did not return a user ID for {Target.Channel}.");
@@ -7163,32 +7184,6 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     {
         resolvedTwitchOverlayRoomId = roomId;
         return roomId;
-    }
-
-    private static bool TryReadTwitchHelixUserId(JsonElement root, out string roomId)
-    {
-        roomId = "";
-        if (!root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array ||
-            data.GetArrayLength() <= 0)
-        {
-            return false;
-        }
-
-        var user = data[0];
-        if (!user.TryGetProperty("id", out var id))
-        {
-            return false;
-        }
-
-        var value = id.ValueKind == JsonValueKind.String ? id.GetString() : id.ToString();
-        if (string.IsNullOrWhiteSpace(value) || !IsAsciiDigits(value))
-        {
-            return false;
-        }
-
-        roomId = value;
-        return true;
     }
 
     private static bool IsAsciiDigits(string value)
@@ -7223,6 +7218,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         KickOAuthTokenResult token,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        var credentials = KickCredentialSnapshot.Capture(settings);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = cancellationToken.Register(
             static state =>
@@ -7236,6 +7233,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         {
             try
             {
+                if (completion.Task.IsCompleted || cancellationToken.IsCancellationRequested || !credentials.Matches(settings))
+                {
+                    completion.TrySetCanceled();
+                    return;
+                }
+
                 KickOAuthService.ApplyTokenResult(settings, token);
                 completion.TrySetResult();
             }
@@ -7245,7 +7248,15 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             }
         });
 
-        await completion.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        try
+        {
+            await completion.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+        finally
+        {
+            // A dispatcher callback can run after its caller's timeout or cancellation.
+            completion.TrySetCanceled();
+        }
     }
 
     private string GetConfiguredKickSetting(
@@ -7289,7 +7300,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     {
         var directory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "StreamlinkVlcStudio",
+            AppIdentity.ProductDirectoryName,
             "vlc-overlays",
             "streams");
         Directory.CreateDirectory(directory);
@@ -7419,94 +7430,38 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private async Task<KickOverlayChannelInfo> TryResolveKickChannelMetadataAsync(string channel, CancellationToken cancellationToken)
     {
+        using var httpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(18));
+        var reader = new KickWebsiteJsonReader(httpClient, logger, "ChatOverlay", TimeSpan.FromSeconds(18));
+        var escapedChannel = Uri.EscapeDataString(channel);
+        var url = $"https://kick.com/api/v2/channels/{escapedChannel}";
+        var referrer = $"https://kick.com/{escapedChannel}";
         try
         {
-            if (await TryResolveKickChannelMetadataWithHttpClientAsync(channel, cancellationToken) is { ChatroomId: not null } httpMetadata)
-            {
-                return httpMetadata;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Kick metadata lookup with .NET HTTP failed for {channel}.", ex);
-        }
+            var direct = await reader.ReadDirectAsync(url, referrer, cancellationToken);
+            if (ReadKickOverlayChannelInfo(direct.Body) is { ChatroomId: not null } metadata)
+                return metadata;
 
-        try
-        {
-            if (await TryResolveKickChannelMetadataWithCurlAsync(channel, cancellationToken) is { ChatroomId: not null } curlMetadata)
+            var fallback = await reader.ReadFallbackAsync(url, referrer, cancellationToken);
+            if (ReadKickOverlayChannelInfo(fallback) is { ChatroomId: not null } fallbackMetadata)
             {
                 AddSystemMessage("Resolved Kick chatroom ID with curl fallback.");
-                return curlMetadata;
+                return fallbackMetadata;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Kick metadata lookup with curl.exe failed for {channel}.", ex);
+            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Kick metadata lookup failed for {channel}.", ex);
         }
 
         return new KickOverlayChannelInfo(null, null);
     }
 
-    private static async Task<KickOverlayChannelInfo?> TryResolveKickChannelMetadataWithHttpClientAsync(string channel, CancellationToken cancellationToken)
+    private static KickOverlayChannelInfo? ReadKickOverlayChannelInfo(string? body)
     {
-        using var httpClient = HttpClientFactory.Create(
-            TimeSpan.FromSeconds(18),
-            includeUserAgent: true,
-            acceptJson: true);
-        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
-        httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
-
-        var escapedChannel = Uri.EscapeDataString(channel);
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://kick.com/api/v2/channels/{escapedChannel}");
-        request.Headers.Referrer = new Uri($"https://kick.com/{escapedChannel}");
-
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
-        using var document = JsonDocument.Parse(responseBody);
-        return ToKickOverlayChannelInfo(KickChannelInfoJson.Read(document.RootElement));
-    }
-
-    private async Task<KickOverlayChannelInfo?> TryResolveKickChannelMetadataWithCurlAsync(string channel, CancellationToken cancellationToken)
-    {
-        var curlPath = KickCurlArguments.ResolveCurlPath();
-
-        var escapedChannel = Uri.EscapeDataString(channel);
-        var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(
-            curlPath,
-            KickCurlArguments.BuildJsonRequest(
-                $"https://kick.com/api/v2/channels/{escapedChannel}",
-                $"https://kick.com/{escapedChannel}"));
-        var result = await processRunner.RunAsync(
-            startInfo,
-            TimeSpan.FromSeconds(18),
-            cancellationToken);
-
-        if (result.TimedOut)
-        {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"curl.exe timed out resolving Kick metadata for {channel}.");
-            return null;
-        }
-
-        if (result.ExitCode != 0 ||
-            result.OutputWasTruncated ||
-            string.IsNullOrWhiteSpace(result.StandardOutput))
-        {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"curl.exe failed resolving Kick metadata for {channel}: {result.StandardError.Trim()}");
-            return null;
-        }
-
-        using var document = JsonDocument.Parse(result.StandardOutput);
-        return ToKickOverlayChannelInfo(KickChannelInfoJson.Read(document.RootElement));
-    }
-
-    private static KickOverlayChannelInfo ToKickOverlayChannelInfo(KickChannelInfo channelInfo)
-    {
-        return new KickOverlayChannelInfo(channelInfo.ChatroomId, channelInfo.BroadcasterUserId);
+        if (body is null) return null;
+        using var document = JsonDocument.Parse(body);
+        var info = KickChannelInfoJson.Read(document.RootElement);
+        return new KickOverlayChannelInfo(info.ChatroomId, info.BroadcasterUserId);
     }
 
     private static string NormalizeOutgoingMessage(string message)

@@ -103,7 +103,7 @@ internal static class SettingsSecretProtector
             var succeeded = protect
                 ? CryptProtectData(
                     ref inputBlob,
-                    "Streamlink VLC Studio settings",
+                    "Stream Studio settings",
                     ref entropyBlob,
                     IntPtr.Zero,
                     IntPtr.Zero,

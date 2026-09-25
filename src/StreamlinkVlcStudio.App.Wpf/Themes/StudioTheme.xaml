@@ -124,6 +124,53 @@
     </Style>
     <Style TargetType="{x:Type TextBox}" BasedOn="{StaticResource StudioTextBoxStyle}" />
 
+    <Style TargetType="{x:Type PasswordBox}">
+        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+        <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
+        <Setter Property="BorderThickness" Value="1.5" />
+        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="CaretBrush" Value="{DynamicResource StudioAccentBrush}" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource StudioAccentPressedBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type PasswordBox}">
+                    <Border x:Name="PasswordBoxBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource StudioCornerSmall}">
+                        <ScrollViewer x:Name="PART_ContentHost"
+                                      Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      HorizontalScrollBarVisibility="Hidden"
+                                      VerticalScrollBarVisibility="Hidden" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True" />
+                                <Condition Property="IsKeyboardFocusWithin" Value="False" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="PasswordBoxBorder" Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                        </MultiTrigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="PasswordBoxBorder" Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
+                            <Setter TargetName="PasswordBoxBorder" Property="BorderThickness" Value="2" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="StudioComboBoxItemStyle" TargetType="{x:Type ComboBoxItem}">
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
         <Setter Property="Background" Value="Transparent" />

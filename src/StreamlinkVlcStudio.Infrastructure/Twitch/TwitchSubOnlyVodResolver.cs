@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
@@ -22,8 +23,6 @@ namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 /// </summary>
 public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
 {
-    // Public Twitch web Client-ID, the same one ReplayResolver uses for archive lookups.
-    private const string TwitchPublicClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private const int PlaylistProbeByteLimit = 65535;
     private static readonly TimeSpan VariantProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StalePlaylistAge = TimeSpan.FromHours(24);
@@ -36,7 +35,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
         allowAutoRedirect: false);
     private static readonly string DefaultPlaylistDirectory = Path.Combine(
         Path.GetTempPath(),
-        "StreamlinkVlcStudio",
+        AppIdentity.ProductDirectoryName,
         "sub-only-vods");
 
     private readonly IAppLogger logger;
@@ -144,7 +143,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
         {
             document = await twitchGraphQlTransport.SendAsync(
                 BuildVideoQueryPayload(vodId),
-                TwitchPublicClientId,
+                TwitchGraphQlTransport.PublicClientId,
                 TwitchGraphQlTransport.CreateDeviceId(),
                 cancellationToken,
                 mediaType: "application/json").ConfigureAwait(false);

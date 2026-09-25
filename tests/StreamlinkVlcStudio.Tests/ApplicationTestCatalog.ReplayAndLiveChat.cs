@@ -324,7 +324,7 @@ internal static partial class ApplicationTestCatalog
     {
         var root = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"resize-callback-failure-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var positionStatePath = Path.Combine(root, "overlay-position");
@@ -1597,7 +1597,7 @@ internal static partial class ApplicationTestCatalog
                 TimeSpan.FromMinutes(10),
                 new ChatMessage(PlatformKind.Twitch, "streamer", "vod-viewer", "vod chat after promotion", startedAt.AddMinutes(10)))
         ]));
-        var tab = TestViewModels.CreateTab(
+        await using var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("streamer", PlatformKind.Twitch),
             "source",
             new FakeStreamlinkService(),
@@ -1624,12 +1624,13 @@ internal static partial class ApplicationTestCatalog
         await TestWait.UntilAsync(
             () => vodChatProvider.RequestedReplays.Any(replay => replay.ReplayId == "123"),
             TimeSpan.FromSeconds(2));
+        // A recorded request precedes timeline insertion and the next UI clock update.
+        await WaitForDockedChatMessageAsync(tab, "vod chat after promotion");
 
         Assert.True(vodChatProvider.RequestedReplays.Any(replay => replay.ReplayId == "123"));
         Assert.Contains("123", tab.ReplaySeekToolTip);
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "vod chat after promotion"));
 
-        await tab.DisposeAsync();
     }),
     ("replay step buttons seek thirty seconds and return to live at the edge", async () =>
     {
@@ -2082,9 +2083,9 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
 
         tab.BeginReplaySeekPreview(tab.ReplaySeekSliderValue);
-        tab.PreviewReplaySeek(TimeSpan.FromMinutes(5).TotalSeconds);
-        tab.PreviewReplaySeek(TimeSpan.FromMinutes(15).TotalSeconds);
-        tab.PreviewReplaySeek(TimeSpan.FromMinutes(25).TotalSeconds);
+        tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(5).TotalSeconds;
+        tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(15).TotalSeconds;
+        tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(25).TotalSeconds;
 
         Assert.True(tab.IsReplaySeekPreviewActive);
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
@@ -2447,7 +2448,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("test log line", observedLine);
         Assert.True(logger.Entries.Any(entry =>
             entry.Level == AppLogLevel.Warning &&
-            entry.Message == "A Streamlink log subscriber failed." &&
+            entry.Message.Contains("LogLineReceived subscriber threw", StringComparison.Ordinal) &&
             entry.Exception is InvalidOperationException));
     }),
     ("Kick chat client disposal is idempotent", async () =>

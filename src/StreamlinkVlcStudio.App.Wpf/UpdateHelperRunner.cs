@@ -3,7 +3,9 @@ using System.IO;
 using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Text.Json;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Io;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
@@ -13,7 +15,15 @@ internal static class UpdateHelperRunner
     {
         exitCode = 0;
         if (!args.Contains("--update-helper", StringComparer.OrdinalIgnoreCase)) return false;
-        exitCode = RunAsync(args).GetAwaiter().GetResult();
+        try
+        {
+            exitCode = RunAsync(args).GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // Invalid helper arguments must not fall through into normal application startup.
+            exitCode = 1;
+        }
         return true;
     }
 
@@ -28,20 +38,25 @@ internal static class UpdateHelperRunner
         var installDirectory = Path.GetFullPath(Required(args, "--install-dir"));
         var resultPath = Path.GetFullPath(Required(args, "--result"));
         var logPath = Path.GetFullPath(Required(args, "--log"));
-        ValidatePathsAndPackage(setup, setupLength, setupSha256, resultPath, logPath);
+        ValidateResultPaths(operationId, resultPath, logPath);
         AppUpdateCompletion completion;
         try
         {
             await WaitForParentAsync(parentId).ConfigureAwait(false);
+            ValidatePathsAndPackage(setup, setupLength, setupSha256, resultPath, logPath);
+            // Keep the verified bytes locked against replacement until Setup has exited.
+            using var packageLock = new FileStream(setup, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!string.Equals(Convert.ToHexString(SHA256.HashData(packageLock)), setupSha256, StringComparison.OrdinalIgnoreCase))
+                throw new CryptographicException("The staged Setup package changed before launch.");
             var info = new ProcessStartInfo(setup) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(setup)! };
             foreach (var argument in new[] { "/passive", "/norestart", "/log", logPath }) info.ArgumentList.Add(argument);
             using var installer = Process.Start(info) ?? throw new InvalidOperationException("Setup did not start.");
             await installer.WaitForExitAsync().ConfigureAwait(false);
             var code = installer.ExitCode;
             var outcome = MapExitCode(code);
-            if (outcome is AppUpdateCompletionOutcome.Succeeded or AppUpdateCompletionOutcome.SucceededRebootRequired)
+            if (outcome == AppUpdateCompletionOutcome.Succeeded)
             {
-                var installedTarget = Path.Combine(installDirectory, "StreamlinkVlcStudio.exe");
+                var installedTarget = Path.Combine(installDirectory, AppIdentity.ManagedExecutableName);
                 var actual = ReadVersion(installedTarget);
                 if (actual is null || Normalize(actual) != Normalize(targetVersion))
                 {
@@ -68,21 +83,32 @@ internal static class UpdateHelperRunner
         }
 
         await WriteAtomicAsync(resultPath, completion).ConfigureAwait(false);
-        var installed = Path.Combine(installDirectory, "StreamlinkVlcStudio.exe");
+        var installed = Path.Combine(installDirectory, AppIdentity.ManagedExecutableName);
         if (File.Exists(installed))
         {
-            Process.Start(new ProcessStartInfo(installed) { UseShellExecute = true, WorkingDirectory = installDirectory })?.Dispose();
+            try
+            {
+                Process.Start(new ProcessStartInfo(installed) { UseShellExecute = true, WorkingDirectory = installDirectory })?.Dispose();
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+            {
+                // Preserve the install result for the next manual launch even if relaunch fails.
+            }
         }
         return completion.Outcome is AppUpdateCompletionOutcome.Succeeded or AppUpdateCompletionOutcome.SucceededRebootRequired ? 0 : 1;
     }
 
-    internal static AppUpdateCompletionOutcome MapExitCode(int code) => code switch
+    internal static AppUpdateCompletionOutcome MapExitCode(int code)
     {
-        0 => AppUpdateCompletionOutcome.Succeeded,
-        3010 => AppUpdateCompletionOutcome.SucceededRebootRequired,
-        1602 or 1223 => AppUpdateCompletionOutcome.Canceled,
-        _ => AppUpdateCompletionOutcome.Failed
-    };
+        if ((code & unchecked((int)0xFFFF0000)) == unchecked((int)0x80070000)) code &= 0xFFFF;
+        return code switch
+        {
+            0 => AppUpdateCompletionOutcome.Succeeded,
+            3010 or 1641 => AppUpdateCompletionOutcome.SucceededRebootRequired,
+            1602 or 1223 => AppUpdateCompletionOutcome.Canceled,
+            _ => AppUpdateCompletionOutcome.Failed
+        };
+    }
 
     private static string Message(AppUpdateCompletionOutcome outcome, int code) => outcome switch
     {
@@ -109,6 +135,23 @@ internal static class UpdateHelperRunner
     private static Version Normalize(Version version) =>
         new(version.Major, version.Minor, Math.Max(0, version.Build));
 
+    private static void ValidateResultPaths(Guid operationId, string resultPath, string logPath)
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppIdentity.UpdateDirectoryName, "Updates");
+        if (operationId == Guid.Empty ||
+            !string.Equals(resultPath, Path.Combine(root, "results", operationId.ToString("N") + ".json"), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(logPath, Path.Combine(root, "logs", operationId.ToString("N") + ".log"), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The update result and log do not match the operation.");
+        foreach (var path in new[] { resultPath, logPath })
+        {
+            for (var current = path; current is not null; current = Path.GetDirectoryName(current))
+            {
+                if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Update result paths cannot contain symbolic links or junctions.");
+            }
+        }
+    }
+
     private static void ValidatePathsAndPackage(
         string setup,
         long expectedLength,
@@ -118,7 +161,7 @@ internal static class UpdateHelperRunner
     {
         var helperDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
         if (!string.Equals(Path.GetDirectoryName(setup), helperDirectory, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(Path.GetFileName(setup), "StreamlinkVlcStudio-Setup.exe", StringComparison.Ordinal) ||
+            !string.Equals(Path.GetFileName(setup), AppIdentity.SetupAssetName, StringComparison.Ordinal) ||
             expectedLength is <= 0 or > 1024L * 1024L * 1024L ||
             expectedSha256.Length != 64 || !expectedSha256.All(Uri.IsHexDigit))
         {
@@ -127,7 +170,7 @@ internal static class UpdateHelperRunner
 
         var updateRoot = Path.GetFullPath(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "StreamlinkVlcStudio",
+            AppIdentity.UpdateDirectoryName,
             "Updates"));
         var rootPrefix = Path.TrimEndingDirectorySeparator(updateRoot) + Path.DirectorySeparatorChar;
         if (!resultPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) ||
@@ -156,11 +199,8 @@ internal static class UpdateHelperRunner
         return args[index + 1];
     }
 
-    private static async Task WriteAtomicAsync(string path, AppUpdateCompletion result)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var temporary = path + ".tmp";
-        await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None)) await JsonSerializer.SerializeAsync(stream, result).ConfigureAwait(false);
-        File.Move(temporary, path, true);
-    }
+    private static Task WriteAtomicAsync(string path, AppUpdateCompletion result) =>
+        AtomicFile.WriteAsync(path,
+            (stream, token) => JsonSerializer.SerializeAsync(stream, result, cancellationToken: token),
+            CancellationToken.None);
 }

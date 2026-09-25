@@ -18,6 +18,8 @@ public sealed partial class VideoOverlayHost : FrameworkElement
 {
     private const int WsChild = 0x40000000;
     private const int WsClipSiblings = 0x04000000;
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExNoActivate = 0x08000000;
     private const int SwpNoSize = 0x0001;
     private const int SwpNoMove = 0x0002;
     private const int SwpNoZOrder = 0x0004;
@@ -89,6 +91,7 @@ public sealed partial class VideoOverlayHost : FrameworkElement
         {
             ParentWindow = parent,
             WindowStyle = WsChild | WsClipSiblings,
+            ExtendedWindowStyle = WsExToolWindow | WsExNoActivate,
             UsesPerPixelTransparency = true,
             // This child handles keyboard input itself rather than forwarding it through
             // the native VLC HWND (which is not a WPF keyboard input sink).

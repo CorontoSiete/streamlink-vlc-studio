@@ -78,5 +78,5 @@ public static class ThemeManager
     // Absolute pack URI: a relative one resolves against the entry assembly, so it only works while
     // this assembly is the one that started the process.
     private static Uri PackUri(string fileName) =>
-        new($"pack://application:,,,/StreamlinkVlcStudio.App.Wpf;component/Themes/Colors/{fileName}");
+        new($"pack://application:,,,/StreamStudio;component/Themes/Colors/{fileName}");
 }

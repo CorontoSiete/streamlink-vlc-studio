@@ -72,13 +72,23 @@ internal sealed class KickChatHistoryBackfillService
             var hasFailure = false;
             var verifiedEmptyIds = new HashSet<string>(StringComparer.Ordinal);
             ChatHistoryBackfillResult? emptyResult = null;
-            if (!directBackfillBlocked)
+            foreach (var useCurl in new[] { false, true })
             {
+                if (!useCurl && directBackfillBlocked) continue;
+                if (useCurl && !directBackfillBlocked && !hasFailure) break;
+
                 foreach (var messagesChannelId in candidateIds)
                 {
-                    var page = await TryReadKickRecentMessagesFromStartTimeDirectAsync(
+                    if (verifiedEmptyIds.Contains(messagesChannelId)) continue;
+
+                    var page = useCurl
+                        ? await transport.ReadRecentMessagesWithCurlAsync(
+                            channel, messagesChannelId, cursor: null, fromTimestampUtc, cancellationToken)
+                            .ConfigureAwait(false)
+                        : await TryReadKickRecentMessagesDirectAsync(
                             channel,
                             messagesChannelId,
+                            cursor: null,
                             fromTimestampUtc,
                             cancellationToken)
                         .ConfigureAwait(false);
@@ -86,7 +96,7 @@ internal sealed class KickChatHistoryBackfillService
                     if (page is null)
                     {
                         hasFailure = true;
-                        if (directBackfillBlocked)
+                        if (!useCurl && directBackfillBlocked)
                         {
                             break;
                         }
@@ -117,73 +127,11 @@ internal sealed class KickChatHistoryBackfillService
                         hasFailure = true;
                     }
                 }
-            }
 
-            if (verifiedEmptyIds.Count == candidateIds.Length)
-            {
-                return emptyResult ?? new ChatHistoryBackfillResult(
-                    attempted,
-                    0,
-                    true,
-                    fromTimestampUtc,
-                    throughTimestampUtc);
-            }
-
-            if (directBackfillBlocked || hasFailure)
-            {
-                foreach (var messagesChannelId in candidateIds)
+                if (verifiedEmptyIds.Count == candidateIds.Length && emptyResult is { } verifiedEmpty)
                 {
-                    if (verifiedEmptyIds.Contains(messagesChannelId))
-                    {
-                        continue;
-                    }
-
-                    var page = await TryReadKickRecentMessagesFromStartTimeWithCurlAsync(
-                            channel,
-                            messagesChannelId,
-                            fromTimestampUtc,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                    attempted = true;
-                    if (page is null)
-                    {
-                        hasFailure = true;
-                        continue;
-                    }
-
-                    var result = await BackfillKickStartTimePageRangeAsync(
-                            channel,
-                            messagesChannelId,
-                            page,
-                            fromTimestampUtc,
-                            throughTimestampUtc,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                    if (result.LoadedMessageCount > 0)
-                    {
-                        return result;
-                    }
-
-                    if (result.CoveredRequestedRange)
-                    {
-                        verifiedEmptyIds.Add(messagesChannelId);
-                        emptyResult ??= result;
-                    }
-                    else
-                    {
-                        hasFailure = true;
-                    }
+                    return verifiedEmpty;
                 }
-            }
-
-            if (verifiedEmptyIds.Count == candidateIds.Length)
-            {
-                return emptyResult ?? new ChatHistoryBackfillResult(
-                    attempted,
-                    0,
-                    true,
-                    fromTimestampUtc,
-                    throughTimestampUtc);
             }
 
             return new ChatHistoryBackfillResult(attempted || hasFailure, 0, false, null, null);
@@ -350,72 +298,27 @@ internal sealed class KickChatHistoryBackfillService
     {
         var page = directBackfillBlocked
             ? null
-            : await TryReadKickRecentMessagesDirectAsync(channel, messagesChannelId, cursor, cancellationToken).ConfigureAwait(false);
-        return page ?? await TryReadKickRecentMessagesWithCurlAsync(channel, messagesChannelId, cursor, cancellationToken).ConfigureAwait(false);
+            : await TryReadKickRecentMessagesDirectAsync(channel, messagesChannelId, cursor, startTimeUtc: null, cancellationToken).ConfigureAwait(false);
+        return page ?? await transport.ReadRecentMessagesWithCurlAsync(
+            channel, messagesChannelId, cursor, startTimeUtc: null, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<KickRecentChatPage?> TryReadKickRecentMessagesDirectAsync(
         string channel,
         string messagesChannelId,
         string? cursor,
+        DateTimeOffset? startTimeUtc,
         CancellationToken cancellationToken)
     {
         var result = await transport.ReadRecentMessagesDirectAsync(
                 channel,
                 messagesChannelId,
                 cursor,
-                startTimeUtc: null,
-                cancellationToken)
-            .ConfigureAwait(false);
-        directBackfillBlocked |= result.DirectForbidden;
-        return result.Page;
-    }
-
-    private async Task<KickRecentChatPage?> TryReadKickRecentMessagesFromStartTimeDirectAsync(
-        string channel,
-        string messagesChannelId,
-        DateTimeOffset startTimeUtc,
-        CancellationToken cancellationToken)
-    {
-        var result = await transport.ReadRecentMessagesDirectAsync(
-                channel,
-                messagesChannelId,
-                cursor: null,
                 startTimeUtc,
                 cancellationToken)
             .ConfigureAwait(false);
         directBackfillBlocked |= result.DirectForbidden;
         return result.Page;
-    }
-
-    private async Task<KickRecentChatPage?> TryReadKickRecentMessagesWithCurlAsync(
-        string channel,
-        string messagesChannelId,
-        string? cursor,
-        CancellationToken cancellationToken)
-    {
-        return await transport.ReadRecentMessagesWithCurlAsync(
-                channel,
-                messagesChannelId,
-                cursor,
-                startTimeUtc: null,
-                cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private async Task<KickRecentChatPage?> TryReadKickRecentMessagesFromStartTimeWithCurlAsync(
-        string channel,
-        string messagesChannelId,
-        DateTimeOffset startTimeUtc,
-        CancellationToken cancellationToken)
-    {
-        return await transport.ReadRecentMessagesWithCurlAsync(
-                channel,
-                messagesChannelId,
-                cursor: null,
-                startTimeUtc,
-                cancellationToken)
-            .ConfigureAwait(false);
     }
 
     private static void AddKickBackfillPageMessages(

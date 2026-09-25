@@ -40,7 +40,7 @@ internal sealed partial class LowLevelMouseHookPump : IDisposable
             hookThread = new Thread(RunHookThread)
             {
                 IsBackground = true,
-                Name = "Streamlink VLC Studio mouse hook"
+                Name = "Stream Studio mouse hook"
             };
             hookThread.SetApartmentState(ApartmentState.STA);
             hookThread.Start();

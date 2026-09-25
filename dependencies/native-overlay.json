@@ -5,7 +5,7 @@
     "classification": "opaque-third-party-input",
     "sourceAvailability": "unavailable",
     "reviewedUtc": "2026-08-15T00:00:00Z",
-    "notes": "These unsigned binaries predate this hardening pass. Their original source and reproducible build recipe are unavailable, so releases pin and verify them as opaque inputs."
+    "notes": "These unsigned binaries predate this hardening pass. Their original source and reproducible build recipe are unavailable, so releases pin and verify them as opaque inputs. The bundled controller includes a minimal binary patch that clears stale keyboard modifier state before translating overlay chat input."
   },
   "files": [
     {
@@ -17,7 +17,7 @@
     {
       "path": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build/vlc_chat_overlay.exe",
       "length": 403688,
-      "sha256": "c5d5c1236b3617f420b41282ee26823de1a7094a70c95a2cde6cd2cf03e56fdd",
+      "sha256": "b684b57abb7dd1ed3b551ac9a7b11a9367af2f78f0a8e29720e86f6e8cb1f554",
       "authenticode": "NotSigned"
     }
   ]

@@ -58,7 +58,7 @@ public sealed record LiveStreamCardData(
 
 public sealed class LiveStreamCardViewModel : ObservableObject, IHomeStreamOpenItemViewModel
 {
-    private readonly LiveStreamCardData stream;
+    private LiveStreamCardData stream;
 
     public LiveStreamCardViewModel(
         LiveStreamCardData stream,
@@ -102,15 +102,54 @@ public sealed class LiveStreamCardViewModel : ObservableObject, IHomeStreamOpenI
 
     public bool HasProfileImage => !string.IsNullOrWhiteSpace(stream.ProfileImageUrl);
 
-    public long ThumbnailCacheVersion { get; }
+    public long ThumbnailCacheVersion { get; private set; }
 
-    public AnimatedImageRequest ThumbnailImageRequest { get; }
+    public AnimatedImageRequest ThumbnailImageRequest { get; private set; }
 
     public bool HasThumbnail => !string.IsNullOrWhiteSpace(stream.ThumbnailUrl);
 
     public string ViewerCountText => stream.ViewerCount is { } viewerCount
         ? FormatViewerCount(viewerCount)
         : "Live";
+
+    internal void Update(LiveStreamCardData updated, long thumbnailCacheVersion)
+    {
+        var previous = stream;
+        stream = updated;
+        if (previous.Source != updated.Source) OnPropertyChanged(nameof(Source));
+        if (previous.Target != updated.Target) OnPropertyChanged(nameof(Target));
+        if (previous.Platform != updated.Platform)
+        {
+            OnPropertyChanged(nameof(Platform));
+            OnPropertyChanged(nameof(PlatformText));
+        }
+        if (previous.Channel != updated.Channel) OnPropertyChanged(nameof(Channel));
+        if (previous.DisplayName != updated.DisplayName || previous.Channel != updated.Channel)
+            OnPropertyChanged(nameof(DisplayName));
+        if (previous.Title != updated.Title) OnPropertyChanged(nameof(Title));
+        if (previous.CategoryName != updated.CategoryName) OnPropertyChanged(nameof(CategoryName));
+        if (previous.ViewerCount != updated.ViewerCount) OnPropertyChanged(nameof(ViewerCountText));
+        if (previous.ProfileImageUrl != updated.ProfileImageUrl)
+        {
+            OnPropertyChanged(nameof(ProfileImageUrl));
+            OnPropertyChanged(nameof(HasProfileImage));
+        }
+        if (previous.ThumbnailUrl != updated.ThumbnailUrl)
+        {
+            OnPropertyChanged(nameof(ThumbnailUrl));
+            OnPropertyChanged(nameof(HasThumbnail));
+        }
+        if (ThumbnailCacheVersion != thumbnailCacheVersion || previous.ThumbnailUrl != updated.ThumbnailUrl)
+        {
+            ThumbnailCacheVersion = thumbnailCacheVersion;
+            ThumbnailImageRequest = new AnimatedImageRequest(updated.ThumbnailUrl, thumbnailCacheVersion);
+            OnPropertyChanged(nameof(ThumbnailCacheVersion));
+            OnPropertyChanged(nameof(ThumbnailImageRequest));
+        }
+
+        // Elapsed live time changes even when the provider's metadata does not.
+        OnPropertyChanged(nameof(MetadataText));
+    }
 
     public string MetadataText
     {

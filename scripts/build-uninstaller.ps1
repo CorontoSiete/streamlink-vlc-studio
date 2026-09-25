@@ -2,7 +2,7 @@ param(
     [string]$OutputPath,
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [string]$Version = "1.7.0",
+    [string]$Version = "1.7.1",
     [switch]$Quiet
 )
 
@@ -79,7 +79,7 @@ try {
         throw "NativeAOT maintenance publish failed with exit code $LASTEXITCODE."
     }
 
-    $publishedExecutable = Join-Path $buildRoot "StreamlinkVlcStudio.Maintenance.exe"
+    $publishedExecutable = Join-Path $buildRoot "StreamStudio.Maintenance.exe"
     if (-not (Test-Path -LiteralPath $publishedExecutable -PathType Leaf) -or
         (Get-Item -LiteralPath $publishedExecutable).Length -le 0) {
         throw "NativeAOT maintenance executable was not created: $publishedExecutable"

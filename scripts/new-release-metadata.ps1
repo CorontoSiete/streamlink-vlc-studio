@@ -79,7 +79,7 @@ $metadata = [ordered]@{
     artifacts = [ordered]@{
         setup = (Get-ArtifactRecord $SetupPath 'StreamlinkVlcStudio-Setup.exe')
         zip = (Get-ArtifactRecord $ZipPath 'StreamlinkVlcStudio-release.zip')
-        sbom = (Get-ArtifactRecord $SbomPath 'StreamlinkVlcStudio.spdx.json')
+        sbom = (Get-ArtifactRecord $SbomPath 'StreamStudio.spdx.json')
         updateManifest = (Get-ArtifactRecord $UpdateManifestPath 'UPDATE-MANIFEST.json')
         updateSignature = (Get-ArtifactRecord $UpdateSignaturePath 'UPDATE-MANIFEST.sig')
     }

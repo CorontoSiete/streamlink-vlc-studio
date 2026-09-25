@@ -1226,7 +1226,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(target);
+        await viewModel.OpenStreamAsync(target);
         Assert.Equal(1, viewModel.Tabs.Count);
         var firstTab = viewModel.Tabs[0];
         Assert.Equal(35, firstTab.Volume);
@@ -1237,7 +1237,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(62, settings.StreamVolumes[target.StateKey]);
 
         Assert.True(viewModel.CloseTab(firstTab));
-        await viewModel.OpenDetectedStreamAsync(target);
+        await viewModel.OpenStreamAsync(target);
         Assert.Equal(1, viewModel.Tabs.Count);
         var reopenedTab = viewModel.Tabs[0];
         Assert.True(!ReferenceEquals(firstTab, reopenedTab));
@@ -1275,7 +1275,7 @@ internal static partial class ApplicationTestCatalog
             streamMetadataService: metadataService);
         var target = StreamInputParser.Parse("albralelie", PlatformKind.Twitch);
 
-        await viewModel.OpenDetectedStreamAsync(target);
+        await viewModel.OpenStreamAsync(target);
         Assert.Equal(1, viewModel.Tabs.Count);
         viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
 
@@ -1642,7 +1642,9 @@ internal static partial class ApplicationTestCatalog
         Assert.True(firstCacheVersion > 0);
         Assert.True(secondCacheVersion > firstCacheVersion);
         Assert.True(thirdCacheVersion > secondCacheVersion);
-        Assert.Equal(firstCacheVersion, firstItem.ThumbnailCacheVersion);
+        Assert.True(ReferenceEquals(firstItem, secondItem));
+        Assert.True(ReferenceEquals(firstItem, thirdItem));
+        Assert.Equal(thirdCacheVersion, firstItem.ThumbnailCacheVersion);
         await viewModel.DisposeAsync();
     }),
     ("home followed failed refresh preserves the displayed thumbnail cache version", async () =>
@@ -1876,7 +1878,7 @@ internal static partial class ApplicationTestCatalog
                 viewModel.LiveFollowedChannels[0].Channel == "summit1g",
             TimeSpan.FromMilliseconds(500));
 
-        await viewModel.OpenDetectedStreamAsync(new StreamTarget(
+        await viewModel.OpenStreamAsync(new StreamTarget(
             PlatformKind.Twitch,
             "otherchannel",
             "https://www.twitch.tv/otherchannel"));
@@ -3632,7 +3634,7 @@ internal static partial class ApplicationTestCatalog
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
     }),
-    ("detected stream open loads live category metadata before creating tab", async () =>
+    ("direct stream open loads live category metadata before creating tab", async () =>
     {
         var metadataService = new FakeStreamMetadataService(new StreamMetadataResult(
             StreamMetadataState.Available,
@@ -3656,7 +3658,7 @@ internal static partial class ApplicationTestCatalog
             action => action(),
             streamMetadataService: metadataService);
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
 
         Assert.Equal(1, metadataService.CallCount);
         Assert.Equal(1, viewModel.Tabs.Count);
@@ -3664,7 +3666,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("Apex Legends", viewModel.TabStripItems.Single().SubtitleText);
         await viewModel.DisposeAsync();
     }),
-    ("detected streams open another tab while first playback is still starting", async () =>
+    ("direct streams open another tab while first playback is still starting", async () =>
     {
         var streamlink = new FakeStreamlinkService();
         var firstPlaybackRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3690,12 +3692,12 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        var firstOpen = viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        var firstOpen = viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
         await firstEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
 
-        var secondOpen = viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
+        var secondOpen = viewModel.OpenStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
         await secondOpen.WaitAsync(TimeSpan.FromMilliseconds(500));
         Assert.Equal(2, viewModel.Tabs.Count);
         viewModel.Tabs[1].SetVideoHandle(new IntPtr(5678));
@@ -3707,7 +3709,7 @@ internal static partial class ApplicationTestCatalog
         await TestWait.UntilAsync(() => firstEngine.Played, TimeSpan.FromMilliseconds(500));
         await viewModel.DisposeAsync();
     }),
-    ("detected streams start independently while first stream transport is unresolved", async () =>
+    ("direct streams start independently while first stream transport is unresolved", async () =>
     {
         var streamlink = new FakeStreamlinkService();
         var firstTransportStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3755,12 +3757,12 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        var firstOpen = viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        var firstOpen = viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
         await firstTransportStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch)).WaitAsync(TimeSpan.FromMilliseconds(500));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch)).WaitAsync(TimeSpan.FromMilliseconds(500));
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 2, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[1].SetVideoHandle(new IntPtr(5678));
         await secondTransportStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
@@ -3781,7 +3783,7 @@ internal static partial class ApplicationTestCatalog
             }
         }
     }),
-    ("detected stream starts are throttled after two concurrent startups", async () =>
+    ("direct stream starts are throttled after two concurrent startups", async () =>
     {
         var streamlink = new FakeStreamlinkService();
         var playbackRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3809,17 +3811,17 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
         await firstEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("summit1g", PlatformKind.Twitch));
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 2, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[1].SetVideoHandle(new IntPtr(5678));
         await secondEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("xqc", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("xqc", PlatformKind.Twitch));
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 3, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[2].SetVideoHandle(new IntPtr(9012));
 
@@ -3833,7 +3835,7 @@ internal static partial class ApplicationTestCatalog
         await TestWait.UntilAsync(() => streamlink.StartCount == 3, TimeSpan.FromMilliseconds(500));
         await viewModel.DisposeAsync();
     }),
-    ("duplicate detected stream reuses tab while first playback is still starting", async () =>
+    ("duplicate direct stream reuses tab while first playback is still starting", async () =>
     {
         var streamlink = new FakeStreamlinkService();
         var firstPlaybackRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3856,12 +3858,12 @@ internal static partial class ApplicationTestCatalog
             action => action());
         var target = StreamInputParser.Parse("albralelie", PlatformKind.Twitch);
 
-        var firstOpen = viewModel.OpenDetectedStreamAsync(target);
+        var firstOpen = viewModel.OpenStreamAsync(target);
         await TestWait.UntilAsync(() => viewModel.Tabs.Count == 1, TimeSpan.FromMilliseconds(500));
         viewModel.Tabs[0].SetVideoHandle(new IntPtr(1234));
         await firstEngine.PlayStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
 
-        await viewModel.OpenDetectedStreamAsync(target).WaitAsync(TimeSpan.FromMilliseconds(500));
+        await viewModel.OpenStreamAsync(target).WaitAsync(TimeSpan.FromMilliseconds(500));
 
         Assert.Equal(1, viewModel.Tabs.Count);
         firstPlaybackRelease.SetResult();
@@ -4206,16 +4208,16 @@ internal static partial class ApplicationTestCatalog
     }),
     ("home held middle-button autoscroll tracks cursor distance and clamps", () =>
     {
-        Assert.Equal(true, MainWindow.ShouldContinueHomeAutoScroll(MouseButtonState.Pressed));
-        Assert.Equal(false, MainWindow.ShouldContinueHomeAutoScroll(MouseButtonState.Released));
-        AssertNear(0, MainWindow.GetHomeAutoScrollVelocity(100, 100));
-        AssertNear(216, MainWindow.GetHomeAutoScrollVelocity(100, 120));
-        AssertNear(-756, MainWindow.GetHomeAutoScrollVelocity(100, 50));
-        AssertNear(2600, MainWindow.GetHomeAutoScrollVelocity(100, 1000));
-        AssertNear(208, MainWindow.GetHomeAutoScrollVerticalOffset(100, 100, 120, 500, 0.5));
-        AssertNear(0, MainWindow.GetHomeAutoScrollVerticalOffset(100, 100, 0, 500, 1));
-        AssertNear(500, MainWindow.GetHomeAutoScrollVerticalOffset(480, 40, 160, 500, 1));
-        AssertNear(0, MainWindow.GetHomeAutoScrollVerticalOffset(double.NaN, 40, 160, 500, 1));
+        Assert.Equal(true, HomeAutoScrollController.ShouldContinue(MouseButtonState.Pressed));
+        Assert.Equal(false, HomeAutoScrollController.ShouldContinue(MouseButtonState.Released));
+        AssertNear(0, HomeAutoScrollController.GetVelocity(100, 100));
+        AssertNear(216, HomeAutoScrollController.GetVelocity(100, 120));
+        AssertNear(-756, HomeAutoScrollController.GetVelocity(100, 50));
+        AssertNear(2600, HomeAutoScrollController.GetVelocity(100, 1000));
+        AssertNear(208, HomeAutoScrollController.GetVerticalOffset(100, 100, 120, 500, 0.5));
+        AssertNear(0, HomeAutoScrollController.GetVerticalOffset(100, 100, 0, 500, 1));
+        AssertNear(500, HomeAutoScrollController.GetVerticalOffset(480, 40, 160, 500, 1));
+        AssertNear(0, HomeAutoScrollController.GetVerticalOffset(double.NaN, 40, 160, 500, 1));
         return Task.CompletedTask;
     }),
     ("middle-click home stream item button resolves and executes stay-on-home command", () =>
@@ -4451,27 +4453,27 @@ internal static partial class ApplicationTestCatalog
     }),
     ("home content scroll bottom helper treats bottom and threshold as loadable", () =>
     {
-        Assert.Equal(true, MainWindow.IsHomeContentScrollNearBottom(1000, 1000, 120));
-        Assert.Equal(true, MainWindow.IsHomeContentScrollNearBottom(890, 1000, 120));
+        Assert.Equal(true, HomeAutoScrollController.IsNearBottom(1000, 1000, 120));
+        Assert.Equal(true, HomeAutoScrollController.IsNearBottom(890, 1000, 120));
         return Task.CompletedTask;
     }),
     ("home content scroll bottom helper ignores positions far from bottom", () =>
     {
-        Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(700, 1000, 120));
+        Assert.Equal(false, HomeAutoScrollController.IsNearBottom(700, 1000, 120));
         return Task.CompletedTask;
     }),
     ("home content scroll bottom helper treats non-scrollable content as loadable", () =>
     {
-        Assert.Equal(true, MainWindow.IsHomeContentScrollNearBottom(0, 0, 120));
-        Assert.Equal(true, MainWindow.IsHomeContentScrollNearBottom(0, -12, 120));
+        Assert.Equal(true, HomeAutoScrollController.IsNearBottom(0, 0, 120));
+        Assert.Equal(true, HomeAutoScrollController.IsNearBottom(0, -12, 120));
         return Task.CompletedTask;
     }),
     ("home content scroll bottom helper rejects invalid numeric input", () =>
     {
-        Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(double.NaN, 1000, 120));
-        Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(0, double.PositiveInfinity, 120));
-        Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(0, 1000, double.NaN));
-        Assert.Equal(false, MainWindow.IsHomeContentScrollNearBottom(0, 1000, -1));
+        Assert.Equal(false, HomeAutoScrollController.IsNearBottom(double.NaN, 1000, 120));
+        Assert.Equal(false, HomeAutoScrollController.IsNearBottom(0, double.PositiveInfinity, 120));
+        Assert.Equal(false, HomeAutoScrollController.IsNearBottom(0, 1000, double.NaN));
+        Assert.Equal(false, HomeAutoScrollController.IsNearBottom(0, 1000, -1));
         return Task.CompletedTask;
     }),
     ("home content padding converter keeps a compact side gutter when card gap is disabled", () =>

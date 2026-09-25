@@ -189,7 +189,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                     RaiseStatusChanged("Twitch token is missing chat:read and chat:edit; connecting to Twitch chat read-only.");
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 logger.Write(AppLogLevel.Warning, "TwitchChat", "Twitch token validation failed; connecting read-only.", ex);
                 RaiseStatusChanged($"Twitch token validation failed: {ex.Message}. Connecting read-only.");
@@ -574,7 +574,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                 : await predictionApiClient.ResolveUserByLoginAsync(target.Channel, token, clientId, cancellationToken)
                     .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(AppLogLevel.Warning, "TwitchPredictions", $"Could not resolve Twitch broadcaster ID for {target.DisplayName}.", ex);
             SetPredictionAccess(new TwitchPredictionAccessState(
@@ -664,7 +664,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                 await eventSubClient.DisposeAsync().ConfigureAwait(false);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(AppLogLevel.Warning, "TwitchPredictions", $"Twitch prediction setup failed for {target.DisplayName}.", ex);
             RaiseStatusChanged($"Twitch prediction updates unavailable: {ex.Message}");

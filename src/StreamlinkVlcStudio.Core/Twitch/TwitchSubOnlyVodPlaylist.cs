@@ -148,9 +148,15 @@ public static partial class TwitchSubOnlyVodPlaylist
             throw new InvalidDataException("The Twitch playlist URL is not an approved HTTPS provider endpoint.");
         }
 
-        // Sub-only VODs 404 on the "-unmuted" segment names; "-muted" always exists.
-        var mutedContent = playlistContent.Replace("-unmuted", "-muted", StringComparison.Ordinal);
-        return TwitchPlaylistUriRewriter.Rewrite(mutedContent, playlistUri, static uri => uri.AbsoluteUri);
+        // Rewrite only the media filename: directory names, signed queries, key/map URIs,
+        // and tag metadata can contain the same text and must retain their original values.
+        return TwitchPlaylistUriRewriter.Rewrite(playlistContent, playlistUri, static uri =>
+        {
+            var path = uri.AbsolutePath;
+            var filenameStart = path.LastIndexOf('/') + 1;
+            return uri.GetLeftPart(UriPartial.Authority) + path[..filenameStart] +
+                path[filenameStart..].Replace("-unmuted", "-muted", StringComparison.Ordinal) + uri.Query;
+        });
     }
 
     private static int IndexOfQualityKey(string key)

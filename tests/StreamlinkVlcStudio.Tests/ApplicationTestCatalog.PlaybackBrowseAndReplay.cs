@@ -45,6 +45,46 @@ internal static partial class ApplicationTestCatalog
         Assert.True(Array.IndexOf(arguments, "--http-header") < arguments.Length - 2);
         return Task.CompletedTask;
     }),
+    ("streamlink playback arguments do not inject proxy options", () =>
+    {
+        var method = typeof(StreamlinkService).GetMethod(
+            "BuildArguments",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var request = new StreamTransportRequest(
+            StreamInputParser.Parse("https://www.twitch.tv/albralelie", PlatformKind.Twitch),
+            "best",
+            "streamlink.exe",
+            LowLatency: true,
+            CustomArguments: ["--http-timeout", "30"]);
+        var arguments = ((IEnumerable<string>)method!.Invoke(null, [request])!).ToArray();
+
+        Assert.Equal(false, arguments.Contains("--http-proxy"));
+        Assert.Equal(false, arguments.Contains("--twitch-proxy-playlist"));
+        Assert.Equal(false, arguments.Contains("--plugin-dir"));
+        return Task.CompletedTask;
+    }),
+    ("streamlink direct URL arguments do not inject proxy options", () =>
+    {
+        var method = typeof(StreamlinkService).GetMethod(
+            "BuildStreamUrlArguments",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var request = new StreamTransportRequest(
+            new StreamTarget(PlatformKind.Twitch, "streamer", "https://www.twitch.tv/videos/123456"),
+            "best",
+            "streamlink.exe",
+            LowLatency: false,
+            CustomArguments: []);
+        var arguments = ((IEnumerable<string>)method!.Invoke(null, [request])!).ToArray();
+
+        Assert.Equal(false, arguments.Contains("--http-proxy"));
+        Assert.Equal(false, arguments.Contains("--twitch-proxy-playlist"));
+        Assert.Equal(false, arguments.Contains("--plugin-dir"));
+        return Task.CompletedTask;
+    }),
     ("stream probes require an absolute HTTP URL", () =>
     {
         var method = typeof(StreamlinkService).GetMethod(
@@ -193,7 +233,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(changing, backoff.RecordValidSample(16.0 / 9.0));
         return Task.CompletedTask;
     }),
-    ("renderer settings default safely and select Direct3D11 only when available", () =>
+    ("renderer settings default to window capture compatibility and allow explicit Direct3D11", () =>
     {
         var settings = new AppSettings();
         Assert.Equal(VideoRendererMode.Automatic, settings.VideoRendererMode);
@@ -213,7 +253,7 @@ internal static partial class ApplicationTestCatalog
             File.WriteAllText(Path.Combine(pluginDirectory, "libdirect3d11_plugin.dll"), "test");
 
             Assert.Equal(
-                VideoRendererMode.Direct3D11,
+                VideoRendererMode.Gdi,
                 LibVlcRendererSelection.Resolve(root, VideoRendererMode.Automatic, usesNativeOverlay: false));
             Assert.Equal(
                 VideoRendererMode.Direct3D11,
@@ -304,14 +344,9 @@ internal static partial class ApplicationTestCatalog
     }),
     ("libVLC overlay options stay on an isolated runtime", () =>
     {
-        var nativeType = typeof(LibVlcPlaybackEngine).Assembly.GetType(
-            "StreamlinkVlcStudio.Infrastructure.Vlc.LibVlcNative");
-        Assert.NotNull(nativeType);
-        Assert.True(nativeType!.GetMethod(
-            "libvlc_media_add_option",
-            BindingFlags.NonPublic | BindingFlags.Static) is null);
-
-        var options = LibVlcPlaybackEngine.BuildLibVlcOptions();
+        // Replay start-time legitimately uses media options. Verify overlay isolation
+        // itself rather than banning the native media-options API for unrelated features.
+        var options = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi);
         Assert.DoesNotContain("--sub-source=", string.Join("\n", options));
         var overlayOption = (string)typeof(LibVlcPlaybackEngine).GetMethod(
             "BuildOverlaySubSourceOption",
@@ -321,6 +356,12 @@ internal static partial class ApplicationTestCatalog
         Assert.Contains("--sub-source=myoverlay{", overlayOption);
         Assert.Contains("pipe=svs_media", overlayOption);
         Assert.Equal(false, LibVlcRuntime.ShouldShareRuntime(usesNativeOverlay: true));
+        var baseKey = LibVlcRuntime.BuildSharedRuntimeKey(@"C:\VLC", VideoRendererMode.Gdi, options);
+        var overlayKey = LibVlcRuntime.BuildSharedRuntimeKey(@"C:\VLC", VideoRendererMode.Gdi, [.. options, overlayOption]);
+        var otherOverlayKey = LibVlcRuntime.BuildSharedRuntimeKey(@"C:\VLC", VideoRendererMode.Gdi,
+            [.. options, overlayOption.Replace("svs_media", "svs_other", StringComparison.Ordinal)]);
+        Assert.Equal(false, baseKey.Equals(overlayKey, StringComparison.Ordinal));
+        Assert.Equal(false, overlayKey.Equals(otherOverlayKey, StringComparison.Ordinal));
         return Task.CompletedTask;
     }),
     ("libVLC overlay plugin path keeps bundled and installed VLC modules discoverable", () =>
@@ -375,12 +416,7 @@ internal static partial class ApplicationTestCatalog
     }),
     ("libVLC options keep native overlay settings scoped to sub-source", () =>
     {
-        var buildOptions = typeof(LibVlcPlaybackEngine).GetMethod(
-            "BuildLibVlcOptions",
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(buildOptions);
-
-        var options = ((IEnumerable<string>)buildOptions!.Invoke(null, null)!).ToArray();
+        var options = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi);
         Assert.Equal(false, options.Any(option => option.StartsWith("--myoverlay-", StringComparison.Ordinal)));
 
         var buildSubSourceOption = typeof(LibVlcPlaybackEngine).GetMethod(

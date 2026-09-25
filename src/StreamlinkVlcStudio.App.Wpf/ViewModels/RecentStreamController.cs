@@ -10,6 +10,7 @@ internal sealed class RecentStreamController
     private readonly object gate = new();
     private readonly Dictionary<string, RecentStreamHint> hints = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentStreamLiveStatus> liveStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> metadataRefreshedAt = new(StringComparer.OrdinalIgnoreCase);
 
     public void SetHint(string stateKey, RecentStreamHint hint)
     {
@@ -31,7 +32,32 @@ internal sealed class RecentStreamController
     {
         lock (gate)
         {
+            metadataRefreshedAt.Remove(stateKey);
             return liveStatuses.Remove(stateKey);
+        }
+    }
+
+    public bool IsMetadataFresh(string stateKey, DateTimeOffset now, TimeSpan refreshInterval)
+    {
+        lock (gate)
+        {
+            return metadataRefreshedAt.TryGetValue(stateKey, out var refreshedAt) &&
+                now >= refreshedAt && now - refreshedAt < refreshInterval;
+        }
+    }
+
+    public void RecordMetadataRefresh(string stateKey, DateTimeOffset checkedAt, bool succeeded)
+    {
+        lock (gate)
+        {
+            if (succeeded)
+            {
+                metadataRefreshedAt[stateKey] = checkedAt;
+            }
+            else
+            {
+                metadataRefreshedAt.Remove(stateKey);
+            }
         }
     }
 

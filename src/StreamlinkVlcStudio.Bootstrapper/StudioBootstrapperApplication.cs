@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
+using StreamlinkVlcStudio.Infrastructure.Processes;
 using System.Windows;
 using System.Windows.Threading;
 using WixToolset.BootstrapperApplicationApi;
@@ -12,7 +13,7 @@ namespace StreamlinkVlcStudio.Bootstrapper;
 internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 {
     private const string ApplicationExecutableName = "StreamlinkVlcStudio.exe";
-    private const string MaintenanceExecutableName = "StreamlinkVlcStudio.Maintenance.exe";
+    private const string MaintenanceExecutableName = "StreamStudio.Maintenance.exe";
     private const int ErrorInstallUserExit = 1602;
     private const int ErrorSuccessRebootRequired = 3010;
     private const int ErrorCancelledHResult = unchecked((int)0x800704C7);
@@ -27,12 +28,20 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     private bool newerRelatedBundle;
     private bool notificationsUnregistered;
     private bool isApplying;
+    private volatile bool isRollingBack;
+    private bool retryingDetection;
     private bool shutdownRequested;
     private string? lastError;
     private string? logPath;
+    private readonly Func<string, string, TimeSpan, int>? runMaintenance;
 
-    public StudioBootstrapperApplication()
+    public StudioBootstrapperApplication() : this(null)
     {
+    }
+
+    internal StudioBootstrapperApplication(Func<string, string, TimeSpan, int>? runMaintenance)
+    {
+        this.runMaintenance = runMaintenance;
         DetectBegin += OnDetectBegin;
         DetectRelatedBundle += OnDetectRelatedBundle;
         DetectPackageComplete += OnDetectPackageComplete;
@@ -48,7 +57,12 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         ApplyComplete += OnApplyComplete;
     }
 
-    internal bool IsApplying => isApplying;
+    internal bool IsApplying => isApplying || viewModel?.Page == BootstrapperPage.Progress;
+
+    // Burn removes the previous bundle at the end of an upgrade. That invocation
+    // must never unregister the new app's notifications or delete the user's data.
+    private bool IsRelatedBundleRemoval => plannedAction == LaunchAction.Uninstall &&
+        command?.Relation is { } relation && relation != RelationType.None;
 
     internal string BundleVersion => TrimDisplayVersion(SafeVariable("WixBundleVersion", "1.7.0"));
 
@@ -81,7 +95,6 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     private void RunUserInterfaceThread()
     {
-        using var uiReady = new ManualResetEventSlim();
         Exception? uiThreadError = null;
         var uiThread = new Thread(() =>
         {
@@ -89,9 +102,11 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             {
                 dispatcher = Dispatcher.CurrentDispatcher;
                 SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
+                var bundleData = new BootstrapperApplicationData(new FileInfo(command!.BootstrapperApplicationDataPath));
+                command.ParseCommandLine().SetOverridableVariables(bundleData.Bundle.OverridableVariables, engine);
                 viewModel = new BootstrapperViewModel(this)
                 {
-                    PurgeUserData = SafeNumericVariable("PurgeUserData") != 0
+                    PurgeUserData = SafeNumericVariableDefaultTrue("PurgeUserData")
                 };
                 window = new MainWindow(this, viewModel);
 
@@ -103,7 +118,6 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 engine.Log(LogLevel.Standard, "Managed bootstrapper application initialized.");
                 ProbeStreamlinkDependency();
                 engine.Detect(window.IsVisible ? window.WindowHandle : nint.Zero);
-                uiReady.Set();
                 Dispatcher.Run();
             }
             catch (Exception ex)
@@ -111,26 +125,16 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 uiThreadError = ex;
                 resultCode = ex.HResult < 0 ? ex.HResult : 1;
                 TryLog(LogLevel.Error, $"Bootstrapper UI thread failed: {ex}");
-                uiReady.Set();
             }
         })
         {
             IsBackground = false,
-            Name = "Streamlink VLC Studio Setup UI"
+            Name = "Stream Studio Setup UI"
         };
         uiThread.SetApartmentState(ApartmentState.STA);
         uiThread.Start();
 
-        uiReady.Wait();
-        if (uiThreadError is null)
-        {
-            uiThread.Join();
-        }
-        else
-        {
-            uiThread.Join();
-            throw uiThreadError;
-        }
+        uiThread.Join();
 
         if (uiThreadError is not null)
         {
@@ -147,8 +151,8 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         if (command?.Display == Display.Full && window is not null)
         {
             var message = viewModel?.PurgeUserData == true
-                ? "Uninstall Streamlink VLC Studio and permanently remove your settings, cache, and temporary data? VLC and Streamlink will be retained."
-                : "Uninstall Streamlink VLC Studio? Your settings, cache, VLC, and Streamlink will be retained.";
+                ? "Uninstall Stream Studio and permanently remove your settings, cache, and temporary data? VLC and Streamlink will be retained."
+                : "Uninstall Stream Studio? Your settings, cache, VLC, and Streamlink will be retained.";
             if (MessageBox.Show(
                     window,
                     message,
@@ -166,7 +170,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     internal void RequestCancel()
     {
-        if (!isApplying || viewModel is null)
+        if (!IsApplying || isRollingBack || viewModel is null)
         {
             return;
         }
@@ -176,9 +180,27 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         TryLog(LogLevel.Standard, "The user requested cancellation.");
     }
 
+    internal void Retry()
+    {
+        if (IsApplying || viewModel?.CanRetry != true) return;
+        retryingDetection = true;
+        newerRelatedBundle = false;
+        lastError = null;
+        resultCode = 0;
+        viewModel.CanRetry = false;
+        viewModel.CanLaunch = false;
+        viewModel.CancelRequested = false;
+        viewModel.IsRollingBack = false;
+        viewModel.Progress = 0;
+        viewModel.StatusText = "Checking installed components again...";
+        viewModel.Page = BootstrapperPage.Loading;
+        ProbeStreamlinkDependency();
+        engine.Detect(window?.IsVisible == true ? window.WindowHandle : nint.Zero);
+    }
+
     internal void Close()
     {
-        if (isApplying)
+        if (IsApplying)
         {
             return;
         }
@@ -190,7 +212,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     internal void NotifyWindowClosing()
     {
-        if (!isApplying)
+        if (!IsApplying)
         {
             shutdownRequested = true;
             dispatcher?.BeginInvokeShutdown(DispatcherPriority.Background);
@@ -246,20 +268,25 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 success: false,
                 warning: false,
                 "A newer version is already installed",
-                "Setup will not replace a newer Streamlink VLC Studio installation with this version.");
+                "Setup will not replace a newer Stream Studio installation with this version.");
             resultCode = 1638;
+            CompleteHeadlessIfNeeded();
             return;
         }
 
         plannedAction = action;
+        lastError = null;
+        notificationsUnregistered = false;
+        isRollingBack = false;
+        viewModel.IsRollingBack = false;
         viewModel.CancelRequested = false;
         viewModel.Progress = 0;
         viewModel.Page = BootstrapperPage.Progress;
         viewModel.OperationTitle = action switch
         {
-            LaunchAction.Uninstall => "Uninstalling Streamlink VLC Studio",
-            LaunchAction.Repair => "Repairing Streamlink VLC Studio",
-            _ => isInstalled ? "Updating Streamlink VLC Studio" : "Installing Streamlink VLC Studio"
+            LaunchAction.Uninstall => "Uninstalling Stream Studio",
+            LaunchAction.Repair => "Repairing Stream Studio",
+            _ => isInstalled ? "Updating Stream Studio" : "Installing Stream Studio"
         };
         viewModel.StatusText = action == LaunchAction.Uninstall
             ? "Requesting a graceful application shutdown…"
@@ -267,37 +294,47 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
         if (action == LaunchAction.Uninstall)
         {
+            if (IsRelatedBundleRemoval)
+            {
+                viewModel.PurgeUserData = false;
+                engine.SetVariableNumeric("PurgeUserData", 0);
+                engine.Plan(action);
+                return;
+            }
             engine.SetVariableNumeric("PurgeUserData", viewModel.PurgeUserData ? 1 : 0);
-            RunDetached(PrepareUninstallAndPlanAsync(), "Uninstall preparation failed", "Uninstall could not start");
-            return;
         }
-
-        engine.Plan(action);
+        RunDetached(PrepareApplicationAndPlanAsync(action), "Application preparation failed", "Setup could not start");
     }
 
-    private async Task PrepareUninstallAndPlanAsync()
+    private async Task PrepareApplicationAndPlanAsync(LaunchAction action)
     {
-        var preparation = await Task.Run(PrepareForUninstall).ConfigureAwait(false);
+        var preparation = await Task.Run(() => PrepareApplication(action)).ConfigureAwait(false);
         await InvokeUiAsync(() =>
         {
+            if (viewModel?.CancelRequested == true)
+            {
+                RunDetached(CompleteApplyAsync(ErrorInstallUserExitHResult, ApplyRestart.None),
+                    "Canceled setup preparation could not be completed", "Setup could not stop");
+                return;
+            }
             if (!preparation.Success)
             {
                 resultCode = preparation.ExitCode;
-                ShowResult(false, false, "Uninstall could not start", preparation.Message);
+                ShowResult(false, false, "Setup could not start", preparation.Message);
                 CompleteHeadlessIfNeeded();
                 return;
             }
 
             if (viewModel is not null)
             {
-                viewModel.StatusText = "Preparing the uninstall plan…";
+                viewModel.StatusText = "Preparing the setup plan…";
             }
 
-            engine.Plan(LaunchAction.Uninstall);
+            engine.Plan(action);
         }).ConfigureAwait(false);
     }
 
-    private MaintenanceResult PrepareForUninstall()
+    private MaintenanceResult PrepareApplication(LaunchAction action)
     {
         var executable = GetInstalledApplicationPath();
         if (!File.Exists(executable))
@@ -312,8 +349,10 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             return new MaintenanceResult(
                 false,
                 shutdown.ExitCode,
-                "Streamlink VLC Studio did not close cleanly. Close the application and try uninstalling again.");
+                "Stream Studio did not close cleanly. Close the application and try setup again.");
         }
+
+        if (action != LaunchAction.Uninstall) return MaintenanceResult.Ok;
 
         var unregister = RunMaintenance(executable, "--maintenance-unregister-notifications", TimeSpan.FromSeconds(15));
         if (!unregister.Success)
@@ -331,7 +370,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     private void ProbeStreamlinkDependency()
     {
         const string versionVariable = "StreamlinkMachineVersion";
-        var executable = SafeVariable("StreamlinkMachineExecutable", string.Empty);
+        var executable = SafeFormattedVariable("StreamlinkMachineExecutable", string.Empty);
         if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
         {
             TryLog(LogLevel.Standard, "A machine-wide Streamlink executable was not found under Program Files.");
@@ -341,42 +380,24 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
         try
         {
-            using var process = Process.Start(new ProcessStartInfo
+            var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(executable, ["--version"]);
+            startInfo.WorkingDirectory = Path.GetDirectoryName(executable)!;
+            var result = new BoundedProcessRunner().RunAsync(startInfo, TimeSpan.FromSeconds(10))
+                .GetAwaiter().GetResult();
+            if (result.TimedOut)
             {
-                FileName = executable,
-                Arguments = "--version",
-                WorkingDirectory = Path.GetDirectoryName(executable)!,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            });
-            if (process is null)
-            {
-                engine.SetVariableVersion(versionVariable, "0.0.0.0");
-                return;
-            }
-
-            var standardOutput = process.StandardOutput.ReadToEndAsync();
-            var standardError = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(10_000))
-            {
-                process.Kill(entireProcessTree: true);
                 engine.SetVariableVersion(versionVariable, "0.0.0.0");
                 TryLog(LogLevel.Standard, "The machine-wide Streamlink version probe timed out.");
                 return;
             }
 
-            var output = string.Concat(
-                standardOutput.GetAwaiter().GetResult(),
-                " ",
-                standardError.GetAwaiter().GetResult());
+            var output = string.Concat(result.StandardOutput, " ", result.StandardError);
             var match = Regex.Match(
                 output,
                 @"(?<!\d)(?<version>\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)(?!\d)",
                 RegexOptions.CultureInvariant,
                 TimeSpan.FromSeconds(1));
-            if (process.ExitCode != 0 || !match.Success)
+            if (result.ExitCode != 0 || result.OutputWasTruncated || !match.Success)
             {
                 engine.SetVariableVersion(versionVariable, "0.0.0.0");
                 TryLog(LogLevel.Standard, "The machine-wide Streamlink executable did not report a usable version.");
@@ -397,6 +418,11 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     private MaintenanceResult RunMaintenance(string executable, string argument, TimeSpan timeout)
     {
         TryLog(LogLevel.Standard, $"Running application maintenance mode: {argument}");
+        if (runMaintenance is not null)
+        {
+            var code = runMaintenance(executable, argument, timeout);
+            return new MaintenanceResult(code == 0, code, "Maintenance test result.");
+        }
         try
         {
             using var process = Process.Start(new ProcessStartInfo
@@ -454,7 +480,18 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     {
         var present = string.Equals(e.State.ToString(), "Present", StringComparison.OrdinalIgnoreCase) ||
                       string.Equals(e.State.ToString(), "Superseded", StringComparison.OrdinalIgnoreCase);
-        var status = present ? "Already installed" : "Will be installed";
+        var versionVariable = e.PackageId switch
+        {
+            "Streamlink" => "StreamlinkMachineVersion",
+            "Vlc" => "VlcInstalledVersion",
+            _ => null
+        };
+        var installedVersion = versionVariable is null ? "0.0.0.0" : SafeVariable(versionVariable, "0.0.0.0");
+        var status = present
+            ? "Already installed"
+            : installedVersion is not ("" or "0" or "0.0.0" or "0.0.0.0")
+                ? "Will be updated"
+                : "Will be installed";
 
         UpdateUi(vm =>
         {
@@ -485,7 +522,13 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             vm.StreamlinkStatus = ResolvePendingStatus(vm.StreamlinkStatus);
             vm.VlcStatus = ResolvePendingStatus(vm.VlcStatus);
 
-            if (command?.Action == LaunchAction.Uninstall && command.Resume != ResumeType.Arp)
+            if (retryingDetection)
+            {
+                retryingDetection = false;
+                vm.Page = isInstalled ? BootstrapperPage.Maintenance : BootstrapperPage.Install;
+                vm.StatusText = isInstalled ? "Ready for maintenance." : "Ready to install.";
+            }
+            else if (command?.Action == LaunchAction.Uninstall && command.Resume != ResumeType.Arp)
             {
                 Uninstall();
             }
@@ -505,19 +548,22 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     private void OnPlanComplete(object? sender, PlanCompleteEventArgs e)
     {
-        if (e.Status < 0)
+        if (e.Status < 0 || viewModel?.CancelRequested == true)
         {
-            resultCode = e.Status;
-            UpdateUi(vm =>
-            {
-                ShowResult(false, false, "Setup could not prepare the operation", FormatFailure(e.Status));
-                CompleteHeadlessIfNeeded();
-            });
+            RunDetached(CompleteApplyAsync(e.Status < 0 ? e.Status : ErrorInstallUserExitHResult, ApplyRestart.None),
+                "Setup preparation could not be completed", "Setup could not start");
             return;
         }
 
         UpdateUi(vm =>
         {
+            // Cancellation can arrive after PlanComplete, while this dispatcher callback is queued.
+            if (vm.CancelRequested)
+            {
+                RunDetached(CompleteApplyAsync(ErrorInstallUserExitHResult, ApplyRestart.None),
+                    "Canceled setup plan could not be completed", "Setup could not stop");
+                return;
+            }
             vm.StatusText = "Waiting for Windows permission…";
             // Engine callbacks arrive on the engine's thread; window.IsVisible/WindowHandle are
             // dispatcher-affine, so resolve the parent handle here rather than on that thread.
@@ -538,25 +584,35 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     private void OnCacheAcquireProgress(object? sender, CacheAcquireProgressEventArgs e)
     {
-        e.Cancel = viewModel?.CancelRequested == true;
+        e.Cancel = !isRollingBack && viewModel?.CancelRequested == true;
         UpdateProgress(e.OverallPercentage, $"Downloading {PackageDisplayName(e.PackageOrContainerId)}…");
     }
 
     private void OnExecutePackageBegin(object? sender, ExecutePackageBeginEventArgs e)
     {
-        e.Cancel = viewModel?.CancelRequested == true;
-        UpdateUi(vm => vm.StatusText = $"Configuring {PackageDisplayName(e.PackageId)}…");
+        var rollingBack = !e.ShouldExecute;
+        isRollingBack = rollingBack;
+        e.Cancel = !rollingBack && viewModel?.CancelRequested == true;
+        UpdateUi(vm =>
+        {
+            vm.IsRollingBack = rollingBack;
+            vm.StatusText = rollingBack
+                ? $"Rolling back {PackageDisplayName(e.PackageId)}..."
+                : vm.CancelRequested ? "Canceling and rolling back..." : $"Configuring {PackageDisplayName(e.PackageId)}…";
+        });
     }
 
     private void OnExecuteProgress(object? sender, ExecuteProgressEventArgs e)
     {
-        e.Cancel = viewModel?.CancelRequested == true;
-        UpdateProgress(e.OverallPercentage, $"Configuring {PackageDisplayName(e.PackageId)}…");
+        e.Cancel = !isRollingBack && viewModel?.CancelRequested == true;
+        UpdateProgress(e.OverallPercentage, isRollingBack
+            ? $"Rolling back {PackageDisplayName(e.PackageId)}..."
+            : $"Configuring {PackageDisplayName(e.PackageId)}…");
     }
 
     private void OnProgress(object? sender, ProgressEventArgs e)
     {
-        e.Cancel = viewModel?.CancelRequested == true;
+        e.Cancel = !isRollingBack && viewModel?.CancelRequested == true;
         UpdateProgress(e.OverallPercentage, null);
     }
 
@@ -570,7 +626,6 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     private void OnApplyComplete(object? sender, ApplyCompleteEventArgs e)
     {
-        isApplying = false;
         RunDetached(
             CompleteApplyAsync(e.Status, e.Restart),
             "Post-apply processing failed",
@@ -582,7 +637,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         var effectiveStatus = status;
         var cleanupWarning = string.Empty;
 
-        if (status < 0 && plannedAction == LaunchAction.Uninstall && notificationsUnregistered)
+        if (status < 0 && !IsRelatedBundleRemoval && plannedAction == LaunchAction.Uninstall && notificationsUnregistered)
         {
             var executable = GetInstalledApplicationPath();
             if (File.Exists(executable))
@@ -595,7 +650,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 }
             }
         }
-        else if (status >= 0 && plannedAction == LaunchAction.Uninstall && viewModel?.PurgeUserData == true)
+        else if (status >= 0 && !IsRelatedBundleRemoval && plannedAction == LaunchAction.Uninstall && viewModel?.PurgeUserData == true)
         {
             var purge = await Task.Run(RunPurgeHelper).ConfigureAwait(false);
             if (!purge.Success)
@@ -669,21 +724,23 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         {
             var title = plannedAction switch
             {
-                LaunchAction.Uninstall => "Streamlink VLC Studio was uninstalled",
+                LaunchAction.Uninstall => "Stream Studio was uninstalled",
                 LaunchAction.Repair => "Repair completed",
                 _ => isInstalled ? "Update completed" : "Installation completed"
             };
             var message = plannedAction == LaunchAction.Uninstall
-                ? "Your personal data was " + (viewModel?.PurgeUserData == true ? "removed." : "preserved. VLC and Streamlink were retained.")
+                ? "Your personal data was " + (viewModel?.PurgeUserData == true
+                    ? "removed. VLC and Streamlink were retained."
+                    : "preserved. VLC and Streamlink were retained.")
                 : restart == ApplyRestart.None
-                    ? "Streamlink VLC Studio is ready to use."
+                    ? "Stream Studio is ready to use."
                     : "Windows must be restarted before all changes take effect.";
             ShowResult(true, false, title, message);
         }
         else if (canceled)
         {
             resultCode = ErrorInstallUserExit;
-            ShowResult(false, false, "Setup was canceled", "No incomplete changes were left on this PC." + cleanupWarning);
+            ShowResult(false, false, "Setup was canceled", "Setup stopped. Open the setup log to review any changes." + cleanupWarning);
         }
         else
         {
@@ -695,6 +752,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     private void ShowResult(bool success, bool warning, string title, string message)
     {
+        isApplying = false;
         if (viewModel is null)
         {
             return;
@@ -705,7 +763,9 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         viewModel.ResultTitle = title;
         viewModel.ResultMessage = message;
         viewModel.CanOpenLog = !string.IsNullOrWhiteSpace(logPath ?? SafeVariable("WixBundleLog", string.Empty));
-        viewModel.CanLaunch = success && plannedAction != LaunchAction.Uninstall && File.Exists(GetInstalledApplicationPath());
+        viewModel.CanLaunch = success && resultCode != ErrorSuccessRebootRequired &&
+            plannedAction != LaunchAction.Uninstall && File.Exists(GetInstalledApplicationPath());
+        viewModel.CanRetry = !success && !warning && !newerRelatedBundle && command?.Display == Display.Full;
         viewModel.Page = BootstrapperPage.Result;
         viewModel.Progress = success ? 100 : viewModel.Progress;
     }
@@ -766,7 +826,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     private string GetInstalledApplicationPath()
     {
-        var configured = SafeVariable("InstalledApplicationPath", string.Empty);
+        var configured = SafeFormattedVariable("InstalledApplicationPath", string.Empty);
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return configured;
@@ -790,15 +850,29 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         }
     }
 
-    private long SafeNumericVariable(string name)
+    private string SafeFormattedVariable(string name, string fallback)
     {
         try
         {
-            return engine.ContainsVariable(name) ? engine.GetVariableNumeric(name) : 0;
+            // GetVariableString returns the raw value, including nested folder tokens.
+            // Format the variable reference so Burn also preserves literal paths.
+            return engine.ContainsVariable(name) ? engine.FormatString($"[{name}]") : fallback;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return fallback;
+        }
+    }
+
+    private bool SafeNumericVariableDefaultTrue(string name)
+    {
+        try
+        {
+            return !engine.ContainsVariable(name) || engine.GetVariableNumeric(name) != 0;
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
-            return 0;
+            return true;
         }
     }
 
@@ -833,7 +907,8 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     {
         "Streamlink" => "Streamlink",
         "Vlc" => "VLC media player",
-        "StreamlinkVlcStudio" => "Streamlink VLC Studio",
+        "StreamStudio" => "Stream Studio",
+        "StreamlinkVlcStudio" => "Stream Studio",
         null or "" => "setup files",
         _ => packageId
     };

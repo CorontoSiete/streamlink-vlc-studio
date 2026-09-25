@@ -1,24 +1,3 @@
-function Test-SafeContractRelativePath {
-    param([AllowNull()][string]$Path)
-
-    if ([string]::IsNullOrWhiteSpace($Path) -or
-        [IO.Path]::IsPathRooted($Path)) {
-        return $false
-    }
-
-    $normalized = $Path.Replace('\', '/')
-    if ([IO.Path]::IsPathRooted($normalized)) {
-        return $false
-    }
-    foreach ($segment in @($normalized -split '/')) {
-        if (-not (Test-SafeWindowsPathSegment $segment)) {
-            return $false
-        }
-    }
-
-    $true
-}
-
 function ConvertTo-StableReleaseVersion {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Version)
@@ -107,7 +86,10 @@ function Get-MsiPropertyValue {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$Property)
+        [Parameter(Mandatory = $true)][ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$Property,
+        [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$Table = 'Property',
+        [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$Column = 'Value',
+        [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$KeyColumn = 'Property')
 
     $fullPath = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
@@ -125,7 +107,7 @@ function Get-MsiPropertyValue {
             $null,
             $installer,
             @($fullPath, 0))
-        $query = "SELECT `Value` FROM `Property` WHERE `Property`='$Property'"
+        $query = 'SELECT `{0}` FROM `{1}` WHERE `{2}`=''{3}''' -f $Column, $Table, $KeyColumn, $Property
         $view = $database.GetType().InvokeMember(
             'OpenView',
             [Reflection.BindingFlags]::InvokeMethod,
@@ -150,6 +132,24 @@ function Get-MsiPropertyValue {
             }
         }
     }
+}
+
+function Assert-ManagedUpdateCompatibility {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # Released 1.7.0 helpers validate and relaunch this path after Setup exits.
+    $folder = Get-MsiPropertyValue -Path $Path -Table Directory -Column DefaultDir -KeyColumn Directory -Property INSTALLFOLDER
+    $parent = Get-MsiPropertyValue -Path $Path -Table Directory -Column Directory_Parent -KeyColumn Directory -Property INSTALLFOLDER
+    $executable = Get-MsiPropertyValue -Path $Path -Table File -Column FileName -KeyColumn File -Property StreamlinkVlcStudioExecutable
+    $upgradeCode = Get-MsiPropertyValue -Path $Path -Property UpgradeCode
+    if (($folder -split '\|')[-1] -cne 'Streamlink VLC Studio' -or
+        $parent -cne 'ProgramFiles64Folder' -or
+        ($executable -split '\|')[-1] -cne 'StreamlinkVlcStudio.exe' -or
+        $upgradeCode -ine '{85EC9B91-312C-4B8E-A293-57D749B10C4B}') {
+        throw 'The MSI breaks the installed path or upgrade identity required by the published 1.7.0 updater.'
+    }
+    Write-Host 'Verified managed-install compatibility with the published 1.7.0 updater.'
 }
 
 function Read-ReleaseContract {
@@ -177,7 +177,7 @@ function Read-ReleaseContract {
         [string]$contract.release.manifestSignature.algorithm -cne 'RSA-PSS-SHA256' -or
         [int]$contract.release.manifestSignature.keyBits -ne 3072 -or
         [string]$contract.release.manifestSignature.keyId -notmatch '^[0-9a-f]{64}$' -or
-        -not (Test-SafeContractRelativePath ([string]$contract.release.manifestSignature.publicKey))) {
+        -not (Test-SafeWindowsRelativePath ([string]$contract.release.manifestSignature.publicKey))) {
         throw "Release contract contains an invalid stable-release or manifest-signing policy: $fullPath"
     }
     $contractDirectory = Split-Path -Parent $fullPath
@@ -198,21 +198,12 @@ function Read-ReleaseContract {
     $required = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($relative in @($contract.payload.requiredFiles)) {
         $value = ([string]$relative).Replace('\', '/')
-        if (-not (Test-SafeContractRelativePath $value) -or -not $required.Add($value)) {
+        if (-not (Test-SafeWindowsRelativePath $value) -or -not $required.Add($value)) {
             throw "Release contract contains an unsafe or duplicate payload path: '$relative'."
         }
     }
     if (-not $required.Contains(([string]$contract.payload.executable).Replace('\', '/'))) {
         throw "Release contract payload does not require its executable."
-    }
-
-    $browserRuntime = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($relative in @($contract.payload.browserExtensionRuntime)) {
-        $value = ([string]$relative).Replace('\', '/')
-        if (-not (Test-SafeContractRelativePath $value) -or -not $browserRuntime.Add($value) -or
-            -not $required.Contains("browser-extension/$value")) {
-            throw "Release contract contains an invalid browser extension runtime path: '$relative'."
-        }
     }
 
     $assetNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -227,7 +218,7 @@ function Read-ReleaseContract {
             [string]::IsNullOrWhiteSpace($key) -or
             $null -eq $outputProperty -or
             -not $outputKeys.Add($key) -or
-            -not (Test-SafeContractRelativePath ([string]$outputProperty.Value)) -or
+            -not (Test-SafeWindowsRelativePath ([string]$outputProperty.Value)) -or
             -not [string]::Equals([IO.Path]::GetFileName([string]$outputProperty.Value), $name, [StringComparison]::Ordinal)) {
             throw "Release contract contains an invalid or duplicate release-set entry: '$name'."
         }
@@ -243,7 +234,7 @@ function Read-ReleaseContract {
         'UPDATE-MANIFEST.sig',
         'SHA256SUMS.txt',
         'RELEASE-METADATA.json',
-        'StreamlinkVlcStudio.spdx.json'
+        'StreamStudio.spdx.json'
     )
     $actualReleaseAssets = @($contract.releaseSet | ForEach-Object { [string]$_.name })
     if ($actualReleaseAssets.Count -ne $requiredReleaseAssets.Count -or

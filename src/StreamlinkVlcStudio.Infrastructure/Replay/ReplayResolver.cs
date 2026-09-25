@@ -14,6 +14,7 @@ using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
+using StreamlinkVlcStudio.Infrastructure.Viewers;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
@@ -21,8 +22,6 @@ namespace StreamlinkVlcStudio.Infrastructure.Replay;
 
 public sealed partial class ReplayResolver : IReplayResolver
 {
-    // Public Twitch web Client-ID used by the installed Twitch VOD Downloader extension as its fallback.
-    private const string TwitchVodDownloaderClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private const string TwitchLiveDvrReplayIdPrefix = "live-dvr-";
     private const int TwitchGraphQlArchiveLimit = 100;
     private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(
@@ -208,7 +207,7 @@ public sealed partial class ReplayResolver : IReplayResolver
                     directDvr);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(
                 AppLogLevel.Info,
@@ -254,9 +253,7 @@ public sealed partial class ReplayResolver : IReplayResolver
         CancellationToken cancellationToken)
     {
         var url = $"https://api.twitch.tv/helix/streams?user_login={Uri.EscapeDataString(target.Channel)}";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
+        using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
 
         using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
@@ -280,9 +277,7 @@ public sealed partial class ReplayResolver : IReplayResolver
         CancellationToken cancellationToken)
     {
         var url = $"https://api.twitch.tv/helix/videos?user_id={Uri.EscapeDataString(userId)}&type=archive&first=100";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
+        using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
 
         using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
@@ -308,7 +303,7 @@ public sealed partial class ReplayResolver : IReplayResolver
         {
             document = await twitchGraphQlTransport.SendAsync(
                 BuildTwitchGraphQlArchiveVideosPayload(channel),
-                TwitchVodDownloaderClientId,
+                TwitchGraphQlTransport.PublicClientId,
                 TwitchGraphQlTransport.CreateDeviceId(),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -487,7 +482,7 @@ public sealed partial class ReplayResolver : IReplayResolver
             _ = TryReadTwitchDvrTotalSeconds(responseBody, out var duration);
             return new TwitchDvrProbeResult(url, duration);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(AppLogLevel.Info, "Replay", $"Twitch DVR playlist probe failed for {url}. {ex.Message}");
             return null;
@@ -510,7 +505,7 @@ public sealed partial class ReplayResolver : IReplayResolver
             {
                 liveStream = await GetKickLiveStreamAsync(target, accessToken, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 logger.Write(AppLogLevel.Warning, "Replay", $"Kick public API live lookup failed for {target.DisplayName}; falling back to website metadata.", ex);
             }
@@ -567,7 +562,7 @@ public sealed partial class ReplayResolver : IReplayResolver
                     "",
                     replayQuality);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 logger.Write(AppLogLevel.Info, "Replay", $"Kick replay candidate failed Streamlink validation: {candidate.Url}. {ex.Message}");
             }
@@ -1098,61 +1093,13 @@ public sealed partial class ReplayResolver : IReplayResolver
 
     public static KickLiveStreamInfo? ReadKickLiveStream(JsonElement root, string channel)
     {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
-        {
-            return null;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            var slug = GetOptionalString(item, "slug");
-            if (!string.IsNullOrWhiteSpace(slug) &&
-                !string.Equals(slug, channel, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (!item.TryGetProperty("stream", out var stream) ||
-                stream.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            if (TryGetBool(stream, "is_live") == false)
-            {
-                return null;
-            }
-
-            DateTimeOffset? startedAt = null;
-            if (TryGetDateTimeOffset(stream, "started_at", out var started) ||
-                TryGetDateTimeOffset(stream, "start_time", out started) ||
-                TryGetDateTimeOffset(stream, "created_at", out started))
-            {
-                startedAt = started.ToUniversalTime();
-            }
-
-            return new KickLiveStreamInfo(
-                GetOptionalString(stream, "id"),
-                startedAt);
-        }
-
-        return null;
+        var payload = LiveChannelPayloadReader.Read(PlatformKind.Kick, channel, root);
+        return payload.State == LiveChannelState.Available ? ReadKickLiveStreamInfo(payload.Stream) : null;
     }
 
     public static KickLiveStreamInfo? ReadKickWebsiteLiveStream(JsonElement root, string channel)
     {
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        var slug = GetOptionalString(root, "slug");
-        if (!string.IsNullOrWhiteSpace(slug) &&
+        if (!TryGetNonEmptyString(root, "slug", out var slug) ||
             !string.Equals(slug, channel, StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -1165,16 +1112,21 @@ public sealed partial class ReplayResolver : IReplayResolver
             return null;
         }
 
+        return ReadKickLiveStreamInfo(livestream);
+    }
+
+    private static KickLiveStreamInfo ReadKickLiveStreamInfo(JsonElement stream)
+    {
         DateTimeOffset? startedAt = null;
-        if (TryGetDateTimeOffset(livestream, "started_at", out var started) ||
-            TryGetDateTimeOffset(livestream, "start_time", out started) ||
-            TryGetDateTimeOffset(livestream, "created_at", out started))
+        if (TryGetDateTimeOffset(stream, "started_at", out var started) ||
+            TryGetDateTimeOffset(stream, "start_time", out started) ||
+            TryGetDateTimeOffset(stream, "created_at", out started))
         {
             startedAt = started.ToUniversalTime();
         }
 
         return new KickLiveStreamInfo(
-            GetOptionalString(livestream, "id"),
+            GetOptionalString(stream, "id"),
             startedAt);
     }
 

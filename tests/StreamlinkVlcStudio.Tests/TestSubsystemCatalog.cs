@@ -150,15 +150,26 @@ internal static class TestSubsystemCatalog
 
     private static async Task BoundedProcessRunnerTimeoutAsync()
     {
+        var executable = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+        var runner = new BoundedProcessRunner();
+        var output = await runner.RunAsync(
+            BoundedProcessRunner.CreateRedirectedStartInfo(
+                executable, ["/d", "/c", "echo stdout & echo stderr 1>&2"]),
+            TimeSpan.FromSeconds(10));
+        Assert.Equal(false, output.TimedOut);
+        Assert.Equal(0, output.ExitCode);
+        Assert.True(output.StandardOutput.Contains("stdout", StringComparison.OrdinalIgnoreCase));
+        Assert.True(output.StandardError.Contains("stderr", StringComparison.OrdinalIgnoreCase));
+
+        // A timed-out process may be killed before it writes anything, especially on a
+        // busy CI worker. Verify drainage independently of the short timeout budget.
         var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(
-            Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
-            ["/c", "echo stdout & echo stderr 1>&2 & ping -n 5 127.0.0.1 >nul"]);
-        var result = await new BoundedProcessRunner().RunAsync(
+            executable, ["/d", "/c", "ping -n 5 127.0.0.1 >nul"]);
+        var result = await runner.RunAsync(
             startInfo,
             TimeSpan.FromMilliseconds(100));
         Assert.True(result.TimedOut);
-        Assert.True(result.StandardOutput.Contains("stdout", StringComparison.OrdinalIgnoreCase));
-        Assert.True(result.StandardError.Contains("stderr", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(-1, result.ExitCode);
     }
 
     private static async Task BoundedProcessRunnerLargeOutputAsync()
@@ -559,7 +570,7 @@ internal static class TestSubsystemCatalog
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"protected-settings-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         return directory;
@@ -684,7 +695,7 @@ internal static class TestSubsystemCatalog
         const string refreshSecret = "refresh-secret-789";
         var directory = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"logger-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try
@@ -731,7 +742,7 @@ internal static class TestSubsystemCatalog
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"logger-bounds-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var releaseWriter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1124,7 +1135,7 @@ internal static class TestSubsystemCatalog
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"toast-storage-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try
@@ -1284,7 +1295,7 @@ internal static class TestSubsystemCatalog
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"executable-path-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try
@@ -1313,7 +1324,7 @@ internal static class TestSubsystemCatalog
     {
         var root = Path.Combine(
             Path.GetTempPath(),
-            "StreamlinkVlcStudioTests",
+            "StreamStudioTests",
             $"vlc-cache-manifest-{Guid.NewGuid():N}");
         var vlcDirectory = Path.Combine(root, "vlc");
         var pluginRoot = Path.Combine(root, "plugins");

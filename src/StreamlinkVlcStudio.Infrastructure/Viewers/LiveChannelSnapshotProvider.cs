@@ -1,7 +1,6 @@
 using System.Net;
-using System.Security.Cryptography;
-using System.Text;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
@@ -41,7 +40,7 @@ internal sealed class LiveChannelSnapshotProvider
             new SnapshotKey(
                 PlatformKind.Twitch,
                 channel.Trim().ToLowerInvariant(),
-                Fingerprint($"{token}\0{clientId}")),
+                OAuthTokenHelpers.CreateCredentialFingerprint(token, clientId)),
             () => LiveChannelRequestFactory.CreateTwitchStreamsRequest(channel, token, clientId),
             cancellationToken);
     }
@@ -55,7 +54,7 @@ internal sealed class LiveChannelSnapshotProvider
             new SnapshotKey(
                 PlatformKind.Kick,
                 channel.Trim().ToLowerInvariant(),
-                Fingerprint(accessToken)),
+                OAuthTokenHelpers.CreateCredentialFingerprint(accessToken)),
             () => LiveChannelRequestFactory.CreateKickChannelsRequest(channel, accessToken),
             cancellationToken);
     }
@@ -65,13 +64,15 @@ internal sealed class LiveChannelSnapshotProvider
         Func<HttpRequestMessage> requestFactory,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Task<LiveChannelSnapshotResponse> operation;
         lock (gate)
         {
             var now = timeProvider.GetUtcNow();
             if (cache.TryGetValue(key, out var existing) &&
                 (!existing.Operation.IsCompleted ||
-                    (existing.Operation.IsCompletedSuccessfully && existing.ExpiresAtUtc > now)))
+                    (existing.Operation.IsCompletedSuccessfully &&
+                     existing.Operation.Result.IsSuccessStatusCode && existing.ExpiresAtUtc > now)))
             {
                 existing.LastAccessUtc = now;
                 operation = existing.Operation;
@@ -113,7 +114,7 @@ internal sealed class LiveChannelSnapshotProvider
                 return;
             }
 
-            if (!operation.IsCompletedSuccessfully)
+            if (!operation.IsCompletedSuccessfully || !operation.Result.IsSuccessStatusCode)
             {
                 cache.Remove(key);
                 return;
@@ -151,9 +152,6 @@ internal sealed class LiveChannelSnapshotProvider
             cache.Remove(key);
         }
     }
-
-    private static string Fingerprint(string value) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private readonly record struct SnapshotKey(
         PlatformKind Platform,

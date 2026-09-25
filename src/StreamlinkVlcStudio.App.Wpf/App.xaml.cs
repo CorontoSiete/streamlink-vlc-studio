@@ -4,8 +4,8 @@ namespace StreamlinkVlcStudio.App.Wpf;
 
 public partial class App : Application
 {
-    private const string SingleInstanceMutexName = "Local\\StreamlinkVlcStudio.App.SingleInstance";
-    private const string ActivationEventName = "Local\\StreamlinkVlcStudio.App.Activate";
+    internal const string SingleInstanceMutexName = "Local\\StreamStudio.App.SingleInstance";
+    private const string ActivationEventName = "Local\\StreamStudio.App.Activate";
     private Mutex? singleInstanceMutex;
     private EventWaitHandle? activationEvent;
     private EventWaitHandle? maintenanceShutdownEvent;
@@ -58,8 +58,9 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         activationSignalCancellation?.Cancel();
-        activationEvent?.Set();
-        maintenanceShutdownEvent?.Set();
+        // Cancellation wakes this instance's WaitAny. The named events belong to every
+        // instance, so setting them here can activate or shut down the primary process
+        // when a secondary launch exits.
 
         try
         {

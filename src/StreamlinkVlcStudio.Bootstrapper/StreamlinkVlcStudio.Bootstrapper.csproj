@@ -14,17 +14,25 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico</ApplicationIcon>
-    <AssemblyTitle>Streamlink VLC Studio Setup</AssemblyTitle>
-    <Description>Managed WiX Burn bootstrapper application for Streamlink VLC Studio</Description>
+    <AssemblyName>StreamStudio.Bootstrapper</AssemblyName>
+    <AssemblyTitle>Stream Studio Setup</AssemblyTitle>
+    <Product>Stream Studio</Product>
+    <Description>Managed WiX Burn bootstrapper application for Stream Studio</Description>
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="StreamlinkVlcStudio.Tests" />
     <PackageReference Include="WixToolset.BootstrapperApplicationApi" Version="6.0.2" />
   </ItemGroup>
 
   <ItemGroup>
     <Resource Include="..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico"
               Link="Assets\Twitch.ico" />
+    <!-- Share bounded process handling without adding the application's native payload to Setup. -->
+    <Compile Include="..\StreamlinkVlcStudio.Infrastructure\Processes\ProcessExtensions.cs"
+             Link="Processes\ProcessExtensions.cs" />
+    <Compile Include="..\StreamlinkVlcStudio.Infrastructure\Limits\PayloadLimits.cs"
+             Link="Processes\PayloadLimits.cs" />
   </ItemGroup>
 
 </Project>

@@ -10,6 +10,7 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
     private readonly StreamSearchChannel? channel;
     private readonly StreamlinkProbeResult probeResult;
     private readonly StreamMetadataResult? metadata;
+    private int? viewerCount;
 
     public StreamSearchResultViewModel(
         StreamSearchChannel channel,
@@ -94,7 +95,20 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
         _ => "Unavailable"
     };
 
-    public int? ViewerCount { get; }
+    public int? ViewerCount
+    {
+        get => viewerCount;
+        private set
+        {
+            if (SetProperty(ref viewerCount, value))
+            {
+                OnPropertyChanged(nameof(HasViewerCount));
+                OnPropertyChanged(nameof(ViewerCountText));
+            }
+        }
+    }
+
+    internal void UpdateViewerCount(int? value) => ViewerCount = NormalizeViewerCount(value);
 
     public bool HasViewerCount => IsLive && ViewerCount is not null;
 

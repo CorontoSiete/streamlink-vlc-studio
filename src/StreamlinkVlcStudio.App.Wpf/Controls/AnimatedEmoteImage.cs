@@ -68,6 +68,7 @@ public sealed class AnimatedEmoteImage : Image
         frameTimer = new DispatcherTimer(DispatcherPriority.Render);
         frameTimer.Tick += (_, _) => AdvanceFrame();
         Loaded += (_, _) => StartAnimationIfNeeded();
+        IsVisibleChanged += (_, _) => StartAnimationIfNeeded();
         Unloaded += (_, _) => frameTimer.Stop();
     }
 
@@ -396,7 +397,7 @@ public sealed class AnimatedEmoteImage : Image
     private void StartAnimationIfNeeded()
     {
         frameTimer.Stop();
-        if (!IsLoaded || decodedImage is not { Frames.Count: > 1 })
+        if (!IsLoaded || !IsVisible || decodedImage is not { Frames.Count: > 1 })
         {
             return;
         }
@@ -407,7 +408,7 @@ public sealed class AnimatedEmoteImage : Image
 
     private void AdvanceFrame()
     {
-        if (decodedImage is not { Frames.Count: > 1 } image)
+        if (!IsLoaded || !IsVisible || decodedImage is not { Frames.Count: > 1 } image)
         {
             frameTimer.Stop();
             return;

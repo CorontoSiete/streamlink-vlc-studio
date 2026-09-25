@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 
@@ -61,7 +62,7 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
 
         var root = baseDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "StreamlinkVlcStudio");
+            AppIdentity.ProductDirectoryName);
 
         Directory.CreateDirectory(root);
         logDirectory = root;
@@ -150,6 +151,10 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
         if (ReferenceEquals(completedTask, writerTask))
         {
             await writerTask.ConfigureAwait(false);
+            if (!completion.Task.IsCompleted)
+            {
+                throw new IOException("The log writer stopped before the flush completed.");
+            }
         }
 
         await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -282,6 +287,10 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
         }
         finally
         {
+            // Stop producers before draining. Otherwise a failed writer can retain new entries
+            // forever, or leave a flush waiting for admission to a queue with no consumer.
+            Interlocked.Exchange(ref stopping, 1);
+            channel.Writer.TryComplete(writerFailure);
             while (channel.Reader.TryRead(out var abandoned))
             {
                 if (abandoned.Line is not null)

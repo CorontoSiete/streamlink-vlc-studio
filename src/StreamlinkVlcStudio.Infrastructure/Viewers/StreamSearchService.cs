@@ -10,6 +10,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
@@ -19,6 +20,25 @@ public sealed class StreamSearchService : IStreamSearchService
 {
     private const int MinimumDiscoveryQueryLength = 3;
     private const int StreamProbeConcurrency = 4;
+    private const string TwitchWebsiteSearchQuery = """
+        query StreamStudioChannelSearch($query: String!, $first: Int!) {
+          searchFor(userQuery: $query, platform: "web", options: { targets: [{ index: CHANNEL, limit: $first }] }) {
+            channels {
+              edges {
+                item {
+                  ... on User {
+                    login
+                    displayName
+                    profileImageURL(width: 150)
+                    stream { id viewersCount game { name } }
+                    broadcastSettings { title }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """;
     private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(20));
     private static readonly TimeSpan CurlTimeout = TimeSpan.FromSeconds(12);
     private readonly IAppLogger logger;
@@ -77,16 +97,17 @@ public sealed class StreamSearchService : IStreamSearchService
         var discoveries = new List<DiscoveredChannel>();
         var messages = new List<string>();
         var explicitPlatform = IsExplicitPlatformSearch(query);
+        var discoveryQuery = NormalizeForMatch(query);
         var order = 0;
 
         if (explicitPlatform)
         {
             discoveries.Add(ToExactDiscovery(exactCandidates[0], order++));
         }
-        else if (query.Length >= MinimumDiscoveryQueryLength)
+        else if (discoveryQuery.Length >= MinimumDiscoveryQueryLength)
         {
-            var twitchTask = SearchTwitchChannelsAsync(query, request.PageSize, settings, cancellationToken);
-            var kickTask = SearchKickChannelsAsync(query, request.PageSize, cancellationToken);
+            var twitchTask = SearchTwitchChannelsAsync(discoveryQuery, request.PageSize, settings, cancellationToken);
+            var kickTask = SearchKickChannelsAsync(discoveryQuery, request.PageSize, cancellationToken);
 
             await Task.WhenAll(twitchTask, kickTask).ConfigureAwait(false);
             var twitch = await twitchTask.ConfigureAwait(false);
@@ -118,7 +139,7 @@ public sealed class StreamSearchService : IStreamSearchService
             .GroupBy(discovery => $"{discovery.Platform}:{discovery.Channel}", StringComparer.OrdinalIgnoreCase)
             .Select(group => SelectBestDiscovery(group, query))
             .OrderBy(discovery => MatchRank(discovery, query))
-            .ThenBy(discovery => LiveRank(discovery.IsLive))
+            // Keep provider relevance before applying the limit, including offline partial matches.
             .ThenBy(discovery => discovery.Order)
             .Take(NormalizePageSize(request.PageSize))
             .ToArray();
@@ -156,10 +177,18 @@ public sealed class StreamSearchService : IStreamSearchService
         AppSettings settings,
         CancellationToken cancellationToken)
     {
+        // Helix only matches the beginning of a login. Website search also finds names
+        // such as iiTzTimmy for "timmy", and works without a configured OAuth token.
+        var websiteSearch = await SearchTwitchWebsiteChannelsAsync(query, pageSize, cancellationToken).ConfigureAwait(false);
+        if (websiteSearch is { Channels.Count: > 0 })
+        {
+            return websiteSearch;
+        }
+
         var token = TwitchOAuthService.NormalizeOAuthToken(settings.Chat.TwitchOAuthToken);
         if (string.IsNullOrWhiteSpace(token))
         {
-            return new TwitchSearchLoad([], ["Twitch channel discovery requires a Twitch OAuth token."]);
+            return websiteSearch ?? new TwitchSearchLoad([], ["Twitch channel search is unavailable."]);
         }
 
         var clientId = await TwitchClientIdResolver.ResolveAsync(
@@ -178,9 +207,7 @@ public sealed class StreamSearchService : IStreamSearchService
         try
         {
             var url = BuildTwitchSearchUrl(query, pageSize);
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.TryAddWithoutValidation("Client-Id", clientId);
+            using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
             using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
             var body = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -203,6 +230,45 @@ public sealed class StreamSearchService : IStreamSearchService
         {
             logger.Write(AppLogLevel.Warning, "Search", $"Twitch channel search failed for {query}.", ex);
             return new TwitchSearchLoad([], ["Twitch channel search is unavailable."]);
+        }
+    }
+
+    private async Task<TwitchSearchLoad?> SearchTwitchWebsiteChannelsAsync(
+        string query,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                query = TwitchWebsiteSearchQuery,
+                variables = new { query, first = NormalizePageSize(pageSize) }
+            });
+            using var document = await new TwitchGraphQlTransport(httpClient).SendAsync(
+                payload,
+                TwitchGraphQlTransport.PublicClientId,
+                TwitchGraphQlTransport.CreateDeviceId(),
+                cancellationToken).ConfigureAwait(false);
+            var channels = document.RootElement
+                .GetProperty("data")
+                .GetProperty("searchFor")
+                .GetProperty("channels");
+            if (!JsonElementReader.TryGetArray(channels, "edges", out var edges))
+            {
+                throw new JsonException("Twitch channel search did not return channel results.");
+            }
+
+            return new TwitchSearchLoad(ReadTwitchWebsiteChannels(edges).Take(NormalizePageSize(pageSize)).ToArray(), []);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "Search", $"Twitch website channel search failed for {query}; trying Helix.", ex);
+            return null;
         }
     }
 
@@ -375,6 +441,40 @@ public sealed class StreamSearchService : IStreamSearchService
         }
     }
 
+    private static IEnumerable<DiscoveredChannel> ReadTwitchWebsiteChannels(JsonElement edges)
+    {
+        var order = 0;
+        foreach (var edge in edges.EnumerateArray())
+        {
+            if (edge.ValueKind != JsonValueKind.Object ||
+                !edge.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object ||
+                !StreamInputParser.TryFromChannel(PlatformKind.Twitch, GetOptionalString(item, "login").ToLowerInvariant(), out var target))
+            {
+                continue;
+            }
+
+            var stream = item.TryGetProperty("stream", out var streamElement) ? streamElement : default;
+            bool? isLive = stream.ValueKind switch
+            {
+                JsonValueKind.Object => true,
+                JsonValueKind.Null => false,
+                _ => null
+            };
+            var viewers = TryGetInt32(stream, "viewersCount");
+            yield return new DiscoveredChannel(
+                PlatformKind.Twitch,
+                target.Channel,
+                FirstNonEmpty(GetOptionalString(item, "displayName"), target.Channel),
+                target.Url,
+                GetOptionalString(item, "profileImageURL"),
+                TryReadNestedString(item, "broadcastSettings", "title"),
+                TryReadNestedString(stream, "game", "name"),
+                isLive,
+                order++,
+                isLive == true && viewers is { } count ? Math.Max(0, count) : null);
+        }
+    }
+
     private static IEnumerable<DiscoveredChannel> ReadKickSearchChannels(JsonElement root)
     {
         if (!JsonElementReader.TryGetArray(root, "channels", out var channels))
@@ -534,19 +634,15 @@ public sealed class StreamSearchService : IStreamSearchService
             return 0;
         }
 
-        if (normalizedChannel.StartsWith(normalizedQuery, StringComparison.OrdinalIgnoreCase) ||
-            normalizedDisplay.StartsWith(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+        // Prefixes and substrings share a tier so relevant substring matches are not
+        // pushed out of the page by less relevant names that happen to start with the query.
+        if (normalizedChannel.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase) ||
+            normalizedDisplay.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
         {
             return 1;
         }
 
-        if (normalizedChannel.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase) ||
-            normalizedDisplay.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
-        {
-            return 2;
-        }
-
-        return 3;
+        return 2;
     }
 
     private static int LiveRank(bool? isLive) => isLive == true ? 0 : isLive == false ? 1 : 2;

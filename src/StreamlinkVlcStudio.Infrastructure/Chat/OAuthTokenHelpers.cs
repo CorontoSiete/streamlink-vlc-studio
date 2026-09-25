@@ -104,17 +104,6 @@ public static class OAuthTokenHelpers
         return value;
     }
 
-    /// <summary>
-    /// Parses a URL query string (with or without a leading '?') into a case-sensitive dictionary,
-    /// decoding percent-escapes and treating '+' as a space.
-    /// </summary>
-    public static Dictionary<string, string> ParseQueryString(string query)
-    {
-        return TryParseQueryString(query, out var values)
-            ? values
-            : throw new FormatException("The OAuth callback query string is malformed.");
-    }
-
     internal static bool TryParseQueryString(
         string query,
         out Dictionary<string, string> values)

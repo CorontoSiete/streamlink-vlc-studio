@@ -526,16 +526,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
                 index++;
             }
 
-            var token = text[tokenStart..index];
-            if (allowCatalogEmotes &&
-                DockedChatEmoteCatalog.Shared.TryGet(message, token, out var catalogEmote))
-            {
-                AppendImage(catalogEmote);
-            }
-            else
-            {
-                AppendRun(token, bodyBrush);
-            }
+            AppendCatalogEmoteOrText(message, text[tokenStart..index], allowCatalogEmotes, bodyBrush);
         }
     }
 
@@ -565,16 +556,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
                 index++;
             }
 
-            var token = text[tokenStart..index];
-            if (allowCatalogEmotes &&
-                DockedChatEmoteCatalog.Shared.TryGet(message, token, out var catalogEmote))
-            {
-                AppendImage(catalogEmote);
-            }
-            else
-            {
-                AppendRun(token, bodyBrush);
-            }
+            AppendCatalogEmoteOrText(message, text[tokenStart..index], allowCatalogEmotes, bodyBrush);
         }
     }
 
@@ -588,13 +570,18 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             return;
         }
 
-        if (DockedChatEmoteCatalog.Shared.TryGet(message, emote.Code, out var catalogEmote))
+        AppendCatalogEmoteOrText(message, emote.Code, allowCatalogEmotes: true, bodyBrush);
+    }
+
+    private void AppendCatalogEmoteOrText(ChatMessage message, string text, bool allowCatalogEmotes, Brush bodyBrush)
+    {
+        if (allowCatalogEmotes && DockedChatEmoteCatalog.Shared.TryGet(message, text, out var catalogEmote))
         {
             AppendImage(catalogEmote);
             return;
         }
 
-        AppendRun(emote.Code, bodyBrush);
+        AppendRun(text, bodyBrush);
     }
 
     private void AppendImage(DockedChatEmoteImage emote)

@@ -3,6 +3,7 @@ namespace StreamlinkVlcStudio.Core.Settings;
 public sealed class UpdateSettings : NotifyPropertyChangedObject
 {
     private bool automaticChecksEnabled = true;
+    private bool automaticDownloadsEnabled;
     private string snoozedVersion = "";
     private DateTimeOffset? snoozedUntilUtc;
 
@@ -10,6 +11,12 @@ public sealed class UpdateSettings : NotifyPropertyChangedObject
     {
         get => automaticChecksEnabled;
         set => SetProperty(ref automaticChecksEnabled, value);
+    }
+
+    public bool AutomaticDownloadsEnabled
+    {
+        get => automaticDownloadsEnabled;
+        set => SetProperty(ref automaticDownloadsEnabled, value);
     }
 
     public string SnoozedVersion

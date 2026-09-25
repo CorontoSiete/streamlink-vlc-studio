@@ -386,7 +386,7 @@ internal static partial class ApplicationTestCatalog
         LibVlcNative.SetDllDirectory(vlc);
         var bytes = await File.ReadAllBytesAsync(Environment.GetEnvironmentVariable("SVS_TEST_PREVIEW_SEGMENT")!);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var pixels = await LibVlcPreviewDecoder.DecodeAsync(bytes, vlc, timeout.Token);
+        var pixels = await LibVlcPreviewDecoder.DecodeAsync(bytes, null, vlc, timeout.Token);
         Assert.NotNull(pixels);
         Assert.Equal(192 * 108 * 4, pixels!.Length);
         // The steady blue fixture must produce real image pixels, not just an allocated buffer.

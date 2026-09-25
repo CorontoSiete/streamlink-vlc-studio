@@ -1,4 +1,5 @@
 using System.Text.Json;
+using StreamlinkVlcStudio.Core.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 
@@ -10,7 +11,7 @@ internal static class KickRecentChatJson
     {
         if (!TryGetMessageArray(root, out var messagesElement))
         {
-            return [];
+            throw new InvalidDataException("Kick did not return a recent-chat message array.");
         }
 
         return messagesElement.EnumerateArray()
@@ -74,15 +75,17 @@ internal static class KickRecentChatJson
     private static bool TryReadNonEmptyString(JsonElement element, string propertyName, out string value)
     {
         value = "";
-        if (!element.TryGetProperty(propertyName, out var property))
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
         {
             return false;
         }
 
-        value = property.ValueKind == JsonValueKind.String
-            ? property.GetString() ?? ""
-            : property.ToString();
-        value = value.Trim();
-        return !string.IsNullOrWhiteSpace(value);
+        if (property.ValueKind is not (JsonValueKind.String or JsonValueKind.Number))
+        {
+            throw new InvalidDataException("Kick returned an invalid recent-chat cursor.");
+        }
+
+        value = JsonElementReader.GetScalarString(property);
+        return value.Length > 0;
     }
 }

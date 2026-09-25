@@ -236,19 +236,19 @@ internal static class TwitchMutedVodRepairTestCatalog
 
     private static Task PlaylistDetectionMatchesOnlyMutedSegments()
     {
-        Assert.True(TwitchMutedVodPlaylist.ContainsMutedSegments("#EXTM3U\n#EXTINF:10.000,\n0-muted.ts\n#EXTINF:10.000,\n1.ts\n"));
-        Assert.True(TwitchMutedVodPlaylist.ContainsMutedSegments("#EXTM3U\r\n#EXTINF:10.000,\r\n0.ts\r\n#EXTINF:10.000,\r\n  41-MUTED.ts?sig=abc  \r\n"));
-        Assert.True(TwitchMutedVodPlaylist.ContainsMutedSegments(
-            "#EXTM3U\n#EXTINF:10.000,\nhttps://d2vi6trrdongqn.cloudfront.net/vod_special/chunked/7-muted.ts\n"));
-        Assert.Equal(2, TwitchMutedVodPlaylist.CountMutedSegments("#EXTM3U\n#EXTINF:10.000,\n0-muted.ts\n#EXTINF:10.000,\n1.ts\n#EXTINF:10.000,\n2-muted.ts\n"));
+        Assert.True(TwitchMutedVodPlaylist.Inspect("#EXTM3U\n#EXTINF:10.000,\n0-muted.ts\n#EXTINF:10.000,\n1.ts\n").MutedSegments > 0);
+        Assert.True(TwitchMutedVodPlaylist.Inspect("#EXTM3U\r\n#EXTINF:10.000,\r\n0.ts\r\n#EXTINF:10.000,\r\n  41-MUTED.ts?sig=abc  \r\n").MutedSegments > 0);
+        Assert.True(TwitchMutedVodPlaylist.Inspect(
+            "#EXTM3U\n#EXTINF:10.000,\nhttps://d2vi6trrdongqn.cloudfront.net/vod_special/chunked/7-muted.ts\n").MutedSegments > 0);
+        Assert.Equal(2, TwitchMutedVodPlaylist.Inspect("#EXTM3U\n#EXTINF:10.000,\n0-muted.ts\n#EXTINF:10.000,\n1.ts\n#EXTINF:10.000,\n2-muted.ts\n").MutedSegments);
 
-        Assert.Equal(false, TwitchMutedVodPlaylist.ContainsMutedSegments(null));
-        Assert.Equal(false, TwitchMutedVodPlaylist.ContainsMutedSegments(""));
-        Assert.Equal(false, TwitchMutedVodPlaylist.ContainsMutedSegments("#EXTM3U\n#EXTINF:10.000,\n0.ts\n#EXTINF:10.000,\n1-unmuted.ts\n"));
-        Assert.Equal(false, TwitchMutedVodPlaylist.ContainsMutedSegments("#EXTM3U\n# previously 0-muted.ts\n#EXTINF:10.000,\n0.ts\n"));
-        Assert.Equal(false, TwitchMutedVodPlaylist.ContainsMutedSegments("#EXTM3U\n#EXTINF:10.000,\n0.ts?next=1-muted.ts\n"));
-        Assert.Equal(false, TwitchMutedVodPlaylist.ContainsMutedSegments(
-            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nchunked/index-muted-ABC123.m3u8\n"));
+        Assert.Equal(false, TwitchMutedVodPlaylist.Inspect(null).MutedSegments > 0);
+        Assert.Equal(false, TwitchMutedVodPlaylist.Inspect("").MutedSegments > 0);
+        Assert.Equal(false, TwitchMutedVodPlaylist.Inspect("#EXTM3U\n#EXTINF:10.000,\n0.ts\n#EXTINF:10.000,\n1-unmuted.ts\n").MutedSegments > 0);
+        Assert.Equal(false, TwitchMutedVodPlaylist.Inspect("#EXTM3U\n# previously 0-muted.ts\n#EXTINF:10.000,\n0.ts\n").MutedSegments > 0);
+        Assert.Equal(false, TwitchMutedVodPlaylist.Inspect("#EXTM3U\n#EXTINF:10.000,\n0.ts?next=1-muted.ts\n").MutedSegments > 0);
+        Assert.Equal(false, TwitchMutedVodPlaylist.Inspect(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nchunked/index-muted-ABC123.m3u8\n").MutedSegments > 0);
 
         Assert.True(TwitchMutedVodPlaylist.IsMutedSegment(new Uri(SegmentBaseUrl + "0-muted.ts")));
         Assert.True(TwitchMutedVodPlaylist.IsMutedSegment(new Uri(SegmentBaseUrl + "0-muted.ts?token=1")));

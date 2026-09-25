@@ -5,9 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using System.Windows;
-using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
@@ -23,7 +21,6 @@ using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Chat;
@@ -38,12 +35,14 @@ using StreamlinkVlcStudio.Infrastructure.Vlc;
 using StreamlinkVlcStudio.Infrastructure.Viewers;
 using StreamlinkVlcStudio.Infrastructure.Vod;
 using StreamlinkVlcStudio.App.Wpf.Themes;
+using StreamlinkVlcStudio.App.Wpf.Twitch;
 using static StreamlinkVlcStudio.App.Wpf.WindowInteropHelpers;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
 public partial class MainWindow : Window
 {
+    private TwitchChannelPointsController? twitchChannelPoints;
     private enum FullscreenMode
     {
         None,
@@ -104,21 +103,8 @@ public partial class MainWindow : Window
     private const int VideoReorderPollIntervalMilliseconds = 16;
     private static readonly TimeSpan HomeAutoScrollInterval = TimeSpan.FromMilliseconds(16);
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan BrowserClickDuplicateWindow = TimeSpan.FromSeconds(8);
     private static readonly int WmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
     private static ITaskbarFullscreenController taskbarFullscreenController = WindowsTaskbarFullscreenController.Instance;
-    private static readonly HashSet<string> SupportedBrowserProcessNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "arc",
-        "brave",
-        "chrome",
-        "chromium",
-        "firefox",
-        "msedge",
-        "opera",
-        "opera_gx",
-        "vivaldi"
-    };
 
     private readonly Dictionary<StreamTabViewModel, bool> fullscreenChatVisibility = [];
     private readonly Dictionary<StreamTabViewModel, bool> fullscreenDockedChatPanelVisibility = [];
@@ -128,7 +114,6 @@ public partial class MainWindow : Window
     private MainViewModel? viewModel;
     private ISettingsService? settingsService;
     private IAppLogger? appLogger;
-    private BrowserCaptureServer? browserCaptureServer;
     private TwitchMutedVodPlaybackGateway? twitchMutedVodPlaybackGateway;
     private ToastLiveNotificationService? liveNotificationService;
     private LowLevelMouseHookPump? mouseHookPump;
@@ -139,10 +124,6 @@ public partial class MainWindow : Window
     private IntPtr trayIconHandle;
     private ScrollViewer? dockedChatScrollViewer;
     private ScrollViewer? homeAutoScrollViewer;
-    private string lastDetectedStreamUrl = "";
-    private DateTimeOffset lastDetectedStreamAt = DateTimeOffset.MinValue;
-    private bool suppressNextBrowserMouseUp;
-    private bool browserClickFallbackEnabled;
     private bool exitRequested;
     private bool trayIconVisible;
     private bool destroyTrayIconHandle;
@@ -201,6 +182,8 @@ public partial class MainWindow : Window
         this.setupRequested = setupRequested;
         this.windowHitTester = windowHitTester ?? throw new ArgumentNullException(nameof(windowHitTester));
         InitializeComponent();
+        DataContextChanged += (_, e) => SetBrowseScrollViewModel(e.NewValue as MainViewModel);
+        Closed += (_, _) => SetBrowseScrollViewModel(null);
         PlaybackHost.SizeChanged += (_, _) => UpdateResponsiveLayout();
         ApplyWindowChromeHitTestState();
         ((INotifyCollectionChanged)DockedChatListBox.Items).CollectionChanged += DockedChatItemsOnCollectionChanged;
@@ -377,7 +360,7 @@ public partial class MainWindow : Window
                 : (AppHotkeyAction?)null;
         if (tabAction is not null &&
             !HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, tabAction.Value, focusedElement) &&
-            TabNavigationKeyPolicy.CanNavigate(
+            HotkeyBindingPolicy.CanNavigateTabs(
                 fullscreen, fullscreenMode != FullscreenMode.None, viewModel?.IsSettingsOpen == true))
         {
             var direction = tabAction == AppHotkeyAction.PreviousTab ? -1 : 1;
@@ -745,7 +728,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!ShouldContinueHomeAutoScroll(e.MiddleButton))
+        if (!HomeAutoScrollController.ShouldContinue(e.MiddleButton))
         {
             ClearHomeAutoScroll();
             e.Handled = true;
@@ -777,26 +760,23 @@ public partial class MainWindow : Window
 
     private void HomeContentScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        if (sender is not ScrollViewer scrollViewer ||
+        TryLoadMoreBrowseCategories();
+    }
+
+    private void TryLoadMoreBrowseCategories()
+    {
+        if (pendingBrowseScroll is not null ||
             viewModel?.IsBrowseCategoriesPageVisible != true ||
             viewModel.LoadMoreBrowseCategoriesCommand.CanExecute(null) != true ||
-            !IsHomeContentScrollNearBottom(
-                scrollViewer.VerticalOffset,
-                scrollViewer.ScrollableHeight,
+            !HomeAutoScrollController.IsNearBottom(
+                HomeContentScrollViewer.VerticalOffset,
+                HomeContentScrollViewer.ScrollableHeight,
                 BrowseCategoryLoadMoreBottomThreshold))
         {
             return;
         }
 
         viewModel.LoadMoreBrowseCategoriesCommand.Execute(null);
-    }
-
-    private void BrowseCategoryButton_Click(object sender, RoutedEventArgs e)
-    {
-        // Button commands run after Click, so reset after the stream page replaces the category grid.
-        _ = Dispatcher.BeginInvoke(
-            DispatcherPriority.ContextIdle,
-            new Action(HomeContentScrollViewer.ScrollToTop));
     }
 
     private void BeginHomeAutoScroll(ScrollViewer scrollViewer, Point anchorPoint)
@@ -839,7 +819,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!ShouldContinueHomeAutoScroll(Mouse.MiddleButton))
+        if (!HomeAutoScrollController.ShouldContinue(Mouse.MiddleButton))
         {
             ClearHomeAutoScroll();
             return;
@@ -851,7 +831,7 @@ public partial class MainWindow : Window
             : (now - homeAutoScrollLastTickTimestamp) / (double)Stopwatch.Frequency;
         homeAutoScrollLastTickTimestamp = now;
 
-        var targetOffset = GetHomeAutoScrollVerticalOffset(
+        var targetOffset = HomeAutoScrollController.GetVerticalOffset(
             scrollViewer.VerticalOffset,
             homeAutoScrollAnchorPoint.Y,
             homeAutoScrollCursorPoint.Y,
@@ -884,31 +864,6 @@ public partial class MainWindow : Window
             Mouse.Capture(null);
         }
     }
-
-    internal static bool ShouldContinueHomeAutoScroll(MouseButtonState middleButtonState)
-        => HomeAutoScrollController.ShouldContinue(middleButtonState);
-
-    internal static double GetHomeAutoScrollVelocity(double anchorY, double currentY)
-        => HomeAutoScrollController.GetVelocity(anchorY, currentY);
-
-    internal static double GetHomeAutoScrollVerticalOffset(
-        double currentVerticalOffset,
-        double anchorY,
-        double currentY,
-        double scrollableHeight,
-        double elapsedSeconds)
-        => HomeAutoScrollController.GetVerticalOffset(
-            currentVerticalOffset,
-            anchorY,
-            currentY,
-            scrollableHeight,
-            elapsedSeconds);
-
-    internal static bool IsHomeContentScrollNearBottom(
-        double verticalOffset,
-        double scrollableHeight,
-        double bottomThreshold)
-        => HomeAutoScrollController.IsNearBottom(verticalOffset, scrollableHeight, bottomThreshold);
 
     internal static bool TryHandleHomeStreamOpenAndStayOnHomeCommand(DependencyObject? source)
     {
@@ -1038,6 +993,10 @@ public partial class MainWindow : Window
         });
 
         viewModel.Initialize();
+        twitchChannelPoints = new TwitchChannelPointsController(
+            settings, viewModel.Tabs, () => viewModel.SelectedTab, new TwitchBonusBrowser(this), logger,
+            settingsService: settingsService);
+        TwitchBonusesPanel.DataContext = twitchChannelPoints;
         if (!string.IsNullOrWhiteSpace(settingsLoadWarning))
         {
             viewModel.SetStartupWarning(settingsLoadWarning);
@@ -1053,18 +1012,6 @@ public partial class MainWindow : Window
             };
             setupWizard.ShowDialog();
         }
-
-        browserCaptureServer = new BrowserCaptureServer(HandleBrowserCaptureUrlAsync, logger);
-        if (!browserCaptureServer.Start())
-        {
-            browserClickFallbackEnabled = true;
-            viewModel.SetBrowserClickStatus("Browser capture extension listener could not start");
-        }
-        else
-        {
-            browserClickFallbackEnabled = false;
-        }
-
     }
 
     private async void MainWindowClosing(object? sender, CancelEventArgs e)
@@ -1097,6 +1044,8 @@ public partial class MainWindow : Window
         }
 
         shutdownStarted = true;
+        twitchChannelPoints?.Dispose();
+        twitchChannelPoints = null;
         Hide();
         DisposeTrayIcon();
         var forceExit = false;
@@ -1106,12 +1055,6 @@ public partial class MainWindow : Window
             if (viewModel is not null)
             {
                 CloseAllDetachedWindows(reattach: false);
-                if (browserCaptureServer is not null)
-                {
-                    await browserCaptureServer.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
-                    browserCaptureServer = null;
-                }
-
                 viewModel.Tabs.CollectionChanged -= ViewModelTabsCollectionChanged;
 
                 await viewModel.DisposeAsync().AsTask().WaitAsync(ShutdownTimeout);
@@ -1146,6 +1089,8 @@ public partial class MainWindow : Window
 
     private void MainWindowClosed(object? sender, EventArgs e)
     {
+        twitchChannelPoints?.Dispose();
+        twitchChannelPoints = null;
         ClearTaskbarFullscreen();
 
         if (viewModel is not null)
@@ -1265,25 +1210,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private Task HandleBrowserCaptureUrlAsync(string url)
-    {
-        if (!StreamInputParser.TryParsePlatformUrl(url, out var target) || target is null)
-        {
-            DispatchToUi(() => viewModel?.SetBrowserClickStatus("Ignored browser capture that was not a stream channel"));
-            return Task.CompletedTask;
-        }
-
-        DispatchToUi(() =>
-        {
-            if (viewModel is not null)
-            {
-                ShowMainWindow();
-                _ = viewModel.OpenDetectedStreamAsync(target);
-            }
-        });
-        return Task.CompletedTask;
-    }
-
     private void VideoSurface_Loaded(object sender, RoutedEventArgs e)
     {
         if (sender is VideoSurface surface && surface.Tag is StreamTabViewModel tab)
@@ -1292,6 +1218,8 @@ public partial class MainWindow : Window
             surface.NativeMouseLeftButtonDown += VideoSurface_NativeMouseLeftButtonDown;
             surface.NativeMouseMoved += VideoSurface_NativeMouseMoved;
             surface.NativeMouseLeftButtonUp += VideoSurface_NativeMouseLeftButtonUp;
+            tab.PropertyChanged -= MainVideoTabOnPropertyChanged;
+            tab.PropertyChanged += MainVideoTabOnPropertyChanged;
             tab.SetVideoHandle(surface.Handle);
         }
     }
@@ -1305,8 +1233,19 @@ public partial class MainWindow : Window
             surface.NativeMouseLeftButtonDown -= VideoSurface_NativeMouseLeftButtonDown;
             surface.NativeMouseMoved -= VideoSurface_NativeMouseMoved;
             surface.NativeMouseLeftButtonUp -= VideoSurface_NativeMouseLeftButtonUp;
+            tab.PropertyChanged -= MainVideoTabOnPropertyChanged;
             videoSurfaces.Remove(tab);
             tab.ClearVideoHandle(surface.Handle);
+        }
+    }
+
+    private void MainVideoTabOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(StreamTabViewModel.Status) &&
+            sender is StreamTabViewModel { Status: PlaybackStatus.Starting or PlaybackStatus.Playing } tab &&
+            videoSurfaces.TryGetValue(tab, out var surface))
+        {
+            surface.ScheduleRendererWindowRepair();
         }
     }
 
@@ -3365,399 +3304,6 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private bool TryCaptureBrowserStreamClick(NativePoint screenPoint)
-    {
-        if (!browserClickFallbackEnabled)
-        {
-            return false;
-        }
-
-        var foregroundWindow = GetForegroundWindow();
-        if (foregroundWindow == IntPtr.Zero ||
-            foregroundWindow == windowHandle ||
-            !IsSupportedBrowserWindow(foregroundWindow) ||
-            !TryGetBrowserAddressUrl(foregroundWindow, out var currentUrl) ||
-            !IsSupportedPlatformUrl(currentUrl))
-        {
-            return false;
-        }
-
-        if (!TryGetStreamTargetFromAutomationPoint(screenPoint, currentUrl, out var target) ||
-            target is null)
-        {
-            return false;
-        }
-
-        suppressNextBrowserMouseUp = true;
-        if (!IsDuplicateDetectedStream(target.Url))
-        {
-            DispatchToUi(() =>
-            {
-                if (viewModel is not null)
-                {
-                    ShowMainWindow();
-                    _ = viewModel.OpenDetectedStreamAsync(target);
-                }
-            });
-        }
-
-        return true;
-    }
-
-    private bool IsDuplicateDetectedStream(string streamUrl)
-    {
-        var now = DateTimeOffset.UtcNow;
-        if (string.Equals(lastDetectedStreamUrl, streamUrl, StringComparison.OrdinalIgnoreCase) &&
-            now - lastDetectedStreamAt < BrowserClickDuplicateWindow)
-        {
-            return true;
-        }
-
-        lastDetectedStreamUrl = streamUrl;
-        lastDetectedStreamAt = now;
-        return false;
-    }
-
-    private static bool TryGetStreamTargetFromAutomationPoint(
-        NativePoint screenPoint,
-        string currentUrl,
-        out StreamTarget? target)
-    {
-        target = null;
-
-        try
-        {
-            var element = AutomationElement.FromPoint(new Point(screenPoint.X, screenPoint.Y));
-            for (var depth = 0; element is not null && depth < 12; depth++)
-            {
-                if (TryGetStreamTargetFromAutomationElement(element, currentUrl, out target))
-                {
-                    return true;
-                }
-
-                element = TreeWalker.RawViewWalker.GetParent(element);
-            }
-        }
-        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
-        {
-        }
-
-        return false;
-    }
-
-    private static bool TryGetStreamTargetFromAutomationElement(
-        AutomationElement element,
-        string currentUrl,
-        out StreamTarget? target)
-    {
-        target = null;
-        foreach (var text in GetAutomationElementTextCandidates(element))
-        {
-            foreach (var candidate in ExtractUrlCandidates(text))
-            {
-                if (TryNormalizeSupportedBrowserUrl(candidate, currentUrl, out var normalizedUrl) &&
-                    StreamInputParser.TryParsePlatformUrl(normalizedUrl, out target) &&
-                    target is not null)
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryGetBrowserAddressUrl(IntPtr browserWindow, out string normalizedUrl)
-    {
-        normalizedUrl = "";
-        return TryFindBrowserAddressBar(browserWindow, out _, out _, out normalizedUrl);
-    }
-
-    private static bool TryFindBrowserAddressBar(
-        IntPtr browserWindow,
-        out AutomationElement? addressBar,
-        out ValuePattern? valuePattern,
-        out string normalizedUrl)
-    {
-        addressBar = null;
-        valuePattern = null;
-        normalizedUrl = "";
-        if (!IsSupportedBrowserWindow(browserWindow))
-        {
-            return false;
-        }
-
-        try
-        {
-            var root = AutomationElement.FromHandle(browserWindow);
-            if (root is null)
-            {
-                return false;
-            }
-
-            var windowBounds = root.Current.BoundingRectangle;
-            var editCondition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit);
-            var editElements = root.FindAll(TreeScope.Descendants, editCondition);
-            for (var index = 0; index < editElements.Count; index++)
-            {
-                var element = editElements[index];
-                if (!IsLikelyBrowserAddressBar(element, windowBounds) ||
-                    !TryGetValuePattern(element, out var candidatePattern) ||
-                    candidatePattern is null ||
-                    !TryGetAutomationValue(candidatePattern, out var value) ||
-                    !TryNormalizeSupportedBrowserUrl(value, out var candidateUrl))
-                {
-                    continue;
-                }
-
-                addressBar = element;
-                valuePattern = candidatePattern;
-                normalizedUrl = candidateUrl;
-                return true;
-            }
-        }
-        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
-        {
-        }
-
-        return false;
-    }
-
-    private static bool IsSupportedBrowserWindow(IntPtr window)
-    {
-        if (window == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        _ = GetWindowThreadProcessId(window, out var processId);
-        if (processId == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            using var process = Process.GetProcessById((int)processId);
-            return SupportedBrowserProcessNames.Contains(process.ProcessName);
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
-        {
-            return false;
-        }
-    }
-
-    private static bool IsLikelyBrowserAddressBar(AutomationElement element, Rect windowBounds)
-    {
-        try
-        {
-            var bounds = element.Current.BoundingRectangle;
-            if (bounds.IsEmpty || windowBounds.IsEmpty || bounds.Top > windowBounds.Top + 180 || bounds.Width < 180)
-            {
-                return false;
-            }
-
-            var name = element.Current.Name ?? "";
-            var automationId = element.Current.AutomationId ?? "";
-            if (ContainsIgnoreCase(name, "address") ||
-                ContainsIgnoreCase(name, "location") ||
-                ContainsIgnoreCase(name, "search") ||
-                ContainsIgnoreCase(automationId, "address") ||
-                ContainsIgnoreCase(automationId, "url") ||
-                ContainsIgnoreCase(automationId, "urlbar"))
-            {
-                return true;
-            }
-
-            return bounds.Top <= windowBounds.Top + 120;
-        }
-        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
-        {
-            return false;
-        }
-    }
-
-    private static bool TryGetValuePattern(AutomationElement element, out ValuePattern? valuePattern)
-    {
-        valuePattern = null;
-        try
-        {
-            if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) ||
-                pattern is not ValuePattern candidatePattern)
-            {
-                return false;
-            }
-
-            valuePattern = candidatePattern;
-            return true;
-        }
-        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
-        {
-            return false;
-        }
-    }
-
-    private static bool TryGetAutomationValue(ValuePattern valuePattern, out string value)
-    {
-        value = "";
-        try
-        {
-            value = valuePattern.Current.Value?.Trim() ?? "";
-            return value.Length > 0;
-        }
-        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
-        {
-            return false;
-        }
-    }
-
-    private static IEnumerable<string> GetAutomationElementTextCandidates(AutomationElement element)
-    {
-        string[] currentValues;
-        try
-        {
-            currentValues =
-            [
-                element.Current.Name,
-                element.Current.HelpText,
-                element.Current.AutomationId,
-                element.Current.ItemStatus,
-                element.Current.ItemType,
-                element.Current.ClassName
-            ];
-        }
-        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
-        {
-            yield break;
-        }
-
-        foreach (var value in currentValues)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                yield return value;
-            }
-        }
-
-        if (TryGetValuePattern(element, out var valuePattern) &&
-            valuePattern is not null &&
-            TryGetAutomationValue(valuePattern, out var patternValue))
-        {
-            yield return patternValue;
-        }
-
-    }
-
-    private static IEnumerable<string> ExtractUrlCandidates(string text)
-    {
-        var trimmed = text.Trim();
-        if (!string.IsNullOrWhiteSpace(trimmed))
-        {
-            yield return trimmed;
-        }
-
-        foreach (Match match in BrowserUrlCandidatePattern().Matches(text))
-        {
-            yield return match.Value.TrimEnd('.', ',', ';', ')', ']', '}', '"', '\'');
-        }
-    }
-
-    private static bool TryNormalizeSupportedBrowserUrl(string value, out string normalizedUrl)
-    {
-        return TryNormalizeSupportedBrowserUrl(value, baseUrl: null, out normalizedUrl);
-    }
-
-    private static bool TryNormalizeSupportedBrowserUrl(string value, string? baseUrl, out string normalizedUrl)
-    {
-        normalizedUrl = "";
-        var candidate = value.Trim();
-        if (!candidate.Contains("://", StringComparison.Ordinal))
-        {
-            if (candidate.StartsWith("/", StringComparison.Ordinal) &&
-                !candidate.StartsWith("//", StringComparison.Ordinal) &&
-                !string.IsNullOrWhiteSpace(baseUrl) &&
-                Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
-            {
-                candidate = new Uri(baseUri, candidate).ToString();
-            }
-            else if (StartsWithSupportedHost(candidate))
-            {
-                candidate = $"https://{candidate}";
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
-
-        var host = NormalizeSupportedBrowserHost(uri.Host);
-        if (host is null)
-        {
-            return false;
-        }
-
-        var path = uri.AbsolutePath.TrimEnd('/');
-        normalizedUrl = $"{uri.Scheme.ToLowerInvariant()}://{host}{path}";
-        return true;
-    }
-
-    private static bool IsSupportedPlatformUrl(string url)
-    {
-        return Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
-            NormalizeSupportedBrowserHost(uri.Host) is not null;
-    }
-
-    private static bool StartsWithSupportedHost(string value)
-    {
-        return value.StartsWith("twitch.tv/", StringComparison.OrdinalIgnoreCase) ||
-            value.Equals("twitch.tv", StringComparison.OrdinalIgnoreCase) ||
-            value.StartsWith("www.twitch.tv/", StringComparison.OrdinalIgnoreCase) ||
-            value.Equals("www.twitch.tv", StringComparison.OrdinalIgnoreCase) ||
-            value.StartsWith("m.twitch.tv/", StringComparison.OrdinalIgnoreCase) ||
-            value.Equals("m.twitch.tv", StringComparison.OrdinalIgnoreCase) ||
-            value.StartsWith("kick.com/", StringComparison.OrdinalIgnoreCase) ||
-            value.Equals("kick.com", StringComparison.OrdinalIgnoreCase) ||
-            value.StartsWith("www.kick.com/", StringComparison.OrdinalIgnoreCase) ||
-            value.Equals("www.kick.com", StringComparison.OrdinalIgnoreCase) ||
-            value.StartsWith("m.kick.com/", StringComparison.OrdinalIgnoreCase) ||
-            value.Equals("m.kick.com", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string? NormalizeSupportedBrowserHost(string host)
-    {
-        var normalized = host.StartsWith("www.", StringComparison.OrdinalIgnoreCase)
-            ? host[4..]
-            : host;
-
-        if (normalized.Equals("m.twitch.tv", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Equals("m.kick.com", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = normalized[2..];
-        }
-
-        if (normalized.Equals("twitch.tv", StringComparison.OrdinalIgnoreCase))
-        {
-            return "www.twitch.tv";
-        }
-
-        if (normalized.Equals("kick.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return "kick.com";
-        }
-
-        return null;
-    }
-
-    private static bool ContainsIgnoreCase(string value, string expected)
-    {
-        return value.Contains(expected, StringComparison.OrdinalIgnoreCase);
-    }
-
     private bool TryRouteNativeOverlayWheel(StreamTabViewModel tab, NativePoint screenPoint, int delta)
     {
         if (viewModel?.Settings.Chat.Layout != ChatLayout.Overlay ||
@@ -4268,7 +3814,7 @@ public partial class MainWindow : Window
             _ = TryActivateVideoTabFromScreenClick(screenPoint);
             _ = BeginVideoReorderDragCandidate(screenPoint);
 
-            return TryCaptureBrowserStreamClick(screenPoint);
+            return false;
         }
 
         if (hookEvent.Message == LowLevelMouseHookEvent.WmLeftButtonUp)
@@ -4284,12 +3830,6 @@ public partial class MainWindow : Window
             {
                 _ = TryCompleteTabDetachDrag(screenPoint);
                 ClearTabDetachDrag();
-            }
-
-            if (suppressNextBrowserMouseUp)
-            {
-                suppressNextBrowserMouseUp = false;
-                return true;
             }
         }
 
@@ -5158,9 +4698,6 @@ public partial class MainWindow : Window
     private static partial int RegisterWindowMessage(string message);
 
     [LibraryImport("user32")]
-    private static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [LibraryImport("user32")]
     private static partial int GetSystemMetrics(int nIndex);
 
     [LibraryImport("user32")]
@@ -5176,9 +4713,6 @@ public partial class MainWindow : Window
 
     [LibraryImport("user32")]
     private static partial IntPtr MonitorFromPoint(NativePoint pt, uint dwFlags);
-
-    [GeneratedRegex("""https?://[^\s"'<>]+|(?:www\.)?(?:twitch\.tv|kick\.com)/[^\s"'<>]+|/(?:[A-Za-z0-9_.-]{1,80})(?:/[^\s"'<>]*)?""", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
-    private static partial Regex BrowserUrlCandidatePattern();
 
     [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

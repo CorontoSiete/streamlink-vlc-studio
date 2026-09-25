@@ -38,10 +38,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private const int BrowseCategoryViewerCountConcurrency = 4;
     private const int BrowseStreamPageSize = 50;
     private const int StreamSearchViewerCountConcurrency = 4;
+    private const int RecentMetadataConcurrency = 4;
     private const int VlcPluginMultiViewChatDisableThreshold = 3;
     private const int DenseMultiStreamStartupThreshold = 4;
     private const int MaxConcurrentTabStarts = 2;
-    private static long nextFollowedThumbnailCacheVersion;
+    private static long nextLiveThumbnailCacheVersion;
     private readonly ISettingsService settingsService;
     private readonly IStreamlinkService streamlinkService;
     private readonly IPlaybackEngineFactory playbackFactory;
@@ -81,6 +82,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly StreamSearchController streamSearchController = new();
     private readonly VodBrowseController vodBrowseController = new();
+    private readonly PagedResultTracker vodPages = new();
+    private readonly PagedResultTracker browseCategoryPages = new();
+    private readonly PagedResultTracker browseStreamPages = new();
     private readonly SemaphoreSlim streamOpenGate = new(1, 1);
     private readonly TabStartController tabStartController = new(MaxConcurrentTabStarts);
     private readonly SemaphoreSlim chatSettingsApplyGate = new(1, 1);
@@ -94,6 +98,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly BackgroundOperationController backgroundOperationController;
     private readonly TabGroupingController tabGroupingController = new();
     private readonly RecentStreamController recentStreamController = new();
+    private Dictionary<string, StreamMetadataResult>? pendingRecentMetadata;
     private readonly HashSet<StreamTabViewModel> vlcPluginMultiViewChatPolicyHiddenTabs = [];
     private readonly List<NavigationDestination> navigationHistory = [];
     // Stream opening can hide Home before selecting its tab. Keep the last completed
@@ -111,16 +116,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private string streamSearchStatus = "";
     private string selectedQuality;
     private string statusMessage = "Ready";
-    private string browserClickStatus = "Browser extension capture keeps Twitch and Kick on their home pages";
     private string followedChannelsStatus = "Live followed channels are not loaded";
     private string twitchVodSearchText = "";
     private string twitchVodStatus = "Search a Twitch streamer to browse VODs.";
     private string browseCategorySearchText = "";
     private string browseStatus = "Browse Twitch or Kick categories.";
     private string browseCategoryStatus = "Browse Twitch or Kick categories.";
-    private string appUpdateStatus = "Updates are checked automatically. No download starts without your consent.";
+    private string appUpdateStatus = "Updates are checked automatically. Automatic downloads are optional; you choose when to restart and install.";
+    private Version? canceledAutomaticDownloadVersion;
     private string appUpdateActionText = "Check for updates";
     private bool isUpdateBannerVisible;
+    private Task? automaticUpdateTask;
+    private CancellationTokenSource? updateDownloadCancellation;
+    private bool updateDownloadCanceledByUser;
+    private int updateActionInProgress;
     private string browseCategoryNextCursor = "";
     private string browseStreamNextCursor = "";
     private string kickFollowedChannelsText;
@@ -134,13 +143,25 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private SettingsCategory selectedSettingsCategory = SettingsCategory.General;
     private bool isStreamSearchRunning;
     private bool hasStreamSearchCompleted;
+    private Task? activeStreamSearchTask;
+    private int activeStreamSearchGeneration;
+    private string activeStreamSearchQuality = "";
     private bool isStreamSearchDropdownOpen;
     private bool isFollowedChannelsRefreshing;
     private bool isTwitchVodSearchRunning;
+    private Task? activeTwitchVodSearchTask;
+    private int activeTwitchVodSearchGeneration;
+    private (PlatformKind Platform, string Query, TwitchVodTypeFilter Type) activeTwitchVodSearch;
     private bool hasTwitchVodSearchCompleted;
     private bool isBrowseCategoriesLoading;
+    private Task? activeBrowseCategoryTask;
+    private int activeBrowseCategoryGeneration;
+    private (PlatformKind Platform, string Query) activeBrowseCategorySearch;
     private bool hasBrowseCategorySearchCompleted;
     private bool isBrowseStreamsLoading;
+    private Task? activeBrowseStreamTask;
+    private int activeBrowseStreamGeneration;
+    private (PlatformKind Platform, string CategoryId) activeBrowseStreamSearch;
     private bool hasBrowseStreamSearchCompleted;
     private bool isReplaySeekBarUiVisible = true;
     private bool isStreamOnlyFullscreenActive;
@@ -280,8 +301,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ClearTwitchTokenCommand = CreateCommand(ClearTwitchTokenAsync, HasTwitchToken);
         AuthorizeKickCommand = CreateCommand(AuthorizeKickAsync);
         ClearKickTokenCommand = CreateCommand(ClearKickTokenAsync, HasKickToken);
-        UpdateAppCommand = CreateCommand(UpdateAppAsync, () => appUpdateService is not null);
-        LaterUpdateCommand = CreateCommand(SnoozeUpdateAsync, () => appUpdateService?.State.Release is not null);
+        UpdateAppCommand = CreateCommand(() => UpdateAppAsync(checkOnly: false), CanRunUpdateAction);
+        CheckForUpdatesCommand = CreateCommand(() => UpdateAppAsync(checkOnly: true), CanRunUpdateAction);
+        CancelUpdateCommand = new RelayCommand(CancelUpdateDownload, () => updateDownloadCancellation is not null);
+        LaterUpdateCommand = CreateCommand(SnoozeUpdateAsync, () => Volatile.Read(ref updateActionInProgress) == 0 && appUpdateService?.State is
+        { Release: not null, Phase: AppUpdatePhase.Available or AppUpdatePhase.Ready or AppUpdatePhase.NotifyOnly or AppUpdatePhase.DownloadFailed });
         ToggleSettingsCommand = new RelayCommand(() => IsSettingsOpen = !IsSettingsOpen);
         ShowGeneralSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.General);
         ShowPlaybackSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Playback);
@@ -358,7 +382,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand AuthorizeKickCommand { get; }
     public AsyncRelayCommand ClearKickTokenCommand { get; }
     public AsyncRelayCommand UpdateAppCommand { get; }
+    public AsyncRelayCommand CheckForUpdatesCommand { get; }
     public AsyncRelayCommand LaterUpdateCommand { get; }
+    public RelayCommand CancelUpdateCommand { get; }
+    public bool CanCancelUpdate => updateDownloadCancellation is not null;
+    public bool IsUpdateRefreshVisible => appUpdateService?.State.Phase is
+        AppUpdatePhase.Available or AppUpdatePhase.DownloadFailed or AppUpdatePhase.Ready or AppUpdatePhase.NotifyOnly;
     public RelayCommand ToggleSettingsCommand { get; }
     public RelayCommand ShowGeneralSettingsCommand { get; }
     public RelayCommand ShowPlaybackSettingsCommand { get; }
@@ -927,12 +956,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         private set => SetProperty(ref statusMessage, value);
     }
 
-    public string BrowserClickStatus
-    {
-        get => browserClickStatus;
-        private set => SetProperty(ref browserClickStatus, value);
-    }
-
     public bool IsHomeSelected
     {
         get => isHomeSelected;
@@ -1342,7 +1365,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         if (appUpdateService is not null)
         {
-            _ = CheckForStartupUpdateAsync();
+            automaticUpdateTask ??= CheckForStartupUpdateAsync();
         }
 
         if (loggerEntryWrittenHandler is null)
@@ -1371,14 +1394,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public void RefreshSettingsBindings()
     {
         OnPropertyChanged(nameof(Settings));
-    }
-
-    public void SetBrowserClickStatus(string message)
-    {
-        if (!string.IsNullOrWhiteSpace(message))
-        {
-            BrowserClickStatus = message;
-        }
     }
 
     internal void SetStartupWarning(string message)
@@ -1721,15 +1736,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            var thumbnailCacheVersion = Interlocked.Increment(ref nextFollowedThumbnailCacheVersion);
-            LiveFollowedChannels.Clear();
-            foreach (var stream in result.Streams)
-            {
-                LiveFollowedChannels.Add(new LiveStreamCardViewModel(
-                    LiveStreamCardData.FromFollowedStream(stream),
-                    OpenLiveStreamCardAsync,
-                    thumbnailCacheVersion));
-            }
+            var thumbnailCacheVersion = Interlocked.Increment(ref nextLiveThumbnailCacheVersion);
+            UpdateLiveStreamCards(LiveFollowedChannels,
+                result.Streams.Select(LiveStreamCardData.FromFollowedStream), thumbnailCacheVersion);
 
             ProcessFollowedChannelLiveNotifications(result);
 
@@ -1776,6 +1785,52 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             {
                 followedChannelsRefreshGate.Release();
             }
+        }
+    }
+
+    private void UpdateLiveStreamCards(ObservableCollection<LiveStreamCardViewModel> cards,
+        IEnumerable<LiveStreamCardData> streams, long thumbnailCacheVersion)
+    {
+        var existing = cards.ToDictionary(card => card.Target.StateKey, StringComparer.OrdinalIgnoreCase);
+        var desiredKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var desiredCards = new List<LiveStreamCardViewModel>(streams.TryGetNonEnumeratedCount(out var count) ? count : 0);
+        foreach (var data in streams)
+        {
+            if (!desiredKeys.Add(data.Target.StateKey))
+            {
+                continue;
+            }
+
+            if (existing.TryGetValue(data.Target.StateKey, out var card))
+            {
+                card.Update(data, thumbnailCacheVersion);
+            }
+            else
+            {
+                card = new LiveStreamCardViewModel(data, OpenLiveStreamCardAsync, thumbnailCacheVersion);
+            }
+            desiredCards.Add(card);
+        }
+
+        for (var index = cards.Count - 1; index >= 0; index--)
+        {
+            if (!desiredKeys.Contains(cards[index].Target.StateKey))
+            {
+                cards.RemoveAt(index);
+            }
+        }
+
+        for (var index = 0; index < desiredCards.Count; index++)
+        {
+            var card = desiredCards[index];
+            if (index < cards.Count && ReferenceEquals(cards[index], card))
+            {
+                continue;
+            }
+
+            var currentIndex = cards.IndexOf(card);
+            if (currentIndex < 0) cards.Insert(index, card);
+            else cards.Move(currentIndex, index);
         }
     }
 
@@ -1953,25 +2008,27 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task SearchTwitchVodsAsync(bool reset)
+    private Task SearchTwitchVodsAsync(bool reset)
     {
+        if (disposed) return Task.CompletedTask;
+        if (reset) CancelTwitchVodSearchDebounce();
         var query = TwitchVodSearchText.Trim();
         if (string.IsNullOrWhiteSpace(query))
         {
             TwitchVodStatus = $"Enter a {VodPlatformText} streamer.";
-            return;
+            return Task.CompletedTask;
         }
 
         if (SelectedVodPlatform == PlatformKind.Twitch && twitchVodService is null)
         {
             TwitchVodStatus = "Twitch VOD search is not available.";
-            return;
+            return Task.CompletedTask;
         }
 
         if (SelectedVodPlatform == PlatformKind.Kick && kickVodService is null)
         {
             TwitchVodStatus = "Kick VOD search is not available.";
-            return;
+            return Task.CompletedTask;
         }
 
         var platform = SelectedVodPlatform;
@@ -1979,17 +2036,40 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var cursor = reset ? "" : TwitchVodNextCursor;
         if (!reset && string.IsNullOrWhiteSpace(cursor))
         {
-            return;
+            return Task.CompletedTask;
+        }
+
+        // Only share a first-page load. Refresh during pagination must replace
+        // that page, and a completed search must remain explicitly refreshable.
+        if (reset && activeTwitchVodSearchTask is { IsCompleted: false } &&
+            activeTwitchVodSearchGeneration == vodBrowseController.CurrentTwitchVodGeneration &&
+            activeTwitchVodSearch == (platform, query, type))
+        {
+            return activeTwitchVodSearchTask;
         }
 
         var searchGeneration = reset
             ? vodBrowseController.AdvanceTwitchVodGeneration()
             : vodBrowseController.CurrentTwitchVodGeneration;
+        activeTwitchVodSearchGeneration = searchGeneration;
+        activeTwitchVodSearch = (platform, query, type);
+        var task = RunTwitchVodSearchAsync(reset, platform,
+            new TwitchVodSearchRequest(query, type, cursor, 100), searchGeneration);
+        activeTwitchVodSearchTask = reset ? task : null;
+        return task;
+    }
+
+    private async Task RunTwitchVodSearchAsync(bool reset, PlatformKind platform,
+        TwitchVodSearchRequest request, int searchGeneration)
+    {
+        var query = request.Streamer;
+        var type = request.Type;
+        var cursor = request.Cursor;
         var searchCancellation = ReplaceTwitchVodSearchCancellation();
         if (reset)
         {
-            TwitchVods.Clear();
-            TwitchVodNextCursor = "";
+            // Query/platform/filter changes clear at their navigation boundary. Refresh
+            // keeps the last successful page usable until its replacement is available.
             HasTwitchVodSearchCompleted = false;
         }
 
@@ -2001,47 +2081,43 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
+            string message;
             if (platform == PlatformKind.Twitch)
             {
                 var result = await twitchVodService!.SearchAsync(
-                    new TwitchVodSearchRequest(query, type, cursor, 100),
+                    request,
                     Settings,
                     searchCancellation.Token);
-                if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform))
+                if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform)) return;
+                if (result.IsAvailable)
                 {
-                    return;
+                    TwitchVodNextCursor = vodPages.ApplyPage(
+                        TwitchVods, result.Videos, card => card.Identity, VodViewModel.GetIdentity,
+                        vod => new VodViewModel(vod, OpenTwitchVodAsync), (card, vod) => card.Update(vod),
+                        cursor, result.NextCursor);
                 }
-
-                foreach (var vod in result.Videos)
+                message = result.Message;
+            }
+            else
+            {
+                var result = await kickVodService!.SearchAsync(
+                    new KickVodSearchRequest(query, cursor, 100),
+                    Settings,
+                    searchCancellation.Token);
+                if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform)) return;
+                if (result.IsAvailable)
                 {
-                    TwitchVods.Add(new VodViewModel(vod, OpenTwitchVodAsync));
+                    TwitchVodNextCursor = vodPages.ApplyPage(
+                        TwitchVods, result.Videos, card => card.Identity, VodViewModel.GetIdentity,
+                        vod => new VodViewModel(vod, OpenTwitchVodAsync), (card, vod) => card.Update(vod),
+                        cursor, result.NextCursor);
                 }
-
-                TwitchVodNextCursor = result.NextCursor;
-                HasTwitchVodSearchCompleted = true;
-                TwitchVodStatus = result.Message;
-                StatusMessage = result.Message;
-                return;
+                message = result.Message;
             }
 
-            var kickResult = await kickVodService!.SearchAsync(
-                new KickVodSearchRequest(query, cursor, 100),
-                Settings,
-                searchCancellation.Token);
-            if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform))
-            {
-                return;
-            }
-
-            foreach (var vod in kickResult.Videos)
-            {
-                TwitchVods.Add(new VodViewModel(vod, OpenTwitchVodAsync));
-            }
-
-            TwitchVodNextCursor = kickResult.NextCursor;
             HasTwitchVodSearchCompleted = true;
-            TwitchVodStatus = kickResult.Message;
-            StatusMessage = kickResult.Message;
+            TwitchVodStatus = message;
+            StatusMessage = message;
         }
         catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
         {
@@ -2056,7 +2132,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             HasTwitchVodSearchCompleted = true;
             TwitchVodStatus = ex.Message;
             StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "VODs", "Twitch VOD search failed.", ex);
+            logger.Write(AppLogLevel.Error, "VODs", $"{platform} VOD search failed.", ex);
         }
         finally
         {
@@ -2219,6 +2295,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task RefreshBrowseAsync()
     {
+        if (disposed) return;
         if (IsBrowseStreamsPageVisible && SelectedBrowseCategory is not null)
         {
             await LoadBrowseStreamsAsync(reset: true);
@@ -2228,12 +2305,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         await LoadBrowseCategoriesAsync(reset: true);
     }
 
-    private async Task LoadBrowseCategoriesAsync(bool reset)
+    private Task LoadBrowseCategoriesAsync(bool reset)
     {
+        if (disposed) return Task.CompletedTask;
+        if (reset) CancelBrowseCategorySearchDebounce();
         if (browseService is null)
         {
             BrowseStatus = "Browse is not available.";
-            return;
+            return Task.CompletedTask;
         }
 
         var platform = SelectedBrowsePlatform;
@@ -2241,19 +2320,39 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var cursor = reset ? "" : BrowseCategoryNextCursor;
         if (!reset && string.IsNullOrWhiteSpace(cursor))
         {
-            return;
+            return Task.CompletedTask;
+        }
+
+        if (reset && activeBrowseCategoryTask is { IsCompleted: false } &&
+            activeBrowseCategoryGeneration == vodBrowseController.CurrentBrowseCategoryGeneration &&
+            activeBrowseCategorySearch == (platform, query))
+        {
+            return activeBrowseCategoryTask;
         }
 
         var searchGeneration = reset
             ? vodBrowseController.AdvanceBrowseCategoryGeneration()
             : vodBrowseController.CurrentBrowseCategoryGeneration;
+        activeBrowseCategoryGeneration = searchGeneration;
+        activeBrowseCategorySearch = (platform, query);
+        var task = RunBrowseCategoriesAsync(reset,
+            new BrowseCategoryRequest(platform, query, cursor, BrowseCategoryPageSize), searchGeneration);
+        activeBrowseCategoryTask = reset ? task : null;
+        return task;
+    }
+
+    private async Task RunBrowseCategoriesAsync(bool reset, BrowseCategoryRequest request, int searchGeneration)
+    {
+        var platform = request.Platform;
+        var query = request.Query;
+        var cursor = request.Cursor;
         var searchCancellation = ReplaceBrowseCategorySearchCancellation();
         if (reset)
         {
             vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
             CancelActiveBrowseCategoryViewerCountLoad();
             SetBrowseStreamsPageSelected(false);
-            ClearBrowseCategories(clearStatus: false);
+            // Preserve cards and pagination during refresh; navigation clears old results.
             ClearBrowseStreams(clearSelectedCategory: true);
             HasBrowseCategorySearchCompleted = false;
         }
@@ -2267,8 +2366,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await browseService.GetCategoriesAsync(
-                new BrowseCategoryRequest(platform, query, cursor, BrowseCategoryPageSize),
+            var result = await browseService!.GetCategoriesAsync(
+                request,
                 Settings,
                 searchCancellation.Token);
             if (!IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
@@ -2276,18 +2375,30 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            AppendBrowseCategories(result.Items);
-            if (platform == PlatformKind.Kick)
+            if (result.IsAvailable)
             {
-                SortBrowseCategoriesByViewerCount();
+                IEnumerable<BrowseCategory> categories = platform == PlatformKind.Kick && reset
+                    ? OrderBrowseCategories(
+                        result.Items.DistinctBy(category => $"{category.Platform}:{category.Id}", StringComparer.OrdinalIgnoreCase),
+                        category => category.ViewerCount,
+                        category => string.IsNullOrWhiteSpace(category.Name) ? "Untitled category" : category.Name)
+                    : result.Items;
+                BrowseCategoryNextCursor = browseCategoryPages.ApplyPage(
+                    BrowseCategories, categories,
+                    card => $"{card.Platform}:{card.Id}", category => $"{category.Platform}:{category.Id}",
+                    category => new BrowseCategoryViewModel(category, SelectBrowseCategoryAsync),
+                    (card, category) => card.Update(category), cursor, result.NextCursor);
+                if (platform == PlatformKind.Kick && !reset)
+                {
+                    SortBrowseCategoriesByViewerCount();
+                }
             }
 
-            BrowseCategoryNextCursor = result.NextCursor;
             HasBrowseCategorySearchCompleted = true;
             BrowseStatus = result.Message;
             browseCategoryStatus = result.Message;
             StatusMessage = result.Message;
-            StartBrowseCategoryViewerCountLoad(platform, query);
+            if (result.IsAvailable) StartBrowseCategoryViewerCountLoad(platform, query);
         }
         catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
         {
@@ -2316,29 +2427,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void AppendBrowseCategories(IReadOnlyList<BrowseCategory> categories)
-    {
-        var existing = BrowseCategories
-            .Select(category => $"{category.Platform}:{category.Id}")
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var category in categories)
-        {
-            var key = $"{category.Platform}:{category.Id}";
-            if (!existing.Add(key))
-            {
-                continue;
-            }
-
-            BrowseCategories.Add(new BrowseCategoryViewModel(category, SelectBrowseCategoryAsync));
-        }
-    }
-
     private void SortBrowseCategoriesByViewerCount()
     {
-        var sortedCategories = BrowseCategories
-            .OrderBy(category => category.Category.ViewerCount is null ? 1 : 0)
-            .ThenByDescending(category => category.Category.ViewerCount ?? 0)
-            .ThenBy(category => category.Name, StringComparer.OrdinalIgnoreCase)
+        var sortedCategories = OrderBrowseCategories(BrowseCategories,
+                category => category.Category.ViewerCount, category => category.Name)
             .ToArray();
 
         for (var index = 0; index < sortedCategories.Length; index++)
@@ -2351,6 +2443,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
         }
     }
+
+    private static IOrderedEnumerable<T> OrderBrowseCategories<T>(IEnumerable<T> categories,
+        Func<T, int?> viewerCount, Func<T, string> name) => categories
+        .OrderBy(category => viewerCount(category) is null ? 1 : 0)
+        .ThenByDescending(category => viewerCount(category) ?? 0)
+        .ThenBy(name, StringComparer.OrdinalIgnoreCase);
 
     private void StartBrowseCategoryViewerCountLoad(PlatformKind platform, string query)
     {
@@ -2602,7 +2700,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SelectBrowseCategoryAsync(BrowseCategoryViewModel category)
     {
-        if (category.Platform != SelectedBrowsePlatform)
+        if (disposed || category.Platform != SelectedBrowsePlatform)
         {
             return;
         }
@@ -2626,19 +2724,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         await LoadBrowseStreamsAsync(reset: true);
     }
 
-    private async Task LoadBrowseStreamsAsync(bool reset)
+    private Task LoadBrowseStreamsAsync(bool reset)
     {
+        if (disposed) return Task.CompletedTask;
         if (browseService is null)
         {
             BrowseStatus = "Browse is not available.";
-            return;
+            return Task.CompletedTask;
         }
 
         var category = SelectedBrowseCategory;
         if (category is null)
         {
             BrowseStatus = "Select a category first.";
-            return;
+            return Task.CompletedTask;
         }
 
         var platform = SelectedBrowsePlatform;
@@ -2647,16 +2746,38 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var cursor = reset ? "" : BrowseStreamNextCursor;
         if (!reset && string.IsNullOrWhiteSpace(cursor))
         {
-            return;
+            return Task.CompletedTask;
+        }
+
+        if (reset && activeBrowseStreamTask is { IsCompleted: false } &&
+            activeBrowseStreamGeneration == vodBrowseController.CurrentBrowseStreamGeneration &&
+            activeBrowseStreamSearch == (platform, categoryId))
+        {
+            return activeBrowseStreamTask;
         }
 
         var searchGeneration = reset
             ? vodBrowseController.AdvanceBrowseStreamGeneration()
             : vodBrowseController.CurrentBrowseStreamGeneration;
+        activeBrowseStreamGeneration = searchGeneration;
+        activeBrowseStreamSearch = (platform, categoryId);
+        var task = RunBrowseStreamsAsync(reset,
+            new BrowseStreamRequest(platform, categoryId, categoryName, cursor, BrowseStreamPageSize), searchGeneration);
+        // A refresh during Load More must restart the first page, not share pagination.
+        activeBrowseStreamTask = reset ? task : null;
+        return task;
+    }
+
+    private async Task RunBrowseStreamsAsync(bool reset, BrowseStreamRequest request, int searchGeneration)
+    {
+        var platform = request.Platform;
+        var categoryId = request.CategoryId;
+        var categoryName = request.CategoryName;
         var searchCancellation = ReplaceBrowseStreamSearchCancellation();
         if (reset)
         {
-            ClearBrowseStreams(clearSelectedCategory: false);
+            // Keep usable cards and the last successful cursor until the refresh succeeds.
+            // Selecting a different category already clears them at the navigation boundary.
             HasBrowseStreamSearchCompleted = false;
         }
 
@@ -2668,8 +2789,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var result = await browseService.GetStreamsAsync(
-                new BrowseStreamRequest(platform, categoryId, categoryName, cursor, BrowseStreamPageSize),
+            var result = await browseService!.GetStreamsAsync(
+                request,
                 Settings,
                 searchCancellation.Token);
             if (!IsCurrentBrowseStreamSearch(searchGeneration, platform, categoryId))
@@ -2677,8 +2798,26 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            AppendBrowseStreams(result.Items);
-            BrowseStreamNextCursor = result.NextCursor;
+            if (result.IsAvailable)
+            {
+                var thumbnailCacheVersion = Interlocked.Increment(ref nextLiveThumbnailCacheVersion);
+                if (reset)
+                {
+                    UpdateLiveStreamCards(BrowseStreams,
+                        result.Items.Select(LiveStreamCardData.FromBrowseStream), thumbnailCacheVersion);
+                    BrowseStreamNextCursor = browseStreamPages.RecordPage(request.Cursor, result.NextCursor);
+                }
+                else
+                {
+                    BrowseStreamNextCursor = browseStreamPages.AppendPage(
+                        BrowseStreams,
+                        result.Items.Select(stream => new LiveStreamCardViewModel(
+                            LiveStreamCardData.FromBrowseStream(stream), OpenLiveStreamCardAsync, thumbnailCacheVersion)),
+                        stream => stream.Target.TabIdentityKey,
+                        request.Cursor,
+                        result.NextCursor);
+                }
+            }
             HasBrowseStreamSearchCompleted = true;
             BrowseStatus = result.Message;
             StatusMessage = result.Message;
@@ -2706,24 +2845,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             DisposeBrowseStreamSearchCancellation(searchCancellation);
-        }
-    }
-
-    private void AppendBrowseStreams(IReadOnlyList<BrowseLiveStream> streams)
-    {
-        var existing = BrowseStreams
-            .Select(stream => stream.Target.TabIdentityKey)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var stream in streams)
-        {
-            if (!existing.Add(stream.Target.TabIdentityKey))
-            {
-                continue;
-            }
-
-            BrowseStreams.Add(new LiveStreamCardViewModel(
-                LiveStreamCardData.FromBrowseStream(stream),
-                OpenLiveStreamCardAsync));
         }
     }
 
@@ -2973,6 +3094,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     .ToList();
                 recentStreamController.RemoveLiveStatus(target.StateKey);
                 recentStreamController.TakeHint(target.StateKey);
+                pendingRecentMetadata?.Remove(target.StateKey);
 
                 RebuildRecentStreams();
                 StatusMessage = $"{target.DisplayName} removed from recent streams";
@@ -3065,24 +3187,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return [];
         }
 
-        if (GetPictureInPictureTabGroup(tab) is { Count: > 1 } pictureInPictureGroup)
-        {
-            return pictureInPictureGroup;
-        }
-
-        if (!tab.IsDetached && GetMultiViewTabGroup(tab) is { Count: > 1 } multiViewGroup)
-        {
-            var hostableGroup = multiViewGroup
-                .Where(candidate => !candidate.IsDetached)
-                .Take(VideoGridLayoutCalculator.TileLimit)
-                .ToArray();
-            if (hostableGroup.Length > 1 && hostableGroup.Contains(tab))
-            {
-                return hostableGroup;
-            }
-        }
-
-        return [tab];
+        return ResolveHostableTabGroup(tab) ?? [tab];
     }
 
     public bool IsCurrentVideoViewMultiStream()
@@ -3337,32 +3442,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RemoveTabsFromMultiViewGroups(IReadOnlyCollection<StreamTabViewModel> tabs, bool applyLayout)
     {
-        if (tabs.Count == 0 || tabGroupingController.MultiViewGroups.Count == 0)
-        {
-            return;
-        }
-
-        var tabsToRemove = tabs.ToHashSet();
-        var changed = false;
-        for (var index = 0; index < tabGroupingController.MultiViewGroups.Count; index++)
-        {
-            var group = tabGroupingController.MultiViewGroups[index];
-            var originalCount = group.Count;
-            group.RemoveAll(tabsToRemove.Contains);
-            if (group.Count != originalCount)
-            {
-                changed = true;
-            }
-
-            if (group.Count <= 1)
-            {
-                tabGroupingController.MultiViewGroups.RemoveAt(index);
-                index--;
-                changed = true;
-            }
-        }
-
-        if (changed && applyLayout)
+        if (tabGroupingController.RemoveFromMultiViewGroups(tabs) && applyLayout)
         {
             ApplyVideoLayout();
         }
@@ -3370,25 +3450,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RemoveTabsFromPictureInPictureVisibleGroups(IReadOnlyCollection<StreamTabViewModel> tabs, bool applyPolicy)
     {
-        if (tabs.Count == 0 || tabGroupingController.PictureInPictureVisibleGroups.Count == 0)
-        {
-            return;
-        }
-
-        var tabsToRemove = tabs.ToHashSet();
-        var changed = false;
-        for (var index = 0; index < tabGroupingController.PictureInPictureVisibleGroups.Count; index++)
-        {
-            var group = tabGroupingController.PictureInPictureVisibleGroups[index];
-            if (group.Any(tabsToRemove.Contains))
-            {
-                tabGroupingController.PictureInPictureVisibleGroups.RemoveAt(index);
-                index--;
-                changed = true;
-            }
-        }
-
-        if (changed && applyPolicy)
+        if (tabGroupingController.RemoveFromPictureInPictureVisibleGroups(tabs) && applyPolicy)
         {
             ApplyVlcPluginMultiViewChatPolicyInBackground(restoreWhenAllowed: true);
         }
@@ -3450,81 +3512,45 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RemoveTabsFromPictureInPictureGroups(IReadOnlyCollection<StreamTabViewModel> tabs, bool applyLayout)
     {
-        if (tabs.Count == 0 || tabGroupingController.PictureInPictureGroups.Count == 0)
-        {
-            return;
-        }
-
-        var tabsToRemove = tabs.ToHashSet();
-        var changed = false;
-        for (var index = 0; index < tabGroupingController.PictureInPictureGroups.Count; index++)
-        {
-            var group = tabGroupingController.PictureInPictureGroups[index];
-            var originalCount = group.Count;
-            group.RemoveAll(tabsToRemove.Contains);
-            if (group.Count != originalCount)
-            {
-                changed = true;
-            }
-
-            if (group.Count <= 1)
-            {
-                tabGroupingController.PictureInPictureGroups.RemoveAt(index);
-                index--;
-                changed = true;
-            }
-        }
-
-        if (changed && applyLayout)
+        if (tabGroupingController.RemoveFromPictureInPictureGroups(tabs) && applyLayout)
         {
             ApplyVideoLayout();
         }
     }
 
-    public async Task OpenDetectedStreamAsync(StreamTarget target)
+    internal async Task OpenStreamAsync(
+        StreamTarget target,
+        bool clearInputOnSuccess = false,
+        bool selectOpenedTab = true)
     {
-        if (disposed)
-        {
-            return;
-        }
+        if (disposed) return;
 
-        var enteredStreamOpenGate = false;
+        target = await TryLoadTargetCategoryAsync(target, lifetimeCancellation.Token);
+        await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
         try
         {
-            target = await TryLoadTargetCategoryAsync(target, lifetimeCancellation.Token);
-            await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
-            enteredStreamOpenGate = true;
-
-            BrowserClickStatus = $"Detected {target.DisplayName}";
             var existing = FindTab(target);
             if (existing is not null)
             {
                 existing.SetProfileImageUrl(target.ProfileImageUrl);
-                FocusOrStartExistingTab(existing, updateBrowserStatus: true);
-                BrowserClickStatus = StatusMessage;
+                if (selectOpenedTab)
+                {
+                    FocusOrStartExistingTab(existing);
+                }
+                else
+                {
+                    StartExistingTabWithoutSelecting(existing);
+                }
                 return;
             }
 
-            var tab = CreateAndSelectTab(target);
+            var tab = selectOpenedTab ? CreateAndSelectTab(target) : CreateTab(target);
             StatusMessage = $"Starting {target.DisplayName}";
-            BrowserClickStatus = StatusMessage;
-            StartTabInBackground(tab, clearInputOnSuccess: false, updateBrowserStatus: true);
-        }
-        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            BrowserClickStatus = ex.Message;
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "UI", "Detected stream open failed.", ex);
+            StartTabInBackground(tab, clearInputOnSuccess);
         }
         finally
         {
-            if (enteredStreamOpenGate)
-            {
-                streamOpenGate.Release();
-            }
+            streamOpenGate.Release();
         }
     }
 
@@ -3615,6 +3641,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
+            if (automaticUpdateTask is not null) await automaticUpdateTask;
             await DrainSearchOperationsAsync();
 
             var tabDisposals = Tabs
@@ -3662,10 +3689,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             recentStreamsGate.Dispose();
             recentThumbnailRefreshGate.Dispose();
             followedChannelsRefreshGate.Dispose();
-            if (appUpdateService is IDisposable disposableUpdater)
+            if (appUpdateService is not null)
             {
                 appUpdateService.StateChanged -= OnAppUpdateStateChanged;
-                disposableUpdater.Dispose();
+                (appUpdateService as IDisposable)?.Dispose();
             }
         }
     }
@@ -3684,12 +3711,27 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task AddAndPlayAsync()
+    private Task AddAndPlayAsync()
     {
         var query = NewStreamText.Trim();
-        var searchGeneration = streamSearchController.AdvanceGeneration();
         CancelStreamSearchDebounce();
-        await RunStreamSearchAsync(query, searchGeneration);
+        if (activeStreamSearchTask is { IsCompleted: false } &&
+            activeStreamSearchGeneration == streamSearchController.CurrentGeneration &&
+            string.Equals(activeStreamSearchQuality, SelectedQuality, StringComparison.Ordinal))
+        {
+            SetStreamSearchDropdownOpen(true);
+            return activeStreamSearchTask;
+        }
+
+        return StartStreamSearchAsync(query, streamSearchController.AdvanceGeneration());
+    }
+
+    private Task StartStreamSearchAsync(string query, int searchGeneration)
+    {
+        activeStreamSearchGeneration = searchGeneration;
+        activeStreamSearchQuality = SelectedQuality;
+        activeStreamSearchTask = RunStreamSearchAsync(query, searchGeneration);
+        return activeStreamSearchTask;
     }
 
     private async Task RunStreamSearchAsync(string query, int searchGeneration)
@@ -3740,7 +3782,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             if (!viewerCountProbes.SequenceEqual(enrichedProbes))
             {
                 displayProbes = OrderStreamSearchProbesForDisplay(viewerCountProbes);
-                ReplaceStreamSearchResults(displayProbes);
+                UpdateStreamSearchViewerCounts(displayProbes);
                 StreamSearchStatus = FormatStreamSearchResult(query, displayProbes);
                 StatusMessage = StreamSearchStatus;
             }
@@ -3815,7 +3857,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StatusMessage = message;
         StreamSearchStatus = message;
         var customArguments = CommandLineTokenizer.Tokenize(Settings.CustomStreamlinkArguments);
-        return await ProbeCandidatesAsync(candidates, customArguments, cancellationToken);
+        return await ProbeCandidatesAsync(
+            candidates,
+            customArguments,
+            cancellationToken);
     }
 
     private async Task<IReadOnlyList<StreamCandidateProbe>> LoadStreamSearchResultMetadataAsync(
@@ -3913,6 +3958,32 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     probe.Metadata,
                     OpenSearchResultAsync,
                     probe.ViewerCount));
+        }
+    }
+
+    private void UpdateStreamSearchViewerCounts(IReadOnlyList<StreamCandidateProbe> probes)
+    {
+        // Enrichment only changes counts and ordering. Keep the existing rows so
+        // WPF retains their controls, focus, and any in-flight Open command.
+        for (var index = 0; index < probes.Count; index++)
+        {
+            var probe = probes[index];
+            var identity = probe.Target.TabIdentityKey;
+            for (var currentIndex = index; currentIndex < StreamSearchResults.Count; currentIndex++)
+            {
+                var result = StreamSearchResults[currentIndex];
+                if (!string.Equals(result.Target.TabIdentityKey, identity, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                result.UpdateViewerCount(probe.ViewerCount);
+                if (currentIndex != index)
+                {
+                    StreamSearchResults.Move(currentIndex, index);
+                }
+                break;
+            }
         }
     }
 
@@ -4046,7 +4117,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        await RunStreamSearchAsync(query, searchGeneration);
+        await StartStreamSearchAsync(query, searchGeneration);
     }
 
     private void CancelStreamSearchDebounce()
@@ -4151,36 +4222,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             throw new InvalidOperationException("No stream target was provided.");
         }
 
-        var target = await TryLoadTargetCategoryAsync(candidates[0], lifetimeCancellation.Token);
-        await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
-        try
-        {
-            var existing = FindTab(target);
-            if (existing is not null)
-            {
-                existing.SetProfileImageUrl(target.ProfileImageUrl);
-                if (selectOpenedTab)
-                {
-                    FocusOrStartExistingTab(existing, updateBrowserStatus: false);
-                }
-                else
-                {
-                    StartExistingTabWithoutSelecting(existing, updateBrowserStatus: false);
-                }
-
-                return;
-            }
-
-            var tab = selectOpenedTab
-                ? CreateAndSelectTab(target)
-                : CreateTab(target);
-            StatusMessage = $"Starting {target.DisplayName}";
-            StartTabInBackground(tab, clearInputOnSuccess, updateBrowserStatus: false);
-        }
-        finally
-        {
-            streamOpenGate.Release();
-        }
+        await OpenStreamAsync(candidates[0], clearInputOnSuccess, selectOpenedTab);
     }
 
     private async Task<StreamTarget> TryLoadTargetCategoryAsync(
@@ -4233,7 +4275,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void FocusOrStartExistingTab(StreamTabViewModel tab, bool updateBrowserStatus)
+    private void FocusOrStartExistingTab(StreamTabViewModel tab)
     {
         SelectedTab = tab;
         SelectedQuality = tab.Quality;
@@ -4241,42 +4283,25 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (IsTabOpenOrStarting(tab))
         {
             StatusMessage = $"{tab.Target.DisplayName} already open";
-            if (updateBrowserStatus)
-            {
-                BrowserClickStatus = StatusMessage;
-            }
             return;
         }
 
         StatusMessage = $"Starting {tab.Target.DisplayName}";
-        if (updateBrowserStatus)
-        {
-            BrowserClickStatus = StatusMessage;
-        }
 
-        StartTabInBackground(tab, clearInputOnSuccess: false, updateBrowserStatus: updateBrowserStatus);
+        StartTabInBackground(tab, clearInputOnSuccess: false);
     }
 
-    private void StartExistingTabWithoutSelecting(StreamTabViewModel tab, bool updateBrowserStatus)
+    private void StartExistingTabWithoutSelecting(StreamTabViewModel tab)
     {
         if (IsTabOpenOrStarting(tab))
         {
             StatusMessage = $"{tab.Target.DisplayName} already open";
-            if (updateBrowserStatus)
-            {
-                BrowserClickStatus = StatusMessage;
-            }
-
             return;
         }
 
         StatusMessage = $"Starting {tab.Target.DisplayName}";
-        if (updateBrowserStatus)
-        {
-            BrowserClickStatus = StatusMessage;
-        }
 
-        StartTabInBackground(tab, clearInputOnSuccess: false, updateBrowserStatus: updateBrowserStatus);
+        StartTabInBackground(tab, clearInputOnSuccess: false);
     }
 
     private StreamTabViewModel CreateAndSelectTab(StreamTarget target)
@@ -4480,7 +4505,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token));
+            // Navigation can reuse fresh results; periodic polling retains its cadence.
+            backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token, force: true));
         });
     }
 
@@ -4494,7 +4520,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token));
     }
 
-    private async Task RefreshRecentThumbnailsAsync(CancellationToken cancellationToken)
+    private async Task RefreshRecentThumbnailsAsync(CancellationToken cancellationToken, bool force = false)
     {
         if (streamMetadataService is null || Settings.RecentStreams.Count == 0)
         {
@@ -4515,27 +4541,44 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
+            var now = DateTimeOffset.UtcNow;
             var snapshot = Settings.RecentStreams
                 .Select(stream => new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName))
+                .DistinctBy(target => target.StateKey, StringComparer.OrdinalIgnoreCase)
+                .Where(target => force || !recentStreamController.IsMetadataFresh(target.StateKey, now, recentThumbnailRefreshInterval))
                 .ToArray();
             if (snapshot.Length == 0)
             {
                 return;
             }
 
+            var metadataByStream = new Dictionary<string, StreamMetadataResult>(StringComparer.OrdinalIgnoreCase);
+            pendingRecentMetadata = metadataByStream;
             await MarkRecentStreamsCheckingAsync(snapshot, cancellationToken);
 
-            var metadataByStream = new Dictionary<string, StreamMetadataResult>(StringComparer.OrdinalIgnoreCase);
-            foreach (var target in snapshot)
+            // A fixed worker count bounds both provider requests and queued tasks
+            // even when the user's Recent history has grown large.
+            var nextIndex = -1;
+            await Task.WhenAll(Enumerable.Range(0, Math.Min(RecentMetadataConcurrency, snapshot.Length)).Select(async _ =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var metadata = await GetRecentStreamMetadataAsync(target, cancellationToken);
-                if (metadata is not null)
+                while (true)
                 {
-                    metadataByStream[target.StateKey] = metadata;
-                }
-            }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var index = Interlocked.Increment(ref nextIndex);
+                    if (index >= snapshot.Length)
+                    {
+                        return;
+                    }
 
+                    var metadata = await GetRecentStreamMetadataAsync(snapshot[index], cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (metadata is not null)
+                    {
+                        await ApplyRecentStreamMetadataAsync(snapshot[index], metadata, cancellationToken);
+                    }
+                }
+            }));
+            cancellationToken.ThrowIfCancellationRequested();
             if (disposed || metadataByStream.Count == 0)
             {
                 return;
@@ -4544,60 +4587,23 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             await recentStreamsGate.WaitAsync(cancellationToken);
             try
             {
+                if (disposed) return;
                 var settingsChanged = false;
-                var currentStreamKeys = Settings.RecentStreams
-                    .Select(stream => new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName).StateKey)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var statusChanged = ApplyRecentStreamLiveStatuses(metadataByStream, currentStreamKeys, DateTimeOffset.UtcNow);
-                var updated = new List<RecentStreamSettings>();
+                var updated = new List<RecentStreamSettings>(Settings.RecentStreams.Count);
                 foreach (var stream in Settings.RecentStreams)
                 {
-                    var target = new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName);
-                    if (!metadataByStream.TryGetValue(target.StateKey, out var metadata) ||
-                        metadata.State != StreamMetadataState.Available)
-                    {
-                        updated.Add(stream);
-                        continue;
-                    }
-
-                    var displayName = FirstNonEmpty(metadata.DisplayName, stream.DisplayName, stream.Channel);
-                    var thumbnailUrl = FirstNonEmpty(metadata.ThumbnailUrl, stream.ThumbnailUrl);
-                    var categoryName = FirstNonEmpty(metadata.CategoryName, stream.CategoryName);
-                    if (string.Equals(displayName, stream.DisplayName, StringComparison.Ordinal) &&
-                        string.Equals(thumbnailUrl, stream.ThumbnailUrl, StringComparison.Ordinal) &&
-                        string.Equals(categoryName, stream.CategoryName, StringComparison.Ordinal))
-                    {
-                        updated.Add(stream);
-                        continue;
-                    }
-
-                    settingsChanged = true;
-                    updated.Add(new RecentStreamSettings
-                    {
-                        Platform = stream.Platform,
-                        Channel = stream.Channel,
-                        Url = stream.Url,
-                        DisplayName = displayName,
-                        CategoryName = categoryName,
-                        ThumbnailUrl = thumbnailUrl,
-                        LastQuality = stream.LastQuality,
-                        LastWatchedAtUtc = stream.LastWatchedAtUtc
-                    });
+                    var key = new StreamTarget(stream.Platform, stream.Channel, stream.Url).StateKey;
+                    var next = metadataByStream.TryGetValue(key, out var metadata)
+                        ? MergeRecentStreamMetadata(stream, metadata) : stream;
+                    updated.Add(next);
+                    settingsChanged |= !ReferenceEquals(stream, next);
                 }
-
-                if (!settingsChanged && !statusChanged)
-                {
-                    return;
-                }
-
+                // Publish a new settings list once, keeping a concurrent save's snapshot
+                // stable while individual results are already visible in the cards.
                 if (settingsChanged)
                 {
                     Settings.RecentStreams = updated;
-                }
-
-                RebuildRecentStreams();
-                if (settingsChanged)
-                {
+                    RebuildRecentStreams();
                     await SaveRecentThumbnailSettingsAsync(cancellationToken);
                 }
             }
@@ -4615,6 +4621,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
+            pendingRecentMetadata = null;
             recentThumbnailRefreshGate.Release();
         }
     }
@@ -4652,24 +4659,61 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private bool ApplyRecentStreamLiveStatuses(
-        IReadOnlyDictionary<string, StreamMetadataResult> metadataByStream,
-        IReadOnlySet<string> currentStreamKeys,
-        DateTimeOffset checkedAtUtc)
+    private async Task ApplyRecentStreamMetadataAsync(
+        StreamTarget target,
+        StreamMetadataResult metadata,
+        CancellationToken cancellationToken)
     {
-        var changed = false;
-        foreach (var (stateKey, metadata) in metadataByStream)
+        await recentStreamsGate.WaitAsync(cancellationToken);
+        try
         {
-            if (!currentStreamKeys.Contains(stateKey))
+            if (disposed)
             {
-                continue;
+                return;
             }
 
+            // A request can finish after its row was deleted. It must not restore either
+            // the row or its transient freshness/status entry.
+            var current = FindRecentStream(target);
+            if (current is null) return;
+            pendingRecentMetadata![target.StateKey] = metadata;
+            var checkedAtUtc = DateTimeOffset.UtcNow;
             var status = CreateRecentStreamLiveStatus(metadata, checkedAtUtc);
-            changed |= recentStreamController.SetLiveStatus(stateKey, status);
+            recentStreamController.SetLiveStatus(target.StateKey, status);
+            recentStreamController.RecordMetadataRefresh(target.StateKey, checkedAtUtc,
+                metadata.State is StreamMetadataState.Available or StreamMetadataState.Offline);
+            foreach (var card in RecentStreams)
+            {
+                if (card.Platform == target.Platform &&
+                    string.Equals(card.Channel, target.Channel, StringComparison.OrdinalIgnoreCase))
+                    card.Update(MergeRecentStreamMetadata(current, metadata), status);
+            }
         }
+        finally { recentStreamsGate.Release(); }
+    }
 
-        return changed;
+    private static RecentStreamSettings MergeRecentStreamMetadata(RecentStreamSettings stream, StreamMetadataResult metadata)
+    {
+        if (metadata.State != StreamMetadataState.Available) return stream;
+        var displayName = FirstNonEmpty(metadata.DisplayName, stream.DisplayName, stream.Channel);
+        var thumbnailUrl = NormalizeImageUrl(FirstNonEmpty(metadata.ThumbnailUrl, stream.ThumbnailUrl));
+        var categoryName = FirstNonEmpty(metadata.CategoryName, stream.CategoryName);
+        if (displayName == stream.DisplayName && thumbnailUrl == stream.ThumbnailUrl && categoryName == stream.CategoryName)
+            return stream;
+
+        // Merge into the latest settings, preserving watch order, quality and timestamps
+        // that playback or a user action may have changed while the request was running.
+        return new RecentStreamSettings
+        {
+            Platform = stream.Platform,
+            Channel = stream.Channel,
+            Url = stream.Url,
+            DisplayName = displayName,
+            CategoryName = categoryName,
+            ThumbnailUrl = thumbnailUrl,
+            LastQuality = stream.LastQuality,
+            LastWatchedAtUtc = stream.LastWatchedAtUtc
+        };
     }
 
     private static RecentStreamLiveStatus CreateRecentStreamLiveStatus(
@@ -4771,9 +4815,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     .Where(stream => !IsSameRecentStream(stream, target))
                     .Prepend(recentStream)
                     .ToList();
-                recentStreamController.SetLiveStatus(
-                    target.StateKey,
-                    CreateRecentStreamLiveStatus(metadata, DateTimeOffset.UtcNow));
+                var checkedAtUtc = DateTimeOffset.UtcNow;
+                recentStreamController.SetLiveStatus(target.StateKey, CreateRecentStreamLiveStatus(metadata, checkedAtUtc));
+                recentStreamController.RecordMetadataRefresh(target.StateKey, checkedAtUtc, succeeded: true);
                 RebuildRecentStreams();
                 await SaveRecentStreamSettingsAsync(target);
             }
@@ -4924,7 +4968,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private void EndTabStart(StreamTabViewModel tab)
         => tabStartController.End(tab.Id);
 
-    private void StartTabInBackground(StreamTabViewModel tab, bool clearInputOnSuccess, bool updateBrowserStatus)
+    private void StartTabInBackground(StreamTabViewModel tab, bool clearInputOnSuccess)
     {
         if (disposed || !TryBeginTabStart(tab))
         {
@@ -4933,7 +4977,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         ApplyVideoLayout();
         var start = () => backgroundOperationController.Track(
-            StartTabAndUpdateStatusAsync(tab, clearInputOnSuccess, updateBrowserStatus));
+            StartTabAndUpdateStatusAsync(tab, clearInputOnSuccess));
         try
         {
             if (tryDispatch is not null)
@@ -4955,7 +4999,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task StartTabAndUpdateStatusAsync(StreamTabViewModel tab, bool clearInputOnSuccess, bool updateBrowserStatus)
+    private async Task StartTabAndUpdateStatusAsync(StreamTabViewModel tab, bool clearInputOnSuccess)
     {
         if (disposed)
         {
@@ -4997,11 +5041,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     {
                         StatusMessage = $"{tab.Target.DisplayName}: {GetStartFailure(tab)}";
                     }
-
-                    if (updateBrowserStatus)
-                    {
-                        BrowserClickStatus = StatusMessage;
-                    }
                 },
                 lifetimeCancellation.Token);
         }
@@ -5011,10 +5050,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         catch (Exception ex)
         {
             StatusMessage = ex.Message;
-            if (updateBrowserStatus)
-            {
-                BrowserClickStatus = ex.Message;
-            }
 
             logger.Write(AppLogLevel.Error, "UI", $"Failed to start {tab.Target.DisplayName}.", ex);
         }
@@ -5063,7 +5098,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         StatusMessage = $"Checking Twitch and Kick for {candidates[0].Channel}";
         var customArguments = CommandLineTokenizer.Tokenize(Settings.CustomStreamlinkArguments);
-        var probes = await ProbeCandidatesAsync(candidates, customArguments, CancellationToken.None);
+        var probes = await ProbeCandidatesAsync(
+            candidates,
+            customArguments,
+            CancellationToken.None);
         var playableProbes = probes
             .Where(probe => probe.Result.HasPlayableStream)
             .ToArray();
@@ -5102,7 +5140,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            var request = new StreamTransportRequest(target, SelectedQuality, Settings.StreamlinkPath!, Settings.LowLatency, customArguments);
+            var request = new StreamTransportRequest(
+                target,
+                SelectedQuality,
+                Settings.StreamlinkPath!,
+                Settings.LowLatency,
+                customArguments);
             var result = await streamlinkService.ProbeStreamsAsync(request, cancellationToken);
             return new StreamCandidateProbe(target, result);
         }
@@ -5125,7 +5168,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         StatusMessage = $"Starting {SelectedTab.Target.DisplayName}";
-        StartTabInBackground(SelectedTab, clearInputOnSuccess: false, updateBrowserStatus: false);
+        StartTabInBackground(SelectedTab, clearInputOnSuccess: false);
         await Task.CompletedTask;
     }
 
@@ -5195,7 +5238,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         StatusMessage = $"Reloading {SelectedTab.Target.DisplayName}";
-        StartTabInBackground(SelectedTab, clearInputOnSuccess: false, updateBrowserStatus: false);
+        StartTabInBackground(SelectedTab, clearInputOnSuccess: false);
         await Task.CompletedTask;
     }
 
@@ -5697,7 +5740,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task UpdateAppAsync()
+    private bool CanRunUpdateAction() => !disposed && Volatile.Read(ref updateActionInProgress) == 0 &&
+        updateDownloadCancellation is null && appUpdateService is not null &&
+        appUpdateService.State.Phase is not (AppUpdatePhase.Checking or AppUpdatePhase.Downloading or AppUpdatePhase.Verifying or AppUpdatePhase.Launching);
+
+    private void RaiseUpdateActionCanExecuteChanged()
+    {
+        UpdateAppCommand.RaiseCanExecuteChanged();
+        CheckForUpdatesCommand.RaiseCanExecuteChanged();
+        LaterUpdateCommand.RaiseCanExecuteChanged();
+    }
+
+    private async Task UpdateAppAsync(bool checkOnly)
     {
         if (appUpdateService is null)
         {
@@ -5706,27 +5760,35 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Both manual commands share admission, including the settings save before
+        // the service enters Checking or Launching and announces its busy state.
+        if (Interlocked.CompareExchange(ref updateActionInProgress, 1, 0) != 0) return;
         try
         {
-            Settings.Updates.SnoozedVersion = "";
-            Settings.Updates.SnoozedUntilUtc = null;
-            if (appUpdateService.State is { Phase: AppUpdatePhase.NotifyOnly, Release: { } notification })
+            RaiseUpdateActionCanExecuteChanged();
+            if (Settings.Updates.SnoozedVersion.Length != 0 || Settings.Updates.SnoozedUntilUtc is not null)
+            {
+                Settings.Updates.SnoozedVersion = "";
+                Settings.Updates.SnoozedUntilUtc = null;
+                await settingsService.SaveAsync(Settings, lifetimeCancellation.Token);
+            }
+            if (!checkOnly && appUpdateService.State is { Phase: AppUpdatePhase.NotifyOnly, Release: { } notification })
             {
                 openBrowser(notification.ReleasePage);
                 return;
             }
-            if (appUpdateService.State is { Phase: AppUpdatePhase.Available, Release: { } release })
+            if (!checkOnly && appUpdateService.State is { Phase: AppUpdatePhase.Available or AppUpdatePhase.DownloadFailed, Release: { } release })
             {
-                await appUpdateService.DownloadAsync(release, cancellationToken: lifetimeCancellation.Token);
+                await DownloadUpdateAsync(release, automatic: false, lifetimeCancellation.Token);
                 return;
             }
-            if (appUpdateService.State is { Phase: AppUpdatePhase.Ready, PreparedUpdate: { } prepared })
+            if (!checkOnly && appUpdateService.State is { Phase: AppUpdatePhase.Ready, PreparedUpdate: { } prepared })
             {
                 var launch = await appUpdateService.ApplyAndRestartAsync(prepared, lifetimeCancellation.Token);
                 AppUpdateStatus = launch.Message;
                 StatusMessage = launch.Message;
                 logger.Write(AppLogLevel.Info, "Updater", launch.Message);
-                requestShutdown?.Invoke();
+                if (launch.Started) requestShutdown?.Invoke();
                 return;
             }
             AppUpdateStatus = "Checking the latest signed release…";
@@ -5744,54 +5806,102 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             StatusMessage = AppUpdateStatus;
             logger.Write(AppLogLevel.Error, "Updater", "Application update failed.", ex);
         }
+        finally
+        {
+            Volatile.Write(ref updateActionInProgress, 0);
+            RaiseUpdateActionCanExecuteChanged();
+        }
     }
 
-    private async Task CheckForStartupUpdateAsync()
+    private void CancelUpdateDownload()
     {
+        updateDownloadCanceledByUser = true;
+        updateDownloadCancellation?.Cancel();
+    }
+
+    private async Task DownloadUpdateAsync(AppUpdateRelease release, bool automatic, CancellationToken token)
+    {
+        if (updateDownloadCancellation is not null) return;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token, lifetimeCancellation.Token);
+        var preferences = Settings.Updates;
+        void PreferencesChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (!preferences.AutomaticChecksEnabled || !preferences.AutomaticDownloadsEnabled)
+                cancellation.Cancel();
+        }
+        if (automatic) preferences.PropertyChanged += PreferencesChanged;
+        updateDownloadCanceledByUser = false;
+        updateDownloadCancellation = cancellation;
+        OnPropertyChanged(nameof(CanCancelUpdate));
+        CancelUpdateCommand.RaiseCanExecuteChanged();
+        RaiseUpdateActionCanExecuteChanged();
         try
         {
-            if (!Settings.Updates.AutomaticChecksEnabled)
-            {
-                var disabledCompletion = await appUpdateService!.ConsumeCompletionAsync(lifetimeCancellation.Token);
-                if (disabledCompletion is not null) AppUpdateStatus = disabledCompletion.Message;
-                return;
-            }
-            var completion = await appUpdateService!.ConsumeCompletionAsync(lifetimeCancellation.Token);
-            if (completion is not null) AppUpdateStatus = completion.Message;
-            await Task.Delay(TimeSpan.FromSeconds(20), lifetimeCancellation.Token);
-            try
-            {
-                var result = await appUpdateService.CheckAsync(UpdateCheckReason.Startup, lifetimeCancellation.Token);
-                ApplySnooze(result);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                logger.Write(AppLogLevel.Warning, "Updater", "Initial automatic update check failed; retrying in 15 minutes.", ex);
-                await Task.Delay(TimeSpan.FromMinutes(15), lifetimeCancellation.Token);
-                var result = await appUpdateService.CheckAsync(UpdateCheckReason.Retry, lifetimeCancellation.Token);
-                ApplySnooze(result);
-            }
+            await appUpdateService!.DownloadAsync(release, cancellationToken: cancellation.Token);
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested) { }
-        catch (NotSupportedException) { }
-        catch (Exception ex) { logger.Write(AppLogLevel.Warning, "Updater", "Automatic update check failed.", ex); }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Only the explicit Cancel action pauses this version for the session.
+            // A preference change must allow downloading again after re-enabling it.
+            if (updateDownloadCanceledByUser) canceledAutomaticDownloadVersion = release.Version;
+        }
+        finally
+        {
+            if (automatic) preferences.PropertyChanged -= PreferencesChanged;
+            updateDownloadCancellation = null;
+            OnPropertyChanged(nameof(CanCancelUpdate));
+            CancelUpdateCommand.RaiseCanExecuteChanged();
+            RaiseUpdateActionCanExecuteChanged();
+        }
     }
+
+    internal Task PrepareAutomaticUpdateAsync(AppUpdateCheckResult result, CancellationToken token)
+    {
+        if (disposed || Volatile.Read(ref updateActionInProgress) != 0 ||
+            !Settings.Updates.AutomaticChecksEnabled || !Settings.Updates.AutomaticDownloadsEnabled ||
+            !result.IsUpdateAvailable || result.IsNotifyOnly || result.Release is not { } release ||
+            result.InstallKind is not (AppInstallKind.Managed or AppInstallKind.LegacyManaged) ||
+            release.Version == canceledAutomaticDownloadVersion ||
+            Settings.Updates.IsSnoozed(release.Version, DateTimeOffset.UtcNow) ||
+            appUpdateService?.State is not { Phase: AppUpdatePhase.Available or AppUpdatePhase.DownloadFailed })
+            return Task.CompletedTask;
+
+        return DownloadUpdateAsync(release, automatic: true, token);
+    }
+
+    private Task CheckForStartupUpdateAsync() => new AutomaticUpdateController(
+        appUpdateService!,
+        () => Settings.Updates.AutomaticChecksEnabled && Volatile.Read(ref updateActionInProgress) == 0,
+        ApplySnooze,
+        completion => dispatch(() => AppUpdateStatus = completion.Message),
+        logger,
+        prepareUpdate: PrepareAutomaticUpdateAsync).RunAsync(lifetimeCancellation.Token);
 
     private void OnAppUpdateStateChanged(object? sender, AppUpdateStateChangedEventArgs e)
     {
         dispatch(() =>
         {
+            if (disposed) return;
             AppUpdateStatus = e.State.Message;
+            OnPropertyChanged(nameof(IsUpdateRefreshVisible));
             AppUpdateActionText = e.State.Phase switch
             {
                 AppUpdatePhase.Available => "Download update",
+                AppUpdatePhase.DownloadFailed => "Retry download",
                 AppUpdatePhase.Ready => "Restart and install",
                 AppUpdatePhase.NotifyOnly => "Open release page",
                 AppUpdatePhase.Downloading or AppUpdatePhase.Verifying or AppUpdatePhase.Launching => "Please wait…",
                 _ => "Check for updates"
             };
-            IsUpdateBannerVisible = e.State.Phase is AppUpdatePhase.Available or AppUpdatePhase.Ready or AppUpdatePhase.NotifyOnly;
-            LaterUpdateCommand.RaiseCanExecuteChanged();
+            IsUpdateBannerVisible = e.State.Phase is AppUpdatePhase.Available or AppUpdatePhase.Ready or AppUpdatePhase.NotifyOnly or
+                AppUpdatePhase.Downloading or AppUpdatePhase.Verifying or AppUpdatePhase.DownloadFailed ||
+                (e.State.Phase == AppUpdatePhase.Failed && e.State.Release is not null);
+            if (e.State.Phase is not (AppUpdatePhase.Downloading or AppUpdatePhase.Verifying) &&
+                e.State.Release is { } release && Settings.Updates.IsSnoozed(release.Version, DateTimeOffset.UtcNow))
+            {
+                IsUpdateBannerVisible = false;
+            }
+            RaiseUpdateActionCanExecuteChanged();
         });
     }
 
@@ -6079,6 +6189,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     }
 
     private void ChatSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        // Token refreshes and Kick identity lookups also publish settings from worker threads.
+        // Keep collection access, playback reconfiguration, and command notifications on the UI.
+        dispatch(() => ApplyChatSettingsChange(sender, e));
+    }
+
+    private void ApplyChatSettingsChange(object? sender, PropertyChangedEventArgs e)
     {
         if (disposed || !ReferenceEquals(sender, observedChatSettings))
         {
@@ -6519,14 +6636,33 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void RebuildRecentStreams()
     {
-        RecentStreams.Clear();
+        var existing = RecentStreams.ToDictionary(card => card.Target.StateKey, StringComparer.OrdinalIgnoreCase);
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var desired = new List<RecentStreamViewModel>(Settings.RecentStreams.Count);
         foreach (var stream in Settings.RecentStreams)
         {
             var target = new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName);
+            if (!keys.Add(target.StateKey)) continue;
             var liveStatus = recentStreamController.TryGetLiveStatus(target.StateKey, out var status)
                 ? status
                 : RecentStreamLiveStatus.Unknown;
-            RecentStreams.Add(new RecentStreamViewModel(stream, OpenRecentStreamAsync, DeleteRecentStreamAsync, liveStatus));
+            var displayed = pendingRecentMetadata is not null && pendingRecentMetadata.TryGetValue(target.StateKey, out var metadata)
+                ? MergeRecentStreamMetadata(stream, metadata) : stream;
+            if (existing.TryGetValue(target.StateKey, out var card)) card.Update(displayed, liveStatus);
+            else card = new RecentStreamViewModel(displayed, OpenRecentStreamAsync, DeleteRecentStreamAsync, liveStatus);
+            desired.Add(card);
+        }
+        for (var index = RecentStreams.Count - 1; index >= 0; index--)
+        {
+            if (!keys.Contains(RecentStreams[index].Target.StateKey)) RecentStreams.RemoveAt(index);
+        }
+        for (var index = 0; index < desired.Count; index++)
+        {
+            var card = desired[index];
+            if (index < RecentStreams.Count && ReferenceEquals(RecentStreams[index], card)) continue;
+            var currentIndex = RecentStreams.IndexOf(card);
+            if (currentIndex < 0) RecentStreams.Insert(index, card);
+            else RecentStreams.Move(currentIndex, index);
         }
     }
 
@@ -6669,7 +6805,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (tab.IsDetached || !visibleSet.Contains(tab))
             {
-                tab.SetVideoPlacement(visible: false, row: 0, column: 0, rowSpan: 1, columnSpan: 1);
+                // Hidden HWNDs stay mounted. Keep their single-stream allocation so
+                // revealing a tab does not first expose a quarter-size video surface.
+                tab.SetVideoPlacement(visible: false, row: 0, column: 0,
+                    rowSpan: layout.Rows, columnSpan: layout.Columns);
             }
         }
 
@@ -6911,7 +7050,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 continue;
             }
 
-            var group = ResolveTabStripGroup(tab);
+            var group = ResolveHostableTabGroup(tab);
             if (group is null)
             {
                 groups.Add([tab]);
@@ -6930,7 +7069,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         return groups;
     }
 
-    private IReadOnlyList<StreamTabViewModel>? ResolveTabStripGroup(StreamTabViewModel tab)
+    private IReadOnlyList<StreamTabViewModel>? ResolveHostableTabGroup(StreamTabViewModel tab)
     {
         if (GetPictureInPictureTabGroup(tab) is { Count: > 1 } pictureInPictureGroup)
         {

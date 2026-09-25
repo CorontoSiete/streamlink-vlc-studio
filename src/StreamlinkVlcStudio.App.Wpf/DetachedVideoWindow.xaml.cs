@@ -12,6 +12,7 @@ using System.Windows.Shell;
 using System.Windows.Threading;
 using StreamlinkVlcStudio.App.Wpf.Controls;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
+using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Settings;
 using static StreamlinkVlcStudio.App.Wpf.PictureInPictureWindowResize;
 using static StreamlinkVlcStudio.App.Wpf.WindowInteropHelpers;
@@ -1315,6 +1316,12 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         {
             OnWindowPropertyChanged(nameof(ContentAspectRatio));
             FitNormalWindowToContent();
+        }
+        else if (e.PropertyName == nameof(StreamTabViewModel.Status) &&
+                 sender is StreamTabViewModel { Status: PlaybackStatus.Starting or PlaybackStatus.Playing } tab &&
+                 detachedSurfaces.TryGetValue(tab, out var surface))
+        {
+            surface.ScheduleRendererWindowRepair();
         }
     }
 

@@ -5,7 +5,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Http;
 /// </summary>
 public static class HttpClientFactory
 {
-    public const string ApplicationUserAgent = "StreamlinkVlcStudio/0.1";
+    public const string ApplicationUserAgent = "StreamStudio/0.1";
 
     public static HttpClient CreateDefault() => Create(
         TimeSpan.FromSeconds(20),

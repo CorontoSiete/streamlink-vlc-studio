@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 
 internal static class DependencyFreeTestRunner
@@ -6,17 +5,19 @@ internal static class DependencyFreeTestRunner
     private static readonly TimeSpan DefaultTestTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaximumConfiguredTimeout = TimeSpan.FromDays(1);
-    // RunInFreshProcessAsync waits `timeout + IsolatedProcessGrace` before it kills the child, so
-    // the outer race must allow strictly more than that. Otherwise a merely slow isolated test
+    // The bounded runner allows two five-second cleanup waits after `timeout + IsolatedProcessGrace`,
+    // so the outer race must leave room for both. Otherwise a merely slow isolated test
     // trips the outer abort first and stops the whole remaining suite while the child is still
     // running, instead of failing that one test.
     private static readonly TimeSpan IsolatedProcessGrace = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan IsolatedProcessTimeoutMargin = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan IsolatedProcessTimeoutMargin = TimeSpan.FromSeconds(20);
     private static readonly HashSet<string> FreshProcessTests = new(StringComparer.Ordinal)
     {
+        AppLifecycleTestCatalog.ExitSignalTestName,
         "inactive window first click focuses docked chat input and accepts typing",
         "theatre chat input stays above the taskbar and accepts physical typing",
         "docked and theatre chat release native overlay keyboard capture before typing",
+        "native overlay chat clears stale shift state after shifted symbol input",
         "native video double click exits theatre mode when the first click activates the window"
     };
 
@@ -152,14 +153,7 @@ internal static class DependencyFreeTestRunner
             throw new InvalidOperationException("Could not locate the test process host for isolated execution.");
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = processPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
+        var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(processPath, []);
         if (string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.OrdinalIgnoreCase))
         {
             startInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "StreamlinkVlcStudio.Tests.dll"));
@@ -169,47 +163,38 @@ internal static class DependencyFreeTestRunner
         startInfo.Environment["SVS_TEST_ISOLATED_CHILD"] = "true";
         startInfo.Environment["SVS_EXPECTED_MAX_SKIPS"] = int.MaxValue.ToString(CultureInfo.InvariantCulture);
 
-        using var process = Process.Start(startInfo) ??
-            throw new InvalidOperationException("Could not start the isolated test process.");
-        var outputTask = process.StandardOutput.ReadToEndAsync();
-        var errorTask = process.StandardError.ReadToEndAsync();
-        try
+        var result = await new BoundedProcessRunner()
+            .RunAsync(startInfo, timeout + IsolatedProcessGrace)
+            .ConfigureAwait(false);
+        if (result.TimedOut)
         {
-            await process.WaitForExitAsync().WaitAsync(timeout + IsolatedProcessGrace).ConfigureAwait(false);
+            throw new TimeoutException($"Isolated test '{testName}' exceeded its process timeout.");
         }
-        catch (TimeoutException)
+        if (result.OutputWasTruncated)
         {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
-
-            await process.WaitForExitAsync().ConfigureAwait(false);
-            throw;
+            throw new InvalidOperationException($"Isolated test '{testName}' exceeded its output limit or left output pipes open.");
         }
 
-        var output = await outputTask.ConfigureAwait(false);
-        var error = await errorTask.ConfigureAwait(false);
-        if (output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .Any(line => line.StartsWith($"SKIP {testName}:", StringComparison.Ordinal)))
-        {
-            throw new InteractiveDesktopTestSkippedException(
-                output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                    .First(line => line.StartsWith($"SKIP {testName}:", StringComparison.Ordinal))
-                    [("SKIP " + testName + ": ").Length..]);
-        }
+        ValidateIsolatedResult(testName, result.ExitCode, result.StandardOutput, result.StandardError);
+    }
 
-        if (process.ExitCode != 0)
+    internal static void ValidateIsolatedResult(string testName, int exitCode, string output, string error)
+    {
+        // A child can print a skip before failing during shutdown. Its exit status must
+        // take precedence so a failed process cannot silently become a permitted skip.
+        if (exitCode != 0)
         {
             throw new InvalidOperationException(
-                $"Isolated test process exited with code {process.ExitCode}. " +
+                $"Isolated test process exited with code {exitCode}. " +
                 $"Output: {output.Trim()} Error: {error.Trim()}".Trim());
+        }
+
+        var skipPrefix = $"SKIP {testName}: ";
+        var skipped = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault(line => line.StartsWith(skipPrefix, StringComparison.Ordinal));
+        if (skipped is not null)
+        {
+            throw new InteractiveDesktopTestSkippedException(skipped[skipPrefix.Length..]);
         }
     }
 

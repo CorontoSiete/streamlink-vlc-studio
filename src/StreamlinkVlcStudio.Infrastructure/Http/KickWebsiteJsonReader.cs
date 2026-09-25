@@ -92,7 +92,7 @@ internal sealed class KickWebsiteJsonReader
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlinkVlcStudio/0.1");
+            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamStudio/0.1");
             request.Headers.Accept.ParseAdd(payloadKind == KickWebsitePayloadKind.Json
                 ? "application/json, text/plain, */*"
                 : "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8");

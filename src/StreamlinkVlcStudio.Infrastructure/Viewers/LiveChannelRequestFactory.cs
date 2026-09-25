@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
@@ -10,12 +11,11 @@ internal static class LiveChannelRequestFactory
         string token,
         string clientId)
     {
-        var request = new HttpRequestMessage(
+        return TwitchApiRequest.Create(
             HttpMethod.Get,
-            $"https://api.twitch.tv/helix/streams?user_login={Uri.EscapeDataString(channel)}");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-        return request;
+            $"https://api.twitch.tv/helix/streams?user_login={Uri.EscapeDataString(channel)}",
+            token,
+            clientId);
     }
 
     public static HttpRequestMessage CreateKickChannelsRequest(

@@ -20,22 +20,6 @@ internal sealed class TabPlaybackPolicyController : IDisposable
     public TabPlaybackPolicyController(
         Action<Action> dispatch,
         Func<bool> isDisposed,
-        Func<Task> applyPassAsync,
-        Action<Task> trackOperation,
-        Action<Exception> reportFailure)
-        : this(
-            dispatch,
-            isDisposed,
-            _ => applyPassAsync(),
-            trackOperation,
-            reportFailure)
-    {
-        ArgumentNullException.ThrowIfNull(applyPassAsync);
-    }
-
-    public TabPlaybackPolicyController(
-        Action<Action> dispatch,
-        Func<bool> isDisposed,
         Func<long, Task> applyPassAsync,
         Action<Task> trackOperation,
         Action<Exception> reportFailure)

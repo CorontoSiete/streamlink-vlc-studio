@@ -4,7 +4,14 @@ namespace StreamlinkVlcStudio.Maintenance;
 
 public static partial class PathSafety
 {
-    private const string ProductDirectoryName = "StreamlinkVlcStudio";
+    private const string ProductDirectoryName = "StreamStudio";
+    private const string LegacyProductDirectoryName = "StreamlinkVlcStudio";
+    private const string InstallerTempDirectoryPrefix = "StreamStudio-installer-";
+    private const string LegacyInstallerTempDirectoryPrefix = "StreamlinkVlcStudio-installer-";
+    private const string MaintenanceLogsDirectoryName = "StreamStudio-Maintenance-Logs";
+    private const string LegacyMaintenanceLogsDirectoryName = "StreamlinkVlcStudio-Maintenance-Logs";
+    private const string MaintenanceStageDirectoryPrefix = "StreamStudio-Maintenance-Stage-";
+    private const string LegacyMaintenanceStageDirectoryPrefix = "StreamlinkVlcStudio-Maintenance-Stage-";
 
     private static readonly string[] ReservedNames =
     [
@@ -51,7 +58,17 @@ public static partial class PathSafety
         var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         AddRoot(roots, Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
         AddRoot(roots, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
-        AddRoot(roots, Path.GetTempPath());
+        AddLegacyRoot(roots, Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+        AddLegacyRoot(roots, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        var tempRoot = Path.GetTempPath();
+        AddRoot(roots, tempRoot);
+        AddLegacyRoot(roots, tempRoot);
+        AddTempRoot(roots, tempRoot, MaintenanceLogsDirectoryName);
+        AddTempRoot(roots, tempRoot, LegacyMaintenanceLogsDirectoryName);
+        AddGuidSuffixedTempRoots(roots, tempRoot, InstallerTempDirectoryPrefix);
+        AddGuidSuffixedTempRoots(roots, tempRoot, LegacyInstallerTempDirectoryPrefix);
+        AddGuidSuffixedTempRoots(roots, tempRoot, MaintenanceStageDirectoryPrefix);
+        AddGuidSuffixedTempRoots(roots, tempRoot, LegacyMaintenanceStageDirectoryPrefix);
         return roots.ToArray();
     }
 
@@ -68,8 +85,11 @@ public static partial class PathSafety
     {
         var child = Normalize(childPath);
         var parent = Normalize(parentPath);
-        return PathsEqual(child, parent) ||
-               child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        var parentPrefix = Path.EndsInDirectorySeparator(parent)
+            ? parent
+            : parent + Path.DirectorySeparatorChar;
+        return string.Equals(child, parent, StringComparison.OrdinalIgnoreCase) ||
+               child.StartsWith(parentPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool ContainsReparsePoint(string path)
@@ -128,6 +148,13 @@ public static partial class PathSafety
         catch (DirectoryNotFoundException)
         {
         }
+        catch (Exception exception) when (
+            exception is ArgumentException or
+                IOException or
+                NotSupportedException or
+                UnauthorizedAccessException)
+        {
+        }
 
         attributes = default;
         return false;
@@ -180,7 +207,7 @@ public static partial class PathSafety
             return false;
         }
 
-        var stem = segment.Split('.')[0];
+        var stem = segment.Split('.')[0].TrimEnd(' ');
         return !ReservedNames.Contains(stem, StringComparer.OrdinalIgnoreCase) &&
                !LegacyReservedDeviceName().IsMatch(stem);
     }
@@ -190,6 +217,60 @@ public static partial class PathSafety
         if (!string.IsNullOrWhiteSpace(baseDirectory))
         {
             roots.Add(Normalize(Path.Combine(baseDirectory, ProductDirectoryName)));
+        }
+    }
+
+    private static void AddLegacyRoot(HashSet<string> roots, string baseDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(baseDirectory))
+        {
+            roots.Add(Normalize(Path.Combine(baseDirectory, LegacyProductDirectoryName)));
+        }
+    }
+
+    private static void AddTempRoot(HashSet<string> roots, string tempRoot, string directoryName)
+    {
+        if (string.IsNullOrWhiteSpace(tempRoot))
+        {
+            return;
+        }
+
+        roots.Add(Normalize(Path.Combine(tempRoot, directoryName)));
+    }
+
+    private static void AddGuidSuffixedTempRoots(
+        HashSet<string> roots,
+        string tempRoot,
+        string directoryPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(tempRoot))
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(tempRoot, directoryPrefix + "*"))
+            {
+                var name = Path.GetFileName(Normalize(directory));
+                if (name.Length <= directoryPrefix.Length)
+                {
+                    continue;
+                }
+
+                var suffix = name[directoryPrefix.Length..];
+                if (Guid.TryParseExact(suffix, "N", out _))
+                {
+                    roots.Add(Normalize(directory));
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or
+                IOException or
+                NotSupportedException or
+                UnauthorizedAccessException)
+        {
         }
     }
 

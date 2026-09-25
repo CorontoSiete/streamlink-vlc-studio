@@ -159,7 +159,7 @@ internal static class AudioSwitchVlcTestCatalog
                 // and convergence still go through the real production engine below.
                 var controller = (LibVlcAudioStateController)EngineType.GetField("audioStateController", PrivateInstance)!.GetValue(engine)!;
                 controller.Update(80, initialState);
-                EngineType.GetMethod("CreatePlayerCore", PrivateInstance)!.Invoke(engine, [new Uri(path)]);
+                EngineType.GetMethod("CreatePlayerCore", PrivateInstance)!.Invoke(engine, [new Uri(path), null]);
                 var player = (IntPtr)EngineType.GetField("player", PrivateInstance)!.GetValue(engine)!;
                 var fixture = new PcmFixture(engine, path, player, capturePcm);
                 EngineType.GetMethod("ApplyAudioCore", PrivateInstance)!.Invoke(engine, null);

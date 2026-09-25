@@ -708,19 +708,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         var nonCriticalLimit = maximumQueuedBytes - reservedCriticalBytes;
         while (GetNonCriticalQueuedBytesLocked() > nonCriticalLimit)
         {
-            var parkedFrame = FindUnprotectedNode(
-                parkedWrites,
-                protectedRequest,
-                static request => !request.IsCritical);
-            if (parkedFrame is not null)
+            if (TryRemoveUnprotectedFrameLocked(protectedRequest))
             {
-                RemoveParkedNodeLocked(parkedFrame, countAsDropped: true);
-                continue;
-            }
-
-            if (pendingWrite is not null && !ReferenceEquals(pendingWrite, protectedRequest))
-            {
-                RemovePendingWriteLocked(countAsDropped: true);
                 continue;
             }
 
@@ -741,19 +730,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         {
             // Critical clear/control work gets first claim on capacity. Evict stale coalescible
             // frame state before considering any queued critical request.
-            var parkedFrame = FindUnprotectedNode(
-                parkedWrites,
-                protectedRequest,
-                static request => !request.IsCritical);
-            if (parkedFrame is not null)
+            if (TryRemoveUnprotectedFrameLocked(protectedRequest))
             {
-                RemoveParkedNodeLocked(parkedFrame, countAsDropped: true);
-                continue;
-            }
-
-            if (pendingWrite is not null && !ReferenceEquals(pendingWrite, protectedRequest))
-            {
-                RemovePendingWriteLocked(countAsDropped: true);
                 continue;
             }
 
@@ -788,6 +766,24 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
 
             break;
         }
+    }
+
+    private bool TryRemoveUnprotectedFrameLocked(NativeReplayOverlayFrameWriteRequest? protectedRequest)
+    {
+        var parkedFrame = FindUnprotectedNode(parkedWrites, protectedRequest, static request => !request.IsCritical);
+        if (parkedFrame is not null)
+        {
+            RemoveParkedNodeLocked(parkedFrame, countAsDropped: true);
+            return true;
+        }
+
+        if (pendingWrite is not null && !ReferenceEquals(pendingWrite, protectedRequest))
+        {
+            RemovePendingWriteLocked(countAsDropped: true);
+            return true;
+        }
+
+        return false;
     }
 
     private static LinkedListNode<NativeReplayOverlayFrameWriteRequest>? FindUnprotectedNode(

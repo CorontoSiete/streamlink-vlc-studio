@@ -1,4 +1,4 @@
-Streamlink VLC Studio
+Stream Studio
 
 Upgrading from 1.6.65 or earlier:
 
@@ -21,12 +21,20 @@ installation offers Download update, verifies it, and then offers the separate
 Restart and install action. Release-zip installs are notification-only and open
 the release page; they do not launch the per-machine updater.
 
+Automatic checks continue while the app is open and retry network failures.
+Download progress and Cancel download are available in the update banner and
+Settings. Completed downloads are retained for up to seven days and reverified
+after an app restart. Installation still starts with Restart and install.
+
 The normal setup is registered through WiX/Windows Installer, not the separate
-per-user Uninstall.exe. Removing Streamlink VLC Studio through Apps & features /
+per-user Uninstall.exe. Removing Stream Studio through Apps & features /
 Control Panel removes the app and its shortcut but leaves the shared VLC and
-Streamlink installations. It also leaves logs, settings, protected account
-secrets, replay caches, and other user data under
-%APPDATA%\StreamlinkVlcStudio and %LOCALAPPDATA%\StreamlinkVlcStudio.
+Streamlink installations. It also removes this Windows account's Streamlink VLC
+Studio settings, logs, protected account secrets, replay caches, extracted
+assets, update cache, and product-owned temporary files under
+%APPDATA%\StreamStudio, %LOCALAPPDATA%\StreamStudio, and the
+product temp folders. Clear the setup UI's data-removal checkbox, or run the
+bundle with PurgeUserData=0, only when you intentionally want to keep that data.
 
 Advanced PowerShell install is also available from the release zip:
 
@@ -51,8 +59,8 @@ The script reads dependencies\windows-installers.json and installs the pinned
 Streamlink and VLC builds when no same-or-newer detected version is present.
 Downloads are checked by size and SHA-256 plus the recorded signature/product
 metadata. By default, it installs the app under
-%LOCALAPPDATA%\Programs\StreamlinkVlcStudio. It writes the detected paths to
-%APPDATA%\StreamlinkVlcStudio\settings.json, creates a per-user Start Menu
+%LOCALAPPDATA%\Programs\StreamStudio. It writes the detected paths to
+%APPDATA%\StreamStudio\settings.json, creates a per-user Start Menu
 shortcut, and registers the included Uninstall.exe for the current Windows user.
 
 For a private repository, set GITHUB_TOKEN to a token with release-content read
@@ -73,13 +81,13 @@ Local app setup from this extracted zip:
 Manual portable setup:
 
 1. Extract the release zip to a normal folder, for example:
-   C:\Users\you\Apps\StreamlinkVlcStudio
+   C:\Users\you\Apps\StreamStudio
 
 2. Install Streamlink for Windows if it is not already installed.
 
 3. Install VLC 64-bit if it is not already installed.
 
-4. Run StreamlinkVlcStudio.exe.
+4. Run StreamStudio.exe.
 
 5. Open Settings and verify:
    - Streamlink executable points to streamlink.exe.
@@ -94,23 +102,11 @@ You do not need to set VLC overlay plugin directory for the included overlay.
 Only set that field if you want to override the bundled overlay with a custom
 vlc-overlay build.
 
-The release also includes the Brave/Chromium capture extension under:
-browser-extension
+Open streams from the app's home search bar, followed channels, Browse, or Recent.
+The browser capture extension is no longer included. If you installed an older
+copy in your browser, remove it from the browser's Extensions page.
 
-To install it in Brave:
-1. Open brave://extensions
-2. Enable Developer mode.
-3. Click Load unpacked.
-4. Select the extracted browser-extension folder.
-
-Keep StreamlinkVlcStudio.exe running before clicking a direct Twitch or Kick
-channel link.
-
-Only unmodified left-clicks on direct Twitch or Kick channel routes are captured.
-VOD, clip, directory/category, settings, and other non-channel routes continue to
-navigate in the browser.
-
-Settings are saved under %APPDATA%\StreamlinkVlcStudio. Twitch OAuth, Kick
+Settings are saved under %APPDATA%\StreamStudio. Twitch OAuth, Kick
 access/refresh tokens, and the Kick client secret are stored inside settings.json
 in a Windows current-user DPAPI-protected ProtectedSecrets envelope. Other
 settings remain readable JSON. The protected secrets cannot be moved to another
@@ -118,6 +114,8 @@ Windows user profile; treat settings.json and any recovery backups as
 account-sensitive.
 
 The PowerShell-path Uninstall.exe removes its registered shortcut, uninstall
-entry, and unchanged managed app payload. It preserves user-modified or unmanaged
-files and does not delete %APPDATA% or %LOCALAPPDATA% user data or uninstall VLC
-or Streamlink.
+entry, unchanged managed app payload, current-user product data, and
+product-owned temporary files. It preserves user-modified or unmanaged files in
+the install directory and does not uninstall VLC or Streamlink. Run
+Uninstall.exe --preserve-user-data only when you intentionally want to keep
+%APPDATA%\StreamStudio and %LOCALAPPDATA%\StreamStudio.

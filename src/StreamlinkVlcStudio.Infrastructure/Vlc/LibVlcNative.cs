@@ -74,6 +74,16 @@ internal static partial class LibVlcNative
     internal static extern void libvlc_media_release(IntPtr media);
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void libvlc_media_add_option(IntPtr media,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string option);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void libvlc_video_set_adjust_int(IntPtr player, uint option, int value);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void libvlc_video_set_adjust_float(IntPtr player, uint option, float value);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr libvlc_media_player_new_from_media(IntPtr media);
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
@@ -116,6 +126,21 @@ internal static partial class LibVlcNative
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern long libvlc_media_player_get_length(IntPtr player);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern MediaPlayerState libvlc_media_player_get_state(IntPtr player);
+
+    internal enum MediaPlayerState
+    {
+        NothingSpecial,
+        Opening,
+        Buffering,
+        Playing,
+        Paused,
+        Stopped,
+        Ended,
+        Error
+    }
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int libvlc_media_player_is_seekable(IntPtr player);

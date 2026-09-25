@@ -2,7 +2,7 @@
 
 Extract the ZIP and open `StreamlinkVlcStudio.sln` inside the
 `streamlink-vlc-studio` folder. This package includes the current source
-changes, tests, assets, browser extension, build scripts, dependency manifests,
+changes, tests, assets, build scripts, dependency manifests,
 and required bundled VLC overlay binaries.
 
 ## Build and run
@@ -21,7 +21,7 @@ dotnet run --project src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf
 ```
 
 For stream playback, also install Streamlink and 64-bit VLC with `libvlc.dll`.
-See `README.md` for account setup, the browser extension, and installer builds.
+See `README.md` for account setup and installer builds.
 Account credentials are configured separately on your own computer.
 
 ## Tests
@@ -30,12 +30,6 @@ After restoring packages:
 
 ```powershell
 dotnet test StreamlinkVlcStudio.sln --no-restore
-```
-
-Browser extension tests additionally require Node.js:
-
-```powershell
-node --test browser-extension\tests\content-core.test.js
 ```
 
 ## Why this package is small

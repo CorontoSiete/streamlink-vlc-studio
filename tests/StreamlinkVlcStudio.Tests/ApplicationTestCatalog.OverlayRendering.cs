@@ -417,17 +417,17 @@ internal static partial class ApplicationTestCatalog
                 () => streamlink.ResolveStreamUrlCount == 1,
                 TimeSpan.FromSeconds(1));
 
-            tab.ReplaySeekValue = TimeSpan.FromMinutes(10).TotalSeconds;
-            await tab.SeekReplayAsync(TimeSpan.FromSeconds(tab.ReplaySeekSliderValue));
-            await TestWait.UntilAsync(
-                () => tab.DockedChatMessages.Any(message => message.Message == "replay hello"),
-                TimeSpan.FromSeconds(1));
+            // The fake dispatcher runs clock updates inline on worker threads. Capture the
+            // intended target instead of reading a slider the live clock can overwrite.
+            var seekPosition = TimeSpan.FromMinutes(10);
+            await tab.SeekReplayAsync(seekPosition);
+            Assert.Equal(seekPosition, playbackFactory.Engine!.Position);
+            await WaitForDockedChatMessageAsync(tab, "replay hello");
 
             Assert.Equal(1, streamlink.ResolveStreamUrlCount);
             Assert.Equal("best", streamlink.ResolveStreamUrlRequests.Single().Quality);
             Assert.True(tab.IsReplayMode);
             Assert.True(tab.IsBehindLive);
-            Assert.Equal(TimeSpan.FromMinutes(10), playbackFactory.Engine!.Position);
             Assert.True(tab.DockedChatMessages.Any(message => message.Message == "replay hello"));
             Assert.True(vodChatProvider.CallCount > 0);
             Assert.Equal(false, vodChatProvider.RequestedReplays.Any(request => request.ReplayId.StartsWith("live-dvr-", StringComparison.Ordinal)));
@@ -1402,21 +1402,14 @@ internal static partial class ApplicationTestCatalog
     }),
     ("toast thumbnail reads enforce the streaming byte limit", async () =>
     {
-        var readThumbnailBytes = typeof(ToastLiveNotificationService).GetMethod(
-            "ReadThumbnailBytesAsync",
-            BindingFlags.Static | BindingFlags.NonPublic);
-        Assert.NotNull(readThumbnailBytes);
-
         using var smallContent = new ByteArrayContent([1, 2, 3]);
-        var smallResult = await (Task<byte[]?>)readThumbnailBytes!.Invoke(
-            null,
-            [smallContent, CancellationToken.None])!;
+        var smallResult = await StreamlinkVlcStudio.Infrastructure.Http.BoundedByteReader.ReadAsync(
+            smallContent, ToastLiveNotificationService.MaxThumbnailBytes);
         Assert.SequenceEqual(new byte[] { 1, 2, 3 }, smallResult ?? []);
 
-        using var oversizedContent = new ByteArrayContent(new byte[(8 * 1024 * 1024) + 1]);
-        var oversizedResult = await (Task<byte[]?>)readThumbnailBytes.Invoke(
-            null,
-            [oversizedContent, CancellationToken.None])!;
+        using var oversizedContent = new ByteArrayContent(new byte[ToastLiveNotificationService.MaxThumbnailBytes + 1]);
+        var oversizedResult = await StreamlinkVlcStudio.Infrastructure.Http.BoundedByteReader.ReadAsync(
+            oversizedContent, ToastLiveNotificationService.MaxThumbnailBytes);
         Assert.Equal<byte[]?>(null, oversizedResult);
     }),
     ("live notification delivery gate invalidates queued work when disabled", () =>

@@ -58,7 +58,7 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal(topBefore, NativeWindowTest.GetTopChildWindow(fixture.Target.Handle));
 
             var renderer = NativeWindowTest.CreateVisibleChildWindow(
-                fixture.Target.Handle, "StreamlinkVlcStudioVideoSurface");
+                fixture.Target.Handle, "StreamStudioVideoSurface");
             try
             {
                 fixture.FlushBindings();

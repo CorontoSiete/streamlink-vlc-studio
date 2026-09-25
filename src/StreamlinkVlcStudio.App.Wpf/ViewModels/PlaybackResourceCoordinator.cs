@@ -38,9 +38,21 @@ internal sealed class PlaybackResourceCoordinator
             }
             finally
             {
-                engine.Dispose();
-                parkingSurface?.Dispose();
-                shutdownCancellation.Dispose();
+                try
+                {
+                    engine.Dispose();
+                }
+                finally
+                {
+                    try
+                    {
+                        parkingSurface?.Dispose();
+                    }
+                    finally
+                    {
+                        shutdownCancellation.Dispose();
+                    }
+                }
             }
         });
 
@@ -91,6 +103,11 @@ internal sealed class PlaybackResourceCoordinator
                     AppLogLevel.Warning,
                     "Playback",
                     $"Playback cleanup for {displayName()} ignored cancellation and remains tracked in the background.");
+                _ = shutdownTask.ContinueWith(
+                    ObserveCompletedShutdown,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
                 observeBackgroundCleanup?.Invoke(shutdownTask);
             }
         }

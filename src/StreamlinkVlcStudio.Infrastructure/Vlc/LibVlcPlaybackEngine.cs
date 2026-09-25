@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
@@ -53,6 +54,9 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     private const int NativeOverlayShowPlaceholder = 0;
     private static readonly TimeSpan VideoOutputRebindReadinessTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan VideoOutputRebindPollInterval = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan SeekTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan SeekPollInterval = TimeSpan.FromMilliseconds(50);
+    private const long SeekConfirmationToleranceMilliseconds = 2000;
     private static readonly TimeSpan[] AudioStateConvergenceDelays =
     [
         TimeSpan.Zero,
@@ -86,6 +90,10 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     // Keeps currentMediaUri openable (for example a repair proxy session) until the media is cleared.
     private PlaybackMediaSource? currentMediaSource;
     private bool desiredPaused;
+    private bool replayOutputPending;
+    private bool preserveReplayPause;
+    private readonly bool replayPausePluginAvailable;
+    private EventWaitHandle? replayPauseReady;
     private int? lastEnabledAudioTrackId;
     private int videoOutputVersion;
     private long playerGeneration;
@@ -129,7 +137,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             var positionStatePath = string.IsNullOrWhiteSpace(nativeOverlayPositionStatePath)
                 ? Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "StreamlinkVlcStudio",
+                    AppIdentity.ProductDirectoryName,
                     "vlc-overlays",
                     $"{NativeOverlayPipeName}.txt")
                 : nativeOverlayPositionStatePath;
@@ -150,6 +158,17 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         }
 
         LibVlcNative.SetDllDirectory(this.vlcDirectory);
+        try
+        {
+            var pluginRoot = VlcReplayPausePlugin.Prepare();
+            SetVlcEnvironmentVariable("VLC_PLUGIN_PATH",
+                BuildPluginPath(this.vlcDirectory, pluginRoot, Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH")));
+            replayPausePluginAvailable = true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            logger.Write(AppLogLevel.Warning, "libVLC", "Replay pause continuity is unavailable; position restoration will use media reloads.", ex);
+        }
         var selectedRenderer = LibVlcRendererSelection.Resolve(
             this.vlcDirectory,
             rendererMode,
@@ -181,10 +200,13 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         RendererMode = selectedRenderer;
         // The runtime above loaded libvlc.dll, so its version can be read without side effects.
         libVlcVersion = LibVlcVersion.TryReadLoaded();
+        var decodingDescription = LibVlcRendererSelection.GetHardwareDecodingOption(RendererMode, UsesNativeOverlay) == "none"
+            ? "software decoding for native chat composition"
+            : "automatic hardware decoding";
         logger.Write(
             AppLogLevel.Info,
             "libVLC",
-            $"Using {RendererMode} video renderer with automatic hardware decoding (libVLC {libVlcVersion?.ToString() ?? "version unknown"}).");
+            $"Using {RendererMode} video renderer with {decodingDescription} (libVLC {libVlcVersion?.ToString() ?? "version unknown"}).");
         audioApplyTask = Task.Run(ApplyAudioStateLoopAsync);
     }
 
@@ -216,6 +238,16 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     }
 
     public bool UsesNativeOverlay { get; }
+    public bool PreservesReplayPositionOnResume
+    {
+        get
+        {
+            lock (nativeGate)
+            {
+                return !disposed && replayPauseReady?.WaitOne(0) == true;
+            }
+        }
+    }
     public VideoRendererMode RendererMode { get; private set; }
     public string? NativeOverlayPipeName { get; }
     public string? NativeOverlayPositionStatePath { get; }
@@ -260,7 +292,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         {
             if (!disposed && player != IntPtr.Zero)
             {
-                LibVlcNative.libvlc_media_player_set_hwnd(player, Volatile.Read(ref videoHandle));
+                LibVlcVideoOutputBinding.Bind(player, Volatile.Read(ref videoHandle), RendererMode, libVlcVersion, UsesNativeOverlay);
             }
         }
         finally
@@ -288,10 +320,18 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         return PlayCoreAsync(mediaUri, cancellationToken);
     }
 
-    private async Task PlayCoreAsync(Uri mediaUri, CancellationToken cancellationToken)
+    public Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        audioStateController.Update(volume, audioState);
+        return PlayCoreAsync(mediaUri, cancellationToken, position < TimeSpan.Zero ? TimeSpan.Zero : position);
+    }
+
+    private async Task PlayCoreAsync(Uri mediaUri, CancellationToken cancellationToken, TimeSpan? startPosition = null)
     {
         var mediaSource = await PrepareMediaSourceAsync(mediaUri, cancellationToken).ConfigureAwait(false);
         var engineOwnsMediaSource = false;
+        long generation = 0;
         try
         {
             await RunBlockingNativeAsync(() =>
@@ -308,13 +348,14 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                     var playbackUri = mediaSource.PlaybackUri;
                     currentMediaUri = playbackUri;
                     desiredPaused = false;
+                    preserveReplayPause = startPosition.HasValue;
 
                     if (videoHandle == IntPtr.Zero)
                     {
                         throw new InvalidOperationException("The video surface is not ready yet.");
                     }
 
-                    CreatePlayerCore(playbackUri);
+                    CreatePlayerCore(playbackUri, startPosition);
                     _ = ApplyAudioCore();
 
                     var result = LibVlcNative.libvlc_media_player_play(player);
@@ -326,7 +367,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                             AppLogLevel.Warning,
                             "libVLC",
                             "Direct3D11 could not start the video output; retrying with GDI.");
-                        SwitchToGdiCore(playbackUri);
+                        SwitchToGdiCore(playbackUri, startPosition);
                         result = LibVlcNative.libvlc_media_player_play(player);
                     }
 
@@ -346,8 +387,22 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                     {
                         ScheduleAudioStateConvergence();
                     }
+                    generation = playerGeneration;
                 }
             }, cancellationToken).ConfigureAwait(false);
+            if (startPosition is { } position)
+            {
+                await SeekCoreAsync(position, generation, cancellationToken, openingAtPosition: true).ConfigureAwait(false);
+                lock (nativeGate)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (disposed || player == IntPtr.Zero || playerGeneration != generation)
+                    {
+                        throw new OperationCanceledException("The playback media changed while opening the replay.");
+                    }
+                    ReleaseReplayOutputCore();
+                }
+            }
         }
         catch
         {
@@ -421,33 +476,116 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         }, cancellationToken);
     }
 
-    public Task SeekAsync(TimeSpan position, CancellationToken cancellationToken = default)
+    public async Task<bool> TryResumeReplayAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        return RunBlockingNativeAsync(() =>
+        var resumed = false;
+        await RunBlockingNativeAsync(() =>
         {
             lock (nativeGate)
             {
-                if (disposed || player == IntPtr.Zero)
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!disposed && player != IntPtr.Zero && replayPauseReady?.WaitOne(0) == true)
+                {
+                    desiredPaused = false;
+                    LibVlcNative.libvlc_media_player_set_pause(player, 0);
+                    resumed = true;
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
+        return resumed;
+    }
+
+    public Task SeekAsync(TimeSpan position, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        var generation = Volatile.Read(ref playerGeneration);
+        // Native calls and lock acquisition must stay off the WPF input/dispatcher thread.
+        return Task.Run(() => SeekCoreAsync(position, generation, cancellationToken), cancellationToken);
+    }
+
+    private async Task SeekCoreAsync(TimeSpan position, long generation, CancellationToken cancellationToken, bool openingAtPosition = false)
+    {
+        var requestedMilliseconds = Math.Max(0, (long)Math.Round(position.TotalMilliseconds));
+        var deadline = Stopwatch.StartNew();
+        long? submittedTarget = null;
+        var lastState = LibVlcNative.MediaPlayerState.NothingSpecial;
+        long lastTime = -1;
+        long lastLength = -1;
+        while (deadline.Elapsed < SeekTimeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (nativeGate)
+            {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                if (player == IntPtr.Zero || generation != playerGeneration)
+                {
+                    throw new OperationCanceledException("The playback media changed while seeking.");
+                }
+
+                var state = LibVlcNative.libvlc_media_player_get_state(player);
+                var length = LibVlcNative.libvlc_media_player_get_length(player);
+                lastState = state;
+                lastTime = LibVlcNative.libvlc_media_player_get_time(player);
+                lastLength = length;
+                if (state == LibVlcNative.MediaPlayerState.Ended &&
+                    submittedTarget is { } endTarget && length > 0 && endTarget >= length)
                 {
                     return;
                 }
 
-                if (LibVlcNative.libvlc_media_player_is_seekable(player) == 0)
+                if (state is LibVlcNative.MediaPlayerState.Stopped or LibVlcNative.MediaPlayerState.Ended or LibVlcNative.MediaPlayerState.Error)
                 {
-                    throw new InvalidOperationException("The current media is not seekable.");
+                    throw new InvalidOperationException("Playback ended before the replay position could be restored.");
                 }
 
-                var length = LibVlcNative.libvlc_media_player_get_length(player);
-                var targetMilliseconds = Math.Max(0, (long)Math.Round(position.TotalMilliseconds));
-                if (length > 0)
+                // Play only starts VLC's input thread. HLS must finish opening before a seek
+                // can use its timeline; can-seek alone is already true during initialization.
+                if (state is LibVlcNative.MediaPlayerState.Playing or LibVlcNative.MediaPlayerState.Paused && length > 0)
                 {
-                    targetMilliseconds = Math.Min(targetMilliseconds, length);
-                }
+                    if (LibVlcNative.libvlc_media_player_is_seekable(player) == 0)
+                    {
+                        throw new InvalidOperationException("The current media is not seekable.");
+                    }
 
-                LibVlcNative.libvlc_media_player_set_time(player, targetMilliseconds);
+                    if (submittedTarget is null)
+                    {
+                        submittedTarget = Math.Min(requestedMilliseconds, length);
+                        LibVlcNative.libvlc_media_player_set_time(player, submittedTarget.Value);
+                        // A paused input cannot advance its playback clock. Its seek is queued
+                        // against the initialized timeline and takes effect when it resumes.
+                        if (state == LibVlcNative.MediaPlayerState.Paused && !openingAtPosition)
+                        {
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        if (state == LibVlcNative.MediaPlayerState.Paused && !openingAtPosition)
+                        {
+                            return;
+                        }
+
+                        var time = LibVlcNative.libvlc_media_player_get_time(player);
+                        // VLC's set_time callback immediately echoes the requested time (and
+                        // position). Wait for a different, nearby clock sample from playback,
+                        // rather than accepting that echo as evidence the demuxer has moved.
+                        if (state == LibVlcNative.MediaPlayerState.Playing && time >= 0 && time != submittedTarget.Value &&
+                            (!openingAtPosition || time >= submittedTarget.Value) &&
+                            Math.Abs(time - submittedTarget.Value) <= SeekConfirmationToleranceMilliseconds)
+                        {
+                            return;
+                        }
+                    }
+                }
             }
-        }, cancellationToken);
+
+            await Task.Delay(SeekPollInterval, cancellationToken).ConfigureAwait(false);
+        }
+
+        logger.Write(AppLogLevel.Warning, "libVLC",
+            $"Replay restore timed out: state={lastState}, timeMs={lastTime}, lengthMs={lastLength}, targetMs={submittedTarget}, startup={openingAtPosition}.");
+        throw new TimeoutException("VLC did not confirm the requested replay position within fifteen seconds.");
     }
 
     public Task StopAsync(CancellationToken cancellationToken = default)
@@ -695,6 +833,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private void StopCurrentCore(bool clearCurrentMedia = true)
     {
+        replayOutputPending = false;
         audioStateController.Invalidate();
         lastEnabledAudioTrackId = null;
         lastNativeMuteState = null;
@@ -702,6 +841,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         PlaybackMediaSource? releasedMediaSource = null;
         if (clearCurrentMedia)
         {
+            preserveReplayPause = false;
             currentMediaUri = null;
             desiredPaused = false;
             Interlocked.Increment(ref videoOutputVersion);
@@ -723,11 +863,14 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             media = IntPtr.Zero;
         }
 
+        replayPauseReady?.Dispose();
+        replayPauseReady = null;
+
         // Released only after the player stopped, so libVLC never reads from a revoked source.
         releasedMediaSource?.Dispose();
     }
 
-    private void CreatePlayerCore(Uri mediaUri)
+    private void CreatePlayerCore(Uri mediaUri, TimeSpan? startPosition = null)
     {
         media = LibVlcNative.libvlc_media_new_location(instance, mediaUri.ToString());
         if (media == IntPtr.Zero)
@@ -737,13 +880,37 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
         try
         {
+            if (replayPausePluginAvailable && (preserveReplayPause || startPosition.HasValue))
+            {
+                var eventName = $"Local\\StreamStudio.ReplayPause.{Guid.NewGuid():N}";
+                replayPauseReady = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
+                LibVlcNative.libvlc_media_add_option(media, ":demux-filter=studio_replay_pause");
+                LibVlcNative.libvlc_media_add_option(media, $":studio-replay-pause-ready={eventName}");
+            }
+            if (startPosition is { } position)
+            {
+                // Per-media input options are consumed before VLC's demux loop starts. Do not
+                // set this on the shared instance, where it would affect other tabs/media.
+                LibVlcNative.libvlc_media_add_option(media,
+                    ":start-time=" + position.TotalSeconds.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture));
+            }
             player = LibVlcNative.libvlc_media_player_new_from_media(media);
             if (player == IntPtr.Zero)
             {
                 throw new InvalidOperationException("libVLC could not create a media player.");
             }
 
-            LibVlcNative.libvlc_media_player_set_hwnd(player, videoHandle);
+            LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay);
+            replayOutputPending = startPosition.HasValue;
+            if (replayOutputPending)
+            {
+                // VLC can present preroll before its asynchronous seek finishes. Keep the
+                // new input black and silent until its actual playback clock is restored.
+                // Set this on the player before any vout exists so its first frame is gated.
+                LibVlcNative.libvlc_video_set_adjust_float(player, 2, 0); // brightness
+                LibVlcNative.libvlc_video_set_adjust_float(player, 4, 0); // saturation
+                LibVlcNative.libvlc_video_set_adjust_int(player, 0, 1); // enable
+            }
             lastNativeMuteState = null;
             audioTrackDisabledByEngine = false;
             Interlocked.Increment(ref playerGeneration);
@@ -762,13 +929,16 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                 media = IntPtr.Zero;
             }
 
+            replayPauseReady?.Dispose();
+            replayPauseReady = null;
+
             throw;
         }
     }
 
     private RuntimeLease AcquireRuntime(VideoRendererMode rendererMode)
     {
-        var options = BuildLibVlcOptionsForRenderer(rendererMode);
+        var options = BuildLibVlcOptionsForRenderer(rendererMode, UsesNativeOverlay);
         if (UsesNativeOverlay)
         {
             // VLC 3.x does not instantiate this subpicture source from a media option;
@@ -784,7 +954,17 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             compatibilityKey: Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH"));
     }
 
-    private void SwitchToGdiCore(Uri mediaUri)
+    private void ReleaseReplayOutputCore()
+    {
+        LibVlcNative.libvlc_video_set_adjust_int(player, 0, 0);
+        replayOutputPending = false;
+        if (!ApplyAudioCore())
+        {
+            ScheduleAudioStateConvergence();
+        }
+    }
+
+    private void SwitchToGdiCore(Uri mediaUri, TimeSpan? startPosition)
     {
         // The renderer switch replays the same media, so its source must survive this stop.
         var mediaSource = currentMediaSource;
@@ -800,7 +980,8 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         RendererMode = VideoRendererMode.Gdi;
         currentMediaUri = mediaUri;
         desiredPaused = false;
-        CreatePlayerCore(mediaUri);
+        preserveReplayPause = startPosition.HasValue;
+        CreatePlayerCore(mediaUri, startPosition);
         _ = ApplyAudioCore();
     }
 
@@ -990,10 +1171,10 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         {
             return audioState switch
             {
-                PlaybackAudioState.Audible => ApplyAudibleImmediateCore(version),
+                PlaybackAudioState.Audible => ApplyAudibleAudioTrackCore(version, restoreOnlyDisabledTrack: true),
                 PlaybackAudioState.Muted => ApplySoftMutedAudioCore(version),
                 PlaybackAudioState.HardMuted => ApplyMutedAudioTrackCore(version, PlaybackAudioState.HardMuted),
-                _ => ApplyAudibleImmediateCore(version)
+                _ => ApplyAudibleAudioTrackCore(version, restoreOnlyDisabledTrack: true)
             };
         }
         catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException)
@@ -1094,7 +1275,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         return audioTrackExists;
     }
 
-    private bool ApplyAudibleImmediateCore(int version)
+    private bool ApplyAudibleAudioTrackCore(int version, bool restoreOnlyDisabledTrack = false)
     {
         if (!IsAudioRequestCurrent(version, PlaybackAudioState.Audible))
         {
@@ -1114,39 +1295,9 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             return false;
         }
 
-        if (!audioTrackDisabledByEngine)
+        if (restoreOnlyDisabledTrack && !audioTrackDisabledByEngine)
         {
             return nativeMuteCleared && volumeRestored;
-        }
-
-        var audioTrackEnabled = EnsureAudioTrackEnabledCore(version);
-        if (audioTrackEnabled)
-        {
-            nativeMuteCleared = TrySetNativeMuteCore(muted: false, force: true);
-            volumeRestored = TrySetVolumeCore(targetVolume);
-        }
-
-        return nativeMuteCleared && volumeRestored && audioTrackEnabled;
-    }
-
-    private bool ApplyAudibleAudioTrackCore(int version)
-    {
-        if (!IsAudioRequestCurrent(version, PlaybackAudioState.Audible))
-        {
-            return false;
-        }
-
-        var targetVolume = audioStateController.Snapshot.Volume;
-        var nativeMuteCleared = TrySetNativeMuteCore(muted: false, force: true);
-        if (!IsAudioRequestCurrent(version, PlaybackAudioState.Audible))
-        {
-            return false;
-        }
-
-        var volumeRestored = TrySetVolumeCore(targetVolume);
-        if (!IsAudioRequestCurrent(version, PlaybackAudioState.Audible))
-        {
-            return false;
         }
 
         var audioTrackEnabled = EnsureAudioTrackEnabledCore(version);
@@ -1211,11 +1362,12 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private bool TrySetVolumeCore(int volume)
     {
-        return LibVlcNative.libvlc_audio_set_volume(player, volume) == 0;
+        return LibVlcNative.libvlc_audio_set_volume(player, replayOutputPending ? 0 : volume) == 0;
     }
 
     private bool TrySetNativeMuteCore(bool muted, bool force = false)
     {
+        muted |= replayOutputPending;
         if (audioMuteUnavailable)
         {
             return true;
@@ -1331,12 +1483,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             TaskScheduler.Default);
     }
 
-    internal static List<string> BuildLibVlcOptions()
-    {
-        return BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi);
-    }
-
-    internal static List<string> BuildLibVlcOptionsForRenderer(VideoRendererMode rendererMode)
+    internal static List<string> BuildLibVlcOptionsForRenderer(VideoRendererMode rendererMode, bool usesNativeOverlay = false)
     {
         return
         [
@@ -1349,7 +1496,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             // "none" prevents VLC from falling back to that shared-session backend.
             "--aout=directsound,none",
             "--no-volume-save",
-            "--avcodec-hw=any",
+            $"--avcodec-hw={LibVlcRendererSelection.GetHardwareDecodingOption(rendererMode, usesNativeOverlay)}",
             "--network-caching=500",
             "--live-caching=300",
             "--drop-late-frames",

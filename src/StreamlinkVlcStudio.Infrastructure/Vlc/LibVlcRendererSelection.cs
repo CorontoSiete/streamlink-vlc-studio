@@ -9,7 +9,9 @@ internal static class LibVlcRendererSelection
         VideoRendererMode requestedMode,
         bool usesNativeOverlay)
     {
-        if (usesNativeOverlay || requestedMode == VideoRendererMode.Gdi)
+        // An embedded Direct3D swapchain can replace the whole application as the
+        // target of graphics-hook capture. Automatic must keep window composition.
+        if (usesNativeOverlay || requestedMode != VideoRendererMode.Direct3D11)
         {
             return VideoRendererMode.Gdi;
         }
@@ -55,5 +57,13 @@ internal static class LibVlcRendererSelection
         return rendererMode == VideoRendererMode.Direct3D11
             ? "direct3d11"
             : "wingdi";
+    }
+
+    internal static string GetHardwareDecodingOption(VideoRendererMode rendererMode, bool usesNativeOverlay)
+    {
+        // VLC 3 blends GDI subpictures before converting hardware surfaces to RGB.
+        // Its software blender cannot write to DX11/DXVA surfaces, so native chat
+        // disappears even while the controller and video output are healthy.
+        return rendererMode != VideoRendererMode.Direct3D11 && usesNativeOverlay ? "none" : "any";
     }
 }

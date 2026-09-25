@@ -257,14 +257,15 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
                         return new ConnectionResult(Stop: true, WasConnected: connected);
                     }
 
-                    var previousSocket = socket;
-                    socket = handoff.Socket!;
-                    if (!TryReplaceActiveSocket(previousSocket, socket))
+                    var replacementSocket = handoff.Socket!;
+                    if (!TryReplaceActiveSocket(socket, replacementSocket))
                     {
-                        socket.Dispose();
+                        replacementSocket.Dispose();
                         return new ConnectionResult(Stop: true, WasConnected: connected);
                     }
 
+                    var previousSocket = socket;
+                    socket = replacementSocket;
                     previousSocket.Dispose();
                     keepaliveTimeoutSeconds = handoff.KeepaliveTimeoutSeconds;
                     connected = true;

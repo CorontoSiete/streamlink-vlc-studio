@@ -1,4 +1,4 @@
-# Streamlink VLC Studio code review change report
+# Stream Studio code review change report
 
 Review date: 2026-08-16
 

@@ -32,6 +32,11 @@
           "System.Drawing.Common": "4.7.0"
         }
       },
+      "Microsoft.Web.WebView2": {
+        "type": "Transitive",
+        "resolved": "1.0.4191.47",
+        "contentHash": "Snb6mlTpuz6ZFjWMwIdg28Xp6kAUMy3zaLUyGbFSaw+/AJKlwoX8EiaWJ1eUMfKyJHksPkFjJHl1LIB7kX+0AQ=="
+      },
       "Microsoft.Win32.SystemEvents": {
         "type": "Transitive",
         "resolved": "10.0.10",
@@ -64,23 +69,6 @@
         "resolved": "6.0.2",
         "contentHash": "k3Cpr12y4HFrgrBDFUhXCaJoMMz9iiE1qBAl83aqtGRllSKf04hvtX5P1t2dWh6V0Cm2Zh6vlfVnV5r4/IwLOw=="
       },
-      "streamlinkvlcstudio.app.wpf": {
-        "type": "Project",
-        "dependencies": {
-          "Microsoft.Toolkit.Uwp.Notifications": "[7.1.3, )",
-          "SkiaSharp": "[3.119.4, )",
-          "SkiaSharp.HarfBuzz": "[3.119.4, )",
-          "SkiaSharp.NativeAssets.Win32": "[3.119.4, )",
-          "StreamlinkVlcStudio.Core": "[1.7.0, )",
-          "StreamlinkVlcStudio.Infrastructure": "[1.7.0, )"
-        }
-      },
-      "streamlinkvlcstudio.bootstrapper": {
-        "type": "Project",
-        "dependencies": {
-          "WixToolset.BootstrapperApplicationApi": "[6.0.2, )"
-        }
-      },
       "streamlinkvlcstudio.core": {
         "type": "Project"
       },
@@ -90,7 +78,25 @@
           "StreamlinkVlcStudio.Core": "[1.7.0, )"
         }
       },
-      "streamlinkvlcstudio.maintenance": {
+      "StreamStudio": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Toolkit.Uwp.Notifications": "[7.1.3, )",
+          "Microsoft.Web.WebView2": "[1.0.4191.47, )",
+          "SkiaSharp": "[3.119.4, )",
+          "SkiaSharp.HarfBuzz": "[3.119.4, )",
+          "SkiaSharp.NativeAssets.Win32": "[3.119.4, )",
+          "StreamlinkVlcStudio.Core": "[1.7.0, )",
+          "StreamlinkVlcStudio.Infrastructure": "[1.7.0, )"
+        }
+      },
+      "StreamStudio.Bootstrapper": {
+        "type": "Project",
+        "dependencies": {
+          "WixToolset.BootstrapperApplicationApi": "[6.0.2, )"
+        }
+      },
+      "StreamStudio.Maintenance": {
         "type": "Project"
       }
     }

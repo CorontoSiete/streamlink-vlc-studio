@@ -56,7 +56,7 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         var renderThread = new Thread(() => RunDispatcher(startup, beforeDispatcherInitialization))
         {
             IsBackground = true,
-            Name = "Streamlink VLC Studio replay overlay renderer"
+            Name = "Stream Studio replay overlay renderer"
         };
         renderThread.SetApartmentState(ApartmentState.STA);
         renderThread.Start();

@@ -15,7 +15,10 @@
     <DebugSymbols>false</DebugSymbols>
     <StripSymbols>true</StripSymbols>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
-    <AssemblyTitle>Streamlink VLC Studio Maintenance</AssemblyTitle>
+    <AssemblyName>StreamStudio.Maintenance</AssemblyName>
+    <AssemblyTitle>Stream Studio Maintenance</AssemblyTitle>
+    <Product>Stream Studio</Product>
+    <Description>Stream Studio maintenance helper</Description>
     <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico</ApplicationIcon>
   </PropertyGroup>
 

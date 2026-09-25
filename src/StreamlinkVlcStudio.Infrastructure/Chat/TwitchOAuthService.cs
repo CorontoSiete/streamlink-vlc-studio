@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Http;
@@ -182,22 +181,14 @@ public static class TwitchOAuthService
                 "/twitch-oauth-token",
                 expectedState,
                 AuthorizationTimeout,
-                query => ParseBrowserToken(query, expectedState),
+                ParseBrowserToken,
                 cancellationToken,
                 TryHandleFragmentCaptureRequestAsync)
             .ConfigureAwait(false);
     }
 
-    private static TwitchBrowserToken ParseBrowserToken(
-        IReadOnlyDictionary<string, string> query,
-        string expectedState)
+    private static TwitchBrowserToken ParseBrowserToken(IReadOnlyDictionary<string, string> query)
     {
-        if (!query.TryGetValue("state", out var returnedState) ||
-            !string.Equals(returnedState, expectedState, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException("Twitch authorization returned an invalid state value.");
-        }
-
         if (!query.TryGetValue("access_token", out var accessToken) || string.IsNullOrWhiteSpace(accessToken))
         {
             throw new InvalidOperationException("Twitch authorization did not return an access token.");
@@ -246,30 +237,7 @@ public static class TwitchOAuthService
         </body>
         </html>
         """;
-        var bytes = Encoding.UTF8.GetBytes(html);
-        var response = context.Response;
-        try
-        {
-            response.StatusCode = 200;
-            response.ContentType = "text/html; charset=utf-8";
-            response.Headers[HttpResponseHeader.CacheControl] = "no-store";
-            response.Headers["X-Content-Type-Options"] = "nosniff";
-            response.ContentLength64 = bytes.Length;
-            await response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is HttpListenerException or IOException or ObjectDisposedException)
-        {
-        }
-        finally
-        {
-            try
-            {
-                response.Close();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-        }
+        await LoopbackOAuthReceiver.WriteHtmlAsync(context.Response, HttpStatusCode.OK, html).ConfigureAwait(false);
 
         return true;
     }

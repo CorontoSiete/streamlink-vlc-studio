@@ -5,7 +5,7 @@ param(
     [string]$OverlaySource,
     [string]$OutputRoot,
     [string]$PublishedAppDirectory,
-    [string]$Version = '1.7.0',
+    [string]$Version = '1.7.1',
     [string]$Tag = '',
     [string]$Commit = '',
     [string]$Repository = 'CorontoSiete/streamlink-vlc-studio',
@@ -59,17 +59,12 @@ $outputRootPath = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot
 }
 $outputRootPath = [System.IO.Path]::GetFullPath($outputRootPath)
-$stageDir = Join-Path $outputRootPath "StreamlinkVlcStudio"
+$stageDir = Join-Path $outputRootPath "StreamStudio"
 $zipPath = Join-Path $outputRootPath "StreamlinkVlcStudio-release.zip"
 $publishDir = if ([string]::IsNullOrWhiteSpace($PublishedAppDirectory)) {
-    Join-Path $repoRoot "artifacts\publish\StreamlinkVlcStudio"
+    Join-Path $repoRoot "artifacts\publish\StreamStudio"
 } else {
     [System.IO.Path]::GetFullPath($PublishedAppDirectory)
-}
-
-& (Join-Path $scriptRoot "generate-browser-route-policy.ps1") -RepositoryRoot $repoRoot -Check
-if (-not $?) {
-    throw "Generated browser route policy validation failed."
 }
 
 Assert-NoReparsePointInExistingPath -Path $outputRootPath
@@ -126,18 +121,6 @@ $verifiedOverlayFiles = @(
         -SkipAuthenticodeWhenUnavailable:$SkipAuthenticodeWhenUnavailable
 )
 
-$browserExtensionSource = Join-Path $repoRoot "browser-extension"
-$requiredBrowserExtensionFiles = @($releaseContract.payload.requiredFiles |
-    ForEach-Object { ([string]$_).Replace('\', '/') } |
-    Where-Object { $_.StartsWith('browser-extension/', [StringComparison]::OrdinalIgnoreCase) } |
-    ForEach-Object { $_.Substring('browser-extension/'.Length) })
-foreach ($relativePath in $requiredBrowserExtensionFiles) {
-    $required = Join-Path $browserExtensionSource $relativePath
-    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-        throw "Required browser extension file missing: $required"
-    }
-}
-
 $requiredDocumentationFiles = @(
     "README.md",
     "install.txt"
@@ -171,7 +154,7 @@ if ([string]::IsNullOrWhiteSpace($PublishedAppDirectory)) {
     $selfContained = if ($FrameworkDependent) { "false" } else { "true" }
     $publishSingleFile = if ($FrameworkDependent) { "false" } else { "true" }
 
-    Write-Info "Publishing StreamlinkVlcStudio..."
+    Write-Info "Publishing Stream Studio..."
     & $dotnet restore $project `
         -r $Runtime `
         --locked-mode `
@@ -220,9 +203,9 @@ Write-Info "Staging app files..."
 Copy-DirectoryFiltered $publishDir $stageDir
 
 $publishedExe = Join-Path $stageDir "StreamlinkVlcStudio.App.Wpf.exe"
-$friendlyExe = Join-Path $stageDir "StreamlinkVlcStudio.exe"
+$friendlyExe = Join-Path $stageDir "StreamStudio.exe"
 if ((Test-Path -LiteralPath $publishedExe -PathType Leaf) -and -not (Test-Path -LiteralPath $friendlyExe -PathType Leaf)) {
-    Rename-Item -LiteralPath $publishedExe -NewName "StreamlinkVlcStudio.exe"
+    Rename-Item -LiteralPath $publishedExe -NewName "StreamStudio.exe"
 }
 
 if (-not (Test-Path -LiteralPath $friendlyExe -PathType Leaf)) {
@@ -258,15 +241,6 @@ foreach ($name in @("libmyoverlay_plugin.dll", "vlc_chat_overlay.exe")) {
     if (-not (Test-Path -LiteralPath $stagedOverlayFile -PathType Leaf)) {
         throw "Staged overlay binary missing: $stagedOverlayFile"
     }
-}
-
-Write-Info "Staging Brave browser extension files..."
-$browserExtensionStage = Join-Path $stageDir "browser-extension"
-New-Item -ItemType Directory -Path $browserExtensionStage -Force | Out-Null
-foreach ($relativePath in $requiredBrowserExtensionFiles) {
-    $sourceFile = Join-Path $browserExtensionSource $relativePath
-    $targetFile = Join-Path $browserExtensionStage $relativePath
-    Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
 }
 
 $installerSource = Join-Path $repoRoot "scripts\install.ps1"

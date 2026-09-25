@@ -82,6 +82,6 @@ internal sealed class MaintenanceLog : IDisposable
     private static string GetLogDirectory()
     {
         return System.IO.Path.GetFullPath(
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "StreamlinkVlcStudio-Maintenance-Logs"));
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "StreamStudio-Maintenance-Logs"));
     }
 }

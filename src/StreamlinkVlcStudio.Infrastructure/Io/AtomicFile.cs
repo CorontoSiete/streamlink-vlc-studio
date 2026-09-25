@@ -11,12 +11,15 @@ internal static class AtomicFile
     internal static async Task WriteAsync(
         string destinationPath,
         Func<Stream, CancellationToken, Task> writeAsync,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool flushToDisk = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
         ArgumentNullException.ThrowIfNull(writeAsync);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath));
+        destinationPath = Path.GetFullPath(destinationPath);
+        var directory = Path.GetDirectoryName(destinationPath);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
@@ -29,12 +32,34 @@ internal static class AtomicFile
                 temporaryPath,
                 FileMode.CreateNew,
                 FileAccess.Write,
-                FileShare.None))
+                FileShare.None,
+                bufferSize: 81_920,
+                FileOptions.Asynchronous | (flushToDisk ? FileOptions.WriteThrough : FileOptions.None)))
             {
                 await writeAsync(stream, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                if (flushToDisk)
+                {
+                    stream.Flush(flushToDisk: true);
+                }
             }
 
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(destinationPath))
+            {
+                try
+                {
+                    File.Replace(temporaryPath, destinationPath, null, ignoreMetadataErrors: true);
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(temporaryPath, destinationPath, overwrite: true);
+                }
+            }
+            else
+            {
+                File.Move(temporaryPath, destinationPath, overwrite: true);
+            }
         }
         catch
         {

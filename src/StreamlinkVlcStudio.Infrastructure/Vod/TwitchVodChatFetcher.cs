@@ -30,8 +30,6 @@ namespace StreamlinkVlcStudio.Infrastructure.Vod;
 /// </remarks>
 internal sealed class TwitchVodChatFetcher
 {
-    /// <summary>Public Twitch web Client-ID. VOD comments are public and need no user token.</summary>
-    private const string WebClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private const string LiveDvrReplayIdPrefix = "live-dvr-";
     private const string OperationName = "VideoCommentsByOffsetOrCursor";
     private const string PersistedQueryHash = "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a";
@@ -77,11 +75,16 @@ internal sealed class TwitchVodChatFetcher
             fromOffset = TimeSpan.Zero;
         }
 
+        if (!DurationValues.TryAdd(fromOffset, EmptyPageFrontierStep, out var emptyPageFrontier))
+        {
+            return VodChatFetchResult.Unsupported("The Twitch VOD chat time range falls outside the supported duration range.");
+        }
+
         JsonDocument document;
         try
         {
             document = await transport
-                .SendAsync(BuildPayload(vodId, fromOffset), WebClientId, deviceId, cancellationToken)
+                .SendAsync(BuildPayload(vodId, fromOffset), TwitchGraphQlTransport.PublicClientId, deviceId, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (TwitchGraphQlHttpException ex)
@@ -94,7 +97,7 @@ internal sealed class TwitchVodChatFetcher
         {
             return VodChatFetchResult.Failed($"Twitch rejected the VOD chat request: {ex.GraphQlMessage}");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             return VodChatFetchResult.Failed($"Twitch VOD chat could not be loaded: {ex.Message}");
         }
@@ -102,11 +105,16 @@ internal sealed class TwitchVodChatFetcher
         using (document)
         {
             var page = ReadPage(document.RootElement, replay);
+            if (!page.IsValid)
+            {
+                return VodChatFetchResult.Failed("Twitch returned an incomplete VOD chat response.");
+            }
+
             if (page.Messages.Count == 0)
             {
                 return page.HasNextPage
-                    ? VodChatFetchResult.Loaded([], fromOffset + EmptyPageFrontierStep)
-                    : VodChatFetchResult.Completed([], fromOffset + EmptyPageFrontierStep);
+                    ? VodChatFetchResult.Loaded([], emptyPageFrontier)
+                    : VodChatFetchResult.Completed([], emptyPageFrontier);
             }
 
             var coveredThrough = ResolveCoveredThroughOffset(fromOffset, page.Messages[^1].Offset);
@@ -124,7 +132,11 @@ internal sealed class TwitchVodChatFetcher
     /// </summary>
     internal static TimeSpan ResolveCoveredThroughOffset(TimeSpan fromOffset, TimeSpan lastMessageOffset)
     {
-        var minimum = fromOffset + MinimumFrontierStep;
+        if (!DurationValues.TryAdd(fromOffset, MinimumFrontierStep, out var minimum))
+        {
+            return TimeSpan.MaxValue;
+        }
+
         var lastWholeSecond = TimeSpan.FromSeconds(Math.Floor(lastMessageOffset.TotalSeconds));
         return lastWholeSecond > minimum ? lastWholeSecond : minimum;
     }
@@ -133,19 +145,20 @@ internal sealed class TwitchVodChatFetcher
     {
         var messages = new List<VodChatMessage>();
         var hasNextPage = false;
+        var hasPage = false;
+        var isValid = true;
         foreach (var comments in EnumerateComments(root))
         {
-            if (comments.TryGetProperty("pageInfo", out var pageInfo))
+            hasPage = true;
+            if (!TryGetArray(comments, "edges", out var edges) ||
+                !comments.TryGetProperty("pageInfo", out var pageInfo) ||
+                TryGetBool(pageInfo, "hasNextPage") is not { } nextPage)
             {
-                hasNextPage |= TryGetBool(pageInfo, "hasNextPage") == true;
-            }
-
-            if (!comments.TryGetProperty("edges", out var edges) ||
-                edges.ValueKind != JsonValueKind.Array)
-            {
+                isValid = false;
                 continue;
             }
 
+            hasNextPage |= nextPage;
             foreach (var edge in edges.EnumerateArray())
             {
                 if (TryReadMessage(edge, replay, out var message))
@@ -156,7 +169,7 @@ internal sealed class TwitchVodChatFetcher
         }
 
         messages.Sort(static (left, right) => left.Offset.CompareTo(right.Offset));
-        return new TwitchVodChatPage(messages, hasNextPage);
+        return new TwitchVodChatPage(messages, hasNextPage, hasPage && isValid);
     }
 
     private static string BuildPayload(string vodId, TimeSpan fromOffset)
@@ -297,7 +310,7 @@ internal sealed class TwitchVodChatFetcher
 
         if (replay.StreamStartedAtUtc is { } startedAt)
         {
-            return TryAddOffset(startedAt, offset, out timestamp);
+            return DurationValues.TryAdd(startedAt, offset, out timestamp);
         }
 
         timestamp = DateTimeOffset.UtcNow;
@@ -572,20 +585,6 @@ internal sealed class TwitchVodChatFetcher
         return DurationValues.TryCreatePositive(seconds, TimeSpan.TicksPerSecond, out offset);
     }
 
-    private static bool TryAddOffset(DateTimeOffset startedAt, TimeSpan offset, out DateTimeOffset timestamp)
-    {
-        try
-        {
-            timestamp = startedAt.Add(offset);
-            return true;
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            timestamp = default;
-            return false;
-        }
-    }
-
     private static bool IsVodId(string value) =>
         value.Length is > 0 and <= MaximumVodIdLength &&
         value.All(character => character is >= '0' and <= '9');
@@ -595,4 +594,4 @@ internal sealed class TwitchVodChatFetcher
         replay.ReplayId.StartsWith(LiveDvrReplayIdPrefix, StringComparison.Ordinal);
 }
 
-internal sealed record TwitchVodChatPage(IReadOnlyList<VodChatMessage> Messages, bool HasNextPage);
+internal sealed record TwitchVodChatPage(IReadOnlyList<VodChatMessage> Messages, bool HasNextPage, bool IsValid);

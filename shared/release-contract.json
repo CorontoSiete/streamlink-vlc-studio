@@ -12,16 +12,16 @@
     }
   },
   "payload": {
-    "executable": "StreamlinkVlcStudio.exe",
+    "executable": "StreamStudio.exe",
     "requiredFiles": [
-      "StreamlinkVlcStudio.exe",
+      "StreamStudio.exe",
       "Uninstall.exe",
       "README.md",
       "install.txt",
       "THIRD-PARTY-NOTICES.md",
       "install.ps1",
-      ".streamlink-vlc-studio-owner.json",
-      ".streamlink-vlc-studio-files.json",
+      ".stream-studio-owner.json",
+      ".stream-studio-files.json",
       "release-metadata.json",
       "release-contract.json",
       "shared/update-signing-public-key.pem",
@@ -31,27 +31,14 @@
       "lib/install-state.ps1",
       "lib/dependency-manifest.ps1",
       "lib/release-contract.ps1",
-      "browser-extension/manifest.json",
-      "browser-extension/background.js",
-      "browser-extension/platform-routes.generated.js",
-      "browser-extension/content-core.js",
-      "browser-extension/content.js",
-      "browser-extension/README.md",
       "vlc-overlay/build/libmyoverlay_plugin.dll",
       "vlc-overlay/build/vlc_chat_overlay.exe"
-    ],
-    "browserExtensionRuntime": [
-      "manifest.json",
-      "background.js",
-      "platform-routes.generated.js",
-      "content-core.js",
-      "content.js"
     ]
   },
   "outputs": {
     "bootstrapper": "artifacts/StreamlinkVlcStudio-Setup.exe",
     "releaseZip": "artifacts/package/StreamlinkVlcStudio-release.zip",
-    "sbom": "artifacts/package/StreamlinkVlcStudio.spdx.json",
+    "sbom": "artifacts/package/StreamStudio.spdx.json",
     "metadata": "artifacts/RELEASE-METADATA.json",
     "updateManifest": "artifacts/UPDATE-MANIFEST.json",
     "updateSignature": "artifacts/UPDATE-MANIFEST.sig",
@@ -60,7 +47,7 @@
   "releaseSet": [
     { "name": "StreamlinkVlcStudio-Setup.exe", "output": "bootstrapper", "checksummed": true },
     { "name": "StreamlinkVlcStudio-release.zip", "output": "releaseZip", "checksummed": true },
-    { "name": "StreamlinkVlcStudio.spdx.json", "output": "sbom", "checksummed": true },
+    { "name": "StreamStudio.spdx.json", "output": "sbom", "checksummed": true },
     { "name": "RELEASE-METADATA.json", "output": "metadata", "checksummed": true },
     { "name": "UPDATE-MANIFEST.json", "output": "updateManifest", "checksummed": true },
     { "name": "UPDATE-MANIFEST.sig", "output": "updateSignature", "checksummed": true },

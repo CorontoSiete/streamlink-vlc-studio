@@ -143,11 +143,30 @@ internal static class LoopbackOAuthReceiver
         }
     }
 
-    internal static async Task WriteMessageAsync(
+    internal static Task WriteMessageAsync(
         HttpListenerResponse response,
         string providerName,
         HttpStatusCode statusCode,
         string message)
+    {
+        var encodedProvider = WebUtility.HtmlEncode(providerName);
+        var html = $"""
+        <!doctype html>
+        <html>
+        <head><meta charset="utf-8"><title>{encodedProvider} Authorization</title></head>
+        <body style="font-family:Segoe UI,Arial,sans-serif;margin:32px;">
+        <h1>{encodedProvider} Authorization</h1>
+        <p>{WebUtility.HtmlEncode(message)}</p>
+        </body>
+        </html>
+        """;
+        return WriteHtmlAsync(response, statusCode, html);
+    }
+
+    internal static async Task WriteHtmlAsync(
+        HttpListenerResponse response,
+        HttpStatusCode statusCode,
+        string html)
     {
         try
         {
@@ -155,17 +174,6 @@ internal static class LoopbackOAuthReceiver
             response.ContentType = "text/html; charset=utf-8";
             response.Headers[HttpResponseHeader.CacheControl] = "no-store";
             response.Headers["X-Content-Type-Options"] = "nosniff";
-            var encodedProvider = WebUtility.HtmlEncode(providerName);
-            var html = $"""
-            <!doctype html>
-            <html>
-            <head><meta charset="utf-8"><title>{encodedProvider} Authorization</title></head>
-            <body style="font-family:Segoe UI,Arial,sans-serif;margin:32px;">
-            <h1>{encodedProvider} Authorization</h1>
-            <p>{WebUtility.HtmlEncode(message)}</p>
-            </body>
-            </html>
-            """;
             var bytes = Encoding.UTF8.GetBytes(html);
             response.ContentLength64 = bytes.Length;
             await response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);

@@ -23,6 +23,7 @@ internal static class TwitchClientIdCache
         string failureMessage,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var normalizedToken = token.Trim();
         if (normalizedToken.Length == 0)
         {
@@ -43,8 +44,7 @@ internal static class TwitchClientIdCache
                     normalizedToken,
                     logger,
                     logCategory,
-                    failureMessage,
-                    CancellationToken.None),
+                    failureMessage),
                 LazyThreadSafetyMode.ExecutionAndPublication));
         var operation = lazy.Value;
         _ = operation.ContinueWith(
@@ -72,16 +72,17 @@ internal static class TwitchClientIdCache
         string token,
         IAppLogger logger,
         string logCategory,
-        string failureMessage,
-        CancellationToken cancellationToken)
+        string failureMessage)
     {
         TwitchTokenInfo tokenInfo;
         try
         {
-            tokenInfo = await TwitchOAuthService.ValidateTokenAsync(httpClient, token, cancellationToken).ConfigureAwait(false);
+            tokenInfo = await TwitchOAuthService.ValidateTokenAsync(httpClient, token, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // Waiters cancel only their own WaitAsync. A cancellation here is the HTTP
+            // deadline, so report a lookup failure and allow the next request to retry.
             logger.Write(AppLogLevel.Warning, logCategory, failureMessage, ex);
             return null;
         }

@@ -897,12 +897,6 @@ public sealed class BrowseService : IBrowseService
         };
     }
 
-    internal static TimeSpan ClampTwitchRateLimitDelay(TimeSpan delay)
-        => TwitchRateLimitCoordinator.ClampDelay(delay);
-
-    internal static DateTimeOffset SaturatingAdd(DateTimeOffset value, TimeSpan delta)
-        => TwitchRateLimitCoordinator.SaturatingAdd(value, delta);
-
     private sealed record TwitchCategoryViewerCountsLoadResult(
         IReadOnlyDictionary<string, int> ViewerCounts,
         int PageCount,

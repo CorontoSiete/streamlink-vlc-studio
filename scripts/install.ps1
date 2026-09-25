@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Installs Streamlink VLC Studio and its Windows runtime dependencies.
+Installs Stream Studio and its Windows runtime dependencies.
 
 .DESCRIPTION
 Installs only checksummed release assets and dependencies pinned in the
@@ -9,7 +9,7 @@ through the explicit developer-only mode with a trusted-main commit check.
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\StreamlinkVlcStudio"),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\StreamStudio"),
     [ValidatePattern("^[^/\s]+/[^/\s]+$")]
     [string]$GitHubRepository = "CorontoSiete/streamlink-vlc-studio",
     [string[]]$AppAssetPatterns = @(
@@ -63,15 +63,15 @@ if ([string]::IsNullOrWhiteSpace($releaseContractPath)) {
     throw "Release contract was not found beside the installer or in the source tree."
 }
 $script:ReleaseContract = Read-ReleaseContract $releaseContractPath
-$script:UpdateManifestPublicModulusBase64 = 'wu8er7em+OztL4N8JMJxb8TgmfKC75H2iEOjtdQW0xtZ/Wl2YEoerIv0eZxso7CNvHQevwbtQT+1qWYN6hxfiNl1x1G9dztdMqNfevzD67xfzdrnFJZZ8gGN0cNHhIVJzsbtiOzMrqfmg6pH0sTxdwEz6RXlPbqMa53+Ao/cI26SNJLoWeuFr8TM6L7zVChhjx3ma2uVHIdtenHB3Te7ZeAcRMrJ6SIZ5EGZ+GlF3vjzxvZp6DaC+OeW0QaGYsmlLXgOmgwFtj065yvjoOKlC1mkFxhHZYLtETO9IJpeqpEDpu57yQI5NPL77yuHd+26AwtMTintSJhZ9nnARp28yLypzp9MdFXF+vfDWNO55cDIxImCjrynajvnGp+Gq45IWpxMoyLoqOi2BvVJ3QrficGku0Fs4goB42+VT53XXFzbfVmSsp4n2emFFYEx8qJmttBjLJOy8JGE9FD+A0+gEOnv1XIq3dGOLOLjWP3W0WLq7iky6toi+/Xnbk3NEm7p'
-$script:UpdateManifestKeyId = 'e10eae5e531d0099f523d2bc24eb5c14855d4ee01c556deafbbb8eff3c79af2c'
+$script:UpdateManifestPublicModulusBase64 = 'y9rHGIZ3zqxmr6a/wBJSogVhjxb2UZZl6YqGDbSBYhdkUVsMAm4mbIjF5vl0QCIkHKscRLAkKPNj7IvJYtihgWriYSVsQMWv/aCMjuSBGJyCXEONfn+EsY4Q6Yvu+XHFKrwMYEcXv2ToBN1VqnFcBHEkYVzvajJZ3RhVzL4XhnS1A47Opm8HaH23XPl9Fv4Ekcp2FOcNF1HntaPVuyAFerl2T8iwuM7fmHAcstf0j6a748bAw9uyGZDYXBjNcvcl1rOUNbKX7/sDTQ9pn5AXrvqRmQFFvjiHRfw7u1myzP2ck3t7J2g+rwjoLa7UTsC0JPX4Ahk6MVH2luNoq2wsqSAKNa8g9i0kep1XmHihqdRZCgOZ45TL4c2Rr9F9AvoDbJLLV+kC+g77JYEbB8VuIg1nc2q/GfkAR/CwI7014ApKjusBWkraDB++6y7VyMK/wLrX0Bzwo91hcTI14CT5tNtQSmXXXvo96mPTitlz/AugF/dqvBWz78VkbYsfYdSn'
+$script:UpdateManifestKeyId = '5983e42ba44b37a245be5208c92ee7c7268e3cea1caa4728b3ec9af66a3b71e8'
 if ([string]$script:ReleaseContract.release.manifestSignature.keyId -cne $script:UpdateManifestKeyId -or
     [int]$script:ReleaseContract.release.manifestSignature.keyBits -ne 3072 -or
     [string]$script:ReleaseContract.release.manifestSignature.algorithm -cne 'RSA-PSS-SHA256') {
     throw 'The bundled installer trust root does not match the release contract.'
 }
-$script:UserAgent = "StreamlinkVlcStudioInstaller/1.0 (+https://github.com/$GitHubRepository)"
-$script:TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("StreamlinkVlcStudio-installer-" + [Guid]::NewGuid().ToString("N"))
+$script:UserAgent = "StreamStudioInstaller/1.0 (+https://github.com/$GitHubRepository)"
+$script:TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("StreamStudio-installer-" + [Guid]::NewGuid().ToString("N"))
 $script:RebootRequired = $false
 $script:MaximumDownloadBytes = 512MB
 $script:MaximumChecksumBytes = 1MB
@@ -656,7 +656,7 @@ function Stop-AppIfNeeded {
     $installRoot = [IO.Path]::GetFullPath($InstallDir)
     $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.Name -in @("StreamlinkVlcStudio.exe", "StreamlinkVlcStudio.App.Wpf.exe", "vlc_chat_overlay.exe") -and
+            $_.Name -in @("StreamStudio.exe", "StreamlinkVlcStudio.App.Wpf.exe", "vlc_chat_overlay.exe") -and
             -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
             (Test-PathIsSameOrUnderDirectory ([IO.Path]::GetFullPath($_.ExecutablePath)) $installRoot)
         })
@@ -666,7 +666,7 @@ function Stop-AppIfNeeded {
 
     if (-not $ForceStopApp) {
         $names = ($running | ForEach-Object { "$($_.Name)($($_.ProcessId))" }) -join ", "
-        throw "Streamlink VLC Studio is running: $names. Close it and rerun the installer, or rerun with -ForceStopApp."
+        throw "Stream Studio is running: $names. Close it and rerun the installer, or rerun with -ForceStopApp."
     }
 
     Write-Detail "Stopping running app process before update"
@@ -706,7 +706,7 @@ function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescr
     if ([string]::Equals($source, $destination, [StringComparison]::OrdinalIgnoreCase)) {
         Assert-OwnedOrEmptyInstallDestination $destination | Out-Null
         Write-Detail "Using owned app in place at $destination"
-        return (Join-Path $destination "StreamlinkVlcStudio.exe")
+        return (Join-Path $destination "StreamStudio.exe")
     }
     if ((Test-PathIsSameOrUnderDirectory $destination $source) -or
         (Test-PathIsSameOrUnderDirectory $source $destination)) {
@@ -774,7 +774,7 @@ function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescr
         }
     }
 
-    $appExe = Join-Path $destination "StreamlinkVlcStudio.exe"
+    $appExe = Join-Path $destination "StreamStudio.exe"
     Write-Detail "App installed from $SourceDescription to $destination"
     $appExe
 }
@@ -807,18 +807,19 @@ function Resolve-AppPayloadRoot([string]$ExtractDirectory, [int]$NestedArchiveDe
         }
     }
 
-    throw "The downloaded app package does not contain StreamlinkVlcStudio.exe."
+    throw "The downloaded app package does not contain StreamStudio.exe."
 }
 
 function Find-LocalAppPayloadRoot {
     $candidateDirectories = @(
         $script:ScriptDirectory,
+        (Join-Path $script:ScriptDirectory "StreamStudio"),
         (Join-Path $script:ScriptDirectory "StreamlinkVlcStudio")
     )
 
     foreach ($candidateDirectory in $candidateDirectories) {
         if (-not [string]::IsNullOrWhiteSpace($candidateDirectory) -and
-            (Test-Path -LiteralPath (Join-Path $candidateDirectory "StreamlinkVlcStudio.exe") -PathType Leaf)) {
+            (Test-Path -LiteralPath (Join-Path $candidateDirectory "StreamStudio.exe") -PathType Leaf)) {
             return [IO.Path]::GetFullPath($candidateDirectory)
         }
     }
@@ -827,10 +828,10 @@ function Find-LocalAppPayloadRoot {
 }
 
 function Install-AppFromLocalPayload {
-    Write-Step "Installing Streamlink VLC Studio from local package"
+    Write-Step "Installing Stream Studio from local package"
     $payloadRoot = Find-LocalAppPayloadRoot
     if ([string]::IsNullOrWhiteSpace($payloadRoot)) {
-        throw "No local StreamlinkVlcStudio.exe was found beside install.ps1. Run from the extracted release zip, publish a GitHub release, or rerun with -SkipApp to install dependencies only."
+        throw "No local StreamStudio.exe was found beside install.ps1. Run from the extracted release zip, publish a GitHub release, or rerun with -SkipApp to install dependencies only."
     }
 
     Install-AppPayloadAtomically $payloadRoot "local package"
@@ -851,7 +852,7 @@ function Install-AppFromPackageFile([string]$PackagePath, [string]$SourceDescrip
 }
 
 function Install-AppFromGitHubRelease {
-    Write-Step "Installing Streamlink VLC Studio from GitHub release"
+    Write-Step "Installing Stream Studio from GitHub release"
     try {
         $release = Get-GitHubLatestRelease $GitHubRepository
     } catch {
@@ -886,7 +887,7 @@ function Install-AppFromGitHubRelease {
 }
 
 function Install-AppFromGitHubArtifact {
-    Write-Step "Installing Streamlink VLC Studio from GitHub Actions artifact"
+    Write-Step "Installing Stream Studio from GitHub Actions artifact"
     try {
         $artifactsResponse = Get-GitHubArtifacts $GitHubRepository
     } catch {
@@ -946,7 +947,7 @@ function Install-App {
             return Install-AppFromLocalPayload
         }
 
-        throw "$githubError No local app payload was found beside install.ps1. If you are installing from an extracted release zip, make sure install.ps1 is in the same folder as StreamlinkVlcStudio.exe. To install dependencies only, rerun with -SkipApp."
+        throw "$githubError No local app payload was found beside install.ps1. If you are installing from an extracted release zip, make sure install.ps1 is in the same folder as StreamStudio.exe. To install dependencies only, rerun with -SkipApp."
     }
 }
 
@@ -1029,8 +1030,7 @@ function Ensure-LockedVlc {
         $script:MaximumDownloadBytes
     Save-Uri ([string]$dependency.url) $downloadPath $expectedBytes $expectedBytes
     Assert-DownloadedDependency $downloadPath $dependency
-    $msiArguments = @("/i", ('"' + $downloadPath + '"'), "/qn", "/norestart")
-    Start-Installer (Join-Path $env:SystemRoot "System32\msiexec.exe") $msiArguments "VLC"
+    Start-Installer $downloadPath @("/L=1033", "/S") "VLC"
 
     $installed = Select-CompatibleDependencyCandidate `
         -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
@@ -1056,9 +1056,15 @@ function Update-AppSettings([string]$StreamlinkPath, [string]$VlcDirectory) {
     }
 
     Write-Step "Updating app settings"
-    $settingsDirectory = Join-Path $env:APPDATA "StreamlinkVlcStudio"
+    $settingsDirectory = Join-Path $env:APPDATA "StreamStudio"
+    $legacySettingsDirectory = Join-Path $env:APPDATA "StreamlinkVlcStudio"
     $settingsPath = Join-Path $settingsDirectory "settings.json"
+    $legacySettingsPath = Join-Path $legacySettingsDirectory "settings.json"
     New-Item -ItemType Directory -Path $settingsDirectory -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $legacySettingsPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $legacySettingsPath -Destination $settingsPath -Force:$false
+    }
 
     $settings = [pscustomobject]@{}
     if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
@@ -1120,7 +1126,7 @@ function New-StartMenuShortcut([string]$AppExe) {
     $programsDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::StartMenu)) "Programs"
     New-Item -ItemType Directory -Path $programsDirectory -Force | Out-Null
 
-    $shortcutPath = Join-Path $programsDirectory "Streamlink VLC Studio.lnk"
+    $shortcutPath = Join-Path $programsDirectory "Stream Studio.lnk"
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $AppExe
@@ -1170,7 +1176,8 @@ function Register-AppUninstallEntry([string]$AppExe) {
     }
 
     Write-Step "Registering uninstaller"
-    $registryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamlinkVlcStudio"
+    $registryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamStudio"
+    $legacyRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamlinkVlcStudio"
     New-Item -Path $registryPath -Force | Out-Null
 
     $uninstallCommand = '"' + $uninstallExe + '"'
@@ -1178,9 +1185,9 @@ function Register-AppUninstallEntry([string]$AppExe) {
     $estimatedSize = Get-DirectorySizeKilobytes $installDirectory
     $displayVersion = Get-AppDisplayVersion $AppExe
 
-    New-ItemProperty -Path $registryPath -Name "DisplayName" -Value "Streamlink VLC Studio" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $registryPath -Name "DisplayName" -Value "Stream Studio" -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $registryPath -Name "DisplayVersion" -Value $displayVersion -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $registryPath -Name "Publisher" -Value "Streamlink VLC Studio" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $registryPath -Name "Publisher" -Value "Stream Studio" -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $registryPath -Name "InstallLocation" -Value $installDirectory -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $registryPath -Name "DisplayIcon" -Value $AppExe -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $registryPath -Name "UninstallString" -Value $uninstallCommand -PropertyType String -Force | Out-Null
@@ -1189,6 +1196,12 @@ function Register-AppUninstallEntry([string]$AppExe) {
     New-ItemProperty -Path $registryPath -Name "NoModify" -Value 1 -PropertyType DWord -Force | Out-Null
     New-ItemProperty -Path $registryPath -Name "NoRepair" -Value 1 -PropertyType DWord -Force | Out-Null
     New-ItemProperty -Path $registryPath -Name "EstimatedSize" -Value $estimatedSize -PropertyType DWord -Force | Out-Null
+    if (Test-Path -LiteralPath $legacyRegistryPath) {
+        $legacyLocation = Get-ItemPropertyValue -LiteralPath $legacyRegistryPath -Name "InstallLocation" -ErrorAction SilentlyContinue
+        if ([string]::Equals([string]$legacyLocation, $installDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $legacyRegistryPath -Recurse -Force
+        }
+    }
 
     Write-Detail "Uninstall.exe registered for Control Panel at $uninstallExe"
 }
@@ -1211,7 +1224,7 @@ $InstallDir = Assert-SafeInstallDirectory $InstallDir
 
 try {
     $appExe = if ($SkipApp) {
-        $existingApp = Join-Path ([IO.Path]::GetFullPath($InstallDir)) "StreamlinkVlcStudio.exe"
+        $existingApp = Join-Path ([IO.Path]::GetFullPath($InstallDir)) "StreamStudio.exe"
         if (Test-Path -LiteralPath $existingApp -PathType Leaf) { $existingApp } else { "" }
     } else {
         Install-App

@@ -25,6 +25,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private FollowedChannelsSettings followedChannels = new();
     private UpdateSettings updates = new();
     private List<RecentStreamSettings> recentStreams = [];
+    private Dictionary<string, TwitchBonusClaimHistory> twitchBonusClaims = new(StringComparer.Ordinal);
     private Dictionary<string, int> streamVolumes = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, double> streamVlcOverlayFontSizes = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, bool> streamPictureInPictureTopBarVisibility = new(StringComparer.OrdinalIgnoreCase);
@@ -138,6 +139,31 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => recentStreams;
         set => SetProperty(ref recentStreams, NormalizeRecentStreams(value));
+    }
+
+    public Dictionary<string, TwitchBonusClaimHistory> TwitchBonusClaims
+    {
+        get => twitchBonusClaims;
+        set
+        {
+            var normalized = new Dictionary<string, TwitchBonusClaimHistory>(StringComparer.Ordinal);
+            foreach (var (key, history) in value ?? [])
+            {
+                var channel = key.Trim().ToLowerInvariant();
+                if (history is null || channel.Length is 0 or > 25 ||
+                    !channel.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_')) continue;
+                var entry = history with
+                {
+                    Count = Math.Max(0, history.Count),
+                    RecentClaimIds = (history.RecentClaimIds ?? []).Where(id =>
+                        !string.IsNullOrWhiteSpace(id) && id.Length <= 256).Distinct(StringComparer.Ordinal).TakeLast(64).ToList()
+                };
+                // Case variants describe the same channel; do not add their totals together.
+                if (!normalized.TryGetValue(channel, out var previous) || entry.Count > previous.Count)
+                    normalized[channel] = entry;
+            }
+            SetProperty(ref twitchBonusClaims, normalized);
+        }
     }
 
     public Dictionary<string, int> StreamVolumes

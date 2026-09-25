@@ -49,10 +49,10 @@ public sealed record VodChatFetchResult(
             TimeSpan.Zero,
             Describe(reason, "VOD chat is not available for this video."));
 
-    public static VodChatFetchResult Failed(string reason) =>
+    public static VodChatFetchResult Failed(string reason, IReadOnlyList<VodChatMessage>? messages = null) =>
         new(
             VodChatFetchOutcome.Failed,
-            [],
+            messages ?? [],
             TimeSpan.Zero,
             Describe(reason, "VOD chat could not be loaded."));
 

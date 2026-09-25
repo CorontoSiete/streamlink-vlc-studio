@@ -16,6 +16,7 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
 
     private ChatLayout layout = ChatLayout.Overlay;
     private bool connectAutomatically = true;
+    private bool autoClaimTwitchChannelPoints = true;
     private double opacity = DefaultOpacity;
     private double fontSize = DefaultFontSize;
     private double vlcOverlayFontSize = DefaultVlcOverlayFontSize;
@@ -45,6 +46,12 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     {
         get => connectAutomatically;
         set => SetProperty(ref connectAutomatically, value);
+    }
+
+    public bool AutoClaimTwitchChannelPoints
+    {
+        get => autoClaimTwitchChannelPoints;
+        set => SetProperty(ref autoClaimTwitchChannelPoints, value);
     }
 
     public double Opacity

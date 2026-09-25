@@ -1,7 +1,7 @@
 <Window x:Class="StreamlinkVlcStudio.Bootstrapper.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Streamlink VLC Studio Setup"
+        Title="Stream Studio Setup"
         Width="720"
         Height="590"
         MinWidth="680"
@@ -86,7 +86,7 @@
                 </Grid.ColumnDefinitions>
                 <Image Width="38" Height="38" Source="Assets/Twitch.ico" />
                 <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
-                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="Streamlink VLC Studio" />
+                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="Stream Studio" />
                     <TextBlock Foreground="#A9B0BC" Text="Per-machine setup" />
                 </StackPanel>
                 <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="#A9B0BC">
@@ -110,7 +110,7 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
                 <StackPanel>
-                    <TextBlock Style="{StaticResource PageTitle}" Text="Install Streamlink VLC Studio" />
+                    <TextBlock Style="{StaticResource PageTitle}" Text="Install Stream Studio" />
                     <TextBlock Style="{StaticResource MutedText}"
                                Text="Setup installs the application for everyone on this PC under Program Files. Compatible VLC and Streamlink installations are kept and never downgraded." />
                 </StackPanel>
@@ -154,7 +154,7 @@
                 </Grid.RowDefinitions>
                 <StackPanel>
                     <TextBlock Style="{StaticResource PageTitle}" Text="Modify or repair" />
-                    <TextBlock Style="{StaticResource MutedText}" Text="Streamlink VLC Studio is installed for everyone on this PC." />
+                    <TextBlock Style="{StaticResource MutedText}" Text="Stream Studio is installed for everyone on this PC." />
                 </StackPanel>
                 <Border Grid.Row="1" Margin="0,22,0,0" Style="{StaticResource Card}">
                     <Grid>
@@ -189,7 +189,7 @@
                         </Grid>
                         <CheckBox Grid.Row="1" Margin="0,18,0,0" IsChecked="{Binding PurgeUserData}"
                                   Foreground="#F7F7FA" VerticalContentAlignment="Center"
-                                  Content="Also remove my Streamlink VLC Studio settings, cache, and temporary data" />
+                                  Content="Remove my Stream Studio settings, cache, and temporary data" />
                     </Grid>
                 </Border>
             </Grid>
@@ -252,6 +252,8 @@
                             Command="{Binding CancelCommand}" Content="Cancel" />
                     <Button Visibility="{Binding CanLaunch, Converter={StaticResource BooleanToVisibilityConverter}}"
                             Style="{StaticResource PrimaryButton}" Command="{Binding LaunchCommand}" Content="Launch application" />
+                    <Button Visibility="{Binding CanRetry, Converter={StaticResource BooleanToVisibilityConverter}}"
+                            Style="{StaticResource PrimaryButton}" Command="{Binding RetryCommand}" Content="Try again" />
                     <Button Visibility="{Binding IsResultPage, Converter={StaticResource BooleanToVisibilityConverter}}"
                             Command="{Binding CloseCommand}" Content="Close" />
                     <Button Visibility="{Binding IsMaintenancePage, Converter={StaticResource BooleanToVisibilityConverter}}"

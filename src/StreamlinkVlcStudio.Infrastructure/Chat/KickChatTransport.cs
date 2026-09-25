@@ -22,7 +22,10 @@ internal sealed class KickChatTransport
     private readonly IAppLogger logger;
     private readonly KickWebsiteJsonReader websiteReader;
 
-    public KickChatTransport(HttpClient httpClient, IAppLogger logger)
+    public KickChatTransport(
+        HttpClient httpClient,
+        IAppLogger logger,
+        Func<string, string, CancellationToken, Task<string?>>? curlOverride = null)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -30,7 +33,8 @@ internal sealed class KickChatTransport
             httpClient,
             logger,
             "KickChat",
-            CurlRequestTimeout);
+            CurlRequestTimeout,
+            curlOverride);
     }
 
     /// <summary>

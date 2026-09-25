@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Toolkit.Uwp.Notifications;
+using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
@@ -20,7 +21,7 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
 {
     private const string ToastGroup = "followed-live";
     private const int ToastTagMaxLength = 60;
-    private const int MaxThumbnailBytes = 8 * 1024 * 1024;
+    internal const int MaxThumbnailBytes = 8 * 1024 * 1024;
     private const int MaxStoredThumbnails = 128;
     private const long MaxStoredThumbnailBytes = 64L * 1024 * 1024;
     private static readonly TimeSpan ThumbnailTimeout = TimeSpan.FromSeconds(5);
@@ -179,7 +180,7 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
                 return null;
             }
 
-            var bytes = await ReadThumbnailBytesAsync(response.Content, cancellation.Token).ConfigureAwait(false);
+            var bytes = await BoundedByteReader.ReadAsync(response.Content, MaxThumbnailBytes, cancellation.Token).ConfigureAwait(false);
             if (bytes is null)
             {
                 return null;
@@ -193,13 +194,6 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
             return null;
         }
     }
-
-    // Kept as a small compatibility/reflection adapter for the dependency-free test host. The
-    // actual read is shared with every other bounded HTTP/file payload through BoundedByteReader.
-    private static Task<byte[]?> ReadThumbnailBytesAsync(
-        HttpContent content,
-        CancellationToken cancellationToken) =>
-        BoundedByteReader.ReadAsync(content, MaxThumbnailBytes, cancellationToken);
 
     private static string? ResolveImageExtension(string? mediaType) => mediaType?.ToLowerInvariant() switch
     {
@@ -224,7 +218,7 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
         await ThumbnailStorageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var directory = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudio", "toast");
+            var directory = Path.Combine(Path.GetTempPath(), AppIdentity.ProductDirectoryName, "toast");
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, BuildThumbnailFileName(url) + extension);
             var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";

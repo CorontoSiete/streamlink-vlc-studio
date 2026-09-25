@@ -7,14 +7,7 @@ public sealed record LocalHttpRequest(
     string Method,
     string Path,
     IReadOnlyDictionary<string, string> Headers,
-    byte[] Body)
-{
-    public string GetHeader(string name) =>
-        Headers.TryGetValue(name, out var value) ? value : "";
-
-    public string? GetOptionalHeader(string name) =>
-        Headers.TryGetValue(name, out var value) ? value : null;
-}
+    byte[] Body);
 
 public sealed record LocalHttpRequestReadResult(
     LocalHttpRequest? Request,
@@ -70,7 +63,8 @@ public static class LocalHttpRequestReader
             headerEnd = FindHeaderEnd(buffer.AsSpan(0, totalRead));
         }
 
-        var headerText = Encoding.ASCII.GetString(buffer, 0, headerEnd);
+        // Decode one-to-one so invalid non-ASCII syntax cannot be replaced before validation.
+        var headerText = Encoding.Latin1.GetString(buffer, 0, headerEnd);
         var headerLines = headerText.Split("\r\n", StringSplitOptions.None);
         if (headerLines.Length == 0 || headerLines.Any(static line => ContainsInvalidHeaderCharacters(line)))
         {
@@ -96,8 +90,8 @@ public static class LocalHttpRequestReader
                 return LocalHttpRequestReadResult.Failure(400, "Bad Request", "The request contains a malformed header.");
             }
 
-            var name = line[..separator].Trim();
-            var value = line[(separator + 1)..].Trim();
+            var name = line[..separator];
+            var value = line[(separator + 1)..].Trim(' ', '\t');
             if (!IsToken(name) || !headers.TryAdd(name, value))
             {
                 return LocalHttpRequestReadResult.Failure(400, "Bad Request", "The request contains a duplicate or malformed header.");
@@ -163,10 +157,7 @@ public static class LocalHttpRequestReader
     private static bool IsOriginFormTarget(string value) =>
         value.Length > 0 &&
         value[0] == '/' &&
-        !value.Contains(' ') &&
-        !value.Contains('\\') &&
-        !value.Contains('\r') &&
-        !value.Contains('\n');
+        value.All(static character => character is > ' ' and < '\u007f' and not '\\' and not '#');
 
     private static bool IsToken(string value)
     {
@@ -195,7 +186,7 @@ public static class LocalHttpRequestReader
 
     private static bool ContainsInvalidHeaderCharacters(string value)
     {
-        return value.Any(static character => character < 32 && character != '\t');
+        return value.Any(static character => (character < 32 && character != '\t') || character == 127);
     }
 
     private static int FindHeaderEnd(ReadOnlySpan<byte> bytes)

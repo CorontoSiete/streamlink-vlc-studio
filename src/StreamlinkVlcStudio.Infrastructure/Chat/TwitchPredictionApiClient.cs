@@ -1,9 +1,10 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
+using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
@@ -47,27 +48,10 @@ public sealed class TwitchPredictionApiClient
         }
 
         using var document = JsonDocument.Parse(responseBody);
-        if (document.RootElement.ValueKind != JsonValueKind.Object ||
-            !document.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            return new TwitchUserInfo(
-                TwitchPredictionJson.GetOptionalString(item, "id"),
-                TwitchPredictionJson.GetOptionalString(item, "login"),
-                TwitchPredictionJson.GetOptionalString(item, "display_name"));
-        }
-
-        return null;
+        return TwitchUserPayloadReader.TryRead(document.RootElement, login, out var user)
+            ? new TwitchUserInfo(GetOptionalString(user, "id"), GetOptionalString(user, "login"),
+                GetOptionalString(user, "display_name"))
+            : null;
     }
 
     public async Task<TwitchPrediction?> GetLatestPredictionAsync(
@@ -317,10 +301,7 @@ public sealed class TwitchPredictionApiClient
     {
         RequireNonEmpty(accessToken, "Twitch OAuth token");
         RequireNonEmpty(clientId, "Twitch Client ID");
-        var request = new HttpRequestMessage(method, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", TwitchOAuthService.NormalizeOAuthToken(accessToken));
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId.Trim());
-        return request;
+        return TwitchApiRequest.Create(method, url, accessToken, clientId);
     }
 
     private static StringContent CreateJsonContent(object payload)

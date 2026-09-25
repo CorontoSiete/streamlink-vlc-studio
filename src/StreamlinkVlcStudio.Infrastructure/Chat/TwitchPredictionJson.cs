@@ -8,8 +8,13 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 internal static class TwitchPredictionJson
 {
-    public static TwitchPrediction ReadPrediction(JsonElement element, string eventType = "")
+    public static TwitchPrediction? ReadPrediction(JsonElement element, string eventType = "")
     {
+        if (!JsonElementReader.TryGetNonEmptyString(element, "id", out var id) || string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
         var startedAt = GetOptionalTimestamp(element, "created_at") ??
             GetOptionalTimestamp(element, "started_at");
         var locksAt = GetOptionalTimestamp(element, "locked_at") ??
@@ -28,7 +33,7 @@ internal static class TwitchPredictionJson
         }
 
         return new TwitchPrediction(
-            GetOptionalString(element, "id"),
+            id,
             FirstNonEmpty(GetOptionalString(element, "broadcaster_id"), GetOptionalString(element, "broadcaster_user_id")),
             FirstNonEmpty(GetOptionalString(element, "broadcaster_login"), GetOptionalString(element, "broadcaster_user_login")),
             FirstNonEmpty(GetOptionalString(element, "broadcaster_name"), GetOptionalString(element, "broadcaster_user_name")),
@@ -51,9 +56,9 @@ internal static class TwitchPredictionJson
 
         foreach (var item in data.EnumerateArray())
         {
-            if (item.ValueKind == JsonValueKind.Object)
+            if (ReadPrediction(item) is { } prediction)
             {
-                return ReadPrediction(item);
+                return prediction;
             }
         }
 

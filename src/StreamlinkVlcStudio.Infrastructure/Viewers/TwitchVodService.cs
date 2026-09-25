@@ -1,7 +1,5 @@
 using StreamlinkVlcStudio.Core.Json;
 using System.Globalization;
-using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
@@ -12,6 +10,7 @@ using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
@@ -19,8 +18,6 @@ namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
 public sealed class TwitchVodService : ITwitchVodService
 {
-    private const string TwitchGraphQlEndpoint = "https://gql.twitch.tv/gql";
-    private const string TwitchPublicClientId = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(20));
     private readonly IAppLogger logger;
     private readonly HttpClient httpClient;
@@ -107,7 +104,7 @@ public sealed class TwitchVodService : ITwitchVodService
         CancellationToken cancellationToken)
     {
         var url = $"https://api.twitch.tv/helix/users?login={Uri.EscapeDataString(login)}";
-        using var request = CreateTwitchRequest(url, token, clientId);
+        using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
         using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -120,7 +117,7 @@ public sealed class TwitchVodService : ITwitchVodService
         }
 
         using var document = JsonDocument.Parse(responseBody);
-        return ReadBroadcaster(document.RootElement);
+        return ReadBroadcaster(document.RootElement, login);
     }
 
     private async Task<TwitchVodSearchResult> LoadVideosAsync(
@@ -131,7 +128,7 @@ public sealed class TwitchVodService : ITwitchVodService
         CancellationToken cancellationToken)
     {
         var url = BuildVideosUrl(broadcaster.Id, request);
-        using var httpRequest = CreateTwitchRequest(url, token, clientId);
+        using var httpRequest = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
         using var response = await BoundedHttpResponseSender.SendAsync(httpClient, httpRequest, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -188,10 +185,10 @@ public sealed class TwitchVodService : ITwitchVodService
             // Helix documents "viewable" as always "public", so it cannot identify
             // subscriber-only VODs. Request playback tokens anonymously: a non-empty
             // chansub.restricted_bitrates array is Twitch's actual subscriber gate.
-            using var request = new HttpRequestMessage(HttpMethod.Post, TwitchGraphQlEndpoint);
+            using var request = new HttpRequestMessage(HttpMethod.Post, TwitchGraphQlTransport.Endpoint);
             request.Headers.Accept.ParseAdd("*/*");
-            request.Headers.TryAddWithoutValidation("Client-Id", TwitchPublicClientId);
-            request.Headers.TryAddWithoutValidation("X-Device-Id", CreateDeviceId());
+            request.Headers.TryAddWithoutValidation("Client-Id", TwitchGraphQlTransport.PublicClientId);
+            request.Headers.TryAddWithoutValidation("X-Device-Id", TwitchGraphQlTransport.CreateDeviceId());
             request.Content = new StringContent(
                 BuildVodAccessQueryPayload(videos),
                 Encoding.UTF8,
@@ -210,7 +207,8 @@ public sealed class TwitchVodService : ITwitchVodService
 
             using var document = JsonDocument.Parse(responseBody);
             var root = document.RootElement;
-            if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
             {
                 logger.Write(
                     AppLogLevel.Warning,
@@ -245,7 +243,7 @@ public sealed class TwitchVodService : ITwitchVodService
         {
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        catch (Exception ex) when (OptionalHttpJsonReader.IsRecoverableFailure(ex))
         {
             logger.Write(
                 AppLogLevel.Warning,
@@ -334,47 +332,19 @@ public sealed class TwitchVodService : ITwitchVodService
         _ => ""
     };
 
-    private static string CreateDeviceId() =>
-        Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-
-    private static HttpRequestMessage CreateTwitchRequest(string url, string token, string clientId)
+    private static TwitchVodBroadcaster? ReadBroadcaster(JsonElement root, string expectedLogin)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-        return request;
-    }
-
-    private static TwitchVodBroadcaster? ReadBroadcaster(JsonElement root)
-    {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
+        if (!TwitchUserPayloadReader.TryRead(root, expectedLogin, out var user))
         {
             return null;
         }
 
-        foreach (var item in data.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            var id = GetOptionalString(item, "id");
-            var login = GetOptionalString(item, "login").Trim();
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(login))
-            {
-                continue;
-            }
-
-            var displayName = GetOptionalString(item, "display_name");
-            return new TwitchVodBroadcaster(
-                id,
-                login,
-                string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim(),
-                GetOptionalString(item, "profile_image_url"));
-        }
-
-        return null;
+        var login = GetOptionalString(user, "login");
+        return new TwitchVodBroadcaster(
+            GetOptionalString(user, "id"),
+            login,
+            FirstNonEmpty(GetOptionalString(user, "display_name"), login),
+            GetOptionalString(user, "profile_image_url"));
     }
 
     private static IEnumerable<TwitchVodItem> ReadVideos(JsonElement root, TwitchVodBroadcaster broadcaster)

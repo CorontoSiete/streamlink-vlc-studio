@@ -1112,7 +1112,19 @@ internal static partial class ApplicationTestCatalog
                 surfaceHandle = surfaceHandleRef.Handle;
 
                 Assert.True(surfaceHandle != IntPtr.Zero);
-                Assert.Equal("StreamlinkVlcStudioVideoSurface", NativeWindowTest.GetClassName(surfaceHandle));
+                Assert.Equal("StreamStudioVideoSurface", NativeWindowTest.GetClassName(surfaceHandle));
+                const int wsChild = 0x40000000;
+                const int wsPopup = unchecked((int)0x80000000);
+                const int wsExToolWindow = 0x00000080;
+                const int wsExAppWindow = 0x00040000;
+                const int wsExNoActivate = 0x08000000;
+                var style = NativeWindowTest.GetWindowStyle(surfaceHandle);
+                var extendedStyle = NativeWindowTest.GetWindowExStyle(surfaceHandle);
+                Assert.True((style & wsChild) != 0, "The video host must remain a child HWND of the WPF app window.");
+                Assert.True((style & wsPopup) == 0, "The video host must not advertise itself as an independent popup window.");
+                Assert.True((extendedStyle & wsExToolWindow) != 0, "The video host must stay out of app/window picker lists.");
+                Assert.True((extendedStyle & wsExNoActivate) != 0, "The video host must not independently activate during native capture/input.");
+                Assert.True((extendedStyle & wsExAppWindow) == 0, "The video host must not force an independent app-window identity.");
             }
             finally
             {
@@ -1122,6 +1134,137 @@ internal static partial class ApplicationTestCatalog
                 }
 
                 NativeWindowTest.DestroyWindow(parentHandle);
+            }
+        });
+    }),
+    ("video surface native bounds sync sizes containers and preserves renderer-owned child layout", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var surface = new StreamlinkVlcStudio.App.Wpf.Controls.VideoSurface();
+            var window = new System.Windows.Window
+            {
+                Content = surface,
+                Width = 320,
+                Height = 180,
+                WindowStyle = System.Windows.WindowStyle.None,
+                ShowInTaskbar = false
+            };
+            var renderer = IntPtr.Zero;
+            var output = IntPtr.Zero;
+
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                window.UpdateLayout();
+
+                Assert.True(surface.Handle != IntPtr.Zero);
+                renderer = NativeWindowTest.CreateVisibleChildWindow(surface.Handle, "static");
+                output = NativeWindowTest.CreateVisibleChildWindow(renderer, "static");
+                NativeWindowTest.SetWindowBounds(renderer, 0, 0, 80, 60);
+                NativeWindowTest.SetWindowBounds(output, 0, 0, 20, 10);
+
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.Loaded);
+
+                var surfaceBounds = NativeWindowTest.GetWindowBounds(surface.Handle);
+                var rendererBounds = NativeWindowTest.GetWindowBounds(renderer);
+                var outputBounds = NativeWindowTest.GetWindowBounds(output);
+
+                Assert.Equal(surfaceBounds.Width, rendererBounds.Width);
+                Assert.Equal(surfaceBounds.Height, rendererBounds.Height);
+                Assert.Equal(20, outputBounds.Width);
+                Assert.Equal(10, outputBounds.Height);
+                AssertVideoRendererChildStyles(renderer);
+                AssertVideoRendererChildStyles(output);
+            }
+            finally
+            {
+                if (output != IntPtr.Zero)
+                {
+                    NativeWindowTest.DestroyWindow(output);
+                }
+
+                if (renderer != IntPtr.Zero)
+                {
+                    NativeWindowTest.DestroyWindow(renderer);
+                }
+
+                window.Close();
+            }
+        });
+    }),
+    ("video surface native repair reparents owned popup renderer windows", () =>
+    {
+        return TestSta.RunAsync(() =>
+        {
+            var surface = new StreamlinkVlcStudio.App.Wpf.Controls.VideoSurface();
+            var window = new System.Windows.Window
+            {
+                Content = surface,
+                Width = 320,
+                Height = 180,
+                WindowStyle = System.Windows.WindowStyle.None,
+                ShowInTaskbar = false
+            };
+            var renderer = IntPtr.Zero;
+            var output = IntPtr.Zero;
+
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                window.UpdateLayout();
+
+                Assert.True(surface.Handle != IntPtr.Zero);
+                renderer = NativeWindowTest.CreateVisibleOwnedPopupWindow(
+                    surface.Handle,
+                    "static",
+                    "Stream Studio (VLC Video Output)");
+                output = NativeWindowTest.CreateVisibleChildWindow(renderer, "static");
+                NativeWindowTest.SetWindowBounds(renderer, 0, 0, 80, 60);
+                NativeWindowTest.SetWindowBounds(output, 0, 0, 20, 10);
+
+                surface.ScheduleRendererWindowRepair();
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.Loaded);
+
+                var surfaceBounds = NativeWindowTest.GetWindowBounds(surface.Handle);
+                var rendererBounds = NativeWindowTest.GetWindowBounds(renderer);
+                var outputBounds = NativeWindowTest.GetWindowBounds(output);
+
+                Assert.True(
+                    NativeWindowHitTester.Instance.IsChild(surface.Handle, renderer),
+                    "Owned popup renderer was not reparented under the video surface.");
+                Assert.Equal(surfaceBounds.Width, rendererBounds.Width);
+                Assert.Equal(surfaceBounds.Height, rendererBounds.Height);
+                Assert.Equal(20, outputBounds.Width);
+                Assert.Equal(10, outputBounds.Height);
+                AssertVideoRendererChildStyles(renderer);
+                AssertVideoRendererChildStyles(output);
+            }
+            finally
+            {
+                if (output != IntPtr.Zero)
+                {
+                    NativeWindowTest.DestroyWindow(output);
+                }
+
+                if (renderer != IntPtr.Zero)
+                {
+                    NativeWindowTest.DestroyWindow(renderer);
+                }
+
+                window.Close();
             }
         });
     }),
@@ -4880,7 +5023,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         viewModel.SelectedTab!.SetVideoHandle(new IntPtr(1234));
         await TestWait.UntilAsync(
             () => playbackFactory.CreateCount == 1 &&
@@ -4921,7 +5064,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         viewModel.SelectedTab!.SetVideoHandle(new IntPtr(1234));
         await TestWait.UntilAsync(
             () => playbackFactory.CreateCount == 1 &&
@@ -4971,7 +5114,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        await viewModel.OpenDetectedStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
+        await viewModel.OpenStreamAsync(StreamInputParser.Parse("albralelie", PlatformKind.Twitch));
         viewModel.SelectedTab!.SetVideoHandle(new IntPtr(1234));
         await TestWait.UntilAsync(
             () => playbackFactory.CreateCount == 1 &&
@@ -5600,6 +5743,133 @@ internal static partial class ApplicationTestCatalog
             }
         });
     }),
+    ("native overlay chat clears stale shift state after shifted symbol input", () =>
+    {
+        return TestSta.RunAsync(async () =>
+        {
+            const ushort vkShift = 0x10;
+            const ushort vkSlash = 0xbf;
+
+            var extractRoot = CreateTempTestDirectory();
+            var pipeName = $"svs_shift_symbol_{Guid.NewGuid():N}";
+            Process? overlayController = null;
+            var previousForegroundWindow = NativeWindowTest.GetForegroundWindow();
+            var restoreCursor = NativeWindowTest.TryGetCursorPosition(out var originalCursor);
+            var logger = new MemoryLogger();
+            var window = new Window
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                Left = 320,
+                Top = 160,
+                Width = 480,
+                Height = 240,
+                Title = "Native overlay shift regression"
+            };
+
+            try
+            {
+                var overlayDirectory = VlcOverlayBundledResourceExtractor.TryExtract(logger, extractRoot);
+                Assert.True(!string.IsNullOrWhiteSpace(overlayDirectory));
+                var controllerPath = VlcOverlayDirectoryResolver.GetControllerPath(overlayDirectory!);
+                Assert.True(File.Exists(controllerPath));
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = controllerPath,
+                    WorkingDirectory = Path.GetDirectoryName(controllerPath)!,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                startInfo.ArgumentList.Add("--channel");
+                startInfo.ArgumentList.Add("albralelie");
+                startInfo.ArgumentList.Add("--provider");
+                startInfo.ArgumentList.Add("twitch");
+                startInfo.ArgumentList.Add("--pipe-name");
+                startInfo.ArgumentList.Add(pipeName);
+                startInfo.ArgumentList.Add("--owner-process-id");
+                startInfo.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+
+                overlayController = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+                overlayController.OutputDataReceived += (_, _) => { };
+                overlayController.ErrorDataReceived += (_, _) => { };
+                Assert.True(overlayController.Start());
+                overlayController.BeginOutputReadLine();
+                overlayController.BeginErrorReadLine();
+
+                window.Show();
+                window.UpdateLayout();
+                window.Topmost = true;
+                window.Topmost = false;
+                var windowHandle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+                await NativeWindowTest.RequireForegroundAsync(
+                    windowHandle,
+                    TimeSpan.FromSeconds(2),
+                    "native-overlay shifted-symbol foreground precondition");
+
+                await NativeOverlayControllerTest.SendEventAsync(
+                    pipeName,
+                    NativeOverlayControllerTest.ChatInputFocusEvent,
+                    value: 1,
+                    TimeSpan.FromSeconds(3));
+                await Task.Delay(100);
+
+                NativeWindowTest.SendVirtualKeySequence(
+                    (vkShift, false),
+                    (vkSlash, false),
+                    (vkSlash, true),
+                    (vkShift, true));
+                await TestWait.UntilAsync(
+                    () => NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath) == "?",
+                    TimeSpan.FromSeconds(2),
+                    "native overlay did not capture Shift+/ as a question mark");
+
+                NativeWindowTest.SendVirtualKeySequence(
+                    (vkSlash, false),
+                    (vkSlash, true));
+                await TestWait.UntilAsync(
+                    () => NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath).Length >= 2,
+                    TimeSpan.FromSeconds(2),
+                    "native overlay did not capture the following slash");
+
+                Assert.Equal("?/", NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath));
+            }
+            finally
+            {
+                try
+                {
+                    NativeWindowTest.SendVirtualKeySequence(
+                        (vkShift, true),
+                        (0x11, true),
+                        (0x12, true));
+                }
+                catch (InvalidOperationException)
+                {
+                }
+
+                if (restoreCursor)
+                {
+                    NativeWindowTest.SetCursorPosition(originalCursor.X, originalCursor.Y);
+                }
+
+                if (overlayController is { HasExited: false })
+                {
+                    overlayController.Kill(entireProcessTree: true);
+                    await overlayController.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+                }
+
+                window.Close();
+                if (previousForegroundWindow != IntPtr.Zero)
+                {
+                    NativeWindowTest.ActivateWindow(previousForegroundWindow);
+                }
+
+                overlayController?.Dispose();
+                DeleteTempTestDirectory(extractRoot);
+            }
+        });
+    }),
     ("native video double click exits theatre mode when the first click activates the window", () =>
     {
         return TestSta.RunAsync(async () =>
@@ -5686,7 +5956,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.True(surface.ActualHeight > 0);
                 nativeVideoChild = NativeWindowTest.CreateVisibleChildWindow(
                     surface.Handle,
-                    "StreamlinkVlcStudioVideoSurface");
+                    "StreamStudioVideoSurface");
                 surface.SyncNativeBounds();
 
                 var surfaceCenter = surface.PointToScreen(new System.Windows.Point(
@@ -6637,85 +6907,49 @@ internal static partial class ApplicationTestCatalog
     }),
     ("tab navigation key policy allows left and right in windowed viewer mode", () =>
     {
-        Assert.True(TabNavigationKeyPolicy.ShouldHandle(
-            Key.Left,
-            ModifierKeys.None,
-            isFullscreen: false,
-            isFullscreenModeActive: false,
-            isSettingsOpen: false,
-            focusedElement: null));
-        Assert.True(TabNavigationKeyPolicy.ShouldHandle(
-            Key.Right,
-            ModifierKeys.None,
-            isFullscreen: false,
-            isFullscreenModeActive: false,
-            isSettingsOpen: false,
-            focusedElement: null));
-        Assert.Equal(-1, TabNavigationKeyPolicy.DirectionFor(Key.Left));
-        Assert.Equal(1, TabNavigationKeyPolicy.DirectionFor(Key.Right));
-        Assert.Equal(0, TabNavigationKeyPolicy.DirectionFor(Key.Up));
+        var settings = new HotkeySettings();
+        Assert.True(HotkeyBindingPolicy.Matches(settings, AppHotkeyAction.PreviousTab, Key.Left, ModifierKeys.None));
+        Assert.True(HotkeyBindingPolicy.Matches(settings, AppHotkeyAction.NextTab, Key.Right, ModifierKeys.None));
+        Assert.True(HotkeyBindingPolicy.CanNavigateTabs(
+            isFullscreen: false, isFullscreenModeActive: false, isSettingsOpen: false));
         return Task.CompletedTask;
     }),
     ("tab navigation key policy preserves fullscreen, editing, modifier, and settings gates", async () =>
     {
         await TestSta.RunAsync(() =>
         {
-            Assert.True(TabNavigationKeyPolicy.ShouldHandle(
-                Key.Right,
-                ModifierKeys.None,
-                isFullscreen: true,
-                isFullscreenModeActive: true,
-                isSettingsOpen: false,
-                focusedElement: null));
-            Assert.Equal(false, TabNavigationKeyPolicy.ShouldHandle(
-                Key.Right,
-                ModifierKeys.None,
-                isFullscreen: true,
-                isFullscreenModeActive: false,
-                isSettingsOpen: false,
-                focusedElement: null));
-            Assert.Equal(false, TabNavigationKeyPolicy.ShouldHandle(
-                Key.Up,
-                ModifierKeys.None,
-                isFullscreen: false,
-                isFullscreenModeActive: false,
-                isSettingsOpen: false,
-                focusedElement: null));
-            Assert.Equal(false, TabNavigationKeyPolicy.ShouldHandle(
-                Key.Right,
-                ModifierKeys.Control,
-                isFullscreen: false,
-                isFullscreenModeActive: false,
-                isSettingsOpen: false,
-                focusedElement: null));
-            Assert.Equal(false, TabNavigationKeyPolicy.ShouldHandle(
-                Key.Right,
-                ModifierKeys.None,
-                isFullscreen: false,
-                isFullscreenModeActive: false,
-                isSettingsOpen: true,
-                focusedElement: null));
-            Assert.Equal(false, TabNavigationKeyPolicy.ShouldHandle(
-                Key.Left,
-                ModifierKeys.None,
-                isFullscreen: false,
-                isFullscreenModeActive: false,
-                isSettingsOpen: false,
-                focusedElement: new TextBox()));
+            var settings = new HotkeySettings();
+            Assert.True(HotkeyBindingPolicy.CanNavigateTabs(
+                isFullscreen: true, isFullscreenModeActive: true, isSettingsOpen: false));
+            Assert.Equal(false, HotkeyBindingPolicy.CanNavigateTabs(
+                isFullscreen: true, isFullscreenModeActive: false, isSettingsOpen: false));
+            Assert.Equal(false, HotkeyBindingPolicy.Matches(settings, AppHotkeyAction.NextTab, Key.Up, ModifierKeys.None));
+            Assert.Equal(false, HotkeyBindingPolicy.Matches(settings, AppHotkeyAction.NextTab, Key.Right, ModifierKeys.Control));
+            Assert.Equal(false, HotkeyBindingPolicy.CanNavigateTabs(
+                isFullscreen: false, isFullscreenModeActive: false, isSettingsOpen: true));
+            Assert.True(HotkeyBindingPolicy.ShouldSuppressForTextInput(settings, AppHotkeyAction.PreviousTab, new TextBox()));
         });
     }),
     ("main window shortcuts policy accepts only exact ctrl s for replay seekbar", () =>
     {
-        Assert.True(ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+        Assert.True(HotkeyBindingPolicy.Matches(
+            new HotkeySettings(),
+            AppHotkeyAction.ToggleReplaySeekBar,
             Key.S,
             ModifierKeys.Control));
-        Assert.Equal(false, ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+        Assert.Equal(false, HotkeyBindingPolicy.Matches(
+            new HotkeySettings(),
+            AppHotkeyAction.ToggleReplaySeekBar,
             Key.S,
             ModifierKeys.None));
-        Assert.Equal(false, ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+        Assert.Equal(false, HotkeyBindingPolicy.Matches(
+            new HotkeySettings(),
+            AppHotkeyAction.ToggleReplaySeekBar,
             Key.S,
             ModifierKeys.Control | ModifierKeys.Shift));
-        Assert.Equal(false, ReplaySeekBarShortcutKeyPolicy.ShouldHandle(
+        Assert.Equal(false, HotkeyBindingPolicy.Matches(
+            new HotkeySettings(),
+            AppHotkeyAction.ToggleReplaySeekBar,
             Key.D,
             ModifierKeys.Control));
         return Task.CompletedTask;

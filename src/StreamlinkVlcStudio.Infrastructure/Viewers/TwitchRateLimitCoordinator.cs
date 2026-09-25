@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Net;
-using System.Net.Http.Headers;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Http;
@@ -29,7 +28,7 @@ internal sealed class TwitchRateLimitCoordinator
         {
             await WaitForPauseAsync(cancellationToken).ConfigureAwait(false);
 
-            using var request = CreateRequest(url, token, clientId);
+            using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
             var response = await BoundedHttpResponseSender
                 .SendAsync(httpClient, request, cancellationToken)
                 .ConfigureAwait(false);
@@ -74,14 +73,6 @@ internal sealed class TwitchRateLimitCoordinator
         {
             return delta < TimeSpan.Zero ? DateTimeOffset.MinValue : DateTimeOffset.MaxValue;
         }
-    }
-
-    private static HttpRequestMessage CreateRequest(string url, string token, string clientId)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-        return request;
     }
 
     private static async Task WaitForPauseAsync(CancellationToken cancellationToken)

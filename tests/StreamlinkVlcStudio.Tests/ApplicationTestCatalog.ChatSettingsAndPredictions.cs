@@ -1020,6 +1020,40 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(1920d, loaded.PictureInPictureWindowLocation.FullscreenScreen.Width);
         Assert.Equal(1080d, loaded.PictureInPictureWindowLocation.FullscreenScreen.Height);
     }),
+    ("legacy Streamlink proxy settings are dropped on save", async () =>
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"svs-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            await File.WriteAllTextAsync(
+                temp,
+                """
+                {
+                  "StreamlinkPath": "streamlink.exe",
+                  "UseStreamlinkProxy": true,
+                  "StreamlinkProxyUrl": "http://127.0.0.1:8080",
+                  "CustomStreamlinkArguments": "--retry-streams 10"
+                }
+                """);
+            var service = new JsonSettingsService(temp);
+            var settings = await service.LoadAsync();
+            Assert.Equal("streamlink.exe", settings.StreamlinkPath);
+            Assert.Equal("--retry-streams 10", settings.CustomStreamlinkArguments);
+
+            await service.SaveAsync(settings);
+            var saved = await File.ReadAllTextAsync(temp);
+            Assert.DoesNotContain("UseStreamlinkProxy", saved);
+            Assert.DoesNotContain("StreamlinkProxyUrl", saved);
+            Assert.Contains("CustomStreamlinkArguments", saved);
+        }
+        finally
+        {
+            if (File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
+    }),
     ("legacy JSON settings keep Windows toast notifications enabled", async () =>
     {
         var temp = Path.Combine(Path.GetTempPath(), $"svs-settings-{Guid.NewGuid():N}.json");
@@ -1134,7 +1168,7 @@ internal static partial class ApplicationTestCatalog
     }),
     ("malformed JSON settings are preserved and defaults are loaded", async () =>
     {
-        var directory = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var settingsPath = Path.Combine(directory, "settings.json");
         var malformed = """{"DefaultPlatform":"not-a-platform"}""";
@@ -1209,7 +1243,7 @@ internal static partial class ApplicationTestCatalog
     ("resolves quoted Streamlink environment path", () =>
     {
         var previous = Environment.GetEnvironmentVariable("STREAMLINK_PATH");
-        var directory = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var streamlinkPath = Path.Combine(directory, "streamlink.exe");
         File.WriteAllText(streamlinkPath, "");
@@ -1230,7 +1264,7 @@ internal static partial class ApplicationTestCatalog
     ("resolves VLC directory from root or plugin environment path", () =>
     {
         var previous = Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH");
-        var directory = Path.Combine(Path.GetTempPath(), "StreamlinkVlcStudioTests", Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", Guid.NewGuid().ToString("N"));
         var vlcDirectory = Path.Combine(directory, "VLC");
         var pluginDirectory = Path.Combine(vlcDirectory, "plugins");
         Directory.CreateDirectory(pluginDirectory);
@@ -2705,6 +2739,14 @@ internal static partial class ApplicationTestCatalog
         var requestPaths = new List<string>();
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("{}")
+                };
+            }
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer channel-search-token", request.Headers.Authorization?.ToString());
@@ -2783,6 +2825,14 @@ internal static partial class ApplicationTestCatalog
     {
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("{}")
+                };
+            }
+
             Assert.Equal("kick.com", request.RequestUri!.Host);
             Assert.Equal("/api/search", request.RequestUri.AbsolutePath);
             Assert.Contains("searched_word=xqc", request.RequestUri.Query);

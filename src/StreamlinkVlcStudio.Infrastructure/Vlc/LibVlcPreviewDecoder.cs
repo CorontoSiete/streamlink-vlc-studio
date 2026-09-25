@@ -11,9 +11,6 @@ internal static class LibVlcPreviewDecoder
     private const int Pitch = Width * 4;
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
-    internal static Task<byte[]?> DecodeAsync(byte[] segment, string vlcDirectory, CancellationToken token) =>
-        DecodeAsync(segment, null, vlcDirectory, token);
-
     internal static async Task<byte[]?> DecodeAsync(byte[] segment, byte[]? initialization,
         string vlcDirectory, CancellationToken token)
     {

@@ -11,30 +11,37 @@ internal sealed class TabGroupingController
     public List<List<StreamTabViewModel>> PictureInPictureGroups { get; } = [];
     public List<List<StreamTabViewModel>> PictureInPictureVisibleGroups { get; } = [];
 
-    public void RemoveTabs(IReadOnlyCollection<StreamTabViewModel> tabs)
-    {
-        if (tabs.Count == 0)
-        {
-            return;
-        }
-
+    public bool RemoveFromMultiViewGroups(IReadOnlyCollection<StreamTabViewModel> tabs) =>
         RemoveFromGroups(MultiViewGroups, tabs);
+
+    public bool RemoveFromPictureInPictureGroups(IReadOnlyCollection<StreamTabViewModel> tabs) =>
         RemoveFromGroups(PictureInPictureGroups, tabs);
-        RemoveFromGroups(PictureInPictureVisibleGroups, tabs);
+
+    public bool RemoveFromPictureInPictureVisibleGroups(IReadOnlyCollection<StreamTabViewModel> tabs)
+    {
+        if (tabs.Count == 0 || PictureInPictureVisibleGroups.Count == 0) return false;
+        var removed = tabs.ToHashSet();
+        // Visibility groups describe a whole detached layout. Any membership change invalidates it.
+        return PictureInPictureVisibleGroups.RemoveAll(group => group.Any(removed.Contains)) > 0;
     }
 
-    private static void RemoveFromGroups(
+    private static bool RemoveFromGroups(
         List<List<StreamTabViewModel>> groups,
         IReadOnlyCollection<StreamTabViewModel> tabs)
     {
+        if (tabs.Count == 0 || groups.Count == 0) return false;
         var removed = tabs.ToHashSet();
+        var changed = false;
         for (var index = groups.Count - 1; index >= 0; index--)
         {
-            groups[index].RemoveAll(removed.Contains);
+            changed |= groups[index].RemoveAll(removed.Contains) > 0;
             if (groups[index].Count <= 1)
             {
                 groups.RemoveAt(index);
+                changed = true;
             }
         }
+
+        return changed;
     }
 }

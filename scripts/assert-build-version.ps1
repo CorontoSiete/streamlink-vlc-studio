@@ -27,14 +27,15 @@ if (-not [string]::IsNullOrWhiteSpace($Tag)) {
 }
 
 Assert-WindowsFileVersion $SetupPath 'Burn bundle' $Version
+Assert-ManagedUpdateCompatibility $InternalMsiPath
 $msiVersion = Get-MsiPropertyValue -Path $InternalMsiPath -Property ProductVersion
 if ($msiVersion -cne $Version) { throw "Internal MSI ProductVersion mismatch. Expected $Version; found $msiVersion." }
 
-$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('StreamlinkVlcStudio-build-version-' + [Guid]::NewGuid().ToString('N'))
+$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('StreamStudio-build-version-' + [Guid]::NewGuid().ToString('N'))
 try {
     Expand-ValidatedZipArchive $ZipPath $temporaryRoot
     $payloadRoot = Resolve-ReleasePayloadRoot $temporaryRoot $contract
-    Assert-WindowsFileVersion (Join-Path $payloadRoot 'StreamlinkVlcStudio.exe') 'Application' $Version
+    Assert-WindowsFileVersion (Join-Path $payloadRoot 'StreamStudio.exe') 'Application' $Version
     Assert-WindowsFileVersion (Join-Path $payloadRoot 'Uninstall.exe') 'ZIP maintenance helper' $Version
     $zipMetadata = Get-Content -LiteralPath (Join-Path $payloadRoot 'release-metadata.json') -Raw | ConvertFrom-Json
     $expectedTag = if ([string]::IsNullOrWhiteSpace($Tag)) { '' } else { $Tag }
@@ -50,7 +51,7 @@ try {
 }
 
 $sbom = Get-Content -LiteralPath $SbomPath -Raw | ConvertFrom-Json
-$rootPackage = @($sbom.packages | Where-Object { [string]$_.SPDXID -ceq 'SPDXRef-Package-StreamlinkVlcStudio' })
+$rootPackage = @($sbom.packages | Where-Object { [string]$_.SPDXID -ceq 'SPDXRef-Package-StreamStudio' })
 if ($rootPackage.Count -ne 1 -or [string]$rootPackage[0].versionInfo -cne $Version) {
     throw "SBOM application version does not exactly match $Version."
 }

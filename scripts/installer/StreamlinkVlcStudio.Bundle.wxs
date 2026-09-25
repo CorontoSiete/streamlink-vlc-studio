@@ -3,8 +3,8 @@
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Bundle
-    Name="Streamlink VLC Studio"
-    Manufacturer="Streamlink VLC Studio"
+    Name="Stream Studio"
+    Manufacturer="Stream Studio"
     Version="$(var.BundleVersion)"
     UpgradeCode="B1A4CC92-5E23-4F5E-9D67-1A4EE6F57C18"
     IconSourceFile="$(var.AppIcon)"
@@ -34,21 +34,40 @@
       Type="version"
       Value="0.0.0.0" />
     <Variable
+      Name="VlcInstallDirectory"
+      Type="formatted"
+      Value="[ProgramFiles64Folder]VideoLAN\VLC" />
+    <Variable
+      Name="VlcInstalledVersion"
+      Type="version"
+      Value="0.0.0.0" />
+    <Variable
       Name="PurgeUserData"
       Type="numeric"
-      Value="0"
+      Value="1"
       bal:Overridable="yes" />
 
     <BootstrapperApplication
-      SourceFile="$(var.BootstrapperApplicationDir)\StreamlinkVlcStudio.Bootstrapper.exe">
+      SourceFile="$(var.BootstrapperApplicationDir)\StreamStudio.Bootstrapper.exe">
       <PayloadGroupRef Id="ManagedBootstrapperApplicationPayloads" />
     </BootstrapperApplication>
 
-    <util:ProductSearch
-      Id="VlcRelatedProductSearch"
-      Variable="VlcRelatedVersion"
-      UpgradeCode="D2E0205B-0D3A-46E2-ADF7-0504FF48CF04"
-      Result="version" />
+    <util:RegistrySearch
+      Id="VlcInstallDirectorySearch"
+      Variable="VlcInstallDirectory"
+      Root="HKLM"
+      Key="SOFTWARE\VideoLAN\VLC"
+      Value="InstallDir"
+      Result="value"
+      Bitness="always64" />
+    <!-- Some VLC installers register InstallDir without a Version value. Read
+         the actual playback runtime, with Program Files as the default location. -->
+    <util:FileSearch
+      Id="VlcInstalledVersionSearch"
+      Variable="VlcInstalledVersion"
+      Path="[VlcInstallDirectory]\libvlc.dll"
+      Result="version"
+      After="VlcInstallDirectorySearch" />
 
     <Chain>
       <ExePackage
@@ -59,16 +78,18 @@
         PerMachine="yes"
         Permanent="yes"
         DetectCondition="StreamlinkMachineVersion &gt;= v$(var.StreamlinkMinimumVersion)" />
-      <MsiPackage
+      <ExePackage
         Id="Vlc"
         DisplayName="VLC media player (64-bit)"
-        SourceFile="$(var.VlcMsi)"
-        ForcePerMachine="yes"
-        InstallCondition="VlcRelatedVersion &lt; v$(var.VlcVersion)"
-        Permanent="yes" />
+        SourceFile="$(var.VlcInstaller)"
+        InstallArguments="/L=1033 /S"
+        PerMachine="yes"
+        Permanent="yes"
+        DetectCondition="VlcInstalledVersion &gt;= v$(var.VlcVersion)"
+        InstallCondition="VlcInstalledVersion &lt; v$(var.VlcVersion)" />
       <MsiPackage
-        Id="StreamlinkVlcStudio"
-        DisplayName="Streamlink VLC Studio"
+        Id="StreamStudio"
+        DisplayName="Stream Studio"
         SourceFile="$(var.AppMsi)"
         ForcePerMachine="yes">
         <MsiProperty Name="INSTALLFOLDER" Value="[ProgramFiles64Folder]Streamlink VLC Studio" />

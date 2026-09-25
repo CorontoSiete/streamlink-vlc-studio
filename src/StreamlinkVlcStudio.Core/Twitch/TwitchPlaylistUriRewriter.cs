@@ -48,50 +48,68 @@ internal static class TwitchPlaylistUriRewriter
 
     private static string RewriteTagLine(string line, Uri playlistUri)
     {
-        const string marker = "URI=";
-        var attributeStart = FindExactAttribute(line, marker);
-        if (attributeStart < 0)
+        var colon = line.IndexOf(':');
+        if (colon < 0 || !line.StartsWith("#EXT-X-", StringComparison.OrdinalIgnoreCase))
         {
             return line;
         }
 
-        var quoteIndex = attributeStart + marker.Length;
-        if (quoteIndex >= line.Length || line[quoteIndex] != '"')
+        StringBuilder? rewritten = null;
+        var copiedThrough = 0;
+        var foundUri = false;
+        for (var attributeStart = colon + 1; attributeStart < line.Length;)
         {
-            throw new InvalidDataException("The playlist contained a malformed URI attribute.");
-        }
-
-        var start = quoteIndex + 1;
-        var end = line.IndexOf('"', start);
-        if (end < 0)
-        {
-            throw new InvalidDataException("The playlist contained an unterminated URI attribute.");
-        }
-
-        var uri = line[start..end];
-        return string.Concat(line[..start], ResolveApprovedUri(uri, playlistUri).AbsoluteUri, line[end..]);
-    }
-
-    private static int FindExactAttribute(string line, string marker)
-    {
-        var searchIndex = 0;
-        while (searchIndex < line.Length)
-        {
-            var index = line.IndexOf(marker, searchIndex, StringComparison.OrdinalIgnoreCase);
-            if (index < 0)
+            // Commas and URI= inside a quoted value are metadata, not new attributes.
+            var attributeEnd = attributeStart;
+            var quoted = false;
+            for (; attributeEnd < line.Length; attributeEnd++)
             {
-                return -1;
+                var character = line[attributeEnd];
+                if (character == '"')
+                {
+                    quoted = !quoted;
+                }
+                else if (character == ',' && !quoted)
+                {
+                    break;
+                }
             }
 
-            if (index == 0 || line[index - 1] is ':' or ',')
+            if (quoted)
             {
-                return index;
+                throw new InvalidDataException("The playlist contained an unterminated quoted attribute.");
             }
 
-            searchIndex = index + marker.Length;
+            var attribute = line.AsSpan(attributeStart, attributeEnd - attributeStart);
+            var equals = attribute.IndexOf('=');
+            if (equals >= 0 && attribute[..equals].Trim().Equals("URI", StringComparison.OrdinalIgnoreCase))
+            {
+                if (foundUri)
+                {
+                    throw new InvalidDataException("The playlist contained duplicate URI attributes.");
+                }
+
+                foundUri = true;
+                var value = attribute[(equals + 1)..].Trim();
+                if (value.Length < 2 || value[0] != '"' || value[^1] != '"' || value[1..^1].Contains('"'))
+                {
+                    throw new InvalidDataException("The playlist contained a malformed URI attribute.");
+                }
+
+                var resolved = ResolveApprovedUri(value[1..^1].ToString(), playlistUri);
+                var valueStart = attributeStart + equals + 1;
+                rewritten ??= new StringBuilder(line.Length + 128);
+                rewritten.Append(line.AsSpan(copiedThrough, valueStart - copiedThrough));
+                rewritten.Append('"').Append(resolved.AbsoluteUri).Append('"');
+                copiedThrough = attributeEnd;
+            }
+
+            attributeStart = attributeEnd + 1;
         }
 
-        return -1;
+        return rewritten is null
+            ? line
+            : rewritten.Append(line.AsSpan(copiedThrough)).ToString();
     }
 
     private static Uri ResolveApprovedUri(string uri, Uri playlistUri)

@@ -4,8 +4,7 @@ namespace StreamlinkVlcStudio.App.Wpf;
 
 internal static class MaintenanceModeRunner
 {
-    internal const string ShutdownEventName = "Local\\StreamlinkVlcStudio.App.MaintenanceShutdown";
-    private const string SingleInstanceMutexName = "Local\\StreamlinkVlcStudio.App.SingleInstance";
+    internal const string ShutdownEventName = "Local\\StreamStudio.App.MaintenanceShutdown";
 
     public static bool TryRun(string[] args, out int exitCode)
     {
@@ -50,7 +49,7 @@ internal static class MaintenanceModeRunner
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
         while (DateTime.UtcNow < deadline)
         {
-            using var mutex = new Mutex(false, SingleInstanceMutexName);
+            using var mutex = new Mutex(false, App.SingleInstanceMutexName);
             try
             {
                 if (mutex.WaitOne(TimeSpan.FromMilliseconds(200)))

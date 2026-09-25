@@ -86,36 +86,49 @@ public static class KickOAuthService
             cancellationToken);
     }
 
-    public static async Task<string?> GetUsableAccessTokenAsync(
+    public static Task<string?> GetUsableAccessTokenAsync(
         ChatSettings settings,
         Func<ChatSettings, KickOAuthTokenResult, CancellationToken, Task> applyTokenResultAsync,
         IAppLogger? logger = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        GetUsableAccessTokenAsync(settings, applyTokenResultAsync, RefreshUserTokenAsync, logger, cancellationToken);
+
+    internal static async Task<string?> GetUsableAccessTokenAsync(
+        ChatSettings settings,
+        Func<ChatSettings, KickOAuthTokenResult, CancellationToken, Task> applyTokenResultAsync,
+        Func<ChatSettings, CancellationToken, Task<KickOAuthTokenResult>> refreshTokenAsync,
+        IAppLogger? logger,
+        CancellationToken cancellationToken)
     {
-        var token = NormalizeBearerToken(settings.KickOAuthToken);
-        if (!string.IsNullOrWhiteSpace(token) && !ShouldRefresh(settings))
+        cancellationToken.ThrowIfCancellationRequested();
+        var credentials = KickCredentialSnapshot.Capture(settings);
+        var snapshot = credentials.ToSettings();
+        var token = NormalizeBearerToken(snapshot.KickOAuthToken);
+        if (!string.IsNullOrWhiteSpace(token) && !ShouldRefresh(snapshot))
         {
             return token;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.KickRefreshToken) ||
-            string.IsNullOrWhiteSpace(settings.KickClientId) ||
-            string.IsNullOrWhiteSpace(settings.KickClientSecret))
+        if (string.IsNullOrWhiteSpace(snapshot.KickRefreshToken) ||
+            string.IsNullOrWhiteSpace(snapshot.KickClientId) ||
+            string.IsNullOrWhiteSpace(snapshot.KickClientSecret))
         {
             return string.IsNullOrWhiteSpace(token) ? null : token;
         }
 
         try
         {
-            var refreshed = await RefreshUserTokenAsync(settings, cancellationToken);
+            var refreshed = await refreshTokenAsync(snapshot, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!credentials.Matches(settings)) return null;
             await applyTokenResultAsync(settings, refreshed, cancellationToken);
             logger?.Write(AppLogLevel.Info, "KickOAuth", "Refreshed Kick OAuth token.");
             return NormalizeBearerToken(refreshed.AccessToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger?.Write(AppLogLevel.Warning, "KickOAuth", "Kick OAuth token refresh failed.", ex);
-            return string.IsNullOrWhiteSpace(token) ? null : token;
+            return credentials.Matches(settings) && !string.IsNullOrWhiteSpace(token) ? token : null;
         }
     }
 
@@ -287,7 +300,7 @@ public static class KickOAuthService
             appAccessTokenCache = new KickAppAccessTokenCache(cacheKey, accessToken, expiresAt);
             return accessToken;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger?.Write(AppLogLevel.Warning, "KickOAuth", "Kick app token request failed.", ex);
             return null;
@@ -316,28 +329,27 @@ public static class KickOAuthService
 
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
         using var document = JsonDocument.Parse(responseBody);
-        if (!TryGetArray(document.RootElement, "data", out var data))
+        return ReadBroadcasterUserId(document.RootElement, channel);
+    }
+
+    internal static long? ReadBroadcasterUserId(JsonElement root, string channel)
+    {
+        if (!TryGetArray(root, "data", out var data))
         {
             return null;
         }
 
         foreach (var item in data.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            var slug = GetOptionalString(item, "slug");
-            if (!string.IsNullOrWhiteSpace(slug) &&
+            if (!TryGetNonEmptyString(item, "slug", out var slug) ||
                 !string.Equals(slug, channel, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            if (item.TryGetProperty("broadcaster_user_id", out var broadcasterUserId))
+            if (TryGetInt64(item, "broadcaster_user_id") is > 0 and var broadcasterUserId)
             {
-                return TryGetInt64(broadcasterUserId);
+                return broadcasterUserId;
             }
         }
 

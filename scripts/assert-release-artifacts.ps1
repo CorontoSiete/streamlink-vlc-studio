@@ -43,6 +43,7 @@ foreach ($path in @($SetupPath, $InternalMsiPath, $ZipPath, $SbomPath, $Metadata
 }
 
 Assert-WindowsFileVersion $SetupPath 'Burn bundle' $Version
+Assert-ManagedUpdateCompatibility $InternalMsiPath
 $msiVersion = Get-MsiPropertyValue -Path $InternalMsiPath -Property 'ProductVersion'
 if ($msiVersion -cne $Version) {
     throw "Internal MSI ProductVersion mismatch. Expected $Version; found $msiVersion."
@@ -52,7 +53,7 @@ $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('StreamlinkVlcStudio-rele
 try {
     Expand-ValidatedZipArchive -ArchivePath $ZipPath -DestinationDirectory $temporaryRoot
     $payloadRoot = Resolve-ReleasePayloadRoot -ExtractedRoot $temporaryRoot -Contract $contract
-    Assert-WindowsFileVersion (Join-Path $payloadRoot 'StreamlinkVlcStudio.exe') 'Application' $Version
+    Assert-WindowsFileVersion (Join-Path $payloadRoot 'StreamStudio.exe') 'Application' $Version
     Assert-WindowsFileVersion (Join-Path $payloadRoot 'Uninstall.exe') 'ZIP maintenance helper' $Version
 
     $zipMetadata = Get-Content -LiteralPath (Join-Path $payloadRoot 'release-metadata.json') -Raw | ConvertFrom-Json
@@ -72,7 +73,7 @@ try {
         foreach ($signedPath in @(
                 $SetupPath,
                 $InternalMsiPath,
-                (Join-Path $payloadRoot 'StreamlinkVlcStudio.exe'),
+                (Join-Path $payloadRoot 'StreamStudio.exe'),
                 (Join-Path $payloadRoot 'Uninstall.exe'))) {
             Assert-AuthenticodeSignature -Path $signedPath -Configuration $authenticode | Out-Null
         }
@@ -87,7 +88,7 @@ try {
 }
 
 $sbom = Get-Content -LiteralPath $SbomPath -Raw | ConvertFrom-Json
-$rootPackages = @($sbom.packages | Where-Object { [string]$_.SPDXID -ceq 'SPDXRef-Package-StreamlinkVlcStudio' })
+$rootPackages = @($sbom.packages | Where-Object { [string]$_.SPDXID -ceq 'SPDXRef-Package-StreamStudio' })
 if ($rootPackages.Count -ne 1 -or [string]$rootPackages[0].versionInfo -cne $Version) {
     throw "SBOM application version does not exactly match $Version."
 }
@@ -108,7 +109,7 @@ if ($metadata.schemaVersion -ne 2 -or
 foreach ($entry in @(
         [pscustomobject]@{ Record = $metadata.artifacts.setup; Path = $SetupPath; Name = 'StreamlinkVlcStudio-Setup.exe' },
         [pscustomobject]@{ Record = $metadata.artifacts.zip; Path = $ZipPath; Name = 'StreamlinkVlcStudio-release.zip' },
-        [pscustomobject]@{ Record = $metadata.artifacts.sbom; Path = $SbomPath; Name = 'StreamlinkVlcStudio.spdx.json' },
+        [pscustomobject]@{ Record = $metadata.artifacts.sbom; Path = $SbomPath; Name = 'StreamStudio.spdx.json' },
         [pscustomobject]@{ Record = $metadata.artifacts.updateManifest; Path = $UpdateManifestPath; Name = 'UPDATE-MANIFEST.json' },
         [pscustomobject]@{ Record = $metadata.artifacts.updateSignature; Path = $UpdateSignaturePath; Name = 'UPDATE-MANIFEST.sig' })) {
     $file = Get-Item -LiteralPath $entry.Path

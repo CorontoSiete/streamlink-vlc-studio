@@ -540,26 +540,8 @@ internal sealed class DockedChatEmoteCatalog
 
     private static async Task<JsonDocument?> TryGetJsonAsync(string url)
     {
-        try
-        {
-            using var response = await SharedHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var bytes = await BoundedByteReader.ReadAsync(response.Content, MaxJsonBytes).ConfigureAwait(false);
-            if (bytes is null)
-            {
-                return null;
-            }
-
-            return JsonDocument.Parse(bytes);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
-        {
-            return null;
-        }
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        return await OptionalHttpJsonReader.SendAsync(SharedHttpClient, request, MaxJsonBytes).ConfigureAwait(false);
     }
 
     private static HttpClient CreateHttpClient()

@@ -1,4 +1,3 @@
-using StreamlinkVlcStudio.Core.Json;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -81,6 +80,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         }
 
         var ordered = streams
+            .DistinctBy(stream => stream.Target.StateKey, StringComparer.OrdinalIgnoreCase)
             .OrderByDescending(stream => stream.ViewerCount ?? -1)
             .ThenBy(stream => stream.Platform)
             .ThenBy(stream => stream.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -153,6 +153,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         var after = "";
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         var pageCount = 0;
+        var malformed = false;
         do
         {
             if (++pageCount > MaxTwitchPages)
@@ -163,9 +164,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             }
 
             var url = BuildTwitchFollowedStreamsUrl(tokenInfo.UserId, after);
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.TryAddWithoutValidation("Client-Id", clientId);
+            using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
 
             using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
             var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
@@ -181,7 +180,23 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             }
 
             using var document = JsonDocument.Parse(responseBody);
-            streams.AddRange(ReadTwitchStreams(document.RootElement));
+            if (!TryGetArray(document.RootElement, "data", out var data))
+            {
+                malformed = true;
+                break;
+            }
+
+            var page = ReadTwitchStreams(document.RootElement).ToArray();
+            streams.AddRange(page);
+            if (page.Length != data.GetArrayLength() ||
+                (document.RootElement.TryGetProperty("pagination", out var pagination) &&
+                 (pagination.ValueKind != JsonValueKind.Object ||
+                  (pagination.TryGetProperty("cursor", out var cursor) && cursor.ValueKind != JsonValueKind.String))))
+            {
+                malformed = true;
+                break;
+            }
+
             var nextCursor = ReadPaginationCursor(document.RootElement);
             if (!string.IsNullOrWhiteSpace(nextCursor) && !seenCursors.Add(nextCursor))
             {
@@ -200,7 +215,9 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             clientId,
             cancellationToken).ConfigureAwait(false);
 
-        return new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
+        return malformed
+            ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Twitch, streams)
+            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
     }
 
     private async Task<PlatformFollowedStreamsResult> GetKickFollowedStreamsAsync(
@@ -225,6 +242,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
         var streams = new List<FollowedLiveStream>();
         var broadcasterUserIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var malformed = false;
         for (var index = 0; index < slugs.Count; index += KickSlugLimit)
         {
             var chunk = slugs.Skip(index).Take(KickSlugLimit).ToArray();
@@ -246,13 +264,17 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             }
 
             using var document = JsonDocument.Parse(responseBody);
-            streams.AddRange(ReadKickChannelStreams(document.RootElement, broadcasterUserIds));
+            var page = ReadKickChannelStreams(document.RootElement, chunk, broadcasterUserIds);
+            streams.AddRange(page.Streams);
+            malformed |= !page.Succeeded;
         }
 
         await EnrichKickProfileImagesAsync(streams, broadcasterUserIds, accessToken, cancellationToken)
             .ConfigureAwait(false);
 
-        return new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
+        return malformed
+            ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Kick, streams)
+            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
     }
 
     private Task EnrichTwitchProfileImagesAsync(
@@ -323,80 +345,65 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
     private static IEnumerable<FollowedLiveStream> ReadTwitchStreams(JsonElement root)
     {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
+        foreach (var stream in BrowsePayloadMapper.ReadTwitchStreams(root))
         {
-            yield break;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            var login = GetOptionalString(item, "user_login").Trim();
-            if (string.IsNullOrWhiteSpace(login))
-            {
-                continue;
-            }
-
-            if (!StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var target))
-            {
-                continue;
-            }
-
-            var title = GetOptionalString(item, "title");
-            var category = GetOptionalString(item, "game_name");
-            var thumbnail = NormalizeImageUrl(GetOptionalString(item, "thumbnail_url"), "440", "248");
-
             yield return new FollowedLiveStream(
-                PlatformKind.Twitch,
-                target.Channel,
-                GetOptionalString(item, "user_name") is { Length: > 0 } displayName ? displayName : target.Channel,
-                title,
-                category,
-                TryGetInt32(item, "viewer_count"),
-                thumbnail,
-                TryGetDateTimeOffset(item, "started_at"),
-                TryGetBool(item, "is_mature"),
-                GetOptionalString(item, "language"),
-                target.Url);
+                stream.Platform,
+                stream.Channel,
+                stream.DisplayName,
+                stream.Title,
+                stream.CategoryName,
+                stream.ViewerCount,
+                stream.ThumbnailUrl,
+                stream.StartedAtUtc,
+                stream.IsMature,
+                stream.Language,
+                stream.Url,
+                stream.ProfileImageUrl);
         }
     }
 
-    private static IEnumerable<FollowedLiveStream> ReadKickChannelStreams(
+    private static (IReadOnlyList<FollowedLiveStream> Streams, bool Succeeded) ReadKickChannelStreams(
         JsonElement root,
-        IDictionary<string, string>? broadcasterUserIds = null)
+        IReadOnlyList<string> requestedSlugs,
+        IDictionary<string, string> broadcasterUserIds)
     {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
+        var streams = new List<FollowedLiveStream>();
+        if (!TryGetArray(root, "data", out var data))
         {
-            yield break;
+            return (streams, false);
         }
 
+        var requested = requestedSlugs.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var succeeded = true;
         foreach (var item in data.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.Object)
+            if (!TryGetNonEmptyString(item, "slug", out var slug) ||
+                !StreamInputParser.TryFromChannel(PlatformKind.Kick, slug, out var target))
+            {
+                succeeded = false;
+                continue;
+            }
+
+            if (!requested.Contains(target.Channel))
             {
                 continue;
             }
 
-            var slug = GetOptionalString(item, "slug").Trim();
-            if (string.IsNullOrWhiteSpace(slug) ||
-                !item.TryGetProperty("stream", out var stream) ||
-                stream.ValueKind != JsonValueKind.Object)
+            var payload = LiveChannelPayloadReader.ReadKickChannel(item);
+            if (payload.State == LiveChannelState.Unavailable)
+            {
+                succeeded = false;
+                continue;
+            }
+            if (payload.State == LiveChannelState.Offline)
             {
                 continue;
             }
 
-            var isLive = TryGetBool(stream, "is_live");
-            if (isLive == false)
-            {
-                continue;
-            }
-
-            if (!StreamInputParser.TryFromChannel(PlatformKind.Kick, slug, out var target))
-            {
-                continue;
-            }
-
+            var stream = payload.Stream;
             var broadcasterUserId = GetOptionalString(item, "broadcaster_user_id");
-            if (!string.IsNullOrWhiteSpace(broadcasterUserId) && broadcasterUserIds is not null)
+            if (!string.IsNullOrWhiteSpace(broadcasterUserId))
             {
                 broadcasterUserIds[target.Channel] = broadcasterUserId;
             }
@@ -410,7 +417,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
             var thumbnail = GetKickThumbnailUrl(item, stream);
 
-            yield return new FollowedLiveStream(
+            streams.Add(new FollowedLiveStream(
                 PlatformKind.Kick,
                 target.Channel,
                 target.Channel,
@@ -424,8 +431,10 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 target.Url,
                 NormalizeImageUrl(FirstNonEmpty(
                     GetOptionalString(item, "profile_picture"),
-                    GetOptionalString(item, "profile_pic"))));
+                    GetOptionalString(item, "profile_pic")))));
         }
+
+        return (streams, succeeded);
     }
 
     private static string BuildTwitchFollowedStreamsUrl(string userId, string after)
@@ -517,6 +526,10 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         IReadOnlyList<string> Messages,
         bool Succeeded = false)
     {
+        internal static PlatformFollowedStreamsResult Malformed(
+            PlatformKind platform, IReadOnlyList<FollowedLiveStream> streams) =>
+            new(streams, [$"{platform}: followed streams returned malformed data; offline status could not be determined."]);
+
         public static PlatformFollowedStreamsResult NotConfigured(string message)
         {
             return new PlatformFollowedStreamsResult([], [message]);

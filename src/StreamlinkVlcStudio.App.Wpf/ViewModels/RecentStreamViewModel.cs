@@ -6,8 +6,8 @@ namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenItemViewModel
 {
-    private readonly RecentStreamSettings stream;
-    private readonly RecentStreamLiveStatus liveStatus;
+    private StreamSnapshot stream;
+    private RecentStreamLiveStatus liveStatus;
 
     public RecentStreamViewModel(
         RecentStreamSettings stream,
@@ -15,7 +15,7 @@ public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenIte
         Func<RecentStreamViewModel, Task> deleteAsync,
         RecentStreamLiveStatus? liveStatus = null)
     {
-        this.stream = stream;
+        this.stream = StreamSnapshot.From(stream);
         this.liveStatus = liveStatus ?? RecentStreamLiveStatus.Unknown;
         OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
@@ -27,6 +27,49 @@ public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenIte
     public AsyncRelayCommand OpenAndStayOnHomeCommand { get; }
 
     public AsyncRelayCommand DeleteCommand { get; }
+
+    internal void Update(RecentStreamSettings settings, RecentStreamLiveStatus status)
+    {
+        var previous = stream;
+        var previousDisplayName = DisplayName;
+        stream = StreamSnapshot.From(settings);
+        if (previous.Platform != stream.Platform)
+        {
+            OnPropertyChanged(nameof(Platform));
+            OnPropertyChanged(nameof(PlatformText));
+        }
+        if (previous.Channel != stream.Channel) OnPropertyChanged(nameof(Channel));
+        if (previous.Url != stream.Url) OnPropertyChanged(nameof(Url));
+        if (previous.CategoryName != stream.CategoryName) OnPropertyChanged(nameof(CategoryName));
+        if (previous.Platform != stream.Platform || previous.Channel != stream.Channel ||
+            previous.Url != stream.Url || previous.CategoryName != stream.CategoryName)
+            OnPropertyChanged(nameof(Target));
+        if (previousDisplayName != DisplayName)
+        {
+            OnPropertyChanged(nameof(DisplayName));
+            OnPropertyChanged(nameof(DeleteToolTip));
+        }
+        if (previous.ThumbnailUrl != stream.ThumbnailUrl)
+        {
+            OnPropertyChanged(nameof(ThumbnailUrl));
+            if (string.IsNullOrWhiteSpace(previous.ThumbnailUrl) != string.IsNullOrWhiteSpace(stream.ThumbnailUrl))
+                OnPropertyChanged(nameof(HasThumbnail));
+        }
+        if (previous.LastWatchedAtUtc != stream.LastWatchedAtUtc) OnPropertyChanged(nameof(LastWatchedText));
+        if (previous.LastWatchedAtUtc != stream.LastWatchedAtUtc ||
+            previous.CategoryName != stream.CategoryName || previous.LastQuality != stream.LastQuality)
+            OnPropertyChanged(nameof(MetadataText));
+
+        var previousStatus = liveStatus;
+        liveStatus = status;
+        if (previousStatus.State != status.State)
+        {
+            OnPropertyChanged(nameof(LiveStatusKey));
+            OnPropertyChanged(nameof(LiveStatusText));
+        }
+        if (previousStatus.CheckedAtUtc != status.CheckedAtUtc || previousStatus.Message != status.Message)
+            OnPropertyChanged(nameof(LiveStatusToolTip));
+    }
 
     public StreamTarget Target => new(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName);
 
@@ -58,13 +101,7 @@ public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenIte
         _ => "Unknown"
     };
 
-    public string LiveStatusText => liveStatus.State switch
-    {
-        RecentStreamLiveState.Checking => "Checking",
-        RecentStreamLiveState.Live => "Live",
-        RecentStreamLiveState.Offline => "Offline",
-        _ => "Unknown"
-    };
+    public string LiveStatusText => LiveStatusKey;
 
     public string LiveStatusToolTip
     {
@@ -102,6 +139,16 @@ public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenIte
         }
     }
 
+    // Settings can be edited in place. Keep values rather than their mutable owner so
+    // refreshes can notify bindings accurately without recreating the row or commands.
+    private readonly record struct StreamSnapshot(
+        PlatformKind Platform, string Channel, string Url, string DisplayName,
+        string CategoryName, string ThumbnailUrl, string LastQuality, DateTimeOffset LastWatchedAtUtc)
+    {
+        internal static StreamSnapshot From(RecentStreamSettings settings) => new(
+            settings.Platform, settings.Channel, settings.Url, settings.DisplayName,
+            settings.CategoryName, settings.ThumbnailUrl, settings.LastQuality, settings.LastWatchedAtUtc);
+    }
 }
 
 public enum RecentStreamLiveState

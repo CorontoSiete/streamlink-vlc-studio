@@ -3,6 +3,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vod;
@@ -38,8 +39,8 @@ internal sealed class KickVodChatFetcher
     internal static readonly TimeSpan ChunkSize = TimeSpan.FromSeconds(20);
 
     /// <summary>
-    /// Backward pages allowed per chunk. Twenty pages hold about 500 messages, so the budget only
-    /// binds above ~25 messages per second, well past any real channel's sustained rate.
+    /// Backward pages allowed per chunk. If this budget is exhausted, leave the range retryable
+    /// rather than claiming that messages we never retrieved have been covered.
     /// </summary>
     private const int MaximumPagesPerChunk = 20;
 
@@ -49,10 +50,13 @@ internal sealed class KickVodChatFetcher
     private readonly Dictionary<string, string> resolvedChannelIds = new(StringComparer.OrdinalIgnoreCase);
     private bool directRequestsForbidden;
 
-    public KickVodChatFetcher(HttpClient httpClient, IAppLogger logger)
+    public KickVodChatFetcher(
+        HttpClient httpClient,
+        IAppLogger logger,
+        Func<string, string, CancellationToken, Task<string?>>? curlOverride = null)
     {
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        transport = new KickChatTransport(httpClient, this.logger);
+        transport = new KickChatTransport(httpClient, this.logger, curlOverride);
     }
 
     public async Task<VodChatFetchResult> FetchAsync(
@@ -73,10 +77,10 @@ internal sealed class KickVodChatFetcher
             fromOffset = TimeSpan.Zero;
         }
 
-        var throughOffset = fromOffset + ChunkSize;
         var startedAtUtc = startedAt.ToUniversalTime();
-        if (!TryAddOffset(startedAtUtc, fromOffset, out var fromTimestampUtc) ||
-            !TryAddOffset(startedAtUtc, throughOffset, out var throughTimestampUtc))
+        if (!DurationValues.TryAdd(fromOffset, ChunkSize, out var throughOffset) ||
+            !DurationValues.TryAdd(startedAtUtc, fromOffset, out var fromTimestampUtc) ||
+            !DurationValues.TryAdd(startedAtUtc, throughOffset, out var throughTimestampUtc))
         {
             return VodChatFetchResult.Unsupported(
                 "The Kick VOD chat time range falls outside the supported date range.");
@@ -92,6 +96,7 @@ internal sealed class KickVodChatFetcher
         }
 
         var failureReason = "";
+        IReadOnlyList<ChatMessage> partialMessages = [];
         foreach (var channelId in channelIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -105,6 +110,7 @@ internal sealed class KickVodChatFetcher
             if (chunk.FailureReason is { } reason)
             {
                 failureReason = reason;
+                if (chunk.Messages.Count > partialMessages.Count) partialMessages = chunk.Messages;
                 continue;
             }
 
@@ -116,7 +122,8 @@ internal sealed class KickVodChatFetcher
         return VodChatFetchResult.Failed(
             string.IsNullOrWhiteSpace(failureReason)
                 ? $"Kick VOD chat could not be read for {replay.Channel}."
-                : failureReason);
+                : failureReason,
+            ProjectToOffsets(partialMessages, startedAtUtc, fromOffset, throughOffset));
     }
 
     /// <summary>
@@ -139,16 +146,16 @@ internal sealed class KickVodChatFetcher
             cancellationToken.ThrowIfCancellationRequested();
             if (!requestedCursors.Add(cursor))
             {
-                break;
+                return new KickVodChatChunk(collected, "Kick repeated a VOD chat cursor before covering the requested time range.");
             }
 
             var page = await ReadPageAsync(channel, messagesChannelId, cursor, cancellationToken)
                 .ConfigureAwait(false);
             if (page is null)
             {
-                return collected.Count == 0
-                    ? new KickVodChatChunk([], $"Kick did not answer the VOD chat request for {channel}.")
-                    : new KickVodChatChunk(collected, null);
+                // Pages run backwards: newer messages cannot establish coverage of the missing
+                // beginning of the range. Retry the original offset when a later page fails.
+                return new KickVodChatChunk(collected, $"Kick did not answer the VOD chat request for {channel}.");
             }
 
             foreach (var message in page.Messages)
@@ -161,34 +168,26 @@ internal sealed class KickVodChatFetcher
 
             if (page.Messages.Count == 0)
             {
-                break;
+                return new KickVodChatChunk(collected, null);
             }
 
             var oldestTimestampUtc = page.Messages.Min(message => message.Timestamp).ToUniversalTime();
             if (oldestTimestampUtc <= fromTimestampUtc)
             {
-                break;
+                return new KickVodChatChunk(collected, null);
             }
 
             var nextCursor = KickChatTransport.NormalizeCursor(page.Cursor);
             if (string.IsNullOrWhiteSpace(nextCursor))
             {
-                break;
+                return new KickVodChatChunk(collected, null);
             }
 
             cursor = nextCursor;
-            if (pageIndex == MaximumPagesPerChunk - 1)
-            {
-                logger.Write(
-                    AppLogLevel.Debug,
-                    "VodChat",
-                    $"Kick VOD chat page budget reached for {channel} while filling " +
-                    $"{FormatTimestamp(fromTimestampUtc)}-{FormatTimestamp(throughTimestampUtc)}; " +
-                    "the start of this window may be incomplete.");
-            }
         }
 
-        return new KickVodChatChunk(collected, null);
+        return new KickVodChatChunk(collected, $"Kick VOD chat exceeded its page budget for {channel} while filling " +
+            $"{FormatTimestamp(fromTimestampUtc)}-{FormatTimestamp(throughTimestampUtc)}.");
     }
 
     private async Task<KickRecentChatPage?> ReadPageAsync(
@@ -256,7 +255,7 @@ internal sealed class KickVodChatFetcher
                 AddCandidate(candidates, candidate);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.Write(
                 AppLogLevel.Info,
@@ -312,7 +311,11 @@ internal sealed class KickVodChatFetcher
     /// </summary>
     internal static string ToCursor(DateTimeOffset timestampUtc)
     {
-        var microseconds = timestampUtc.ToUniversalTime().ToUnixTimeMilliseconds() * 1_000L;
+        var ticks = timestampUtc.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks;
+        // Round the exclusive upper bound up to a microsecond. Rounding down to milliseconds
+        // loses messages just before a fractional chunk boundary, including before the epoch.
+        var microseconds = ticks / TimeSpan.TicksPerMicrosecond;
+        if (ticks % TimeSpan.TicksPerMicrosecond > 0) microseconds++;
         return microseconds.ToString(CultureInfo.InvariantCulture);
     }
 
@@ -323,20 +326,6 @@ internal sealed class KickVodChatFetcher
 
     private static string FormatTimestamp(DateTimeOffset timestampUtc) =>
         timestampUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
-
-    private static bool TryAddOffset(DateTimeOffset startedAt, TimeSpan offset, out DateTimeOffset timestamp)
-    {
-        try
-        {
-            timestamp = startedAt.Add(offset);
-            return true;
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            timestamp = default;
-            return false;
-        }
-    }
 
     private bool IsDirectForbidden()
     {

@@ -23,7 +23,7 @@ if ([string]::IsNullOrWhiteSpace($NativeManifestPath)) {
     $NativeManifestPath = Join-Path $repoRoot "dependencies\native-overlay.json"
 }
 if ([string]::IsNullOrWhiteSpace($PublishedDepsPath)) {
-    $PublishedDepsPath = Join-Path $repoRoot "src\StreamlinkVlcStudio.App.Wpf\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamlinkVlcStudio.App.Wpf.deps.json"
+    $PublishedDepsPath = Join-Path $repoRoot "src\StreamlinkVlcStudio.App.Wpf\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamStudio.deps.json"
 }
 if (-not (Test-Path -LiteralPath $root -PathType Container)) {
     throw "SBOM root directory missing: $root"
@@ -239,15 +239,15 @@ if ($Verify) {
         }
     }
 
-    $rootPackages = @($packages | Where-Object SPDXID -eq "SPDXRef-Package-StreamlinkVlcStudio")
+    $rootPackages = @($packages | Where-Object SPDXID -eq "SPDXRef-Package-StreamStudio")
     if ($rootPackages.Count -ne 1 -or
         $rootPackages[0].filesAnalyzed -ne $true -or
         [string]$rootPackages[0].versionInfo -cne $ApplicationVersion) {
-        throw "SBOM must contain exactly one analyzed Streamlink VLC Studio root package."
+        throw "SBOM must contain exactly one analyzed Stream Studio root package."
     }
 
     $expectedDependencies = @(Get-CanonicalDependencyDescriptors)
-    $dependencyPackages = @($packages | Where-Object { $_.SPDXID -ne 'SPDXRef-Package-StreamlinkVlcStudio' })
+    $dependencyPackages = @($packages | Where-Object { $_.SPDXID -ne 'SPDXRef-Package-StreamStudio' })
     if ($dependencyPackages.Count -ne $expectedDependencies.Count) {
         throw "SBOM dependency count does not match canonical inputs. SBOM: $($dependencyPackages.Count); expected: $($expectedDependencies.Count)."
     }
@@ -276,7 +276,7 @@ if ($Verify) {
             }
         }
         $dependencyRelationships = @($relationships | Where-Object {
-            $_.spdxElementId -eq 'SPDXRef-Package-StreamlinkVlcStudio' -and
+            $_.spdxElementId -eq 'SPDXRef-Package-StreamStudio' -and
             $_.relationshipType -eq 'DEPENDS_ON' -and
             $_.relatedSpdxElement -eq $package.SPDXID
         })
@@ -298,7 +298,7 @@ if ($Verify) {
         $relationships | Where-Object {
             $_.spdxElementId -eq "SPDXRef-DOCUMENT" -and
             $_.relationshipType -eq "DESCRIBES" -and
-            $_.relatedSpdxElement -eq "SPDXRef-Package-StreamlinkVlcStudio"
+            $_.relatedSpdxElement -eq "SPDXRef-Package-StreamStudio"
         }
     )
     if ($describes.Count -ne 1) {
@@ -364,7 +364,7 @@ if ($Verify) {
 
         $contains = @(
             $relationships | Where-Object {
-                $_.spdxElementId -eq "SPDXRef-Package-StreamlinkVlcStudio" -and
+                $_.spdxElementId -eq "SPDXRef-Package-StreamStudio" -and
                 $_.relationshipType -eq "CONTAINS" -and
                 $_.relatedSpdxElement -eq $fileId
             }
@@ -408,15 +408,15 @@ foreach ($file in Get-RootFiles) {
         copyrightText = "NOASSERTION"
     }
     $relationships += [ordered]@{
-        spdxElementId = "SPDXRef-Package-StreamlinkVlcStudio"
+        spdxElementId = "SPDXRef-Package-StreamStudio"
         relationshipType = "CONTAINS"
         relatedSpdxElement = $spdxId
     }
 }
 
 $packages = @([ordered]@{
-    SPDXID = "SPDXRef-Package-StreamlinkVlcStudio"
-    name = "Streamlink VLC Studio"
+    SPDXID = "SPDXRef-Package-StreamStudio"
+    name = "Stream Studio"
     versionInfo = $ApplicationVersion
     downloadLocation = "NOASSERTION"
     filesAnalyzed = $true
@@ -460,7 +460,7 @@ foreach ($dependency in @(Get-CanonicalDependencyDescriptors)) {
     }
     $packages += $package
     $relationships += [ordered]@{
-        spdxElementId = "SPDXRef-Package-StreamlinkVlcStudio"
+        spdxElementId = "SPDXRef-Package-StreamStudio"
         relationshipType = "DEPENDS_ON"
         relatedSpdxElement = $packageId
     }
@@ -470,7 +470,7 @@ $document = [ordered]@{
     spdxVersion = "SPDX-2.3"
     dataLicense = "CC0-1.0"
     SPDXID = "SPDXRef-DOCUMENT"
-    name = "Streamlink VLC Studio release"
+    name = "Stream Studio release"
     documentNamespace = $DocumentNamespace.TrimEnd('/') + "/" + [Guid]::NewGuid().ToString("N")
     creationInfo = [ordered]@{
         created = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -482,7 +482,7 @@ $document = [ordered]@{
         [ordered]@{
             spdxElementId = "SPDXRef-DOCUMENT"
             relationshipType = "DESCRIBES"
-            relatedSpdxElement = "SPDXRef-Package-StreamlinkVlcStudio"
+            relatedSpdxElement = "SPDXRef-Package-StreamStudio"
         }
     ) + $relationships
 }

@@ -154,30 +154,9 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         }
     }
 
-    public void Stop()
-    {
-        CancellationTokenSource? cancellationToStop;
-        Timer? resizeTimerToDispose;
-        lock (gate)
-        {
-            cancellationToStop = cancellation;
-            resizeTimerToDispose = ClearResizeFlushStateLocked();
-            NextResizeSessionIdLocked();
-            resizePersistenceSuspended = true;
-            resizePersistenceGeneration++;
-            pipeName = null;
-            positionStatePath = null;
-            stopRequested = cancellationToStop is not null;
-        }
+    public void Stop() => RequestStop();
 
-        resizeTimerToDispose?.Dispose();
-        if (cancellationToStop is not null)
-        {
-            cancellationToStop.Cancel();
-        }
-    }
-
-    public async Task StopAsync()
+    private Task RequestStop()
     {
         Task? taskToStop;
         CancellationTokenSource? cancellationToStop;
@@ -196,18 +175,23 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         }
 
         resizeTimerToDispose?.Dispose();
-        if (cancellationToStop is null)
-        {
-            return;
-        }
-
         try
         {
-            cancellationToStop.Cancel();
-            if (taskToStop is not null)
-            {
-                await taskToStop.ConfigureAwait(false);
-            }
+            cancellationToStop?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The listener may finish and dispose its source after the snapshot above.
+        }
+
+        return taskToStop ?? Task.CompletedTask;
+    }
+
+    public async Task StopAsync()
+    {
+        try
+        {
+            await RequestStop().ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

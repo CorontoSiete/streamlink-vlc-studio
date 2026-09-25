@@ -1,5 +1,4 @@
 using StreamlinkVlcStudio.Core.Json;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
@@ -122,7 +121,7 @@ public sealed class TwitchClipService : ITwitchClipService
             throw new InvalidOperationException("The selected Twitch tab does not have a channel name.");
         }
 
-        using var request = CreateRequest(
+        using var request = TwitchApiRequest.Create(
             HttpMethod.Get,
             $"{HelixBaseUrl}/users?login={Uri.EscapeDataString(channel)}",
             accessToken,
@@ -132,14 +131,12 @@ public sealed class TwitchClipService : ITwitchClipService
         EnsureSuccess("Resolve Twitch broadcaster", response, responseBody);
 
         using var document = ParseJson("Resolve Twitch broadcaster", responseBody);
-        if (!TryGetFirstDataItem(document.RootElement, out var broadcaster) ||
-            !TryGetString(broadcaster, "id", out var broadcasterId) ||
-            string.IsNullOrWhiteSpace(broadcasterId))
+        if (!TwitchUserPayloadReader.TryRead(document.RootElement, channel, out var broadcaster))
         {
             throw new InvalidOperationException($"Twitch channel '{channel}' could not be resolved.");
         }
 
-        return broadcasterId.Trim();
+        return JsonElementReader.GetOptionalString(broadcaster, "id");
     }
 
     private async Task<string> StartClipAsync(
@@ -149,14 +146,14 @@ public sealed class TwitchClipService : ITwitchClipService
         CancellationToken cancellationToken)
     {
         var url = $"{HelixBaseUrl}/clips?broadcaster_id={Uri.EscapeDataString(broadcasterId)}&duration={DefaultClipDurationSeconds}";
-        using var request = CreateRequest(HttpMethod.Post, url, accessToken, clientId);
+        using var request = TwitchApiRequest.Create(HttpMethod.Post, url, accessToken, clientId);
         using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         EnsureSuccess("Create Twitch clip", response, responseBody);
 
         using var document = ParseJson("Create Twitch clip", responseBody);
         if (!TryGetFirstDataItem(document.RootElement, out var clip) ||
-            !TryGetString(clip, "id", out var clipId) ||
+            !JsonElementReader.TryGetNonEmptyString(clip, "id", out var clipId) ||
             string.IsNullOrWhiteSpace(clipId))
         {
             throw new InvalidOperationException("Create Twitch clip response did not include a clip ID.");
@@ -218,7 +215,7 @@ public sealed class TwitchClipService : ITwitchClipService
         string clientId,
         CancellationToken cancellationToken)
     {
-        using var request = CreateRequest(
+        using var request = TwitchApiRequest.Create(
             HttpMethod.Get,
             $"{HelixBaseUrl}/clips?id={Uri.EscapeDataString(clipId)}",
             accessToken,
@@ -233,7 +230,7 @@ public sealed class TwitchClipService : ITwitchClipService
             return null;
         }
 
-        if (!TryGetString(clip, "url", out var clipUrl) || string.IsNullOrWhiteSpace(clipUrl))
+        if (!JsonElementReader.TryGetNonEmptyString(clip, "url", out var clipUrl) || string.IsNullOrWhiteSpace(clipUrl))
         {
             return null;
         }
@@ -246,18 +243,6 @@ public sealed class TwitchClipService : ITwitchClipService
         }
 
         return clipUri;
-    }
-
-    private static HttpRequestMessage CreateRequest(
-        HttpMethod method,
-        string url,
-        string accessToken,
-        string clientId)
-    {
-        var request = new HttpRequestMessage(method, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-        return request;
     }
 
     private static JsonDocument ParseJson(string operation, string responseBody)
@@ -307,19 +292,6 @@ public sealed class TwitchClipService : ITwitchClipService
         }
 
         return false;
-    }
-
-    private static bool TryGetString(JsonElement element, string propertyName, out string value)
-    {
-        value = "";
-        if (!element.TryGetProperty(propertyName, out var property) ||
-            property.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        value = property.GetString() ?? "";
-        return true;
     }
 
 }

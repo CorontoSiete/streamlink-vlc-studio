@@ -8,6 +8,36 @@ namespace StreamlinkVlcStudio.Core.Time;
 /// </summary>
 public static partial class DurationValues
 {
+    /// <summary>Adds an external offset without overflowing the supported timestamp range.</summary>
+    public static bool TryAdd(DateTimeOffset value, TimeSpan offset, out DateTimeOffset result)
+    {
+        try
+        {
+            result = value.Add(offset);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            result = default;
+            return false;
+        }
+    }
+
+    /// <summary>Adds durations without allowing an overflowing external offset to escape as an exception.</summary>
+    public static bool TryAdd(TimeSpan value, TimeSpan increment, out TimeSpan result)
+    {
+        try
+        {
+            result = value + increment;
+            return true;
+        }
+        catch (OverflowException)
+        {
+            result = TimeSpan.Zero;
+            return false;
+        }
+    }
+
     public static bool TryParseHmsDuration(string? value, out TimeSpan duration)
     {
         duration = TimeSpan.Zero;
