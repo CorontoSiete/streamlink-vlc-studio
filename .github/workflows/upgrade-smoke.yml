@@ -1,0 +1,42 @@
+name: Published updater upgrade smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Published version to upgrade from
+        required: true
+        default: v1.7.0
+      target_tag:
+        description: Published version to install
+        required: true
+        default: v1.7.1
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    name: Install, update, and restart on disposable Windows
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Check out verification tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run real published update helper
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          TARGET_TAG: ${{ inputs.target_tag }}
+        run: ./scripts/test-published-upgrade.ps1 -SourceTag $env:SOURCE_TAG -TargetTag $env:TARGET_TAG
+
+      - name: Retain installation and updater logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: published-upgrade-logs-${{ github.run_id }}
+          path: artifacts/upgrade-smoke
+          if-no-files-found: warn
+          retention-days: 14
