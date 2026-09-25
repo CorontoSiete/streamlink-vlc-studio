@@ -9,9 +9,11 @@ internal static class StartupHook
     {
         var restartExecutable = Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_RESTART_EXECUTABLE");
         // The real helper passes its environment through Setup to the relaunched app.
-        // Let every other process run normally; only inspect the installed app.
+        // Let every other process and installer maintenance invocation run normally;
+        // only inspect the final app launch, which has no command-line arguments.
         if (!string.IsNullOrEmpty(restartExecutable) &&
-            !string.Equals(Environment.ProcessPath, restartExecutable, StringComparison.OrdinalIgnoreCase))
+            (!string.Equals(Environment.ProcessPath, restartExecutable, StringComparison.OrdinalIgnoreCase) ||
+                Environment.GetCommandLineArgs().Length != 1))
             return;
 
         try

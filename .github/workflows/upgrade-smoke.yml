@@ -10,7 +10,7 @@ on:
       target_tag:
         description: Published version to install
         required: true
-        default: v1.7.4
+        default: v1.7.5
       helper_source:
         description: Use target for clients predating the packaged-updater fix
         required: true
