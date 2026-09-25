@@ -54,6 +54,16 @@ internal static class UpdateModernizationTestCatalog
         ("updater release protocol and installed path remain compatible with 1.7.0", LegacyUpdateCompatibility)
     ];
 
+    internal static IReadOnlyList<(string Name, Func<Task> Run)> CleanupTests { get; } =
+    [
+        ("updater cleans obsolete packages and expired cache at startup without a network check", StartupCacheCleanupAsync),
+        ("updater removes superseded packages only after the replacement is verified", SupersededPackageCleanupAsync),
+        ("updater cleanup removes read-only cache files", ReadOnlyCacheCleanupAsync),
+        ("updater cleanup removes unlocked siblings and retries locked leftovers", LockedCacheCleanupAsync),
+        ("updater cleanup expires verified packages even when directory timestamps are refreshed", VerifiedCacheExpirationAsync),
+        ("updater cleanup isolates unsafe cache areas and preserves junction targets", CacheCleanupFailureIsolationAsync)
+    ];
+
     private static async Task RetryRejectsInvalidReplacementAsync()
     {
         using var rsa = RSA.Create(3072);
@@ -424,7 +434,7 @@ internal static class UpdateModernizationTestCatalog
                     using var restarted = ManagedService(client, root, rsa,
                         now: () => scenario == "expired" ? DateTimeOffset.UtcNow.AddDays(8) : DateTimeOffset.UtcNow);
                     Assert.Equal(outcome, (await restarted.ConsumeCompletionAsync())!.Outcome);
-                    Assert.True(File.Exists(prepared.SetupPath));
+                    Assert.Equal(scenario != "expired", File.Exists(prepared.SetupPath));
                     Assert.Equal(false, File.Exists(resultPath));
                     await restarted.CheckAsync(UpdateCheckReason.Startup);
                     Assert.Equal(scenario == "valid" ? AppUpdatePhase.Ready : AppUpdatePhase.Available, restarted.State.Phase);
@@ -825,6 +835,217 @@ internal static class UpdateModernizationTestCatalog
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task StartupCacheCleanupAsync()
+    {
+        using var rsa = RSA.Create(3072);
+        var fixture = SignedReleaseFixture.Create(rsa, 1);
+        using var client = new HttpClient(fixture.Handler);
+        var root = NewTemporaryDirectory();
+        try
+        {
+            PreparedAppUpdate prepared;
+            using (var initial = ManagedService(client, root, rsa))
+                prepared = await initial.DownloadAsync((await initial.CheckAsync(UpdateCheckReason.Manual)).Release!);
+            var updates = Path.Combine(root, "updates");
+            var oldPartial = Path.Combine(updates, "operations", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(oldPartial);
+            File.WriteAllText(Path.Combine(oldPartial, "partial.tmp"), "old download");
+            Directory.SetLastWriteTimeUtc(oldPartial, DateTime.UtcNow.AddDays(-2));
+            var logs = Path.Combine(updates, "logs");
+            Directory.CreateDirectory(logs);
+            File.WriteAllText(Path.Combine(logs, "old.log"), "expired");
+            File.SetLastWriteTimeUtc(Path.Combine(logs, "old.log"), DateTime.UtcNow.AddDays(-31));
+            File.WriteAllText(Path.Combine(logs, "recent.log"), "keep");
+            File.WriteAllText(Path.Combine(root, "settings.json"), "personal settings");
+            fixture.Handler.FailApi = true;
+
+            using (var beforeUpgrade = ManagedService(client, root, rsa))
+            {
+                Assert.Equal<AppUpdateCompletion?>(null, await beforeUpgrade.ConsumeCompletionAsync());
+                Assert.True(File.Exists(prepared.SetupPath));
+                Assert.Equal(false, Directory.Exists(oldPartial));
+                Assert.Equal(false, File.Exists(Path.Combine(logs, "old.log")));
+            }
+            var cleanupLogger = new MemoryLogger();
+            using (var afterUpgrade = new StagedAppUpdateService(cleanupLogger, client, root, updates,
+                       getCurrentVersion: () => new Version(1, 8, 0), trustedKey: rsa.ExportParameters(false)))
+            {
+                // A locked leftover survives this attempt and is removed on the next launch.
+                using (var locked = new FileStream(prepared.SetupPath, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    await afterUpgrade.ConsumeCompletionAsync();
+                    Assert.True(File.Exists(prepared.SetupPath));
+                }
+                await afterUpgrade.ConsumeCompletionAsync();
+                Assert.True(!Directory.Exists(prepared.OperationDirectory), string.Join(Environment.NewLine,
+                    cleanupLogger.Entries.Select(entry => $"{entry.Message} {entry.Exception}")));
+            }
+            Assert.Equal("keep", File.ReadAllText(Path.Combine(logs, "recent.log")));
+            Assert.Equal("personal settings", File.ReadAllText(Path.Combine(root, "settings.json")));
+            Assert.Equal(1, fixture.Handler.ApiRequests);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task ReadOnlyCacheCleanupAsync()
+    {
+        var root = NewTemporaryDirectory();
+        var readOnlyPaths = new List<string>();
+        try
+        {
+            var updates = Path.Combine(root, "updates");
+            var operation = Path.Combine(updates, "operations", Guid.NewGuid().ToString("N"));
+            foreach (var directory in new[] { operation, Path.Combine(updates, "logs"), Path.Combine(updates, "results") })
+            {
+                Directory.CreateDirectory(directory);
+                var file = Path.Combine(directory, "old.tmp");
+                File.WriteAllText(file, "expired cache");
+                File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays(-31));
+                readOnlyPaths.Add(file);
+                File.SetAttributes(file, File.GetAttributes(file) | FileAttributes.ReadOnly);
+            }
+            Directory.SetLastWriteTimeUtc(operation, DateTime.UtcNow.AddDays(-2));
+            using var client = new HttpClient();
+            using var service = new StagedAppUpdateService(new MemoryLogger(), client, root, updates);
+            await service.ConsumeCompletionAsync();
+            Assert.True(readOnlyPaths.All(path => !File.Exists(path)));
+            Assert.Equal(false, Directory.Exists(operation));
+        }
+        finally
+        {
+            foreach (var path in readOnlyPaths)
+                if (File.Exists(path)) File.SetAttributes(path, FileAttributes.Normal);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task LockedCacheCleanupAsync()
+    {
+        var root = NewTemporaryDirectory();
+        try
+        {
+            var updates = Path.Combine(root, "updates");
+            var operation = Path.Combine(updates, "operations", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(operation);
+            File.WriteAllText(Path.Combine(operation, "a.tmp"), "locked");
+            File.WriteAllText(Path.Combine(operation, "b.tmp"), "removable");
+            var files = Directory.GetFiles(operation);
+            Directory.SetLastWriteTimeUtc(operation, DateTime.UtcNow.AddDays(-2));
+            using var client = new HttpClient();
+            using var service = new StagedAppUpdateService(new MemoryLogger(), client, root, updates);
+            using (var locked = new FileStream(files[0], FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                await service.ConsumeCompletionAsync();
+                Assert.True(File.Exists(files[0]));
+                Assert.Equal(false, File.Exists(files[1]));
+            }
+            await service.ConsumeCompletionAsync();
+            Assert.Equal(false, Directory.Exists(operation));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task VerifiedCacheExpirationAsync()
+    {
+        using var rsa = RSA.Create(3072);
+        var fixture = SignedReleaseFixture.Create(rsa, 1);
+        using var client = new HttpClient(fixture.Handler);
+        var root = NewTemporaryDirectory();
+        try
+        {
+            PreparedAppUpdate prepared;
+            using (var initial = ManagedService(client, root, rsa))
+                prepared = await initial.DownloadAsync((await initial.CheckAsync(UpdateCheckReason.Manual)).Release!);
+            var future = prepared.VerifiedAt.AddDays(8);
+            // Replacing a helper or touching a directory must not extend package retention.
+            Directory.SetLastWriteTimeUtc(prepared.OperationDirectory, future.UtcDateTime);
+            using var restarted = new StagedAppUpdateService(new MemoryLogger(), client, root, Path.Combine(root, "updates"),
+                utcNow: () => future, getCurrentVersion: () => new Version(1, 7, 0));
+            await restarted.ConsumeCompletionAsync();
+            Assert.Equal(false, Directory.Exists(prepared.OperationDirectory));
+            Assert.Equal(1, fixture.Handler.ApiRequests);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task CacheCleanupFailureIsolationAsync()
+    {
+        using var rsa = RSA.Create(3072);
+        foreach (var linkedArea in new[] { "operations", "results", "logs" })
+        {
+            var fixture = SignedReleaseFixture.Create(rsa, 1);
+            using var client = new HttpClient(fixture.Handler);
+            var root = NewTemporaryDirectory();
+            var updates = Path.Combine(root, "updates");
+            var link = Path.Combine(updates, linkedArea);
+            try
+            {
+                Directory.CreateDirectory(updates);
+                var target = Path.Combine(root, "unrelated");
+                Directory.CreateDirectory(target);
+                var unrelatedFile = Path.Combine(target, "old.tmp");
+                File.WriteAllText(unrelatedFile, "preserve");
+                File.SetLastWriteTimeUtc(unrelatedFile, DateTime.UtcNow.AddDays(-31));
+                var info = BoundedProcessRunner.CreateRedirectedStartInfo(
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                        "WindowsPowerShell", "v1.0", "powershell.exe"),
+                    ["-NoProfile", "-NonInteractive", "-Command",
+                        "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction -Path $env:SVS_TEST_JUNCTION_PATH -Target $env:SVS_TEST_JUNCTION_TARGET | Out-Null"]);
+                info.Environment["SVS_TEST_JUNCTION_PATH"] = link;
+                info.Environment["SVS_TEST_JUNCTION_TARGET"] = target;
+                var result = await new BoundedProcessRunner().RunAsync(info, TimeSpan.FromSeconds(10));
+                Assert.True(!result.TimedOut && result.ExitCode == 0, result.StandardError);
+
+                var otherArea = Path.Combine(updates, linkedArea == "logs" ? "results" : "logs");
+                Directory.CreateDirectory(otherArea);
+                var expired = Path.Combine(otherArea, "old.tmp");
+                File.WriteAllText(expired, "remove");
+                File.SetLastWriteTimeUtc(expired, DateTime.UtcNow.AddDays(-31));
+                using var service = ManagedService(client, root, rsa);
+                if (linkedArea == "results")
+                    await Assert.ThrowsAsync<InvalidDataException>(() => service.ConsumeCompletionAsync());
+                else
+                    await service.ConsumeCompletionAsync();
+                Assert.Equal(false, File.Exists(expired));
+                if (linkedArea == "logs")
+                    Assert.True((await service.CheckAsync(UpdateCheckReason.Manual)).IsUpdateAvailable);
+                Assert.Equal("preserve", File.ReadAllText(unrelatedFile));
+                Assert.True(Directory.Exists(link));
+            }
+            finally
+            {
+                if (Directory.Exists(link)) Directory.Delete(link);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static async Task SupersededPackageCleanupAsync()
+    {
+        using var rsa = RSA.Create(3072);
+        var fixture = SignedReleaseFixture.Create(rsa, 1);
+        using var client = new HttpClient(fixture.Handler);
+        var root = NewTemporaryDirectory();
+        try
+        {
+            using var service = ManagedService(client, root, rsa);
+            var first = await service.DownloadAsync((await service.CheckAsync(UpdateCheckReason.Manual)).Release!);
+            var replacement = SignedReleaseFixture.Create(rsa, 1, version: "1.9.0");
+            fixture.Handler.NextRelease = replacement.Handler;
+            var next = (await service.CheckAsync(UpdateCheckReason.Manual)).Release!;
+            Assert.True(File.Exists(first.SetupPath));
+            replacement.Handler.SetupOverride = Encoding.UTF8.GetBytes("bad-package!!");
+            await Assert.ThrowsAsync<CryptographicException>(() => service.DownloadAsync(next));
+            Assert.True(File.Exists(first.SetupPath));
+            replacement.Handler.SetupOverride = null;
+            var second = await service.DownloadAsync(next);
+            Assert.True(File.Exists(second.SetupPath));
+            Assert.Equal(false, Directory.Exists(first.OperationDirectory));
+            Assert.Equal(1, Directory.GetDirectories(Path.GetDirectoryName(second.OperationDirectory)!).Length);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     private static Task UpdateExitCodes()

@@ -6,6 +6,8 @@ namespace StreamlinkVlcStudio.Core.Settings;
 public sealed class FollowedChannelsSettings : NotifyPropertyChangedObject
 {
     private List<string> kickChannelSlugs = [];
+    private List<string> kickImportedChannelSlugs = [];
+    private DateTimeOffset? kickFollowsImportedAtUtc;
     private bool notifyWhenLive = true;
 
     public List<string> KickChannelSlugs
@@ -18,6 +20,18 @@ public sealed class FollowedChannelsSettings : NotifyPropertyChangedObject
     {
         get => notifyWhenLive;
         set => SetProperty(ref notifyWhenLive, value);
+    }
+
+    public List<string> KickImportedChannelSlugs
+    {
+        get => kickImportedChannelSlugs;
+        set => SetProperty(ref kickImportedChannelSlugs, NormalizeChannelSlugs(value));
+    }
+
+    public DateTimeOffset? KickFollowsImportedAtUtc
+    {
+        get => kickFollowsImportedAtUtc;
+        set => SetProperty(ref kickFollowsImportedAtUtc, value);
     }
 
     private static List<string> NormalizeChannelSlugs(IEnumerable<string>? values)

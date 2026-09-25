@@ -224,11 +224,14 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         AppSettings settings,
         CancellationToken cancellationToken)
     {
-        var slugs = NormalizeKickSlugs(settings.FollowedChannels.KickChannelSlugs);
+        var slugs = NormalizeKickSlugs(settings.FollowedChannels.KickChannelSlugs
+            .Concat(settings.FollowedChannels.KickImportedChannelSlugs));
         if (slugs.Count == 0)
         {
-            return PlatformFollowedStreamsResult.NotConfigured(
-                "Kick: add followed channel slugs in Settings.");
+            return settings.FollowedChannels.KickFollowsImportedAtUtc is not null
+                ? new PlatformFollowedStreamsResult([], [], Succeeded: true)
+                : PlatformFollowedStreamsResult.NotConfigured(
+                    "Kick: use Detect Kick follows in Settings to import your followed channels.");
         }
 
         var accessToken = await kickTokenProvider

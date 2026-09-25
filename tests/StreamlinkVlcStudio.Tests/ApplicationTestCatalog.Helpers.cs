@@ -70,18 +70,6 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(expectedValue, arguments[optionIndex + 1]);
     }
 
-    static void SetKickClientBackfillState(
-        KickChatClient client,
-        string channel,
-        string? channelId,
-        string chatroomId)
-    {
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(KickChatClient).GetField("connectedChannel", flags)!.SetValue(client, channel);
-        typeof(KickChatClient).GetField("currentChannelId", flags)!.SetValue(client, channelId);
-        typeof(KickChatClient).GetField("currentChatroomId", flags)!.SetValue(client, chatroomId);
-    }
-
     static void SetTwitchPredictionContext(TwitchChatClient client)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;

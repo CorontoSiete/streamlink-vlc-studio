@@ -20,8 +20,7 @@ namespace StreamlinkVlcStudio.App.Wpf.Chat;
 /// <para>
 /// Chat the network cannot supply is still covered: <see cref="CaptureLiveMessage"/> files live
 /// messages onto the same timeline at their broadcast offset. That is the only source for a Twitch
-/// stream watched through its live DVR window, because Twitch publishes no VOD comments id until
-/// the broadcast ends.
+/// stream watched through a live DVR window that has no published VOD id yet.
 /// </para>
 /// </remarks>
 internal sealed class VodChatController : IAsyncDisposable
@@ -43,12 +42,14 @@ internal sealed class VodChatController : IAsyncDisposable
 
     private static readonly TimeSpan IdlePollDelay = TimeSpan.FromMilliseconds(400);
     private static readonly TimeSpan FailureRetryDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan GrowingTailRetryDelay = TimeSpan.FromSeconds(5);
 
     /// <summary>Tolerance for filing a live message that arrives a moment past the known duration.</summary>
     private static readonly TimeSpan LiveCaptureSlack = TimeSpan.FromMinutes(5);
 
     private readonly IVodChatProvider? provider;
     private readonly IAppLogger logger;
+    private readonly TimeProvider timeProvider;
     private readonly VodChatTimeline timeline = new();
     private readonly object gate = new();
     private readonly Queue<ChatMessage> bufferedLiveMessages = new();
@@ -58,14 +59,17 @@ internal sealed class VodChatController : IAsyncDisposable
     private Task? disposalTask;
     private bool disposed;
 
-    public VodChatController(IVodChatProvider? provider, IAppLogger logger)
+    public VodChatController(IVodChatProvider? provider, IAppLogger logger, TimeProvider? timeProvider = null)
     {
         this.provider = provider;
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>True once any chat — fetched or captured — is on the timeline.</summary>
     public bool HasMessages => timeline.HasMessages;
+
+    public bool HasMessagesAtOrBefore(TimeSpan position) => timeline.HasMessagesAtOrBefore(position);
 
     internal int TimelineCount => timeline.Count;
 
@@ -99,6 +103,7 @@ internal sealed class VodChatController : IAsyncDisposable
                 if (!current.FetchInFlight &&
                     (current.Unsupported ||
                         current.Exhausted ||
+                        current.TailRetryAtUtc is not null ||
                         current.ConsecutiveFailures >= FailuresBeforeNotice ||
                         current.Frontier > current.Position + LookAhead))
                 {
@@ -118,11 +123,16 @@ internal sealed class VodChatController : IAsyncDisposable
     /// the read cursor and, when the new position is outside what has been fetched, the frontier.
     /// Switching to a different session clears the timeline.
     /// </remarks>
+    /// <param name="isGrowing">
+    /// True for a current broadcast: its last published chat page is temporary and must be polled
+    /// again. A finished archive can stop fetching permanently at that page.
+    /// </param>
     public void Start(
         ReplaySessionInfo replay,
         AppSettings settings,
         TimeSpan position,
-        Func<TimeSpan> getDuration)
+        Func<TimeSpan> getDuration,
+        bool isGrowing = false)
     {
         ArgumentNullException.ThrowIfNull(replay);
         ArgumentNullException.ThrowIfNull(settings);
@@ -138,10 +148,20 @@ internal sealed class VodChatController : IAsyncDisposable
                 return;
             }
 
-            if (session is { } current && current.Matches(replay))
+            // A fetch frontier describes downloaded coverage, but eviction can remove its
+            // messages. Restart that cache when seeking into a discarded range so fresh
+            // pages have room and retired requests cannot repopulate it with newer data.
+            // Capture-only streams cannot refetch history; keep their surviving messages.
+            if (session is { } current && current.Matches(replay) &&
+                (current.Unsupported || !timeline.HasDiscardedMessagesFrom(resumeFrom)))
             {
                 current.Settings = settings;
                 current.GetDuration = getDuration;
+                if (isGrowing && !current.IsGrowing)
+                {
+                    current.Exhausted = false;
+                }
+                current.IsGrowing = isGrowing;
                 current.Position = position;
                 current.ReanchorTo(resumeFrom);
                 timeline.MoveCursorTo(resumeFrom);
@@ -151,7 +171,7 @@ internal sealed class VodChatController : IAsyncDisposable
 
             replaced = session;
             timeline.Clear();
-            started = new Session(replay, settings, getDuration, resumeFrom, position);
+            started = new Session(replay, settings, getDuration, resumeFrom, position, isGrowing);
             session = started;
             timeline.MoveCursorTo(resumeFrom);
             if (FlushBufferedLiveMessagesCore(started) is { } firstBufferedOffset && firstBufferedOffset < resumeFrom)
@@ -444,6 +464,28 @@ internal sealed class VodChatController : IAsyncDisposable
             case VodChatFetchOutcome.Loaded:
             case VodChatFetchOutcome.Completed:
                 state.ConsecutiveFailures = 0;
+                if (result.Outcome == VodChatFetchOutcome.Completed && state.IsGrowing)
+                {
+                    // Twitch reports hasNextPage=false at the current end of an ongoing
+                    // broadcast too. Continue from the last published page's boundary; an
+                    // empty response proves no coverage and must not skip ahead by its
+                    // synthetic empty-page step while comments are still being published.
+                    if (result.Messages.Count > 0)
+                    {
+                        state.AdvanceFrontier(fromOffset, result.CoveredThroughOffset);
+                    }
+
+                    if (state.TailRetryAtUtc is null)
+                    {
+                        logger.Write(AppLogLevel.Debug, "VodChat",
+                            $"VOD chat caught up with published comments for {state.Replay.Channel} " +
+                            $"({state.Replay.ReplayId}); retrying at {state.Frontier.TotalSeconds:0.###}s while the broadcast can grow.");
+                    }
+                    state.TailRetryAtUtc = timeProvider.GetUtcNow() + GrowingTailRetryDelay;
+                    return;
+                }
+
+                state.TailRetryAtUtc = null;
                 state.AdvanceFrontier(fromOffset, result.CoveredThroughOffset);
                 if (result.Outcome == VodChatFetchOutcome.Completed)
                 {
@@ -463,6 +505,7 @@ internal sealed class VodChatController : IAsyncDisposable
                 return;
 
             default:
+                state.TailRetryAtUtc = null;
                 state.ConsecutiveFailures++;
                 if (state.ConsecutiveFailures == FailuresBeforeNotice)
                 {
@@ -485,6 +528,7 @@ internal sealed class VodChatController : IAsyncDisposable
         {
             request = default;
             if (disposed || !ReferenceEquals(session, state) || state.Unsupported || state.Exhausted ||
+                (state.TailRetryAtUtc is { } retryAt && timeProvider.GetUtcNow() < retryAt) ||
                 (duration > TimeSpan.Zero && state.Frontier >= duration) ||
                 state.Frontier > state.Position + LookAhead)
             {
@@ -611,11 +655,13 @@ internal sealed class VodChatController : IAsyncDisposable
             AppSettings settings,
             Func<TimeSpan> getDuration,
             TimeSpan resumeFrom,
-            TimeSpan position)
+            TimeSpan position,
+            bool isGrowing)
         {
             Replay = replay;
             Settings = settings;
             GetDuration = getDuration;
+            IsGrowing = isGrowing;
             // Fetching starts a little before the resume point so chat is never blank, but the
             // position is where playback actually is; the two are not interchangeable.
             Frontier = resumeFrom;
@@ -648,6 +694,10 @@ internal sealed class VodChatController : IAsyncDisposable
 
         public bool Exhausted { get; set; }
 
+        public bool IsGrowing { get; set; }
+
+        public DateTimeOffset? TailRetryAtUtc { get; set; }
+
         /// <summary>Why chat is missing, once known. Kept so a later seek can say so again.</summary>
         public string NoticeText { get; set; } = "";
 
@@ -679,6 +729,7 @@ internal sealed class VodChatController : IAsyncDisposable
             FrontierEpoch++;
             ConsecutiveFailures = 0;
             Exhausted = false;
+            TailRetryAtUtc = null;
             // The seek wipes the visible chat, so offer the explanation again.
             NoticePending = NoticeText.Length > 0;
         }
@@ -689,6 +740,7 @@ internal sealed class VodChatController : IAsyncDisposable
             FrontierEpoch++;
             Unsupported = false;
             Exhausted = false;
+            TailRetryAtUtc = null;
             NoticeText = "";
             NoticePending = false;
             ConsecutiveFailures = 0;

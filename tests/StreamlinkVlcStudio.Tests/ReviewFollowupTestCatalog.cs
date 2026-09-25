@@ -176,6 +176,29 @@ internal static class ReviewFollowupTestCatalog
         Assert.True(parsed.IsSuccess);
         Assert.Equal("/capture", parsed.Request!.Path);
         Assert.SequenceEqual("{}"u8.ToArray(), parsed.Request.Body);
+
+        var fragmentedRequest = "POST /capture HTTP/1.1\r\nX-Padding: " + new string('a', 4096) +
+            "\r\nContent-Length: 2\r\n\r\n{}";
+        var bytes = Encoding.ASCII.GetBytes(fragmentedRequest);
+        foreach (var chunkSize in new[] { 1, 2, 3, 4, 7, 4096 })
+        {
+            using var fragments = new FragmentedRequestStream(bytes, chunkSize);
+            var result = await LocalHttpRequestReader.ReadWithStatusAsync(fragments, bytes.Length, default);
+            Assert.True(result.IsSuccess);
+            Assert.Equal(4096, result.Request!.Headers["X-Padding"].Length);
+            Assert.SequenceEqual("{}"u8.ToArray(), result.Request.Body);
+        }
+
+        using var oversized = new FragmentedRequestStream(bytes, 1);
+        Assert.Equal(413, (await LocalHttpRequestReader.ReadWithStatusAsync(oversized, bytes.Length - 1, default)).StatusCode);
+        using var incomplete = new FragmentedRequestStream("GET / HTTP/1.1\r\n\r"u8.ToArray(), 1);
+        Assert.Equal(400, (await LocalHttpRequestReader.ReadWithStatusAsync(incomplete, 4096, default)).StatusCode);
+    }
+
+    private sealed class FragmentedRequestStream(byte[] bytes, int chunkSize) : MemoryStream(bytes)
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            base.ReadAsync(buffer[..Math.Min(buffer.Length, chunkSize)], cancellationToken);
     }
 
     private static Task PlaylistQuotedMetadata()

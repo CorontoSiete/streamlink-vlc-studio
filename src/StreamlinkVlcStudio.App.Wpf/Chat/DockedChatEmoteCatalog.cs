@@ -59,7 +59,7 @@ internal sealed class DockedChatEmoteCatalog
     {
         if (RegisterMessageEmotes(message))
         {
-            QueueCatalogChanged();
+            QueueCatalogChanged(CatalogChangeScope.ForChannel(message.Platform, message.Channel));
         }
 
         if (message.Platform != PlatformKind.Twitch)
@@ -118,7 +118,7 @@ internal sealed class DockedChatEmoteCatalog
         loadCoordinator.Ensure(
             "twitch:global",
             LoadGlobalAsync,
-            QueueCatalogChanged,
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Twitch)),
             preserveFromEviction: true);
     }
 
@@ -134,7 +134,7 @@ internal sealed class DockedChatEmoteCatalog
         loadCoordinator.Ensure(
             $"twitch:{normalizedRoomId}:{normalizedChannel}",
             () => LoadTwitchChannelAsync(normalizedRoomId, normalizedChannel),
-            QueueCatalogChanged);
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Twitch, normalizedChannel)));
     }
 
     private async Task<CatalogLoadResult> LoadGlobalAsync()
@@ -209,7 +209,7 @@ internal sealed class DockedChatEmoteCatalog
         return new CatalogLoadResult(succeeded, changed);
     }
 
-    private void QueueCatalogChanged() => catalogChangeNotifier.Queue(() => CatalogChanged);
+    private void QueueCatalogChanged(CatalogChangeScope? scope) => catalogChangeNotifier.Queue(() => CatalogChanged, scope);
 
     private async Task<CatalogLoadResult> LoadBttvAsync(
         string url,
@@ -474,7 +474,10 @@ internal sealed class DockedChatEmoteCatalog
 
         if (changed)
         {
-            QueueCatalogChanged();
+            var parts = scope.Split(':', 3);
+            QueueCatalogChanged(parts is ["twitch", _, var channel]
+                ? CatalogChangeScope.ForChannel(PlatformKind.Twitch, channel)
+                : null);
         }
     }
 
@@ -496,6 +499,12 @@ internal sealed class DockedChatEmoteCatalog
             messageEmoteLru.RemoveFirst();
             messageEmoteNodes.Remove(oldest.Value);
             emotes.Remove(oldest.Value);
+            // Admission in one channel can evict a learned fallback in another channel.
+            // Include that channel so its existing rows also lose the expired decoration.
+            var parts = oldest.Value.Split('|', 3);
+            QueueCatalogChanged(parts.Length == 3 && Enum.TryParse<PlatformKind>(parts[0], out var platform)
+                ? CatalogChangeScope.ForChannel(platform, parts[1])
+                : null);
         }
     }
 

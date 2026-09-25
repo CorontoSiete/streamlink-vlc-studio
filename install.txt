@@ -26,6 +26,12 @@ Download progress and Cancel download are available in the update banner and
 Settings. Completed downloads are retained for up to seven days and reverified
 after an app restart. Installation still starts with Restart and install.
 
+Startup cleanup removes installers for versions already installed, partial
+downloads older than 24 hours, and update logs older than 30 days. It also runs
+offline or with automatic checks disabled. Once a replacement is verified,
+superseded downloads are removed. Read-only cache files are removed, and locked
+files do not prevent cleanup of other files. Locked leftovers are retried later.
+
 The normal setup is registered through WiX/Windows Installer, not the separate
 per-user Uninstall.exe. Removing Stream Studio through Apps & features /
 Control Panel removes the app and its shortcut but leaves the shared VLC and
@@ -114,8 +120,9 @@ Windows user profile; treat settings.json and any recovery backups as
 account-sensitive.
 
 The PowerShell-path Uninstall.exe removes its registered shortcut, uninstall
-entry, unchanged managed app payload, current-user product data, and
-product-owned temporary files. It preserves user-modified or unmanaged files in
-the install directory and does not uninstall VLC or Streamlink. Run
+entry, managed app payload (including modified managed files), current-user
+product data, and product-owned temporary files. It removes its temporary
+helper after exiting and preserves unrelated files added to the install
+directory. VLC and Streamlink remain installed. Run
 Uninstall.exe --preserve-user-data only when you intentionally want to keep
 %APPDATA%\StreamStudio and %LOCALAPPDATA%\StreamStudio.

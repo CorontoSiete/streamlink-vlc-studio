@@ -190,11 +190,20 @@ internal static class DependencyFreeTestRunner
         }
 
         var skipPrefix = $"SKIP {testName}: ";
-        var skipped = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .FirstOrDefault(line => line.StartsWith(skipPrefix, StringComparison.Ordinal));
-        if (skipped is not null)
+        var results = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.Equals($"PASS {testName}", StringComparison.Ordinal) ||
+                line.StartsWith(skipPrefix, StringComparison.Ordinal))
+            .ToArray();
+        // A zero exit code alone does not prove that the child ran the requested test.
+        // Require one unambiguous result, including when a similar test name appears.
+        if (results.Length != 1)
         {
-            throw new InteractiveDesktopTestSkippedException(skipped[skipPrefix.Length..]);
+            throw new InvalidOperationException(
+                $"Isolated test '{testName}' produced {results.Length} matching results; expected exactly one.");
+        }
+        if (results[0].StartsWith(skipPrefix, StringComparison.Ordinal))
+        {
+            throw new InteractiveDesktopTestSkippedException(results[0][skipPrefix.Length..]);
         }
     }
 

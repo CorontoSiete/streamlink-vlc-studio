@@ -8,6 +8,7 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
@@ -655,25 +656,7 @@ public sealed class StreamSearchService : IStreamSearchService
         var live = channels.Count(channel => channel.IsLive);
         var offline = channels.Count(channel => !channel.IsLive && channel.State == StreamSearchChannelState.Offline);
         var unavailable = channels.Count - live - offline;
-        var parts = new List<string>();
-        if (live > 0)
-        {
-            parts.Add(live == 1 ? "1 live" : $"{live} live");
-        }
-
-        if (offline > 0)
-        {
-            parts.Add(offline == 1 ? "1 offline" : $"{offline} offline");
-        }
-
-        if (unavailable > 0)
-        {
-            parts.Add(unavailable == 1 ? "1 unavailable" : $"{unavailable} unavailable");
-        }
-
-        var summary = parts.Count == 0
-            ? $"No channels found for {query}."
-            : $"{string.Join(", ", parts)} channel result{(channels.Count == 1 ? "" : "s")} found for {query}.";
+        var summary = StreamSearchSummary.Format(query, live, offline, unavailable);
         return sourceMessages.Count == 0
             ? summary
             : $"{summary} {string.Join(" ", sourceMessages.Distinct(StringComparer.Ordinal))}";

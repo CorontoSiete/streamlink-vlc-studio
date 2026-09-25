@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -115,8 +114,9 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
             candidates.Select(candidate => candidate.Key).ToArray(),
             request.Quality);
         var playlistUrl = candidates.First(candidate => candidate.Key == selectedKey).Url;
-        var playlistContent = await FetchStringAsync(playlistUrl, ranged: false, cancellationToken).ConfigureAwait(false);
-        var rewritten = TwitchSubOnlyVodPlaylist.RewriteMediaPlaylist(playlistContent, new Uri(playlistUrl));
+        var playlist = await ValidatedReplayHttpClient.ReadPlaylistAsync(
+            httpClient, replayUrlValidator, new Uri(playlistUrl), PlatformKind.Twitch, cancellationToken).ConfigureAwait(false);
+        var rewritten = TwitchSubOnlyVodPlaylist.RewriteMediaPlaylist(playlist.Content, playlist.Uri);
 
         Directory.CreateDirectory(playlistDirectory);
         var playlistPath = Path.Combine(playlistDirectory, $"{vodId}-{selectedKey}.m3u8");
@@ -185,7 +185,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
         probeTimeout.CancelAfter(VariantProbeTimeout);
         try
         {
-            var content = await FetchStringAsync(url, ranged: true, probeTimeout.Token).ConfigureAwait(false);
+            var content = await FetchRangeProbeAsync(url, probeTimeout.Token).ConfigureAwait(false);
             return content.TrimStart().StartsWith("#EXTM3U", StringComparison.Ordinal);
         }
         catch (HttpRequestException)
@@ -208,21 +208,17 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
         }
     }
 
-    private async Task<string> FetchStringAsync(string url, bool ranged, CancellationToken cancellationToken)
+    private async Task<string> FetchRangeProbeAsync(string url, CancellationToken cancellationToken)
     {
         using var response = await ValidatedReplayHttpClient.SendGetAsync(
             httpClient,
             replayUrlValidator,
             new Uri(url),
             PlatformKind.Twitch,
-            requestUri =>
+            static requestUri =>
             {
                 var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-                if (ranged)
-                {
-                    request.Headers.Range = new RangeHeaderValue(0, PlaylistProbeByteLimit);
-                }
-
+                request.Headers.Range = new RangeHeaderValue(0, PlaylistProbeByteLimit);
                 return request;
             },
             cancellationToken).ConfigureAwait(false);
@@ -231,9 +227,7 @@ public sealed partial class TwitchSubOnlyVodResolver : ITwitchSubOnlyVodResolver
             throw new HttpRequestException($"GET {url} returned {(int)response.StatusCode}.");
         }
 
-        return ranged
-            ? await BoundedHttpContentReader.ReadRangeProbeAsync(response.Content, cancellationToken).ConfigureAwait(false)
-            : await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken).ConfigureAwait(false);
+        return await BoundedHttpContentReader.ReadRangeProbeAsync(response.Content, cancellationToken).ConfigureAwait(false);
     }
 
     private static Task WritePlaylistAtomicallyAsync(

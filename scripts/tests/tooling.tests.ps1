@@ -104,7 +104,7 @@ try {
         $ownershipManifest.files[0].path = $unsafeRelativePath
         Write-JsonAtomically $ownershipManifestPath $ownershipManifest
         $ownershipMarker = Get-Content -LiteralPath $ownershipMarkerPath -Raw | ConvertFrom-Json
-        $ownershipMarker.manifestSha256 = Get-InstallFileSha256 $ownershipManifestPath
+        $ownershipMarker.manifestSha256 = Get-FileSha256 $ownershipManifestPath
         Write-JsonAtomically $ownershipMarkerPath $ownershipMarker
         Assert-Throws { Read-InstallOwnershipState $ownershipRoot | Out-Null } 'unsafe or duplicate path'
     }
@@ -117,7 +117,7 @@ try {
     Assert-True (@($ownership.Manifest.files).Count -eq 1) 'Separator aliases produced duplicate managed files.'
     $ownership.Manifest.files[0].path = 'lib\runtime.dll'
     Write-JsonAtomically $ownershipManifestPath $ownership.Manifest
-    $ownership.Owner.manifestSha256 = Get-InstallFileSha256 $ownershipManifestPath
+    $ownership.Owner.manifestSha256 = Get-FileSha256 $ownershipManifestPath
     Write-JsonAtomically $ownershipMarkerPath $ownership.Owner
     $ownership = Read-InstallOwnershipState $ownershipRoot
     Assert-True ($ownership.Paths.Contains('lib/runtime.dll')) 'Managed-file lookup did not normalize directory separators.'
@@ -125,7 +125,7 @@ try {
         path = 'lib/runtime.dll'; length = 7; sha256 = $ownership.Manifest.files[0].sha256
     })
     Write-JsonAtomically $ownershipManifestPath $ownership.Manifest
-    $ownership.Owner.manifestSha256 = Get-InstallFileSha256 $ownershipManifestPath
+    $ownership.Owner.manifestSha256 = Get-FileSha256 $ownershipManifestPath
     Write-JsonAtomically $ownershipMarkerPath $ownership.Owner
     Assert-Throws { Read-InstallOwnershipState $ownershipRoot | Out-Null } 'unsafe or duplicate path'
     Write-Host 'PASS tooling: installation ownership normalizes and deduplicates directory separators'

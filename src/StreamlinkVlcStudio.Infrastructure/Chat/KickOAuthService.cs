@@ -8,6 +8,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
+using static StreamlinkVlcStudio.Core.Text.StringValues;
 using static StreamlinkVlcStudio.Infrastructure.Chat.OAuthTokenHelpers;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
@@ -28,6 +29,7 @@ public static class KickOAuthService
         ChatSettings settings,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var clientId = OAuthTokenHelpers.RequireSetting(settings.KickClientId, "Kick Client ID", "Kick");
         var clientSecret = OAuthTokenHelpers.RequireSetting(settings.KickClientSecret, "Kick Client Secret", "Kick");
         var state = CreateBase64UrlSecret(32);
@@ -152,44 +154,58 @@ public static class KickOAuthService
 
     public static async Task<string?> TryGetCurrentUsernameAsync(
         string accessToken,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IAppLogger? logger = null)
     {
+        using var httpClient = HttpClientFactory.CreateDefault();
+        return await TryGetCurrentUsernameAsync(httpClient, accessToken, cancellationToken, logger).ConfigureAwait(false);
+    }
+
+    internal static async Task<string?> TryGetCurrentUsernameAsync(
+        HttpClient httpClient,
+        string accessToken,
+        CancellationToken cancellationToken,
+        IAppLogger? logger = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var token = NormalizeBearerToken(accessToken);
         if (string.IsNullOrWhiteSpace(token))
         {
             return null;
         }
 
-        using var httpClient = HttpClientFactory.CreateDefault();
-        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.kick.com/public/v1/users");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            return null;
-        }
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.kick.com/public/v1/users");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
-        using var document = JsonDocument.Parse(responseBody);
-        if (!TryGetArray(document.RootElement, "data", out var data))
-        {
-            return null;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            var name = GetOptionalString(item, "name");
-            if (!string.IsNullOrWhiteSpace(name))
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
             {
-                return name;
+                return null;
             }
 
-            var username = GetOptionalString(item, "username");
-            if (!string.IsNullOrWhiteSpace(username))
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(responseBody);
+            if (!TryGetArray(document.RootElement, "data", out var data))
             {
-                return username;
+                return null;
             }
+
+            foreach (var item in data.EnumerateArray())
+            {
+                var username = FirstNonEmpty(GetOptionalString(item, "name"), GetOptionalString(item, "username"));
+                if (!string.IsNullOrWhiteSpace(username))
+                {
+                    return username;
+                }
+            }
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // This optional decoration must not prevent either authorization UI from saving
+            // a valid token when the users endpoint fails or reaches its HTTP deadline.
+            logger?.Write(AppLogLevel.Warning, "KickOAuth", "Could not resolve the authorized Kick username.", ex);
         }
 
         return null;

@@ -158,18 +158,17 @@ internal sealed class KickVodChatFetcher
                 return new KickVodChatChunk(collected, $"Kick did not answer the VOD chat request for {channel}.");
             }
 
-            foreach (var message in page.Messages)
-            {
-                if (seenMessageKeys.Add(GetMessageKey(message)))
-                {
-                    collected.Add(message);
-                }
-            }
-
             if (page.Messages.Count == 0)
             {
                 return new KickVodChatChunk(collected, null);
             }
+
+            var newMessages = page.ReadNewMessages(seenMessageKeys);
+            if (newMessages.Length == 0)
+            {
+                return new KickVodChatChunk(collected, "Kick repeated a VOD chat page before covering the requested time range.");
+            }
+            collected.AddRange(newMessages);
 
             var oldestTimestampUtc = page.Messages.Min(message => message.Timestamp).ToUniversalTime();
             if (oldestTimestampUtc <= fromTimestampUtc)
@@ -203,7 +202,6 @@ internal sealed class KickVodChatFetcher
                     channel,
                     messagesChannelId,
                     cursor,
-                    startTimeUtc: null,
                     cancellationToken)
                 .ConfigureAwait(false);
             if (direct.DirectForbidden)
@@ -221,7 +219,6 @@ internal sealed class KickVodChatFetcher
                 channel,
                 messagesChannelId,
                 cursor,
-                startTimeUtc: null,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -318,11 +315,6 @@ internal sealed class KickVodChatFetcher
         if (ticks % TimeSpan.TicksPerMicrosecond > 0) microseconds++;
         return microseconds.ToString(CultureInfo.InvariantCulture);
     }
-
-    private static string GetMessageKey(ChatMessage message) =>
-        string.IsNullOrWhiteSpace(message.MessageId)
-            ? $"{message.Timestamp.ToUniversalTime().UtcTicks}:{message.Username}:{message.Message}"
-            : message.MessageId;
 
     private static string FormatTimestamp(DateTimeOffset timestampUtc) =>
         timestampUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);

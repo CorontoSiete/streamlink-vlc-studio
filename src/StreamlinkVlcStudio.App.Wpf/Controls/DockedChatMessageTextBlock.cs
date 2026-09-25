@@ -101,6 +101,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         ["vip"] = new(BadgeCheckGeometry, BadgeVipBackgroundBrush),
     };
     private volatile bool subscribed;
+    private ChatMessage? catalogMessage;
     private bool rebuildInProgress;
     private bool rebuildQueued;
     private int catalogRebuildQueued;
@@ -166,6 +167,8 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         {
             if (e.Property == MessageProperty)
             {
+                // Catalog events arrive on workers; do not read a dependency property there.
+                Volatile.Write(ref textBlock.catalogMessage, (ChatMessage?)e.NewValue);
                 textBlock.EnsureMessageCatalogs();
             }
 
@@ -210,6 +213,11 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
     private void OnCatalogChanged(object? sender, EventArgs e)
     {
+        if (e is CatalogChangedEventArgs changes && !changes.Affects(Volatile.Read(ref catalogMessage)))
+        {
+            return;
+        }
+
         // Catalog notifications arrive on worker threads. Coalesce before posting so a
         // burst cannot enqueue one full inline rebuild per event for every visible row.
         if (!subscribed || Interlocked.Exchange(ref catalogRebuildQueued, 1) != 0)

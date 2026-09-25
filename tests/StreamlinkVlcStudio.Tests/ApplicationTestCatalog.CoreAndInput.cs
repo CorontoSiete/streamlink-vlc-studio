@@ -292,23 +292,6 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("trimmed", VodChatFetchResult.Failed("  trimmed  ").Reason);
         return Task.CompletedTask;
     }),
-    ("chat backfill results normalize null and default message collections", () =>
-    {
-        var explicitResult = new ChatHistoryBackfillResult(
-            Attempted: true,
-            LoadedMessageCount: 0,
-            CoveredRequestedRange: false,
-            CoveredFromTimestampUtc: null,
-            CoveredThroughTimestampUtc: null,
-            Messages: null);
-        var defaultResult = default(ChatHistoryBackfillResult);
-
-        Assert.NotNull(explicitResult.Messages);
-        Assert.Equal(0, explicitResult.Messages.Count);
-        Assert.NotNull(defaultResult.Messages);
-        Assert.Equal(0, defaultResult.Messages.Count);
-        return Task.CompletedTask;
-    }),
     ("shared string helpers tolerate null params arrays", () =>
     {
         Assert.Equal("", StringValues.FirstNonEmpty((string?[]?)null));
@@ -660,13 +643,11 @@ internal static partial class ApplicationTestCatalog
         kickClient.MessageReceived += (_, _) => throw new InvalidOperationException("kick subscriber failed");
         kickClient.MessageReceived += (_, _) => kickMessageCount++;
         var kickRaise = typeof(KickChatClient).GetMethod(
-            "EmitKickBackfillMessages",
+            "RaiseMessageReceived",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(kickRaise);
-        kickRaise!.Invoke(kickClient, [new[]
-        {
-            new ChatMessage(PlatformKind.Kick, "channel", "viewer", "hello", DateTimeOffset.UtcNow)
-        }]);
+        kickRaise!.Invoke(kickClient,
+            [new ChatMessage(PlatformKind.Kick, "channel", "viewer", "hello", DateTimeOffset.UtcNow)]);
         Assert.Equal(1, kickMessageCount);
 
         await using var twitchClient = new TwitchChatClient(new ChatSettings(), logger, httpClient);
@@ -874,6 +855,11 @@ internal static partial class ApplicationTestCatalog
     ("sub-only VOD quality selection maps app qualities", () =>
     {
         var all = new[] { "chunked", "1080p60", "720p60", "480p30", "360p30", "160p30" };
+        foreach (var key in all)
+        {
+            Assert.Equal(key, TwitchSubOnlyVodPlaylist.SelectQualityKey(all, key));
+            Assert.Equal(key, TwitchSubOnlyVodPlaylist.SelectQualityKey(all, $" {key.ToUpperInvariant()} "));
+        }
         Assert.Equal("chunked", TwitchSubOnlyVodPlaylist.SelectQualityKey(all, "best"));
         Assert.Equal("chunked", TwitchSubOnlyVodPlaylist.SelectQualityKey(all, "source"));
         Assert.Equal("1080p60", TwitchSubOnlyVodPlaylist.SelectQualityKey(all, "1080p"));

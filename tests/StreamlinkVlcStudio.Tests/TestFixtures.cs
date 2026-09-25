@@ -2493,7 +2493,7 @@ internal sealed class FakeChatClientFactory : IChatClientFactory
     public IChatClient Create(PlatformKind platform) => Client;
 }
 
-internal sealed class FakeChatClient : IChatClient, IChatHistoryBackfillClient, ITwitchPredictionClient
+internal sealed class FakeChatClient : IChatClient, ITwitchPredictionClient
 {
     public event EventHandler<ChatMessage>? MessageReceived;
     public event EventHandler<string>? StatusChanged { add { } remove { } }
@@ -2505,14 +2505,8 @@ internal sealed class FakeChatClient : IChatClient, IChatHistoryBackfillClient, 
     public List<string> PredictionLockRequests { get; } = [];
     public List<string> PredictionCancelRequests { get; } = [];
     public List<(string PredictionId, string WinningOutcomeId)> PredictionResolveRequests { get; } = [];
-    public List<DateTimeOffset> BackfillUntilRequests { get; } = [];
-    public List<ChatBackfillRangeRequest> BackfillRangeRequests { get; } = [];
-    public List<ChatMessage> BackfillMessages { get; } = [];
-    public bool? BackfillCoveredRequestedRange { get; set; }
-    public DateTimeOffset? BackfillCoveredFromTimestampUtc { get; set; }
-    public DateTimeOffset? BackfillCoveredThroughTimestampUtc { get; set; }
-    public Func<FakeChatClient, DateTimeOffset, DateTimeOffset, CancellationToken, Task<ChatHistoryBackfillResult>>? BackfillHandler { get; set; }
     public bool EchoSentMessages { get; set; }
+    public Func<string, CancellationToken, Task>? SendHandler { get; set; }
     public Func<FakeChatClient, StreamTarget, CancellationToken, Task>? ConnectHandler { get; set; }
     public bool Connected { get; private set; }
     public int ConnectCount { get; private set; }
@@ -2540,11 +2534,16 @@ internal sealed class FakeChatClient : IChatClient, IChatHistoryBackfillClient, 
         return Task.CompletedTask;
     }
 
-    public Task SendMessageAsync(string message, CancellationToken cancellationToken = default)
+    public async Task SendMessageAsync(string message, CancellationToken cancellationToken = default)
     {
         if (!Connected)
         {
             throw new InvalidOperationException("Fake chat is not connected.");
+        }
+
+        if (SendHandler is { } handler)
+        {
+            await handler(message, cancellationToken);
         }
 
         SentMessages.Add(message);
@@ -2558,8 +2557,6 @@ internal sealed class FakeChatClient : IChatClient, IChatHistoryBackfillClient, 
                 DateTimeOffset.Now,
                 "#48C7B5"));
         }
-
-        return Task.CompletedTask;
     }
 
     public void Receive(ChatMessage message)
@@ -2628,80 +2625,6 @@ internal sealed class FakeChatClient : IChatClient, IChatHistoryBackfillClient, 
         return Task.FromResult(prediction);
     }
 
-    public Task<ChatHistoryBackfillResult> BackfillRecentChatRangeAsync(
-        DateTimeOffset fromTimestampUtc,
-        DateTimeOffset throughTimestampUtc,
-        CancellationToken cancellationToken = default)
-    {
-        fromTimestampUtc = fromTimestampUtc.ToUniversalTime();
-        throughTimestampUtc = throughTimestampUtc.ToUniversalTime();
-        if (throughTimestampUtc < fromTimestampUtc)
-        {
-            throughTimestampUtc = fromTimestampUtc;
-        }
-
-        BackfillUntilRequests.Add(fromTimestampUtc);
-        BackfillRangeRequests.Add(new ChatBackfillRangeRequest(fromTimestampUtc, throughTimestampUtc));
-        if (BackfillHandler is { } handler)
-        {
-            return handler(this, fromTimestampUtc, throughTimestampUtc, cancellationToken);
-        }
-
-        var loadedMessages = new List<ChatMessage>();
-        DateTimeOffset? loadedThroughTimestampUtc = null;
-        var backfillMessages = BackfillMessages.ToArray();
-        foreach (var message in backfillMessages
-            .OrderBy(message => message.Timestamp)
-            .Where(message =>
-            {
-                var timestampUtc = message.Timestamp.ToUniversalTime();
-                return timestampUtc >= fromTimestampUtc && timestampUtc <= throughTimestampUtc;
-            }))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Receive(message);
-            loadedMessages.Add(message);
-            var timestampUtc = message.Timestamp.ToUniversalTime();
-            loadedThroughTimestampUtc = loadedThroughTimestampUtc is { } loadedThrough &&
-                loadedThrough >= timestampUtc
-                    ? loadedThrough
-                    : timestampUtc;
-        }
-
-        DateTimeOffset? coveredFromTimestampUtc = null;
-        DateTimeOffset? coveredThroughTimestampUtc = null;
-        if (BackfillCoveredFromTimestampUtc is { } configuredFrom &&
-            BackfillCoveredThroughTimestampUtc is { } configuredThrough)
-        {
-            coveredFromTimestampUtc = configuredFrom.ToUniversalTime();
-            coveredThroughTimestampUtc = configuredThrough.ToUniversalTime();
-            if (coveredThroughTimestampUtc < coveredFromTimestampUtc)
-            {
-                coveredThroughTimestampUtc = coveredFromTimestampUtc;
-            }
-        }
-        else if (BackfillCoveredRequestedRange == true)
-        {
-            coveredFromTimestampUtc = fromTimestampUtc;
-            coveredThroughTimestampUtc = throughTimestampUtc;
-        }
-        else if (loadedThroughTimestampUtc is { } loadedThrough)
-        {
-            coveredFromTimestampUtc = fromTimestampUtc;
-            coveredThroughTimestampUtc = loadedThrough < fromTimestampUtc ? fromTimestampUtc : loadedThrough;
-        }
-
-        var coveredRequestedRange = BackfillCoveredRequestedRange ??
-            (coveredFromTimestampUtc <= fromTimestampUtc && coveredThroughTimestampUtc >= throughTimestampUtc);
-        return Task.FromResult(new ChatHistoryBackfillResult(
-            Attempted: true,
-            LoadedMessageCount: loadedMessages.Count,
-            CoveredRequestedRange: coveredRequestedRange,
-            CoveredFromTimestampUtc: coveredFromTimestampUtc,
-            CoveredThroughTimestampUtc: coveredThroughTimestampUtc,
-            Messages: loadedMessages));
-    }
-
     private static TwitchPrediction CreateFakePrediction(
         string id,
         string title,
@@ -2740,10 +2663,6 @@ internal sealed class FakeChatClient : IChatClient, IChatHistoryBackfillClient, 
         return ValueTask.CompletedTask;
     }
 }
-
-internal readonly record struct ChatBackfillRangeRequest(
-    DateTimeOffset FromTimestampUtc,
-    DateTimeOffset ThroughTimestampUtc);
 
 internal sealed class FakeReplayResolver : IReplayResolver
 {

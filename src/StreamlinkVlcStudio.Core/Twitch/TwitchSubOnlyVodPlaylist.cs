@@ -109,13 +109,15 @@ public static partial class TwitchSubOnlyVodPlaylist
 
         var preferred = requested switch
         {
-            "1080p60" or "1080p" => "1080p60",
-            "720p60" or "720p" => "720p60",
+            "1080p" => "1080p60",
+            "720p" => "720p60",
             "480p" => "480p30",
-            _ => "chunked"
+            _ => requested
         };
 
-        var preferredIndex = IndexOfQualityKey(preferred);
+        // Accept the canonical rendition keys as well as the app's display aliases.
+        // Unknown preferences (including best/source) keep the highest-quality fallback.
+        var preferredIndex = Math.Max(0, IndexOfQualityKey(preferred));
         string? bestKey = null;
         var bestDistance = int.MaxValue;
         var bestIndex = int.MaxValue;

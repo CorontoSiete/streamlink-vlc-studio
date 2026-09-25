@@ -1,6 +1,6 @@
 internal static class TestCatalog
 {
-    private const int CharacterizedTestCount = 714;
+    private const int CharacterizedTestCount = 702;
 
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } = Build();
 
@@ -30,6 +30,7 @@ internal static class TestCatalog
                 .. characterized,
                 .. UpdateModernizationTestCatalog.RefreshTests,
                 .. UpdateModernizationTestCatalog.ReleaseTests,
+                .. UpdateModernizationTestCatalog.CleanupTests,
                 .. ApplicationTestCatalog.ReplaySeekOverlayTests,
                 .. ApplicationTestCatalog.ResponsiveLayoutTests,
                 .. ApplicationTestCatalog.TabSwitchVideoBoundsTests,
@@ -53,6 +54,10 @@ internal static class TestCatalog
                 .. RepositoryReviewTestCatalog.All,
                 .. PagingRegressionTestCatalog.All,
                 .. VodChatLifecycleTestCatalog.All,
+                .. GrowingVodChatTestCatalog.All,
+                .. DvrChatSeekTransitionTestCatalog.All,
+                .. ApplicationTestCatalog.ReplayChatAvailabilityTests,
+                .. KickRecentChatTestCatalog.All,
                 .. AppLifecycleTestCatalog.All,
                 .. HotkeySettingsExpansionTestCatalog.All,
                 .. MouseWheelDispatchTestCatalog.All,
@@ -70,12 +75,17 @@ internal static class TestCatalog
                 .. HomeRefreshResourceTestCatalog.All,
                 .. BrowseStreamResourceTestCatalog.All,
                 .. PagedRefreshResourceTestCatalog.All,
+                .. BackgroundWorkflowResourceTestCatalog.All,
+                .. ChatCatalogResourceTestCatalog.All,
                 .. TwitchMutedVodRepairTestCatalog.All,
+                .. PlaylistRedirectTestCatalog.All,
                 .. TwitchChannelPointsTestCatalog.All,
                 .. StreamSearchTestCatalog.All,
                 .. LiveChannelPayloadTestCatalog.All,
                 .. SettingsRecoveryTestCatalog.All,
                 .. TestRunnerValidationTestCatalog.All,
+                .. NotificationIdentityTestCatalog.All,
+                .. KickFollowImportTestCatalog.All,
                 .. ReviewContinuationTestCatalog.All,
                 .. ServiceResilienceTestCatalog.All,
                 .. ReplayChatResilienceTestCatalog.All,
@@ -83,7 +93,12 @@ internal static class TestCatalog
                 .. ApplicationTestCatalog.ReplaySeekChatTimingTests,
                 .. PollingLifecycleTestCatalog.All,
                 .. TwitchPayloadValidationTestCatalog.All,
-                .. TimeoutRecoveryTestCatalog.All
+                .. TimeoutRecoveryTestCatalog.All,
+                .. SeekPreviewResilienceTestCatalog.All,
+                .. ReplayPromotionRaceTestCatalog.All,
+                .. CommandLifetimeTestCatalog.All,
+                .. ChatSendLifetimeTestCatalog.All,
+                .. ChatCatalogLifecycleTestCatalog.All
             ];
         var duplicate = all
             .GroupBy(test => test.Name, StringComparer.Ordinal)

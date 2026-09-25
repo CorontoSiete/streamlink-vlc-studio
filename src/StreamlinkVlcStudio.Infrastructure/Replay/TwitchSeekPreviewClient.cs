@@ -33,9 +33,11 @@ internal sealed class TwitchSeekPreviewClient
         using var metadata = await new TwitchGraphQlTransport(httpClient).SendAsync(
             payload, TwitchGraphQlTransport.PublicClientId, TwitchGraphQlTransport.CreateDeviceId(),
             cancellationToken).ConfigureAwait(false);
-        if (!metadata.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+        if (metadata.RootElement.ValueKind != JsonValueKind.Object ||
+            !metadata.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             !data.TryGetProperty("video", out var video) || video.ValueKind != JsonValueKind.Object ||
-            !video.TryGetProperty("lengthSeconds", out var length) || !length.TryGetDouble(out var duration) ||
+            !video.TryGetProperty("lengthSeconds", out var length) || length.ValueKind != JsonValueKind.Number ||
+            !length.TryGetDouble(out var duration) || !double.IsFinite(duration) || duration <= 0 ||
             !video.TryGetProperty("seekPreviewsURL", out var url) || url.ValueKind != JsonValueKind.String ||
             !Uri.TryCreate(url.GetString(), UriKind.Absolute, out var uri)) return null;
 
@@ -87,8 +89,8 @@ internal sealed record TwitchSeekStoryboard(
             // Twitch rounds its sampling interval up; duration/count drifts into later cells.
             var interval = duration / count;
             if (item.TryGetProperty("interval", out var spacing) &&
-                (spacing.ValueKind != JsonValueKind.Number || !spacing.TryGetDouble(out interval) ||
-                 !double.IsFinite(interval) || interval <= 0)) continue;
+                (spacing.ValueKind != JsonValueKind.Number || !spacing.TryGetDouble(out interval))) continue;
+            if (!double.IsFinite(interval) || interval <= 0) continue;
             var urls = new List<Uri>();
             foreach (var image in images.EnumerateArray())
             {

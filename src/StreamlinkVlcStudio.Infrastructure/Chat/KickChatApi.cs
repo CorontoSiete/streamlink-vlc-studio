@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 /// <summary>
@@ -10,40 +8,18 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 internal static class KickChatApi
 {
     /// <summary>
-    /// Builds the kick.com recent-messages URL for a channel; <paramref name="startTimeUtc"/>
-    /// takes precedence over <paramref name="cursor"/> when both are provided.
+    /// Builds the kick.com recent-messages URL for a channel and optional backward cursor.
     /// </summary>
     public static string BuildRecentMessagesUrl(
         string escapedMessagesChannelId,
-        string? cursor,
-        DateTimeOffset? startTimeUtc)
+        string? cursor)
     {
         var url = $"https://kick.com/api/v2/channels/{escapedMessagesChannelId}/messages";
-        if (startTimeUtc is { } startTime)
-        {
-            return $"{url}?start_time={Uri.EscapeDataString(FormatStartTime(startTime))}";
-        }
-
         if (!string.IsNullOrWhiteSpace(cursor))
         {
             return $"{url}?cursor={Uri.EscapeDataString(cursor)}";
         }
 
         return url;
-    }
-
-    private static string FormatStartTime(DateTimeOffset timestampUtc)
-    {
-        return timestampUtc
-            .ToUniversalTime()
-            .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
-    }
-
-    /// <summary>Formats a backfill cursor timestamp for logging.</summary>
-    internal static string FormatBackfillTimestamp(DateTimeOffset? timestampUtc)
-    {
-        return timestampUtc is { } timestamp
-            ? timestamp.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
-            : "none";
     }
 }

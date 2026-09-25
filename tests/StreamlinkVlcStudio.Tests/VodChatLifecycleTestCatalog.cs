@@ -12,6 +12,9 @@ internal static class VodChatLifecycleTestCatalog
         ("VOD chat lifecycle: a provider timeout is retried", ProviderTimeoutAsync),
         ("VOD chat lifecycle: a stale completed page cannot stop a seek", StaleCompletionAsync),
         ("VOD chat lifecycle: a stale unsupported result cannot undo promotion", StalePromotionAsync),
+        ("VOD chat lifecycle: seeking into evicted history refetches messages", RefetchEvictedHistoryAsync),
+        ("VOD chat lifecycle: seeking inside retained history reuses messages", ReuseRetainedHistoryAsync),
+        ("VOD chat lifecycle: unsupported history preserves captured messages after eviction", PreserveUnsupportedHistoryAsync),
         ("VOD chat lifecycle: disposal drains a stopped fetch", () => DrainRetiredFetchAsync(replace: false)),
         ("VOD chat lifecycle: disposal drains a replaced fetch", () => DrainRetiredFetchAsync(replace: true)),
         ("VOD chat lifecycle: concurrent disposal shares completion", ConcurrentDisposalAsync)
@@ -89,6 +92,85 @@ internal static class VodChatLifecycleTestCatalog
         await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
         Assert.Equal(false, controller.TryTakeNotice(out _));
     }
+
+    private static async Task RefetchEvictedHistoryAsync()
+    {
+        var calls = 0;
+        var original = CapturedMessage(0);
+        await using var controller = CreateController(new CallbackProvider((_, _, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(VodChatFetchResult.Completed(
+                [new VodChatMessage(TimeSpan.Zero, original)], TimeSpan.FromHours(1)));
+        }));
+        var replay = Replay();
+        Start(controller, replay);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
+        FillCapturedHistory(controller);
+
+        Start(controller, replay);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
+
+        Assert.Equal(2, calls);
+        Assert.SequenceEqual(new[] { original.MessageId },
+            controller.TakeMessagesDueAt(TimeSpan.Zero, 100).Select(message => message.MessageId));
+    }
+
+    private static async Task ReuseRetainedHistoryAsync()
+    {
+        var calls = 0;
+        await using var controller = CreateController(new CallbackProvider((_, _, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(VodChatFetchResult.Completed([], TimeSpan.FromHours(1)));
+        }));
+        var replay = Replay();
+        Start(controller, replay);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
+        FillCapturedHistory(controller);
+
+        Start(controller, replay, TimeSpan.FromSeconds(150));
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
+
+        Assert.Equal(1, calls);
+        Assert.True(controller.TakeMessagesDueAt(TimeSpan.FromSeconds(150), 100).Count > 0);
+        Assert.Equal(40_000, controller.TimelineCount);
+    }
+
+    private static async Task PreserveUnsupportedHistoryAsync()
+    {
+        var calls = 0;
+        await using var controller = CreateController(new CallbackProvider((_, _, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(VodChatFetchResult.Unsupported("Live capture only."));
+        }));
+        var replay = Replay();
+        Start(controller, replay);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
+        FillCapturedHistory(controller);
+
+        Start(controller, replay);
+        await controller.WaitUntilCaughtUpAsync().WaitAsync(TestTimeout);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(40_000, controller.TimelineCount);
+        Assert.True(controller.TakeMessagesDueAt(TimeSpan.FromSeconds(150), 100).Count > 0);
+    }
+
+    private static void FillCapturedHistory(VodChatController controller)
+    {
+        controller.CaptureLiveMessage(CapturedMessage(0));
+        for (var index = 1; index <= 40_000; index++)
+        {
+            controller.CaptureLiveMessage(CapturedMessage(100 + index / 100d));
+        }
+        Assert.Equal(40_000, controller.TimelineCount);
+    }
+
+    private static ChatMessage CapturedMessage(double seconds) => new(
+        PlatformKind.Twitch, "streamer", "viewer", "message", DateTimeOffset.UnixEpoch.AddSeconds(seconds),
+        MessageId: seconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
     private static async Task DrainRetiredFetchAsync(bool replace)
     {

@@ -6,6 +6,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Text;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Processes;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
@@ -19,6 +20,7 @@ internal sealed class DockedChatBadgeCatalog
     private static readonly BoundedProcessRunner ProcessRunner = new();
 
     private readonly object sync = new();
+    private readonly HttpClient httpClient;
     private readonly Dictionary<string, DockedChatEmoteImage> badges = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<int>> twitchNumericBadgeVersions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<int>> kickNumericBadgeVersions = new(StringComparer.OrdinalIgnoreCase);
@@ -31,8 +33,13 @@ internal sealed class DockedChatBadgeCatalog
 
     public static DockedChatBadgeCatalog Shared { get; } = new();
 
-    internal DockedChatBadgeCatalog()
+    internal DockedChatBadgeCatalog() : this(SharedHttpClient)
     {
+    }
+
+    internal DockedChatBadgeCatalog(HttpClient httpClient)
+    {
+        this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         loadCoordinator = new CatalogLoadCoordinator(scopeEvicted: EvictCatalogScope);
         catalogChangeNotifier = new CatalogChangeNotifier(this);
     }
@@ -41,9 +48,8 @@ internal sealed class DockedChatBadgeCatalog
 
     public void ConfigureTwitchCredentials(string? clientId, string? oauthToken)
     {
-        var normalizedClientId = NormalizeCredential(clientId);
-        var normalizedOAuthToken = NormalizeOAuthToken(oauthToken);
-        var changed = false;
+        var normalizedClientId = (clientId ?? "").Trim();
+        var normalizedOAuthToken = OAuthTokenHelpers.NormalizeBearerToken(oauthToken ?? "");
         lock (sync)
         {
             if (string.Equals(twitchClientId, normalizedClientId, StringComparison.Ordinal) &&
@@ -54,13 +60,9 @@ internal sealed class DockedChatBadgeCatalog
 
             twitchClientId = normalizedClientId;
             twitchOAuthToken = normalizedOAuthToken;
-            changed = true;
         }
 
-        if (changed)
-        {
-            loadCoordinator.InvalidateScopes("badges:twitch:");
-        }
+        loadCoordinator.InvalidateScopes("badges:twitch:");
     }
 
     public bool TryGet(ChatMessage message, ChatBadge badge, out DockedChatEmoteImage image)
@@ -115,12 +117,12 @@ internal sealed class DockedChatBadgeCatalog
         loadCoordinator.Ensure(
             "badges:twitch:bundled",
             LoadBundledTwitchBadgesAsync,
-            QueueCatalogChanged,
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Twitch)),
             preserveFromEviction: true);
         loadCoordinator.Ensure(
             "badges:twitch:global",
             () => LoadTwitchBadgesAsync("https://badges.twitch.tv/v1/badges/global/display"),
-            QueueCatalogChanged,
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Twitch)),
             preserveFromEviction: true);
     }
 
@@ -129,7 +131,7 @@ internal sealed class DockedChatBadgeCatalog
         loadCoordinator.Ensure(
             "badges:kick:bundled",
             LoadBundledKickBadgesAsync,
-            QueueCatalogChanged,
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Kick)),
             preserveFromEviction: true);
     }
 
@@ -147,7 +149,7 @@ internal sealed class DockedChatBadgeCatalog
             () => LoadTwitchBadgesAsync(
                 $"https://badges.twitch.tv/v1/badges/channels/{escapedRoomId}/display",
                 normalizedRoomId),
-            QueueCatalogChanged);
+            () => QueueCatalogChanged(CatalogChangeScope.ForTwitchRoom(normalizedRoomId)));
     }
 
     private void EnsureKickChannelLoaded(string channel)
@@ -161,7 +163,7 @@ internal sealed class DockedChatBadgeCatalog
         loadCoordinator.Ensure(
             $"badges:kick:channel:{normalizedChannel}",
             () => LoadKickChannelBadgesAsync(normalizedChannel),
-            QueueCatalogChanged);
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Kick, normalizedChannel)));
     }
 
     private async Task<CatalogLoadResult> LoadTwitchBadgesAsync(string url, string? roomId = null)
@@ -331,7 +333,7 @@ internal sealed class DockedChatBadgeCatalog
             await LoadBundledBadges(BundledBadgeAssets.FindKickBadgeManifestPath(), AddKickBadge).ConfigureAwait(false));
     }
 
-    private void QueueCatalogChanged() => catalogChangeNotifier.Queue(() => CatalogChanged);
+    private void QueueCatalogChanged(CatalogChangeScope? scope) => catalogChangeNotifier.Queue(() => CatalogChanged, scope);
 
     private async Task<bool> LoadBundledBadges(
         string? manifestPath,
@@ -464,7 +466,7 @@ internal sealed class DockedChatBadgeCatalog
             return true;
         }
 
-        if (IsTwitchChannelScopedBadgeId(badge.Id))
+        if (IsTwitchSubscriberBadgeId(badge.Id))
         {
             image = null!;
             return false;
@@ -727,19 +729,9 @@ internal sealed class DockedChatBadgeCatalog
     {
         return id.Replace('_', '-') switch
         {
-            "artist-badge" => "artist-badge",
-            "bits-leader" => "bits-leader",
-            "bot-badge" => "bot-badge",
-            "clip-champ" => "clip-champ",
-            "clips-leader" => "clips-leader",
-            "game-developer" => "game-developer",
-            "hype-train" => "hype-train",
             "sub-gift" => "sub-gifter",
-            "sub-gift-leader" => "sub-gift-leader",
-            "sub-gifter" => "sub-gifter",
             "sub-gifter-badge" => "sub-gifter",
             "subgifter" => "sub-gifter",
-            "twitch-dj" => "twitch-dj",
             _ => id
         };
     }
@@ -747,11 +739,6 @@ internal sealed class DockedChatBadgeCatalog
     private static bool IsTwitchSubscriberBadgeId(string? id)
     {
         return NormalizePart(id).Replace('_', '-') is "subscriber" or "sub";
-    }
-
-    private static bool IsTwitchChannelScopedBadgeId(string? id)
-    {
-        return IsTwitchSubscriberBadgeId(id);
     }
 
     private static string MakeTwitchBadgeKey(string? roomId, string id, string version)
@@ -884,7 +871,11 @@ internal sealed class DockedChatBadgeCatalog
 
         if (changed)
         {
-            QueueCatalogChanged();
+            QueueCatalogChanged(scope.StartsWith("badges:twitch:channel:", StringComparison.OrdinalIgnoreCase)
+                ? CatalogChangeScope.ForTwitchRoom(scope["badges:twitch:channel:".Length..])
+                : scope.StartsWith("badges:kick:channel:", StringComparison.OrdinalIgnoreCase)
+                    ? CatalogChangeScope.ForChannel(PlatformKind.Kick, scope["badges:kick:channel:".Length..])
+                    : null);
         }
     }
 
@@ -907,19 +898,6 @@ internal sealed class DockedChatBadgeCatalog
     private static string NormalizePart(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? "" : value.Trim().ToLowerInvariant();
-    }
-
-    private static string NormalizeCredential(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
-    }
-
-    private static string NormalizeOAuthToken(string? value)
-    {
-        var token = NormalizeCredential(value);
-        return token.StartsWith("oauth:", StringComparison.OrdinalIgnoreCase)
-            ? token[6..].Trim()
-            : token;
     }
 
     private static string GetBadgeToolTip(ChatBadge badge)
@@ -962,7 +940,7 @@ internal sealed class DockedChatBadgeCatalog
         return false;
     }
 
-    private static async Task<JsonDocument?> TryGetJsonAsync(string url, string? referer = null)
+    private async Task<JsonDocument?> TryGetJsonAsync(string url, string? referer = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (!string.IsNullOrWhiteSpace(referer) &&
@@ -971,7 +949,7 @@ internal sealed class DockedChatBadgeCatalog
             request.Headers.Referrer = refererUri;
         }
 
-        return await OptionalHttpJsonReader.SendAsync(SharedHttpClient, request, MaxJsonBytes).ConfigureAwait(false);
+        return await OptionalHttpJsonReader.SendAsync(httpClient, request, MaxJsonBytes).ConfigureAwait(false);
     }
 
     private async Task<JsonDocument?> TryGetTwitchHelixJsonAsync(string path)
@@ -991,10 +969,8 @@ internal sealed class DockedChatBadgeCatalog
             return null;
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.TryAddWithoutValidation("Client-Id", clientId);
-        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {oauthToken}");
-        return await OptionalHttpJsonReader.SendAsync(SharedHttpClient, request, MaxJsonBytes).ConfigureAwait(false);
+        using var request = TwitchApiRequest.Create(HttpMethod.Get, uri.AbsoluteUri, oauthToken, clientId);
+        return await OptionalHttpJsonReader.SendAsync(httpClient, request, MaxJsonBytes).ConfigureAwait(false);
     }
 
     private static async Task<JsonDocument?> TryGetKickChannelJsonWithCurlAsync(string channel)

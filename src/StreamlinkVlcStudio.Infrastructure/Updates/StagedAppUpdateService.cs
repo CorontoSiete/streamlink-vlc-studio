@@ -107,7 +107,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         {
             Directory.CreateDirectory(updateRoot);
             AssertPathNoReparsePoints(updateRoot);
-            CleanupCache();
+            await Task.Run(TryCleanupCache, cancellationToken).ConfigureAwait(false);
             // A failed package may have been replaced or withdrawn. Retry against fresh
             // signed metadata instead of retrying the same cached release for 24 hours.
             var cached = reason == UpdateCheckReason.Startup
@@ -242,12 +242,13 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             var prepared = new PreparedAppUpdate(id, release, operation, setupPath, helperPath, utcNow());
             await WriteAtomicJsonAsync(Path.Combine(operation, "operation.json"), prepared, cancellationToken).ConfigureAwait(false);
             preparedUpdate = prepared;
+            TryCleanupCache();
             SetState(new(AppUpdatePhase.Ready, "Update verified. Restart and install when you're ready.", release, prepared));
             return prepared;
         }
         catch (Exception ex)
         {
-            TryDeleteCacheEntryWithRetries(operation);
+            if (!TryDeleteCacheEntryWithRetries(operation)) TryExpireCacheEntry(operation);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
             {
                 SetState(new(AppUpdatePhase.Available, "Update download canceled. You can try again.", release));
@@ -312,7 +313,16 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     public async Task<AppUpdateCompletion?> ConsumeCompletionAsync(CancellationToken cancellationToken = default)
     {
         using var lease = await operationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
-        return await ConsumeCompletionCoreAsync(cancellationToken).ConfigureAwait(false);
+        return await Task.Run(async () =>
+        {
+            try { return await ConsumeCompletionCoreAsync(cancellationToken).ConfigureAwait(false); }
+            finally
+            {
+                // An unreadable completion must not prevent independent cache cleanup.
+                // Keep file traversal and deletion retries off the application's UI thread.
+                TryCleanupCache();
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<AppUpdateCompletion?> ConsumeCompletionCoreAsync(CancellationToken cancellationToken)
@@ -541,6 +551,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 if (File.Exists(helperPath)) AssertNotReparsePoint(helperPath);
                 File.Copy(processPath, helperPath, overwrite: true);
                 preparedUpdate = restored with { HelperPath = helperPath };
+                TryCleanupCache();
                 return preparedUpdate;
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or CryptographicException or ArgumentException)
@@ -584,11 +595,20 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         left.ProtocolVersion == right.ProtocolVersion &&
         left.Setup == right.Setup;
 
-    private void CleanupCache()
+    private void TryCleanupCache()
     {
-        CleanupOperations(Path.Combine(updateRoot, "operations"));
-        CleanupDirectory(Path.Combine(updateRoot, "results"), TimeSpan.FromDays(30));
-        CleanupDirectory(Path.Combine(updateRoot, "logs"), TimeSpan.FromDays(30));
+        TryCleanup(() => CleanupOperations(Path.Combine(updateRoot, "operations")));
+        TryCleanup(() => CleanupDirectory(Path.Combine(updateRoot, "results"), TimeSpan.FromDays(30)));
+        TryCleanup(() => CleanupDirectory(Path.Combine(updateRoot, "logs"), TimeSpan.FromDays(30)));
+    }
+
+    private void TryCleanup(Action cleanup)
+    {
+        try { cleanup(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        {
+            logger.Write(AppLogLevel.Debug, "Updater", "Update cache cleanup will be retried later.", ex);
+        }
     }
 
     private void CleanupCompletedOperation(AppUpdateCompletion completion)
@@ -616,24 +636,32 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     {
         if (!Directory.Exists(path)) return;
         AssertPathNoReparsePoints(path);
+        var currentVersion = getCurrentVersion();
         var entries = new List<(string Path, DateTimeOffset Modified, long Length)>();
         foreach (var entry in Directory.EnumerateFileSystemEntries(path))
         {
+            var shouldRemove = false;
             try
             {
-                if (preparedUpdate is { } prepared && IsSamePath(prepared.OperationDirectory, entry)) continue;
+                if (preparedUpdate is { } prepared && IsSamePath(prepared.OperationDirectory, entry) &&
+                    (currentVersion is null || prepared.Release.Version > currentVersion)) continue;
                 var modified = new DateTimeOffset(File.GetLastWriteTimeUtc(entry), TimeSpan.Zero);
                 var verified = File.Exists(Path.Combine(entry, "operation.json"));
                 var maximumAge = verified ? TimeSpan.FromDays(7) : TimeSpan.FromHours(24);
-                if (utcNow() - modified > maximumAge)
+                shouldRemove = utcNow() - modified > maximumAge || IsObsoleteOperation(entry, currentVersion);
+                if (shouldRemove)
                 {
                     DeleteCacheEntry(entry);
+                    if (preparedUpdate is { } removed && IsSamePath(removed.OperationDirectory, entry)) preparedUpdate = null;
                     continue;
                 }
                 entries.Add((entry, modified, GetCacheEntryLength(entry)));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                // Partial deletion changes directory timestamps and can remove metadata.
+                // Keep a locked remainder eligible for the next startup's cleanup.
+                if (shouldRemove) TryExpireCacheEntry(entry);
                 logger.Write(AppLogLevel.Debug, "Updater", $"Could not inspect update operation: {entry}", ex);
             }
         }
@@ -652,6 +680,33 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             {
                 logger.Write(AppLogLevel.Debug, "Updater", $"Could not trim update operation: {entry.Path}", ex);
             }
+        }
+    }
+
+    private bool IsObsoleteOperation(string operation, Version? currentVersion)
+    {
+        var metadataPath = Path.Combine(operation, "operation.json");
+        if (!Guid.TryParseExact(Path.GetFileName(operation), "N", out var id) || !File.Exists(metadataPath)) return false;
+        try
+        {
+            AssertPathNoReparsePoints(metadataPath);
+            using var stream = new FileStream(metadataPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length is <= 0 or > 64 * 1024) return false;
+            var saved = JsonSerializer.Deserialize<PreparedAppUpdate>(stream, JsonOptions);
+            if (saved?.Release?.Version is not { } version || saved.OperationId != id ||
+                !IsSamePath(saved.OperationDirectory, operation)) return false;
+
+            // Metadata can only select a directory already inside our cache. It is
+            // never used as a deletion target or as permission to install a package.
+            return utcNow() - saved.VerifiedAt > TimeSpan.FromDays(7) ||
+                   (currentVersion is not null && version <= currentVersion) ||
+                   (preparedUpdate is { } ready && version <= ready.Release.Version &&
+                    !IsSamePath(ready.OperationDirectory, operation));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+        {
+            logger.Write(AppLogLevel.Debug, "Updater", $"Could not read cached operation metadata: {operation}", ex);
+            return false;
         }
     }
 
@@ -685,10 +740,13 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         {
             if (FileOrDirectoryExists(path))
             {
-                File.SetLastWriteTimeUtc(path, utcNow().UtcDateTime - TimeSpan.FromDays(8));
+                AssertPathNoReparsePoints(path);
+                var expired = utcNow().UtcDateTime - TimeSpan.FromDays(8);
+                if (Directory.Exists(path)) Directory.SetLastWriteTimeUtc(path, expired);
+                else File.SetLastWriteTimeUtc(path, expired);
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             logger.Write(AppLogLevel.Debug, "Updater", $"Could not mark completed update operation for later cleanup: {path}", ex);
         }
@@ -711,18 +769,33 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         var rootPrefix = Path.TrimEndingDirectorySeparator(updateRoot) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Refusing to remove a path outside the update cache.");
-        if (File.Exists(fullPath))
+        AssertPathNoReparsePoints(Path.GetDirectoryName(fullPath)!);
+        FileAttributes attributes;
+        try { attributes = File.GetAttributes(fullPath); }
+        catch (FileNotFoundException) { return; }
+        catch (DirectoryNotFoundException) { return; }
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            // Remove the link itself, including dangling links. Never change target attributes.
+            if ((attributes & FileAttributes.Directory) != 0) Directory.Delete(fullPath);
+            else File.Delete(fullPath);
+            return;
+        }
+        if ((attributes & FileAttributes.ReadOnly) != 0)
+            File.SetAttributes(fullPath, attributes & ~FileAttributes.ReadOnly);
+        if ((attributes & FileAttributes.Directory) == 0)
         {
             File.Delete(fullPath);
             return;
         }
-        if (!Directory.Exists(fullPath)) return;
-        if ((File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) != 0)
+        Exception? failure = null;
+        foreach (var child in Directory.EnumerateFileSystemEntries(fullPath))
         {
-            Directory.Delete(fullPath);
-            return;
+            try { DeleteCacheEntry(child); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { failure ??= ex; }
         }
-        foreach (var child in Directory.EnumerateFileSystemEntries(fullPath)) DeleteCacheEntry(child);
+        // A locked helper should not retain the installer and all its other siblings.
+        if (failure is not null) throw new IOException($"Some update cache files could not be removed: {fullPath}", failure);
         Directory.Delete(fullPath);
     }
 

@@ -22,6 +22,7 @@ public static class TwitchOAuthService
         ChatSettings settings,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var clientId = OAuthTokenHelpers.RequireSetting(settings.TwitchClientId, "Twitch Client ID", "Twitch");
         var state = CreateBase64UrlSecret(32);
         var authorizationUri = BuildAuthorizationUri(clientId, state);

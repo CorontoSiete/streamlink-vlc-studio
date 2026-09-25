@@ -1,26 +1,50 @@
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
 /// <summary>
-/// Raises a catalog-changed event off the caller's thread and coalesces bursts: while a
-/// notification is pending, further requests are dropped instead of queueing another pass.
-/// The badge and emote catalogs both mutate in tight loops while loading, so this keeps a
-/// single load from fanning out into hundreds of UI refreshes.
+/// Coalesces changes off the caller's thread without losing any affected lookup scopes.
 /// </summary>
-internal sealed class CatalogChangeNotifier(object sender)
+internal sealed class CatalogChangeNotifier(object sender, Action<Action>? schedule = null)
 {
-    private int queued;
+    private const int MaximumPendingScopes = 256;
+    private readonly object gate = new();
+    private readonly HashSet<CatalogChangeScope> pendingScopes = [];
+    private bool allScopes;
+    private bool queued;
 
-    internal void Queue(Func<EventHandler?> handlers)
+    internal void Queue(Func<EventHandler?> handlers, CatalogChangeScope? scope = null)
     {
-        if (Interlocked.Exchange(ref queued, 1) != 0)
+        lock (gate)
         {
-            return;
+            if (!allScopes)
+            {
+                if (scope is null || (pendingScopes.Add(scope.Value) && pendingScopes.Count > MaximumPendingScopes))
+                {
+                    // Fall back to a complete refresh rather than retaining an unbounded burst
+                    // or omitting decorations when many different channels change together.
+                    allScopes = true;
+                    pendingScopes.Clear();
+                }
+            }
+
+            if (queued) return;
+            queued = true;
         }
 
-        _ = Task.Run(() =>
+        void Deliver()
         {
-            Interlocked.Exchange(ref queued, 0);
-            CatalogLoadCoordinator.RaiseSafely(handlers(), sender);
-        });
+            EventArgs changes;
+            lock (gate)
+            {
+                changes = allScopes ? EventArgs.Empty : new CatalogChangedEventArgs(pendingScopes.ToArray());
+                pendingScopes.Clear();
+                allScopes = false;
+                queued = false;
+            }
+
+            CatalogLoadCoordinator.RaiseSafely(handlers(), sender, changes);
+        }
+
+        if (schedule is null) _ = Task.Run(Deliver);
+        else schedule(Deliver);
     }
 }

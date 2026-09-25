@@ -213,21 +213,11 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
 
     private async Task<string> ReadRemotePlaylistAsync(Uri playlistUri, CancellationToken cancellationToken)
     {
-        using var response = await ValidatedReplayHttpClient.SendGetAsync(
-                httpClient,
-                replayUrlValidator,
-                playlistUri,
-                PlatformKind.Twitch,
-                static requestUri => new HttpRequestMessage(HttpMethod.Get, requestUri),
-                cancellationToken)
-            .ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(
-                $"GET {TwitchMutedVodRepairLog.Describe(playlistUri)} returned {(int)response.StatusCode}.");
-        }
-
-        return await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken).ConfigureAwait(false);
+        var playlist = await ValidatedReplayHttpClient.ReadPlaylistAsync(
+            httpClient, replayUrlValidator, playlistUri, PlatformKind.Twitch, cancellationToken).ConfigureAwait(false);
+        // Each refresh may redirect to another location. Resolve relative entries now,
+        // before the proxy associates the text with the session's original playlist URL.
+        return TwitchMutedVodPlaylist.RewriteForRepair(playlist.Content, playlist.Uri, static uri => uri.AbsoluteUri);
     }
 
     private static async Task<string> ReadLocalPlaylistAsync(string path, CancellationToken cancellationToken)

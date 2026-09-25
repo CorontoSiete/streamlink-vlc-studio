@@ -17,6 +17,7 @@ internal sealed class CatalogLoadCoordinator
 
     private readonly object gate = new();
     private readonly Dictionary<string, Entry> entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> evictingScopes = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider timeProvider;
     private readonly int maximumEntries;
     private readonly TimeSpan timeToLive;
@@ -51,6 +52,10 @@ internal sealed class CatalogLoadCoordinator
         Entry entry;
         lock (gate)
         {
+            // Payload cleanup runs outside this lock. Do not let a replacement load
+            // publish data that the previous scope's cleanup would immediately erase.
+            if (evictingScopes.Contains(scope)) return false;
+
             if (entries.TryGetValue(scope, out var existing))
             {
                 existing.LastAccessUtc = now;
@@ -206,6 +211,7 @@ internal sealed class CatalogLoadCoordinator
         }
 
         entries.Remove(evictionCandidate);
+        evictingScopes.Add(evictionCandidate);
         evictedScope = evictionCandidate;
         return true;
     }
@@ -219,9 +225,16 @@ internal sealed class CatalogLoadCoordinator
         catch (Exception)
         {
         }
+        finally
+        {
+            lock (gate)
+            {
+                evictingScopes.Remove(scope);
+            }
+        }
     }
 
-    internal static void RaiseSafely(EventHandler? handlers, object sender)
+    internal static void RaiseSafely(EventHandler? handlers, object sender, EventArgs? changes = null)
     {
         if (handlers is null)
         {
@@ -232,7 +245,7 @@ internal sealed class CatalogLoadCoordinator
         {
             try
             {
-                handler(sender, EventArgs.Empty);
+                handler(sender, changes ?? EventArgs.Empty);
             }
             catch (Exception)
             {

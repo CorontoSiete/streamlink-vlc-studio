@@ -986,7 +986,7 @@ internal static partial class ApplicationTestCatalog
             "",
             "best",
             ReplayMediaKind.CurrentLiveDvr);
-        var tab = TestViewModels.CreateTab(
+        await using var tab = TestViewModels.CreateTab(
             StreamInputParser.Parse("streamer", PlatformKind.Twitch),
             "source",
             streamlink,
@@ -1024,12 +1024,15 @@ internal static partial class ApplicationTestCatalog
             "window captured",
             startedAt.AddMinutes(9).AddSeconds(50),
             MessageId: "window-captured"));
+        // The clock pump can consume the message before this receive callback does;
+        // coalesced UI delivery on that other thread may still be completing.
+        await WaitForDockedChatMessageAsync(tab, "window captured");
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "window captured"));
+        Assert.Equal(false, tab.DockedChatMessages.Any(message => message.Message == "future captured"));
 
         await tab.SeekReplayAsync(TimeSpan.FromMinutes(50));
+        await WaitForDockedChatMessageAsync(tab, "future captured");
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "future captured"));
-
-        await tab.DisposeAsync();
     }),
     ("Kick live startup does not wait for replay availability lookup", async () =>
     {
@@ -1630,6 +1633,7 @@ internal static partial class ApplicationTestCatalog
         Assert.True(vodChatProvider.RequestedReplays.Any(replay => replay.ReplayId == "123"));
         Assert.Contains("123", tab.ReplaySeekToolTip);
         Assert.True(tab.DockedChatMessages.Any(message => message.Message == "vod chat after promotion"));
+        Assert.Equal(false, tab.HasReplayChatStatus);
 
     }),
     ("replay step buttons seek thirty seconds and return to live at the edge", async () =>
@@ -2528,7 +2532,6 @@ internal static partial class ApplicationTestCatalog
             100);
 
         Assert.Equal(3, timeline.Count);
-        Assert.Equal(TimeSpan.FromSeconds(30), timeline.LastOffset);
 
         var first = timeline.TakeMessagesDueAt(TimeSpan.FromSeconds(10), 100);
         Assert.Equal(2, first.Count);

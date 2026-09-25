@@ -90,9 +90,11 @@ internal static class MaintenanceApplication
     private static int RunStaged(CommandLineOptions options)
     {
         using var log = MaintenanceLog.OpenExisting(options.LogPath!);
+        var validatedStage = false;
         try
         {
             StageLauncher.ValidateStagedHandshake(options);
+            validatedStage = true;
             log.Write($"Validated staged handoff for installation: {options.InstallDirectory}");
             WaitForOriginalProcess(options.ParentProcessId, log);
 
@@ -141,7 +143,7 @@ internal static class MaintenanceApplication
         }
         finally
         {
-            StageLauncher.ScheduleCurrentStageForCleanup(log);
+            if (validatedStage) StageLauncher.ScheduleCurrentStageForCleanup(log);
         }
     }
 
@@ -375,32 +377,7 @@ internal static class StageLauncher
             File.Copy(processPath, stageExecutable, overwrite: false);
             File.WriteAllText(Path.Combine(stageDirectory, StageTokenFileName), nonce);
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = stageExecutable,
-                WorkingDirectory = stageDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = quiet
-            };
-            startInfo.ArgumentList.Add("--staged");
-            startInfo.ArgumentList.Add("--install-directory");
-            startInfo.ArgumentList.Add(installDirectory);
-            startInfo.ArgumentList.Add("--parent-pid");
-            startInfo.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            startInfo.ArgumentList.Add("--stage-nonce");
-            startInfo.ArgumentList.Add(nonce);
-            startInfo.ArgumentList.Add("--log-path");
-            startInfo.ArgumentList.Add(log.Path);
-            if (quiet)
-            {
-                startInfo.ArgumentList.Add("/quiet");
-            }
-
-            if (purgeUserData)
-            {
-                startInfo.ArgumentList.Add("/purge-user-data");
-            }
-
+            var startInfo = CreateStartInfo(stageExecutable, installDirectory, purgeUserData, quiet, nonce, log.Path);
             using var process = Process.Start(startInfo);
             if (process is null)
             {
@@ -412,12 +389,33 @@ internal static class StageLauncher
             return true;
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+            exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             TryRemoveFailedStage(stageDirectory);
             error = exception.Message;
             return false;
         }
+    }
+
+    internal static ProcessStartInfo CreateStartInfo(
+        string stageExecutable, string installDirectory, bool purgeUserData, bool quiet, string nonce, string logPath)
+    {
+        var startInfo = new ProcessStartInfo(stageExecutable)
+        {
+            WorkingDirectory = Path.GetDirectoryName(stageExecutable)!,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in new[]
+                 {
+                     "--staged", "--install-directory", installDirectory,
+                     "--parent-pid", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                     "--stage-nonce", nonce, "--log-path", logPath,
+                     purgeUserData ? "--purge-user-data" : "--preserve-user-data"
+                 })
+            startInfo.ArgumentList.Add(argument);
+        if (quiet) startInfo.ArgumentList.Add("/quiet");
+        return startInfo;
     }
 
     internal static void ValidateStagedHandshake(CommandLineOptions options)
@@ -449,35 +447,19 @@ internal static class StageLauncher
 
     internal static void ScheduleCurrentStageForCleanup(MaintenanceLog log)
     {
-        var processPath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(processPath))
-        {
-            return;
-        }
-
-        if (NativeDialog.ScheduleDeleteOnReboot(processPath, null, 0x00000004))
-        {
-            log.Write($"Scheduled staged maintenance executable for deletion at reboot: {processPath}");
-        }
-        else
-        {
-            log.Write($"The staged maintenance executable remains in the temporary directory: {processPath}");
-        }
-
         try
         {
-            var stageDirectory = Path.GetDirectoryName(PathSafety.Normalize(processPath));
-            var tempRoot = PathSafety.Normalize(Path.GetTempPath());
-            var stageName = string.IsNullOrWhiteSpace(stageDirectory) ? "" : Path.GetFileName(stageDirectory);
-            if (!string.IsNullOrWhiteSpace(stageDirectory) &&
-                PathSafety.IsSameOrUnder(stageDirectory, tempRoot) &&
-                stageName.StartsWith(StageDirectoryPrefix, StringComparison.Ordinal) &&
-                Guid.TryParseExact(stageName[StageDirectoryPrefix.Length..], "N", out _) &&
-                !PathSafety.ContainsReparsePoint(stageDirectory) &&
+            var stageDirectory = GetCurrentStageDirectory();
+            if (stageDirectory is null) return;
+            if (StageCleanup.TryLaunch(stageDirectory, Environment.ProcessId, log)) return;
+
+            var processPath = Path.Combine(stageDirectory, "StreamStudio.Maintenance.exe");
+            if (NativeDialog.ScheduleDeleteOnReboot(processPath, null, 0x00000004) &&
                 NativeDialog.ScheduleDeleteOnReboot(stageDirectory, null, 0x00000004))
             {
-                log.Write($"Scheduled staged maintenance directory for deletion at reboot: {stageDirectory}");
+                log.Write($"Scheduled staged maintenance cleanup at reboot: {stageDirectory}");
             }
+            else log.Write($"Staged maintenance files remain for a later cleanup: {stageDirectory}");
         }
         catch (Exception exception) when (
             exception is IOException or
@@ -487,6 +469,16 @@ internal static class StageLauncher
         {
             log.Write($"Could not schedule staged maintenance directory cleanup: {exception.Message}");
         }
+    }
+
+    internal static string? GetCurrentStageDirectory()
+    {
+        var processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath) ||
+            !string.Equals(Path.GetFileName(processPath), "StreamStudio.Maintenance.exe", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var directory = Path.GetDirectoryName(PathSafety.Normalize(processPath));
+        return directory is not null && StageCleanup.IsSafeStageDirectory(directory) ? directory : null;
     }
 
     private static void TryRemoveFailedStage(string stageDirectory)

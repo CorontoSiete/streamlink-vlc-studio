@@ -6,9 +6,13 @@ internal static class MaintenanceTestCatalog
     [
         ("Maintenance paths reject traversal and constrain personal-data roots", PathPoliciesAreStrict),
         ("Maintenance uninstall purges current-user leftovers by default", CommandLinePurgesUserDataByDefault),
+        ("Maintenance staged uninstall preserves the selected personal-data policy", StagedArgumentsPreserveDataPolicy),
+        ("Maintenance temporary stage cleans itself after exit and preserves unknown files", StageCleanupAfterExitAsync),
+        ("Maintenance temporary cleanup rejects paths outside its stage", StageCleanupRejectsUnownedPaths),
         ("Personal-data cleanup removes only selected product roots", PersonalDataCleanupRemovesSelectedRoots),
         ("Personal-data cleanup tolerates the active maintenance log", PersonalDataCleanupToleratesActiveLog),
         ("ZIP cleanup removes modified managed files and preserves unknown files", ModifiedManagedFilesAreRemoved),
+        ("ZIP cleanup removes empty managed ancestors and preserves unrelated directories", EmptyManagedAncestorsAreRemoved),
         ("ZIP cleanup preserves retry ownership while a managed file is locked", LockedManagedFilesPreserveRetryState),
         ("ZIP cleanup rejects corrupt ownership state before deletion", CorruptOwnershipStateIsRejected),
         ("ZIP cleanup rejects duplicate paths with different directory separators", DuplicatePathAliasesAreRejected)
@@ -49,6 +53,90 @@ internal static class MaintenanceTestCatalog
         Assert.True(explicitPurge.PurgeUserData);
 
         return Task.CompletedTask;
+    }
+
+    private static Task StagedArgumentsPreserveDataPolicy()
+    {
+        foreach (var purge in new[] { true, false })
+            foreach (var quiet in new[] { true, false })
+            {
+                var info = StageLauncher.CreateStartInfo(@"C:\stage\StreamStudio.Maintenance.exe",
+                    @"C:\Apps\Stream Studio", purge, quiet, Guid.NewGuid().ToString("N"), @"C:\logs\uninstall.log");
+                var parsed = CommandLineOptions.Parse(info.ArgumentList.ToArray());
+                Assert.True(parsed.Staged);
+                Assert.Equal(purge, parsed.PurgeUserData);
+                Assert.Equal(quiet, parsed.Quiet);
+                Assert.Equal(@"C:\Apps\Stream Studio", parsed.InstallDirectory);
+            }
+        return Task.CompletedTask;
+    }
+
+    private static Task StageCleanupRejectsUnownedPaths()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fakeNestedStage = Path.Combine(root, "StreamStudio-Maintenance-Stage-" + Guid.NewGuid().ToString("N"));
+            foreach (var candidate in new[] { root, Path.GetTempPath(), fakeNestedStage })
+                Assert.Throws<InvalidDataException>(() => StageCleanup.CreateStartInfo(candidate, Environment.ProcessId));
+        }
+        finally { Directory.Delete(root); }
+        return Task.CompletedTask;
+    }
+
+    private static async Task StageCleanupAfterExitAsync()
+    {
+        foreach (var unknownFile in new[] { false, true })
+        {
+            var stage = Path.Combine(Path.GetTempPath(), "StreamStudio-Maintenance-Stage-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            try
+            {
+                var executable = Path.Combine(stage, "StreamStudio.Maintenance.exe");
+                File.WriteAllText(executable, "temporary helper");
+                File.WriteAllText(Path.Combine(stage, ".stage-token"), "token");
+                if (unknownFile) File.WriteAllText(Path.Combine(stage, "keep.txt"), "user file");
+                var parentInfo = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    "WindowsPowerShell", "v1.0", "powershell.exe"))
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true
+                };
+                foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-Command",
+                             "[Console]::WriteLine('ready'); [Console]::ReadLine() | Out-Null" })
+                    parentInfo.ArgumentList.Add(argument);
+                using var parent = Process.Start(parentInfo)!;
+                Process? cleaner = null;
+                try
+                {
+                    Assert.Equal("ready", await parent.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
+                    cleaner = Process.Start(StageCleanup.CreateStartInfo(stage, parent.Id))!;
+                    await Task.Delay(600);
+                    Assert.True(File.Exists(executable));
+                    await parent.StandardInput.WriteLineAsync("exit");
+                    await parent.StandardInput.FlushAsync();
+                    await parent.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                    await cleaner.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                    Assert.Equal(unknownFile ? 1 : 0, cleaner.ExitCode);
+                    Assert.Equal(false, File.Exists(executable));
+                    Assert.Equal(false, File.Exists(Path.Combine(stage, ".stage-token")));
+                    Assert.Equal(unknownFile, Directory.Exists(stage));
+                    if (unknownFile) Assert.Equal("user file", File.ReadAllText(Path.Combine(stage, "keep.txt")));
+                }
+                finally
+                {
+                    if (!parent.HasExited) { parent.Kill(); await parent.WaitForExitAsync(); }
+                    if (cleaner is not null)
+                    {
+                        if (!cleaner.HasExited) { cleaner.Kill(); await cleaner.WaitForExitAsync(); }
+                        cleaner.Dispose();
+                    }
+                }
+            }
+            finally { if (Directory.Exists(stage)) Directory.Delete(stage, recursive: true); }
+        }
     }
 
     private static Task PersonalDataCleanupRemovesSelectedRoots()
@@ -145,6 +233,38 @@ internal static class MaintenanceTestCatalog
             Directory.Delete(testRoot, recursive: true);
         }
 
+        return Task.CompletedTask;
+    }
+
+    private static Task EmptyManagedAncestorsAreRemoved()
+    {
+        foreach (var preserveUnknown in new[] { false, true })
+        {
+            var testRoot = CreateRoot();
+            try
+            {
+                var installRoot = Path.Combine(testRoot, "install");
+                var managedPath = Path.Combine(installRoot, "runtimes", "win-x64", "native", "plugin.dll");
+                Directory.CreateDirectory(Path.GetDirectoryName(managedPath)!);
+                File.WriteAllText(managedPath, "managed");
+                WriteOwnership(installRoot, ["runtimes/win-x64/native/plugin.dll"]);
+                var ownership = InstallOwnership.Load(installRoot);
+                var unknownDirectory = Path.Combine(installRoot, "runtimes", "user-folder");
+                if (preserveUnknown) Directory.CreateDirectory(unknownDirectory);
+                File.Delete(managedPath);
+                File.Delete(ownership.ManifestPath);
+                File.Delete(ownership.OwnerPath);
+
+                using var log = MaintenanceLog.Create();
+                ManagedInstallationCleaner.RemoveEmptyManagedDirectories(ownership, log);
+
+                Assert.Equal(false, Directory.Exists(Path.Combine(installRoot, "runtimes", "win-x64")));
+                Assert.Equal(preserveUnknown, Directory.Exists(installRoot));
+                Assert.Equal(preserveUnknown, Directory.Exists(unknownDirectory));
+                Assert.True(Directory.Exists(testRoot));
+            }
+            finally { Directory.Delete(testRoot, recursive: true); }
+        }
         return Task.CompletedTask;
     }
 

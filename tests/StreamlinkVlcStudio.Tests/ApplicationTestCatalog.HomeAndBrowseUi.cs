@@ -2304,7 +2304,7 @@ internal static partial class ApplicationTestCatalog
         };
         settings.Chat.ConnectAutomatically = true;
         settings.Chat.Layout = ChatLayout.Docked;
-        var tab = TestViewModels.CreateTab(
+        await using var tab = TestViewModels.CreateTab(
             target,
             "best",
             streamlink,
@@ -2319,7 +2319,8 @@ internal static partial class ApplicationTestCatalog
         await TestWait.UntilAsync(
             () => vodChatProvider.CallCount >= 1 &&
                 DockedChatMessagesContainText(tab, "webhook chat cache"),
-            TimeSpan.FromMilliseconds(500));
+            // The notification is delivered by the 500 ms replay clock poll.
+            TimeSpan.FromSeconds(2));
 
         Assert.Equal(PlaybackStatus.Playing, tab.Status);
         Assert.Equal(1, streamlink.ResolveStreamUrlCount);
@@ -2337,8 +2338,6 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("668", vodChatProvider.RequestedReplays[0].ChatRoomId);
         Assert.Equal(TimeSpan.Zero, vodChatProvider.RequestedOffsets[0]);
         Assert.True(DockedChatMessagesContainText(tab, unavailableReason));
-
-        await tab.DisposeAsync();
     }),
     ("explicit Kick VOD tab without start time reports replay chat unavailable", async () =>
     {

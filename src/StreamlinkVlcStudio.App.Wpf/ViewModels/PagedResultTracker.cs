@@ -7,25 +7,6 @@ internal sealed class PagedResultTracker
 {
     private readonly HashSet<string> completedCursors = new(StringComparer.Ordinal);
 
-    internal string AppendPage<T>(
-        ICollection<T> destination,
-        IEnumerable<T> items,
-        Func<T, string> identity,
-        string requestedCursor,
-        string nextCursor)
-    {
-        var existing = destination.Select(identity).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in items)
-        {
-            if (existing.Add(identity(item)))
-            {
-                destination.Add(item);
-            }
-        }
-
-        return RecordPage(requestedCursor, nextCursor);
-    }
-
     /// <summary>Reuses cards on refresh and creates only new identities, including on overlapping pages.</summary>
     internal string ApplyPage<TCard, TItem>(
         ObservableCollection<TCard> destination,
@@ -37,7 +18,21 @@ internal sealed class PagedResultTracker
         string requestedCursor,
         string nextCursor) where TCard : class
     {
-        var reset = string.IsNullOrWhiteSpace(requestedCursor);
+        ApplyItems(destination, items, cardIdentity, itemIdentity, create, update,
+            reset: string.IsNullOrWhiteSpace(requestedCursor));
+        return RecordPage(requestedCursor, nextCursor);
+    }
+
+    /// <summary>Shares card reconciliation with refreshes that do not use pagination.</summary>
+    internal static void ApplyItems<TCard, TItem>(
+        ObservableCollection<TCard> destination,
+        IEnumerable<TItem> items,
+        Func<TCard, string> cardIdentity,
+        Func<TItem, string> itemIdentity,
+        Func<TItem, TCard> create,
+        Action<TCard, TItem> update,
+        bool reset) where TCard : class
+    {
         var existing = destination.ToDictionary(cardIdentity, StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var desired = reset ? new List<TCard>() : null;
@@ -74,11 +69,9 @@ internal sealed class PagedResultTracker
                 else destination.Move(currentIndex, index);
             }
         }
-
-        return RecordPage(requestedCursor, nextCursor);
     }
 
-    internal string RecordPage(string requestedCursor, string nextCursor)
+    private string RecordPage(string requestedCursor, string nextCursor)
     {
         // The empty cursor starts a fresh search, even when the query itself is unchanged.
         if (string.IsNullOrWhiteSpace(requestedCursor))

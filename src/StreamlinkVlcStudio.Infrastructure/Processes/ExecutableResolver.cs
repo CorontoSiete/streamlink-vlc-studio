@@ -100,7 +100,7 @@ public static class ExecutableResolver
         var candidate = path.Trim();
         var startsWithQuote = candidate.StartsWith('"');
         var endsWithQuote = candidate.EndsWith('"');
-        if (startsWithQuote != endsWithQuote)
+        if (startsWithQuote != endsWithQuote || (startsWithQuote && candidate.Length < 2))
         {
             return null;
         }

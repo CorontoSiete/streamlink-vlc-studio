@@ -10,8 +10,9 @@ namespace StreamlinkVlcStudio.App.Wpf.Controls;
 /// <summary>A bounded, per-overlay storyboard cache. All decoding runs away from the dispatcher.</summary>
 internal sealed class ReplaySeekPreviewImages
 {
-    private readonly TwitchSeekPreviewClient client = new();
-    private readonly LiveSeekPreviewImages liveImages = new();
+    private readonly TwitchSeekPreviewClient client;
+    private readonly Func<long> clock;
+    private readonly LiveSeekPreviewImages liveImages;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<Uri, BitmapSource> sheets = [];
     private string? cachedVideoId;
@@ -20,16 +21,22 @@ internal sealed class ReplaySeekPreviewImages
     private Uri? failedImage;
     private long imageRetryAfter;
 
+    internal ReplaySeekPreviewImages() : this(new(), () => Environment.TickCount64) { }
+
+    internal ReplaySeekPreviewImages(TwitchSeekPreviewClient client, Func<long> clock,
+        LiveSeekPreviewImages? liveImages = null)
+    {
+        this.client = client;
+        this.clock = clock;
+        this.liveImages = liveImages ?? new();
+    }
+
     internal async Task<BitmapSource?> GetAsync(ReplaySeekPreviewSource source, double seconds, CancellationToken token)
     {
         if (source.VideoId is { } videoId)
         {
-            try
-            {
-                var image = await GetAsync(videoId, seconds, token).ConfigureAwait(false);
-                if (image is not null) return image;
-            }
-            catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+            var image = await GetAsync(videoId, seconds, token).ConfigureAwait(false);
+            if (image is not null) return image;
         }
         return await liveImages.GetAsync(source, seconds, token).ConfigureAwait(false);
     }
@@ -39,7 +46,7 @@ internal sealed class ReplaySeekPreviewImages
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (cachedVideoId != videoId || Environment.TickCount64 >= metadataExpires)
+            if (cachedVideoId != videoId || clock() >= metadataExpires)
             {
                 storyboard = null;
                 sheets.Clear();
@@ -51,12 +58,12 @@ internal sealed class ReplaySeekPreviewImages
                 {
                     storyboard = await client.GetStoryboardAsync(videoId, cancellationToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex) when (IsPreviewFailure(ex)) { }
-                metadataExpires = Environment.TickCount64 + 60_000;
+                metadataExpires = clock() + 60_000;
             }
             var frame = storyboard?.GetFrame(seconds);
-            if (frame is null || (failedImage == frame.ImageUri && Environment.TickCount64 < imageRetryAfter)) return null;
+            if (frame is null || (failedImage == frame.ImageUri && clock() < imageRetryAfter)) return null;
             if (!sheets.TryGetValue(frame.ImageUri, out var sheet))
             {
                 var bytes = await client.GetImageAsync(frame.ImageUri, cancellationToken).ConfigureAwait(false);
@@ -71,11 +78,11 @@ internal sealed class ReplaySeekPreviewImages
             crop.Freeze();
             return crop;
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex) when (IsPreviewFailure(ex))
         {
             failedImage = storyboard?.GetFrame(seconds)?.ImageUri;
-            imageRetryAfter = Environment.TickCount64 + 30_000;
+            imageRetryAfter = clock() + 30_000;
             return null;
         }
         finally { gate.Release(); }
@@ -97,6 +104,6 @@ internal sealed class ReplaySeekPreviewImages
     }
 
     private static bool IsPreviewFailure(Exception exception) => exception is
-        System.Net.Http.HttpRequestException or IOException or InvalidDataException or System.Text.Json.JsonException or
+        OperationCanceledException or System.Net.Http.HttpRequestException or IOException or InvalidDataException or System.Text.Json.JsonException or
         InvalidOperationException or ArgumentException or NotSupportedException;
 }

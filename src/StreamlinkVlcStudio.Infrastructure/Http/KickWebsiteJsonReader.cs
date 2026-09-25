@@ -52,15 +52,6 @@ internal sealed class KickWebsiteJsonReader
         return await ReadFallbackAsync(url, referrer, cancellationToken, payloadKind).ConfigureAwait(false);
     }
 
-    internal async Task<KickWebsiteDirectReadResult> ReadDirectAsync(
-        string url,
-        string referrer,
-        CancellationToken cancellationToken,
-        KickWebsitePayloadKind payloadKind = KickWebsitePayloadKind.Json)
-    {
-        return await TryReadWithHttpClientAsync(url, referrer, payloadKind, cancellationToken).ConfigureAwait(false);
-    }
-
     internal async Task<string?> ReadFallbackAsync(
         string url,
         string referrer,
@@ -83,11 +74,11 @@ internal sealed class KickWebsiteJsonReader
         return normalizedBody;
     }
 
-    private async Task<KickWebsiteDirectReadResult> TryReadWithHttpClientAsync(
+    internal async Task<KickWebsiteDirectReadResult> ReadDirectAsync(
         string url,
         string referrer,
-        KickWebsitePayloadKind payloadKind,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        KickWebsitePayloadKind payloadKind = KickWebsitePayloadKind.Json)
     {
         try
         {

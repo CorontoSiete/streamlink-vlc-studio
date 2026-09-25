@@ -182,7 +182,6 @@ internal sealed class KickChatTransport
         string channel,
         string messagesChannelId,
         string? cursor,
-        DateTimeOffset? startTimeUtc,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -192,8 +191,7 @@ internal sealed class KickChatTransport
             var escapedChannel = Uri.EscapeDataString(channel);
             var url = KickChatApi.BuildRecentMessagesUrl(
                 Uri.EscapeDataString(messagesChannelId),
-                cursor,
-                startTimeUtc);
+                cursor);
             var result = await websiteReader.ReadDirectAsync(
                     url,
                     $"https://kick.com/{escapedChannel}",
@@ -229,7 +227,6 @@ internal sealed class KickChatTransport
         string channel,
         string messagesChannelId,
         string? cursor,
-        DateTimeOffset? startTimeUtc,
         CancellationToken cancellationToken)
     {
         var escapedChannel = Uri.EscapeDataString(channel);
@@ -237,8 +234,7 @@ internal sealed class KickChatTransport
         {
             var url = KickChatApi.BuildRecentMessagesUrl(
                 Uri.EscapeDataString(messagesChannelId),
-                cursor,
-                startTimeUtc);
+                cursor);
             var body = await websiteReader.ReadFallbackAsync(
                     url,
                     $"https://kick.com/{escapedChannel}",
@@ -289,3 +285,14 @@ internal sealed class KickChatTransport
 }
 
 internal sealed record KickTransportPageResult(KickRecentChatPage? Page, bool DirectForbidden);
+
+internal sealed record KickRecentChatPage(IReadOnlyList<ChatMessage> Messages, string? Cursor)
+{
+    internal ChatMessage[] ReadNewMessages(ISet<string> seenMessageKeys) =>
+        Messages.Where(message => seenMessageKeys.Add(GetMessageKey(message))).ToArray();
+
+    private static string GetMessageKey(ChatMessage message) =>
+        string.IsNullOrWhiteSpace(message.MessageId)
+            ? string.Create(CultureInfo.InvariantCulture, $"{message.Timestamp.UtcTicks}:{message.Username}:{message.Message}")
+            : message.MessageId;
+}

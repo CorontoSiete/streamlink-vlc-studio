@@ -9,6 +9,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Io;
 
 namespace StreamlinkVlcStudio.App.Wpf.Notifications;
 
@@ -20,12 +21,11 @@ namespace StreamlinkVlcStudio.App.Wpf.Notifications;
 public sealed class ToastLiveNotificationService : ILiveNotificationService, IDisposable
 {
     private const string ToastGroup = "followed-live";
-    private const int ToastTagMaxLength = 60;
     internal const int MaxThumbnailBytes = 8 * 1024 * 1024;
     private const int MaxStoredThumbnails = 128;
     private const long MaxStoredThumbnailBytes = 64L * 1024 * 1024;
     private static readonly TimeSpan ThumbnailTimeout = TimeSpan.FromSeconds(5);
-    private static readonly HttpClient HttpClient = CreateHttpClient();
+    private static readonly HttpClient HttpClient = HttpClientFactory.Create(ThumbnailTimeout, includeUserAgent: true);
     private static readonly SemaphoreSlim ThumbnailStorageGate = new(1, 1);
 
     private readonly IAppLogger logger;
@@ -203,9 +203,10 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
         _ => null,
     };
 
-    private static string BuildThumbnailFileName(string url)
+    private static string CreateStorageKey(string value)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(url));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        // Older supported Windows builds limit notification tags to 16 characters.
         return Convert.ToHexString(hash, 0, 8);
     }
 
@@ -219,24 +220,9 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
         try
         {
             var directory = Path.Combine(Path.GetTempPath(), AppIdentity.ProductDirectoryName, "toast");
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, BuildThumbnailFileName(url) + extension);
-            var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
-            try
-            {
-                await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken).ConfigureAwait(false);
-                File.Move(temporaryPath, path, overwrite: true);
-            }
-            finally
-            {
-                try
-                {
-                    File.Delete(temporaryPath);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                }
-            }
+            var path = Path.Combine(directory, CreateStorageKey(url) + extension);
+            await AtomicFile.WriteAsync(path,
+                (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
 
             File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
             PruneThumbnailStorage(directory, path);
@@ -289,23 +275,11 @@ public sealed class ToastLiveNotificationService : ILiveNotificationService, IDi
     internal static void PruneThumbnailStorageForTest(string directory) =>
         PruneThumbnailStorage(directory);
 
-    private static string BuildTag(LiveChannelNotification notification)
+    internal static string BuildTag(LiveChannelNotification notification)
     {
-        var raw = $"{notification.Platform}-{notification.Channel}";
-        var builder = new StringBuilder(raw.Length);
-        foreach (var character in raw)
-        {
-            builder.Append(char.IsLetterOrDigit(character) ? character : '-');
-        }
-
-        var tag = builder.ToString();
-        return tag.Length <= ToastTagMaxLength ? tag : tag[..ToastTagMaxLength];
-    }
-
-    private static HttpClient CreateHttpClient()
-    {
-        var client = HttpClientFactory.Create(ThumbnailTimeout, includeUserAgent: true);
-        return client;
+        // Windows replaces toasts with the same group/tag. Hash the full canonical
+        // identity so punctuation and long names remain distinct within its tag limit.
+        return CreateStorageKey($"{notification.Platform}:{notification.Channel.Trim().ToLowerInvariant()}");
     }
 
     public void Dispose()

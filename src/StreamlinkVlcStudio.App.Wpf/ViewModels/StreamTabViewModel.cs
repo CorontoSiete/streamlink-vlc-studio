@@ -151,6 +151,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private ReplayPlaybackUrlKey? replayPlaybackUrlReadinessKey;
     private ReplayPlaybackUrlKey? currentReplayPlaybackKey;
     private ReplaySessionInfo? replaySession;
+    private Uri? explicitVodPlaybackUri;
     private long replayAvailabilityRefreshVersion;
     private long chatConnectionVersion;
     private long nativeOverlayStartupVersion;
@@ -167,6 +168,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     // Bumped when a VOD seek clears the visible chat, so any message already queued for the
     // dispatcher from the old position is dropped instead of reappearing after the clear.
     private long chatEpoch;
+    private string requestedReplayChatStatus = "";
+    private string replayChatStatusText = "";
+    private ChatMessage? replayChatStatusMessage;
     private bool nativeReplayOverlayRefreshQueued;
     private bool nativeReplayOverlayRefreshPendingAfterSeek;
     private int nativeReplayOverlayVideoWidth;
@@ -237,6 +241,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     private IntPtr videoHandle;
     private long videoHandleVersion;
     private string outgoingChatText = "";
+    private long outgoingChatRevision;
     private string twitchPredictionTitle = "";
     private int twitchPredictionDurationSeconds = 120;
     private string viewerCountText = "--";
@@ -394,6 +399,12 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     public string DockedChatHeaderText => $"Chat in {Target.Channel}'s channel";
 
+    public string ChatModeText => IsReplayMode || IsBehindLive ? "REPLAY CHAT" : "LIVE CHAT";
+
+    public string ReplayChatStatusText => replayChatStatusText;
+
+    public bool HasReplayChatStatus => replayChatStatusText.Length > 0;
+
     /// <summary>
     /// The category the channel is live in. Seeded from <see cref="Target"/> when the tab is
     /// created and then kept current from the live channel poll, so a mid-stream category change
@@ -526,6 +537,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isReplayMode, value))
             {
+                OnPropertyChanged(nameof(ChatModeText));
                 OnPropertyChanged(nameof(CanReturnToLive));
                 RaiseTwitchPredictionCommandState();
                 ReturnToLiveCommand.RaiseCanExecuteChanged();
@@ -546,6 +558,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isBehindLive, value))
             {
+                OnPropertyChanged(nameof(ChatModeText));
                 OnPropertyChanged(nameof(CanReturnToLive));
                 OnPropertyChanged(nameof(CanSendChatMessages));
                 SendChatMessageCommand.RaiseCanExecuteChanged();
@@ -573,7 +586,9 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             var videoId = replay.Platform == PlatformKind.Twitch && replay.MediaKind == ReplayMediaKind.Archive &&
                 replay.ReplayId.Length is > 0 and <= 32 && replay.ReplayId.All(char.IsAsciiDigit)
                     ? replay.ReplayId : null;
-            Uri? playlist = null;
+            // Kick has no Twitch storyboard. Preview the selected media playlist already
+            // resolved for playback, rather than its original master playlist or VOD page.
+            Uri? playlist = Target.IsExplicitKickVod ? explicitVodPlaybackUri : null;
             if (!Target.IsExplicitVod && currentSettings is { } settings)
             {
                 // Reuse the resolved replay URL. Hovering must never resolve or seek the live player.
@@ -882,8 +897,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         get => outgoingChatText;
         set
         {
-            if (SetProperty(ref outgoingChatText, value))
+            if (outgoingChatText != value)
             {
+                outgoingChatRevision++;
+                SetProperty(ref outgoingChatText, value);
                 SendChatMessageCommand.RaiseCanExecuteChanged();
             }
         }
@@ -1522,6 +1539,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             playbackStarted = true;
             if (Target.IsExplicitVod)
             {
+                explicitVodPlaybackUri = playbackUri;
                 InitializeExplicitVodReplaySession(settings, subOnlyVodResolution);
             }
 
@@ -2240,6 +2258,17 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                 await replayPlaybackTransitionGate.WaitAsync(cancellationToken);
                 try
                 {
+                    // Promotion can win the gate after this seek captured the live DVR.
+                    // Its offsets still describe the same broadcast, so use the published
+                    // VOD instead of silently discarding the user's seek as stale.
+                    if (IsCurrentLiveDvrReplay(replay) &&
+                        replaySession is { IsAvailable: true } promotedReplay &&
+                        !IsCurrentLiveDvrReplay(promotedReplay) &&
+                        IsSameReplayStream(replay, promotedReplay))
+                    {
+                        replay = promotedReplay;
+                    }
+
                     if (!IsCurrentReplaySession(replay) ||
                         playbackEngine is null)
                     {
@@ -2263,7 +2292,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                     // seek target is already covered by is republished immediately instead of after
                     // a round trip.
                     ClearChatForVodChatSeek();
-                    RestartVodChat(replay, targetOffset);
+                    StartVodChat(replay, targetOffset);
                     targetReplayWindowHasMessages = PumpVodChat(targetOffset) > 0;
 
                     var seekedInPlace = false;
@@ -2307,7 +2336,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                         var resolved = await ResolveReplayPlaybackUrlForSeekAsync(replayPlaybackKey, cancellationToken);
                         urlWaitStopwatch.Stop();
                         LogReplayFirstSeekStage("URL wait", urlWaitStopwatch.Elapsed);
-                        var replayTransitionWork = PrepareReplayTransitionWork(replay, settings);
+                        var replayTransitionWork = PrepareReplayTransitionWork(settings);
                         var prePlaybackTransitionWork = replayTransitionWork
                             .Where(work => work.RunBeforePlayback)
                             .ToArray();
@@ -2330,15 +2359,25 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
                         try
                         {
                             Status = PlaybackStatus.Starting;
+                            // The live controller has released the shared frame pipe. Clear its
+                            // retained image before the potentially slow replay open/seek, so an
+                            // empty historical window cannot appear to contain frozen live chat.
+                            ClearNativeReplayOverlayForReplayTransition(
+                                replay,
+                                targetReplayWindowHasMessages);
                             var playStopwatch = Stopwatch.StartNew();
                             await playbackEngine.PlayFromAsync(resolved.StreamUri, targetOffset, Volume, CurrentAudioState, cancellationToken);
                             playStopwatch.Stop();
                             LogReplayFirstSeekStage("PlayFromAsync (open at requested position)", playStopwatch.Elapsed);
-                            await ClearNativeReplayOverlayForReplayTransitionAsync(
+                            ClearNativeReplayOverlayForReplayTransition(
                                 replay,
-                                targetReplayWindowHasMessages,
-                                cancellationToken);
+                                targetReplayWindowHasMessages);
                             isDirectExplicitVodReplayPlayback = Target.IsExplicitVod;
+                            if (Target.IsExplicitVod)
+                            {
+                                explicitVodPlaybackUri = resolved.StreamUri;
+                            }
+
                             currentReplayPlaybackKey = replayPlaybackKey;
                             SetReplayClockAnchor(
                                 targetOffset,
@@ -2467,6 +2506,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        var draftRevision = outgoingChatRevision;
         var message = NormalizeOutgoingMessage(OutgoingChatText);
         if (string.IsNullOrWhiteSpace(message))
         {
@@ -2485,62 +2525,66 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var client = chatClient;
-        if (client is null)
+        var cancellationToken = lifetimeCancellation.Token;
+        try
         {
-            // Playback starts chat in the background so a slow platform connection cannot delay
-            // video.  A send requested during that short hand-off should wait for the already
-            // scheduled connection instead of reporting a false "not connected" error.
+            // The client is published before ConnectAsync completes. Always wait for startup,
+            // including when that client is already visible to the UI.
             var pendingConnection = GetChatConnectionTask();
             if (pendingConnection is not null)
             {
-                try
-                {
-                    await pendingConnection;
-                }
-                catch (OperationCanceledException) when (disposed)
-                {
-                    return;
-                }
-
-                client = chatClient;
+                await pendingConnection.WaitAsync(cancellationToken);
             }
-        }
 
-        if (client is null)
-        {
-            AddSystemMessage("Chat is not connected yet.");
-            return;
-        }
+            if (disposed || !CanSendChatMessages) return;
 
-        var rememberDockedLocalEcho = IsDockedChatModeActive;
-        var localEcho = rememberDockedLocalEcho ? CreateLocalEchoMessage(message) : null;
-        if (rememberDockedLocalEcho)
-        {
-            RememberDockedLocalEcho(localEcho!);
-        }
+            var client = chatClient;
+            if (client is null)
+            {
+                AddSystemMessage("Chat is not connected yet.");
+                return;
+            }
 
-        try
+            await SendChatWithLocalEchoAsync(client, message, draftRevision, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await client.SendMessageAsync(message);
-            OutgoingChatText = "";
-            localEcho ??= CreateLocalEchoMessage(message);
-            AddChatMessage(localEcho, isRememberedDockedLocalEcho: rememberDockedLocalEcho);
         }
         catch (Exception ex)
         {
-            if (rememberDockedLocalEcho && localEcho is not null)
-            {
-                ForgetDockedLocalEcho(localEcho);
-            }
+            if (disposed || !CanSendChatMessages) return;
 
-            if (await TryReconnectChatForSendAsync(message, ex))
+            if (await TryReconnectChatForSendAsync(message, draftRevision, ex, cancellationToken))
             {
                 return;
             }
 
             AddSystemMessage($"Chat send failed: {ex.Message}");
             logger.Write(AppLogLevel.Warning, "Chat", $"Failed to send chat message for {Target.DisplayName}", ex);
+        }
+    }
+
+    private async Task SendChatWithLocalEchoAsync(
+        IChatClient client, string message, long draftRevision, CancellationToken cancellationToken)
+    {
+        var rememberDockedLocalEcho = IsDockedChatModeActive;
+        var localEcho = CreateLocalEchoMessage(message);
+        var added = false;
+        if (rememberDockedLocalEcho) RememberDockedLocalEcho(localEcho);
+        try
+        {
+            await client.SendMessageAsync(message, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (disposed || !CanSendChatMessages || !ReferenceEquals(chatClient, client)) return;
+
+            // Even an identical draft may have been cleared and retyped during the send.
+            if (outgoingChatRevision == draftRevision) OutgoingChatText = "";
+            AddChatMessage(localEcho, isRememberedDockedLocalEcho: rememberDockedLocalEcho);
+            added = true;
+        }
+        finally
+        {
+            if (!added && rememberDockedLocalEcho) ForgetDockedLocalEcho(localEcho);
         }
     }
 
@@ -2630,6 +2674,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private void OnChatRenderCatalogChanged(object? sender, EventArgs e)
     {
+        if (e is CatalogChangedEventArgs changes && !changes.MayAffect(Target))
+        {
+            return;
+        }
+
         Interlocked.Increment(ref nativeReplayOverlayRenderContentVersion);
         dispatch(InvalidateNativeReplayOverlayFrame);
     }
@@ -2802,7 +2851,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task<bool> TryReconnectChatForSendAsync(string message, Exception sendException)
+    private async Task<bool> TryReconnectChatForSendAsync(
+        string message, long draftRevision, Exception sendException, CancellationToken cancellationToken)
     {
         if (currentSettings is null ||
             !HasConfiguredChatToken(currentSettings.Chat) ||
@@ -2811,37 +2861,29 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return false;
         }
 
-        var rememberDockedLocalEcho = false;
-        ChatMessage? localEcho = null;
-
         try
         {
             AddSystemMessage("Reconnecting chat with updated credentials...");
-            await RestartChatAsync(currentSettings);
-            if (chatClient is null)
+            await RestartChatAsync(currentSettings, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (disposed || !CanSendChatMessages) return true;
+
+            var client = chatClient;
+            if (client is null)
             {
                 return false;
             }
 
-            rememberDockedLocalEcho = IsDockedChatModeActive;
-            localEcho = rememberDockedLocalEcho ? CreateLocalEchoMessage(message) : null;
-            if (rememberDockedLocalEcho)
-            {
-                RememberDockedLocalEcho(localEcho!);
-            }
-
-            await chatClient.SendMessageAsync(message);
-            OutgoingChatText = "";
-            localEcho ??= CreateLocalEchoMessage(message);
-            AddChatMessage(localEcho, isRememberedDockedLocalEcho: rememberDockedLocalEcho);
+            await SendChatWithLocalEchoAsync(client, message, draftRevision, cancellationToken);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
             return true;
         }
         catch (Exception retryException)
         {
-            if (rememberDockedLocalEcho && localEcho is not null)
-            {
-                ForgetDockedLocalEcho(localEcho);
-            }
+            if (disposed || !CanSendChatMessages) return true;
 
             AddSystemMessage($"Chat reconnect/send failed: {retryException.Message}");
             logger.Write(AppLogLevel.Warning, "Chat", $"Failed to reconnect chat for {Target.DisplayName}", retryException);
@@ -3137,7 +3179,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         if (Target.IsExplicitKickVod)
         {
-            InitializeExplicitKickVodReplaySession(settings);
+            InitializeExplicitKickVodReplaySession();
             return;
         }
 
@@ -3171,11 +3213,11 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             ChatRoomId: Target.BroadcasterId);
 
         ApplyExplicitVodReplaySession(replay);
-        RestartVodChat(replay, TimeSpan.Zero);
+        StartVodChat(replay, TimeSpan.Zero);
         StartReplayClockPolling();
     }
 
-    private void InitializeExplicitKickVodReplaySession(AppSettings settings)
+    private void InitializeExplicitKickVodReplaySession()
     {
         if (!TryValidateExplicitVodReplayFields(
                 "Kick",
@@ -3202,7 +3244,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             ChatRoomId: chatRoomId);
 
         ApplyExplicitVodReplaySession(replay);
-        RestartVodChat(replay, TimeSpan.Zero);
+        StartVodChat(replay, TimeSpan.Zero);
         StartReplayClockPolling();
     }
 
@@ -3466,9 +3508,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private IReadOnlyList<ReplayTransitionWork> PrepareReplayTransitionWork(
-        ReplaySessionInfo replay,
-        AppSettings settings)
+    private IReadOnlyList<ReplayTransitionWork> PrepareReplayTransitionWork(AppSettings settings)
     {
         var work = new List<ReplayTransitionWork>();
         var detachedNativeOverlayChat = TryDetachNativeOverlayChatForReplayTransition();
@@ -4032,7 +4072,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
         ReplaySeekToolTip = Target.IsExplicitVod
             ? $"{replay.Platform} VOD replay available: {replay.ReplayId}"
-            : $"Replay available: {replay.ReplayId}";
+            : IsCurrentLiveDvrReplay(replay)
+                ? "Replay video is available. Twitch has not published chat for this broadcast; " +
+                    "only chat captured while this tab was open can be replayed."
+                : $"Replay available: {replay.ReplayId}";
     }
 
     private bool IsReplayPlaybackUrlPrefetchPending(ReplaySessionInfo replay, AppSettings settings)
@@ -4103,6 +4146,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         CancelReplayPlaybackUrlResolution();
         currentReplayPlaybackKey = null;
         replaySession = null;
+        explicitVodPlaybackUri = null;
         CancelLiveDvrPromotionPolling();
         StopVodChat();
         CancelReplaySeekPreview();
@@ -4297,18 +4341,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        vodChat.Start(replay, settings, position, () => GetCurrentReplayDuration(replay));
-    }
-
-    /// <summary>Re-anchors VOD chat after a seek.</summary>
-    private void RestartVodChat(ReplaySessionInfo replay, TimeSpan position)
-    {
-        StartVodChat(replay, position);
+        vodChat.Start(replay, settings, position, () => GetCurrentReplayDuration(replay),
+            isGrowing: !Target.IsExplicitVod);
     }
 
     private void StopVodChat()
     {
         vodChat.Stop();
+        QueueReplayChatStatus("");
     }
 
     /// <summary>
@@ -4332,10 +4372,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             AddChatMessage(message, isRememberedDockedLocalEcho: false);
         }
 
-        // An explanation only earns screen space on a VOD the viewer deliberately opened, and only
-        // when there is genuinely nothing to show. Seeking back on a live stream stays quiet: chat
-        // captured from here on will simply start appearing, and a Twitch DVR window always reports
-        // "no VOD comments yet" even though capture is working.
+        // Video DVR availability does not imply chat history exists. Future captured messages
+        // must not hide that limitation at the current playback position.
+        QueueReplayChatStatus(replaySession is { } replay && IsCurrentLiveDvrReplay(replay) &&
+            !vodChat.HasMessagesAtOrBefore(position)
+                ? "Twitch hasn't published chat history for this broadcast. " +
+                    "Captured messages will appear when playback reaches them."
+                : "", expectedSeekOperationVersion ?? Volatile.Read(ref replaySeekOperationVersion));
+
         if (vodChat.TryTakeNotice(out var notice) &&
             Target.IsExplicitVod &&
             !vodChat.HasMessages)
@@ -4344,6 +4388,36 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
 
         return due.Count;
+    }
+
+    private void QueueReplayChatStatus(string text, long? expectedSeekOperationVersion = null)
+    {
+        long epoch;
+        lock (chatMessageUiGate)
+        {
+            if (expectedSeekOperationVersion is { } version && !IsLatestReplaySeekOperation(version)) return;
+            if (requestedReplayChatStatus == text) return;
+            requestedReplayChatStatus = text;
+            epoch = chatEpoch;
+        }
+
+        dispatch(() =>
+        {
+            lock (chatMessageUiGate)
+            {
+                if (disposed || epoch != chatEpoch || requestedReplayChatStatus != text) return;
+            }
+            ApplyReplayChatStatus(text);
+        });
+    }
+
+    private void ApplyReplayChatStatus(string text)
+    {
+        if (!SetProperty(ref replayChatStatusText, text, nameof(ReplayChatStatusText))) return;
+        replayChatStatusMessage = text.Length == 0 ? null : new ChatMessage(
+            Target.Platform, Target.Channel, "system", text, DateTimeOffset.UtcNow, "#A6E3A1");
+        OnPropertyChanged(nameof(HasReplayChatStatus));
+        InvalidateNativeReplayOverlayFrame();
     }
 
     /// <summary>
@@ -4356,6 +4430,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         {
             pendingChatMessages.Clear();
             chatEpoch++;
+            requestedReplayChatStatus = "";
         }
 
         nativeReplayOverlayRenderState.InvalidateFrameKey();
@@ -4367,6 +4442,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             ChatMessages.Clear();
             DockedChatMessages.Clear();
             DockedChatFeedItems.Clear();
+            ApplyReplayChatStatus("");
             activeTwitchPredictionFeedItem = null;
             StopTwitchPredictionClock();
             // Seeking backwards legitimately re-shows messages, so the live dedupe ring has to
@@ -4381,7 +4457,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
     /// <summary>
     /// Whether the in-app chat client must stay connected even when the VLC overlay renders chat by
     /// itself. Its messages are what feeds VOD chat once a live stream is watched behind the live
-    /// edge, and for a Twitch broadcast that is still running they are the only possible source.
+    /// edge, including Twitch DVR windows that do not yet have a published VOD id.
     /// </summary>
     private bool ShouldKeepChatClientForVodChatCapture(AppSettings settings)
     {
@@ -4952,7 +5028,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             liveDvrPromotionPollingTask = null;
         }
 
-        cancellation?.Cancel();
+        CancelCancellationSource(cancellation);
     }
 
     private async Task PollLiveDvrPromotionAsync(AppSettings settings, CancellationTokenSource cancellation)
@@ -5014,27 +5090,38 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         AppSettings settings,
         CancellationToken cancellationToken)
     {
-        if (replaySession is not { IsAvailable: true } currentReplay ||
-            !IsCurrentLiveDvrReplay(currentReplay))
+        // A seek re-anchors chat and resolves playback using its captured replay. Keep
+        // promotion in the same transition gate so it cannot replace that source midway.
+        await replayPlaybackTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return;
+            if (disposed || replaySession is not { IsAvailable: true } currentReplay ||
+                !IsCurrentLiveDvrReplay(currentReplay) || !IsSameReplayStream(currentReplay, promotedReplay))
+            {
+                return;
+            }
+
+            replaySession = promotedReplay;
+            var duration = GetCurrentReplayDuration(promotedReplay);
+            var offset = GetCurrentReplayStepOffset();
+            QueueReplayPlaybackUrlResolution(promotedReplay, settings);
+            // Same broadcast, new id: content offsets are unchanged, so everything captured so far
+            // stays valid and only the source of future fetches moves to the published VOD.
+            vodChat.Promote(promotedReplay);
+            QueueReplayChatStatus("");
+
+            dispatch(() =>
+            {
+                ApplyReplayClock(IsReplayMode ? offset : duration, duration, isSeekable: true);
+                ApplyReplaySeekToolTipForCurrentReadiness();
+            });
+
+            logger.Write(AppLogLevel.Info, "Replay", $"Twitch current-live DVR replay for {Target.DisplayName} was promoted to VOD {promotedReplay.ReplayId}.");
         }
-
-        replaySession = promotedReplay;
-        var duration = GetCurrentReplayDuration(promotedReplay);
-        var offset = GetCurrentReplayStepOffset();
-        QueueReplayPlaybackUrlResolution(promotedReplay, settings);
-        // Same broadcast, new id: content offsets are unchanged, so everything captured so far
-        // stays valid and only the source of future fetches moves to the published VOD.
-        vodChat.Promote(promotedReplay);
-
-        dispatch(() =>
+        finally
         {
-            ApplyReplayClock(IsReplayMode ? offset : duration, duration, isSeekable: true);
-            ApplyReplaySeekToolTipForCurrentReadiness();
-        });
-
-        logger.Write(AppLogLevel.Info, "Replay", $"Twitch current-live DVR replay for {Target.DisplayName} was promoted to VOD {promotedReplay.ReplayId}.");
+            replayPlaybackTransitionGate.Release();
+        }
     }
 
     private static bool IsSameReplayStream(ReplaySessionInfo currentReplay, ReplaySessionInfo resolvedReplay)
@@ -5439,6 +5526,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         var engine = playbackEngine;
         playbackEngine = null;
         isDirectExplicitVodReplayPlayback = false;
+        explicitVodPlaybackUri = null;
         currentReplayPlaybackKey = null;
         playbackEngineNativeOverlayRequested = false;
         playbackEngineOverlayDirectory = "";
@@ -5683,9 +5771,20 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        var sampledSeekOperationVersion = Volatile.Read(ref replaySeekOperationVersion);
+        var seekWasInProgress = IsReplaySeekInProgress;
+
         // Every live message is filed on the VOD timeline at its broadcast offset, so seeking
         // back later has chat to replay. This is lock-protected and cheap enough for the read loop.
         var alreadyDue = vodChat.CaptureLiveMessage(message);
+
+        // The first seek clears chat before opening replay media, but commits IsReplayMode /
+        // IsBehindLive only after that open succeeds. IRC must keep capturing throughout the
+        // transition without leaking a burst of live messages into the historical chat window.
+        if (seekWasInProgress || !IsReplayClockSampleCurrent(sampledSeekOperationVersion))
+        {
+            return;
+        }
 
         // Behind the live edge, playback position decides when a message becomes visible, so it is
         // only queued for display while the tab is actually watching live. AddChatMessage performs
@@ -5693,7 +5792,8 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         // scheduling one dispatcher callback per message before that batching can take effect.
         if (!IsBehindLive && !IsReplayMode)
         {
-            AddChatMessage(message, isRememberedDockedLocalEcho: false);
+            AddChatMessage(message, isRememberedDockedLocalEcho: false,
+                expectedLiveSeekOperationVersion: sampledSeekOperationVersion);
             return;
         }
 
@@ -5701,7 +5801,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         // next clock tick would make chat visibly lag the video.
         if (alreadyDue)
         {
-            PumpVodChat(vodChat.Position);
+            PumpVodChat(vodChat.Position, sampledSeekOperationVersion);
         }
     }
 
@@ -5865,7 +5965,10 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         AddChatMessage(systemMessage, isRememberedDockedLocalEcho: false);
     }
 
-    private void AddChatMessage(ChatMessage message, bool isRememberedDockedLocalEcho)
+    private void AddChatMessage(
+        ChatMessage message,
+        bool isRememberedDockedLocalEcho,
+        long? expectedLiveSeekOperationVersion = null)
     {
         if (disposed)
         {
@@ -5875,6 +5978,14 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         var shouldDispatch = false;
         lock (chatMessageUiGate)
         {
+            // Recheck alongside the queue/epoch update: a seek can begin after the receive
+            // callback's first check. Captured messages are delivered by the replay clock later.
+            if (expectedLiveSeekOperationVersion is { } version &&
+                (!IsReplayClockSampleCurrent(version) || IsBehindLive || IsReplayMode))
+            {
+                return;
+            }
+
             pendingChatMessages.Enqueue(new PendingChatMessage(
                 message,
                 isRememberedDockedLocalEcho,
@@ -6797,14 +6908,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private Task ClearNativeReplayOverlayForReplayTransitionAsync(
+    private void ClearNativeReplayOverlayForReplayTransition(
         ReplaySessionInfo replay,
-        bool targetWindowHasReplayMessages,
-        CancellationToken cancellationToken)
+        bool targetWindowHasReplayMessages)
     {
         if (!replay.IsAvailable || targetWindowHasReplayMessages)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         var engine = playbackEngine;
@@ -6816,14 +6926,13 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
             !IsChatVisible ||
             string.IsNullOrWhiteSpace(engine.NativeOverlayPipeName))
         {
-            return Task.CompletedTask;
+            return;
         }
 
         CancelNativeReplayOverlayAnimationState();
         QueueCriticalNativeReplayOverlayFrameWrite(
             engine.NativeOverlayPipeName!,
             BuildTransparentNativeReplayOverlayFrameMessage(engine, settings));
-        return Task.CompletedTask;
     }
 
     private void ClearNativeReplayOverlayForEmptyReplayWindowInBackground()
@@ -7645,6 +7754,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private ChatMessage[] GetNativeReplayOverlayMessages()
     {
+        if (replayChatStatusMessage is { } status) return [status];
         return ChatMessages
             .Where(ShouldRenderNativeReplayOverlayMessage)
             .ToArray();
@@ -7874,7 +7984,7 @@ public sealed class StreamTabViewModel : ObservableObject, IAsyncDisposable
 
     private bool HasNativeReplayOverlayRenderableMessages()
     {
-        return ChatMessages.Any(ShouldRenderNativeReplayOverlayMessage);
+        return replayChatStatusMessage is not null || ChatMessages.Any(ShouldRenderNativeReplayOverlayMessage);
     }
 
     private void ScheduleNativeReplayOverlayWarmupRefresh(

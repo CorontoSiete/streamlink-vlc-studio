@@ -16,7 +16,7 @@ using static StreamlinkVlcStudio.Infrastructure.Chat.OAuthTokenHelpers;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
-public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
+public sealed class KickChatClient : IChatClient
 {
     private const string PusherAppKey = "32cbd69e4b950bf97679";
     private const int KickRecentChatInitialBackfillLimit = 25;
@@ -26,13 +26,9 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
     private readonly bool ownsHttpClient;
     private readonly ChatSettings settings;
     private readonly IAppLogger logger;
-    private readonly KickChatHistoryBackfillService historyBackfillService;
     private readonly KickChatTransport transport;
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
-    private readonly SemaphoreSlim recentChatBackfillGate = new(1, 1);
-    private readonly object recentChatBackfillLifecycleGate = new();
-    private readonly HashSet<string> requestedRecentChatCursors = new(StringComparer.Ordinal);
-    private CancellationTokenSource? recentChatBackfillCancellation = new();
+    private readonly object lifecycleStateGate = new();
     private Task? recentChatBackfillTask;
     private Task? disposalTask;
     private ClientWebSocket? webSocket;
@@ -40,15 +36,9 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
     private Task? readTask;
     private LiveChatConnectionSupervisor? connectionSupervisor;
     private string? connectedChannel;
-    private string? currentChannelId;
-    private string? currentChatroomId;
-    private string? recentChatNextCursor;
-    private DateTimeOffset? oldestRecentChatTimestampUtc;
     private long? currentBroadcasterUserId;
     private string? validatedSendToken;
     private bool canSendMessages;
-    private bool recentChatDirectBackfillBlocked;
-    private bool recentChatBackfillExhausted;
     private bool disposed;
 
     public KickChatClient(ChatSettings settings, IAppLogger logger, HttpClient? httpClient = null)
@@ -58,7 +48,6 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
         this.httpClient = httpClient ?? HttpClientFactory.CreateDefault();
         ownsHttpClient = httpClient is null;
         KickHttpHeaders.Configure(this.httpClient);
-        historyBackfillService = new KickChatHistoryBackfillService(this.httpClient, logger);
         transport = new KickChatTransport(this.httpClient, logger);
     }
 
@@ -68,7 +57,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
 
     public async Task ConnectAsync(StreamTarget target, CancellationToken cancellationToken = default)
     {
-        lock (recentChatBackfillLifecycleGate)
+        lock (lifecycleStateGate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
         }
@@ -76,7 +65,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            lock (recentChatBackfillLifecycleGate)
+            lock (lifecycleStateGate)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
             }
@@ -131,7 +120,6 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
             throw new InvalidOperationException("Kick chatroom ID could not be resolved. Open Settings while this Kick tab is selected and enter the selected Kick chatroom ID.");
         }
 
-        ResetRecentChatBackfillState(channelInfo.ChannelId, channelInfo.ChatroomId);
         currentBroadcasterUserId = channelInfo.BroadcasterUserId;
         CurrentUsername = string.IsNullOrWhiteSpace(settings.KickUsername)
             ? settings.KickSendAsBot ? "bot" : "me"
@@ -209,7 +197,6 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
 
     private async Task DisconnectCoreAsync()
     {
-        CancelRecentChatBackfillsForDisconnect();
         readCancellation?.Cancel();
 
         if (webSocket is { State: WebSocketState.Open })
@@ -248,36 +235,16 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
             recentChatBackfillTask = null;
         }
 
-        if (await recentChatBackfillGate.WaitAsync(DisconnectCleanupTimeout).ConfigureAwait(false))
-        {
-            recentChatBackfillGate.Release();
-        }
-        else
-        {
-            logger.Write(
-                AppLogLevel.Warning,
-                "KickChat",
-                "Timed out waiting for canceled Kick chat backfill work to stop; disconnect will continue.");
-        }
-
         webSocket?.Dispose();
         readCancellation?.Dispose();
         webSocket = null;
         readTask = null;
         readCancellation = null;
         connectedChannel = null;
-        currentChannelId = null;
-        currentChatroomId = null;
-        recentChatNextCursor = null;
-        oldestRecentChatTimestampUtc = null;
-        requestedRecentChatCursors.Clear();
-        recentChatDirectBackfillBlocked = false;
-        recentChatBackfillExhausted = false;
         currentBroadcasterUserId = null;
         validatedSendToken = null;
         canSendMessages = false;
         CurrentUsername = null;
-        ResetRecentChatBackfillCancellationAfterDisconnect();
     }
 
     private async Task ReconnectCoreAsync(
@@ -289,7 +256,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            lock (recentChatBackfillLifecycleGate)
+            lock (lifecycleStateGate)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
             }
@@ -393,7 +360,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
 
     public ValueTask DisposeAsync()
     {
-        lock (recentChatBackfillLifecycleGate)
+        lock (lifecycleStateGate)
         {
             disposalTask ??= DisposeCoreAsync();
             return new ValueTask(disposalTask);
@@ -402,7 +369,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
 
     private async Task DisposeCoreAsync()
     {
-        lock (recentChatBackfillLifecycleGate)
+        lock (lifecycleStateGate)
         {
             disposed = true;
         }
@@ -423,145 +390,6 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
 
         }
     }
-
-    public async Task<ChatHistoryBackfillResult> BackfillRecentChatRangeAsync(
-        DateTimeOffset fromTimestampUtc,
-        DateTimeOffset throughTimestampUtc,
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        var channel = connectedChannel;
-        var channelId = currentChannelId;
-        var chatroomId = currentChatroomId;
-        if (string.IsNullOrWhiteSpace(channel) || string.IsNullOrWhiteSpace(chatroomId))
-        {
-            return new ChatHistoryBackfillResult(false, 0, false, null, null);
-        }
-
-        fromTimestampUtc = fromTimestampUtc.ToUniversalTime();
-        throughTimestampUtc = throughTimestampUtc.ToUniversalTime();
-        if (throughTimestampUtc < fromTimestampUtc)
-        {
-            throughTimestampUtc = fromTimestampUtc;
-        }
-
-        if (!TryCreateRecentBackfillToken(cancellationToken, out var backfillCancellation, out var backfillToken))
-        {
-            return CreateRetryableBackfillResult();
-        }
-
-        using (backfillCancellation)
-        {
-            try
-            {
-                logger.Write(
-                    AppLogLevel.Debug,
-                    "KickChat",
-                    $"Kick seekback backfill requested for {channel}: {KickChatApi.FormatBackfillTimestamp(fromTimestampUtc)} through {KickChatApi.FormatBackfillTimestamp(throughTimestampUtc)}.");
-
-                var timestampResult = await BackfillRecentChatFromStartTimeAsync(
-                        channel,
-                        channelId,
-                        chatroomId,
-                        fromTimestampUtc,
-                        throughTimestampUtc,
-                        backfillToken)
-                    .ConfigureAwait(false);
-                LogKickSeekbackBackfillResult(channel, timestampResult);
-                return timestampResult;
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                logger.Write(AppLogLevel.Debug, "KickChat", $"Kick seekback backfill for {channel} was canceled by chat disconnect; it will remain retryable.");
-                return CreateRetryableBackfillResult();
-            }
-            catch (ObjectDisposedException ex)
-            {
-                logger.Write(AppLogLevel.Debug, "KickChat", $"Kick seekback backfill for {channel} raced disposed chat resources; it will remain retryable.", ex);
-                return CreateRetryableBackfillResult();
-            }
-        }
-    }
-
-    private bool TryCreateRecentBackfillToken(
-        CancellationToken cancellationToken,
-        out CancellationTokenSource? backfillCancellation,
-        out CancellationToken backfillToken)
-    {
-        CancellationToken lifecycleToken;
-        lock (recentChatBackfillLifecycleGate)
-        {
-            if (disposed ||
-                recentChatBackfillCancellation is null ||
-                recentChatBackfillCancellation.IsCancellationRequested)
-            {
-                backfillCancellation = null;
-                backfillToken = cancellationToken;
-                return false;
-            }
-
-            lifecycleToken = recentChatBackfillCancellation.Token;
-        }
-
-        try
-        {
-            backfillCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifecycleToken);
-            backfillToken = backfillCancellation.Token;
-            return true;
-        }
-        catch (ObjectDisposedException)
-        {
-            backfillCancellation = null;
-            backfillToken = cancellationToken;
-            return false;
-        }
-    }
-
-    private void CancelRecentChatBackfillsForDisconnect()
-    {
-        CancellationTokenSource? cancellation;
-        lock (recentChatBackfillLifecycleGate)
-        {
-            cancellation = recentChatBackfillCancellation;
-            recentChatBackfillCancellation = null;
-        }
-
-        try
-        {
-            cancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-
-        cancellation?.Dispose();
-    }
-
-    private void ResetRecentChatBackfillCancellationAfterDisconnect()
-    {
-        lock (recentChatBackfillLifecycleGate)
-        {
-            if (!disposed && recentChatBackfillCancellation is null)
-            {
-                recentChatBackfillCancellation = new CancellationTokenSource();
-            }
-        }
-    }
-
-    private static ChatHistoryBackfillResult CreateRetryableBackfillResult()
-    {
-        return new ChatHistoryBackfillResult(false, 0, false, null, null);
-    }
-
-    private void LogKickSeekbackBackfillResult(string channel, ChatHistoryBackfillResult result)
-    {
-        logger.Write(
-            AppLogLevel.Debug,
-            "KickChat",
-            $"Kick seekback backfill completed for {channel}: loaded={result.LoadedMessageCount.ToString(CultureInfo.InvariantCulture)}, " +
-            $"covered={result.CoveredRequestedRange}, range={KickChatApi.FormatBackfillTimestamp(result.CoveredFromTimestampUtc)} through {KickChatApi.FormatBackfillTimestamp(result.CoveredThroughTimestampUtc)}.");
-    }
-
 
     private async Task<KickChannelInfo> ResolveChannelInfoAsync(string channel, CancellationToken cancellationToken)
     {
@@ -612,7 +440,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Info, $"KickChat", $"Kick recent chat backfill failed for {channel}.", ex);
+                logger.Write(AppLogLevel.Info, "KickChat", $"Kick recent chat backfill failed for {channel}.", ex);
             }
         }
     }
@@ -622,263 +450,82 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
         string chatroomId,
         CancellationToken cancellationToken)
     {
-        var result = await BackfillRecentChatAsync(
+        var loadedMessageCount = await BackfillRecentChatAsync(
                 channel,
                 chatroomId,
-                oldestTimestampUtc: null,
-                throughTimestampUtc: null,
                 KickRecentChatInitialBackfillLimit,
                 cancellationToken)
             .ConfigureAwait(false);
-        if (result.LoadedMessageCount > 0)
+        if (loadedMessageCount > 0)
         {
-            logger.Write(AppLogLevel.Info, "KickChat", $"Loaded {result.LoadedMessageCount} recent Kick chat messages for {channel}.");
+            logger.Write(AppLogLevel.Info, "KickChat", $"Loaded {loadedMessageCount} recent Kick chat messages for {channel}.");
         }
     }
 
-    private async Task<ChatHistoryBackfillResult> BackfillRecentChatFromStartTimeAsync(
-        string channel,
-        string? channelId,
-        string chatroomId,
-        DateTimeOffset fromTimestampUtc,
-        DateTimeOffset throughTimestampUtc,
-        CancellationToken cancellationToken)
-    {
-        await recentChatBackfillGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!string.Equals(channel, connectedChannel, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(chatroomId, currentChatroomId, StringComparison.Ordinal))
-            {
-                return new ChatHistoryBackfillResult(false, 0, false, null, null);
-            }
-
-            var result = await historyBackfillService.BackfillRecentChatFromStartTimeAsync(
-                    channel,
-                    channelId,
-                    chatroomId,
-                    fromTimestampUtc,
-                    throughTimestampUtc,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            EmitKickBackfillMessages(result.Messages);
-            return result;
-        }
-        finally
-        {
-            recentChatBackfillGate.Release();
-        }
-    }
-
-    private void EmitKickBackfillMessages(IReadOnlyList<ChatMessage> messages)
-    {
-        foreach (var message in messages
-            .OrderBy(message => message.Timestamp)
-            .ThenBy(message => message.MessageId, StringComparer.Ordinal))
-        {
-            RaiseMessageReceived(message);
-        }
-
-        if (messages.Count == 0)
-        {
-            return;
-        }
-
-        var pageOldest = messages
-            .Min(message => message.Timestamp)
-            .ToUniversalTime();
-        oldestRecentChatTimestampUtc = oldestRecentChatTimestampUtc is { } oldest &&
-            oldest <= pageOldest
-                ? oldest
-                : pageOldest;
-    }
-
-    private async Task<ChatHistoryBackfillResult> BackfillRecentChatAsync(
+    private async Task<int> BackfillRecentChatAsync(
         string channel,
         string chatroomId,
-        DateTimeOffset? oldestTimestampUtc,
-        DateTimeOffset? throughTimestampUtc,
         int maxMessages,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(chatroomId) ||
-            !chatroomId.All(char.IsDigit) ||
+            !chatroomId.All(char.IsAsciiDigit) ||
             maxMessages <= 0)
         {
-            return new ChatHistoryBackfillResult(false, 0, false, null, null);
+            return 0;
         }
 
-        oldestTimestampUtc = oldestTimestampUtc?.ToUniversalTime();
-        throughTimestampUtc = throughTimestampUtc?.ToUniversalTime();
-        if (oldestTimestampUtc is { } oldest &&
-            throughTimestampUtc is { } through &&
-            through < oldest)
+        // Each connection has one startup history load. Keep its paging state local so a
+        // retired, uncooperative request cannot block or change the replacement connection.
+        var requestedCursors = new HashSet<string>(StringComparer.Ordinal);
+        var seenMessageKeys = new HashSet<string>(StringComparer.Ordinal);
+        var loadedMessages = new List<ChatMessage>();
+        var directBlocked = false;
+        string? cursor = null;
+        while (loadedMessages.Count < maxMessages && requestedCursors.Add(cursor ?? ""))
         {
-            throughTimestampUtc = oldest;
-        }
-
-        await recentChatBackfillGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!string.Equals(channel, connectedChannel, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(chatroomId, currentChatroomId, StringComparison.Ordinal) ||
-                recentChatBackfillExhausted)
+            KickRecentChatPage? page = null;
+            if (!directBlocked)
             {
-                return CreateRecentCursorBackfillResult(
-                    false,
-                    0,
-                    oldestTimestampUtc,
-                    throughTimestampUtc);
+                var result = await transport.ReadRecentMessagesDirectAsync(
+                    channel, chatroomId, cursor, cancellationToken).ConfigureAwait(false);
+                directBlocked = result.DirectForbidden;
+                page = result.Page;
             }
-
-            var loadedMessages = new List<ChatMessage>();
-            var attempted = false;
-            while (loadedMessages.Count < maxMessages && !recentChatBackfillExhausted)
-            {
-                if (oldestTimestampUtc is { } targetOldest &&
-                    oldestRecentChatTimestampUtc is { } currentOldest &&
-                    currentOldest <= targetOldest)
-                {
-                    break;
-                }
-
-                var cursor = recentChatNextCursor;
-                var cursorKey = cursor ?? "";
-                if (requestedRecentChatCursors.Contains(cursorKey))
-                {
-                    recentChatBackfillExhausted = true;
-                    break;
-                }
-
-                var page = recentChatDirectBackfillBlocked
-                    ? null
-                    : await TryReadKickRecentMessagesDirectAsync(channel, chatroomId, cursor, cancellationToken).ConfigureAwait(false);
-                page ??= await TryReadKickRecentMessagesWithCurlAsync(channel, chatroomId, cursor, cancellationToken).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-                attempted = true;
-                if (page is null)
-                {
-                    break;
-                }
-
-                requestedRecentChatCursors.Add(cursorKey);
-
-                if (page.Messages.Count == 0)
-                {
-                    recentChatBackfillExhausted = true;
-                    break;
-                }
-
-                var remainingMessageCount = maxMessages - loadedMessages.Count;
-                var selectedPageMessages = page.Messages.Count <= remainingMessageCount
-                    ? page.Messages
-                    : page.Messages.TakeLast(remainingMessageCount).ToArray();
-                loadedMessages.AddRange(selectedPageMessages);
-                var pageOldest = selectedPageMessages[0].Timestamp.ToUniversalTime();
-                oldestRecentChatTimestampUtc = oldestRecentChatTimestampUtc is { } existingOldest &&
-                    existingOldest <= pageOldest
-                        ? existingOldest
-                        : pageOldest;
-
-                var nextCursor = KickChatTransport.NormalizeCursor(page.Cursor);
-                if (string.IsNullOrWhiteSpace(nextCursor) ||
-                    string.Equals(nextCursor, cursor, StringComparison.Ordinal))
-                {
-                    recentChatBackfillExhausted = true;
-                    break;
-                }
-
-                recentChatNextCursor = nextCursor;
-            }
-
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (var message in loadedMessages
-                .OrderBy(message => message.Timestamp)
-                .ThenBy(message => message.MessageId, StringComparer.Ordinal))
+            page ??= await transport.ReadRecentMessagesWithCurlAsync(
+                channel, chatroomId, cursor, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (page is null)
             {
-                RaiseMessageReceived(message);
+                break;
             }
 
-            return CreateRecentCursorBackfillResult(
-                attempted,
-                loadedMessages.Count,
-                oldestTimestampUtc,
-                throughTimestampUtc);
+            var newMessages = page.ReadNewMessages(seenMessageKeys);
+            if (newMessages.Length == 0)
+            {
+                break;
+            }
+
+            loadedMessages.AddRange(newMessages.TakeLast(maxMessages - loadedMessages.Count));
+            cursor = KickChatTransport.NormalizeCursor(page.Cursor);
+            if (cursor is null)
+            {
+                break;
+            }
         }
-        finally
+
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var message in loadedMessages
+            .OrderBy(message => message.Timestamp)
+            .ThenBy(message => message.MessageId, StringComparer.Ordinal))
         {
-            recentChatBackfillGate.Release();
-        }
-    }
-
-    private ChatHistoryBackfillResult CreateRecentCursorBackfillResult(
-        bool attempted,
-        int loadedMessageCount,
-        DateTimeOffset? oldestTimestampUtc,
-        DateTimeOffset? throughTimestampUtc)
-    {
-        if (oldestTimestampUtc is not { } requestedOldest ||
-            throughTimestampUtc is not { } requestedThrough ||
-            oldestRecentChatTimestampUtc is not { } loadedOldest)
-        {
-            return new ChatHistoryBackfillResult(attempted, loadedMessageCount, false, null, null);
+            cancellationToken.ThrowIfCancellationRequested();
+            RaiseMessageReceived(message);
         }
 
-        requestedOldest = requestedOldest.ToUniversalTime();
-        requestedThrough = requestedThrough.ToUniversalTime();
-        loadedOldest = loadedOldest.ToUniversalTime();
-        var coveredFrom = loadedOldest <= requestedOldest ? requestedOldest : loadedOldest;
-        var coveredThrough = requestedThrough < coveredFrom ? coveredFrom : requestedThrough;
-        return new ChatHistoryBackfillResult(
-            attempted,
-            loadedMessageCount,
-            loadedOldest <= requestedOldest,
-            coveredFrom,
-            coveredThrough);
-    }
-
-    private async Task<KickRecentChatPage?> TryReadKickRecentMessagesDirectAsync(
-        string channel,
-        string chatroomId,
-        string? cursor,
-        CancellationToken cancellationToken)
-    {
-        var result = await transport.ReadRecentMessagesDirectAsync(
-                channel,
-                chatroomId,
-                cursor,
-                startTimeUtc: null,
-                cancellationToken)
-            .ConfigureAwait(false);
-        recentChatDirectBackfillBlocked |= result.DirectForbidden;
-        return result.Page;
-    }
-
-    private async Task<KickRecentChatPage?> TryReadKickRecentMessagesWithCurlAsync(
-        string channel,
-        string chatroomId,
-        string? cursor,
-        CancellationToken cancellationToken)
-    {
-        return await transport.ReadRecentMessagesWithCurlAsync(
-                channel,
-                chatroomId,
-                cursor,
-                startTimeUtc: null,
-                cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private void ResetRecentChatBackfillState(string? channelId, string chatroomId)
-    {
-        currentChannelId = KickChannelInfoJson.NormalizeNumericId(channelId);
-        currentChatroomId = chatroomId;
-        recentChatNextCursor = null;
-        oldestRecentChatTimestampUtc = null;
-        requestedRecentChatCursors.Clear();
-        recentChatDirectBackfillBlocked = false;
-        recentChatBackfillExhausted = false;
+        return loadedMessages.Count;
     }
 
     private async Task ReadLoopAsync(
@@ -937,13 +584,12 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
             var shouldReconnect = !cancellationToken.IsCancellationRequested &&
                 ReferenceEquals(connectionSupervisor, supervisor);
             // A remote close does not pass through DisconnectAsync. Cancel any
-            // seekback/initial history work so a dead websocket cannot keep doing
+            // initial history work so a dead websocket cannot keep doing
             // network work until the tab is explicitly restarted.
             if (ReferenceEquals(connectedWebSocket, webSocket))
             {
                 canSendMessages = false;
                 readCancellation?.Cancel();
-                CancelRecentChatBackfillsForDisconnect();
             }
 
             if (shouldReconnect)
@@ -977,7 +623,7 @@ public sealed class KickChatClient : IChatClient, IChatHistoryBackfillClient
 
     private void ThrowIfDisposed()
     {
-        lock (recentChatBackfillLifecycleGate)
+        lock (lifecycleStateGate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
         }

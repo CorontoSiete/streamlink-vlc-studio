@@ -9,6 +9,7 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
@@ -51,6 +52,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IReplayResolver? replayResolver;
     private readonly IVodChatProvider? vodChatProvider;
     private readonly IFollowedStreamsService? followedStreamsService;
+    private readonly IKickFollowedChannelsImporter? kickFollowedChannelsImporter;
+    private string kickFollowImportStatus = "";
+    private int kickFollowImportBusy;
     private readonly ILiveNotificationService? liveNotificationService;
     private FollowedChannelsSettings? observedFollowedChannelsSettings;
     private HashSet<string>? previousLiveFollowedKeys;
@@ -74,10 +78,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly Action<Uri> openBrowser;
     private readonly Action? requestShutdown;
     private EventHandler<LogEntry>? loggerEntryWrittenHandler;
+    private readonly AppLogBuffer appLogBuffer;
     private readonly object disposalGate = new();
     private readonly object detachedDisposalsGate = new();
     private readonly object recentThumbnailRefreshTimerGate = new();
     private readonly object followedChannelsRefreshTimerGate = new();
+    private readonly object followedChannelsRefreshTaskGate = new();
     private readonly object browseCategoryViewerCountGate = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly StreamSearchController streamSearchController = new();
@@ -148,6 +154,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private string activeStreamSearchQuality = "";
     private bool isStreamSearchDropdownOpen;
     private bool isFollowedChannelsRefreshing;
+    private Task? activeFollowedChannelsRefreshTask;
+    private string activeFollowedChannelsRefreshKey = "";
+    private int followedChannelsRefreshGeneration;
     private bool isTwitchVodSearchRunning;
     private Task? activeTwitchVodSearchTask;
     private int activeTwitchVodSearchGeneration;
@@ -223,6 +232,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.replayResolver = replayResolver;
         this.vodChatProvider = vodChatProvider;
         this.followedStreamsService = followedStreamsService;
+        kickFollowedChannelsImporter = dependencies.KickFollowedChannelsImporter;
         this.liveNotificationService = liveNotificationService;
         this.streamMetadataService = streamMetadataService;
         this.streamSearchService = streamSearchService;
@@ -245,6 +255,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         backgroundOperationController = new BackgroundOperationController(logger);
         this.dispatch = dispatch;
         this.tryDispatch = tryDispatch;
+        appLogBuffer = new AppLogBuffer(AppLogLines, dispatch, tryDispatch);
         this.openBrowser = openBrowser ?? OpenExternalBrowser;
         this.requestShutdown = requestShutdown;
         inactivePlaybackPolicyController = new TabPlaybackPolicyController(
@@ -269,6 +280,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ShowBrowseHomePageCommand = new RelayCommand(ShowBrowseHomePage);
         ReturnToBrowseCategoriesCommand = new RelayCommand(ReturnToBrowseCategoriesPage, () => IsBrowseStreamsPageVisible);
         RefreshFollowedChannelsCommand = CreateCommand(RefreshFollowedChannelsAsync, () => followedStreamsService is not null);
+        ImportKickFollowsCommand = CreateCommand(ImportKickFollowsAsync,
+            () => kickFollowedChannelsImporter is not null && Volatile.Read(ref kickFollowImportBusy) == 0);
+        ClearImportedKickFollowsCommand = CreateCommand(ClearImportedKickFollowsAsync,
+            () => Volatile.Read(ref kickFollowImportBusy) == 0);
         SearchTwitchVodsCommand = CreateCommand(
             () => SearchTwitchVodsAsync(reset: true),
             () => CanSearchSelectedVodPlatform);
@@ -290,8 +305,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         LoadMoreBrowseStreamsCommand = CreateCommand(
             () => LoadBrowseStreamsAsync(reset: false),
             () => browseService is not null && CanLoadMoreBrowseStreams);
-        PlaySelectedCommand = CreateCommand(PlaySelectedAsync, () => SelectedTab is not null);
-        ReloadSelectedCommand = CreateCommand(ReloadSelectedAsync, () => SelectedTab is not null);
+        PlaySelectedCommand = CreateCommand(() => StartSelectedTabAsync("Starting"), () => SelectedTab is not null);
+        ReloadSelectedCommand = CreateCommand(() => StartSelectedTabAsync("Reloading"), () => SelectedTab is not null);
         StopSelectedCommand = CreateCommand(StopSelectedAsync, () => SelectedTab is not null);
         PauseSelectedCommand = CreateCommand(PauseSelectedAsync, () => SelectedTab is not null);
         CloseSelectedCommand = CreateCommand(CloseSelectedAsync, () => SelectedTab is not null);
@@ -357,6 +372,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public RelayCommand ShowBrowseHomePageCommand { get; }
     public RelayCommand ReturnToBrowseCategoriesCommand { get; }
     public AsyncRelayCommand RefreshFollowedChannelsCommand { get; }
+    public AsyncRelayCommand ImportKickFollowsCommand { get; }
+    public AsyncRelayCommand ClearImportedKickFollowsCommand { get; }
     public AsyncRelayCommand SearchTwitchVodsCommand { get; }
     public AsyncRelayCommand LoadMoreTwitchVodsCommand { get; }
     public RelayCommand SelectTwitchVodPlatformCommand { get; }
@@ -1146,6 +1163,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         set => SetProperty(ref kickFollowedChannelsText, value ?? "");
     }
 
+    public string KickFollowImportStatus
+    {
+        get => kickFollowImportStatus;
+        private set => SetProperty(ref kickFollowImportStatus, value);
+    }
+
+    public string KickImportedFollowsSummary => Settings.FollowedChannels.KickFollowsImportedAtUtc is { } importedAt
+        ? $"{Settings.FollowedChannels.KickImportedChannelSlugs.Count} Kick follows imported • {importedAt.ToLocalTime():g}"
+        : "No Kick follows imported yet.";
+
     public string AppUpdateStatus
     {
         get => appUpdateStatus;
@@ -1363,6 +1390,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public void Initialize()
     {
+        if (disposed) return;
+
         if (appUpdateService is not null)
         {
             automaticUpdateTask ??= CheckForStartupUpdateAsync();
@@ -1370,17 +1399,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (loggerEntryWrittenHandler is null)
         {
-            loggerEntryWrittenHandler = (_, entry) =>
-            {
-                dispatch(() =>
-                {
-                    AppLogLines.Add($"{entry.Timestamp:HH:mm:ss} [{entry.Level}] {entry.Source}: {entry.Message}");
-                    while (AppLogLines.Count > 250)
-                    {
-                        AppLogLines.RemoveAt(0);
-                    }
-                });
-            };
+            loggerEntryWrittenHandler = (_, entry) => appLogBuffer.Enqueue(entry);
             logger.EntryWritten += loggerEntryWrittenHandler;
         }
 
@@ -1682,21 +1701,53 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private Task RefreshFollowedChannelsAsync()
     {
-        if (disposed)
+        lock (followedChannelsRefreshTaskGate)
         {
-            return Task.CompletedTask;
-        }
+            if (disposed) return Task.CompletedTask;
 
-        var refreshTask = RefreshFollowedChannelsAsync(
-            followedChannelsRefreshCancellation.Token,
-            skipIfRefreshRunning: false);
-        backgroundOperationController.Track(refreshTask);
-        return refreshTask;
+            var chat = Settings.Chat;
+            var key = OAuthTokenHelpers.CreateCredentialFingerprint(
+                KickFollowedChannelsText, string.Join('\n', Settings.FollowedChannels.KickImportedChannelSlugs),
+                Settings.FollowedChannels.KickFollowsImportedAtUtc?.ToString("O", CultureInfo.InvariantCulture),
+                chat.TwitchOAuthToken, chat.TwitchClientId,
+                chat.KickOAuthToken, chat.KickRefreshToken, chat.KickClientId, chat.KickClientSecret,
+                chat.KickTokenExpiresAtUtc?.ToString("O", CultureInfo.InvariantCulture));
+            if (activeFollowedChannelsRefreshTask is { IsCompleted: false } active &&
+                activeFollowedChannelsRefreshKey == key)
+            {
+                return active;
+            }
+
+            var generation = Interlocked.Increment(ref followedChannelsRefreshGeneration);
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Publish before starting: synchronous providers and property-change callbacks
+            // can reenter refresh while the operation is being started.
+            activeFollowedChannelsRefreshTask = completion.Task;
+            activeFollowedChannelsRefreshKey = key;
+            backgroundOperationController.Track(completion.Task);
+            _ = CompleteFollowedChannelsRefreshAsync(completion, generation, followedChannelsRefreshCancellation.Token);
+            return completion.Task;
+        }
     }
 
-    private async Task RefreshFollowedChannelsAsync(
-        CancellationToken cancellationToken,
-        bool skipIfRefreshRunning)
+    private async Task CompleteFollowedChannelsRefreshAsync(
+        TaskCompletionSource completion, int generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RefreshFollowedChannelsCoreAsync(generation, cancellationToken);
+            completion.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+    }
+
+    private bool IsCurrentFollowedRefresh(int generation) =>
+        !disposed && generation == Volatile.Read(ref followedChannelsRefreshGeneration);
+
+    private async Task RefreshFollowedChannelsCoreAsync(int generation, CancellationToken cancellationToken)
     {
         if (followedStreamsService is null)
         {
@@ -1707,21 +1758,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var enteredRefreshGate = false;
         try
         {
-            if (skipIfRefreshRunning)
-            {
-                enteredRefreshGate = followedChannelsRefreshGate.Wait(0);
-                if (!enteredRefreshGate)
-                {
-                    return;
-                }
-            }
-            else
-            {
-                await followedChannelsRefreshGate.WaitAsync(cancellationToken);
-                enteredRefreshGate = true;
-            }
+            await followedChannelsRefreshGate.WaitAsync(cancellationToken);
+            enteredRefreshGate = true;
 
             cancellationToken.ThrowIfCancellationRequested();
+            if (!IsCurrentFollowedRefresh(generation)) return;
             Settings.FollowedChannels.KickChannelSlugs = ParseKickFollowedChannelSlugs(
                 KickFollowedChannelsText,
                 skipInvalidEntries: true,
@@ -1731,7 +1772,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             var result = await followedStreamsService.GetLiveFollowedStreamsAsync(Settings, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            if (disposed)
+            if (!IsCurrentFollowedRefresh(generation))
             {
                 return;
             }
@@ -1771,12 +1812,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            FollowedChannelsStatus = ex.Message;
+            if (IsCurrentFollowedRefresh(generation)) FollowedChannelsStatus = ex.Message;
             logger.Write(AppLogLevel.Warning, "Followed", "Failed to refresh live followed channels.", ex);
         }
         finally
         {
-            if (enteredRefreshGate && !disposed && !cancellationToken.IsCancellationRequested)
+            if (enteredRefreshGate && IsCurrentFollowedRefresh(generation) && !cancellationToken.IsCancellationRequested)
             {
                 IsFollowedChannelsRefreshing = false;
             }
@@ -1791,47 +1832,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private void UpdateLiveStreamCards(ObservableCollection<LiveStreamCardViewModel> cards,
         IEnumerable<LiveStreamCardData> streams, long thumbnailCacheVersion)
     {
-        var existing = cards.ToDictionary(card => card.Target.StateKey, StringComparer.OrdinalIgnoreCase);
-        var desiredKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var desiredCards = new List<LiveStreamCardViewModel>(streams.TryGetNonEnumeratedCount(out var count) ? count : 0);
-        foreach (var data in streams)
-        {
-            if (!desiredKeys.Add(data.Target.StateKey))
-            {
-                continue;
-            }
-
-            if (existing.TryGetValue(data.Target.StateKey, out var card))
-            {
-                card.Update(data, thumbnailCacheVersion);
-            }
-            else
-            {
-                card = new LiveStreamCardViewModel(data, OpenLiveStreamCardAsync, thumbnailCacheVersion);
-            }
-            desiredCards.Add(card);
-        }
-
-        for (var index = cards.Count - 1; index >= 0; index--)
-        {
-            if (!desiredKeys.Contains(cards[index].Target.StateKey))
-            {
-                cards.RemoveAt(index);
-            }
-        }
-
-        for (var index = 0; index < desiredCards.Count; index++)
-        {
-            var card = desiredCards[index];
-            if (index < cards.Count && ReferenceEquals(cards[index], card))
-            {
-                continue;
-            }
-
-            var currentIndex = cards.IndexOf(card);
-            if (currentIndex < 0) cards.Insert(index, card);
-            else cards.Move(currentIndex, index);
-        }
+        PagedResultTracker.ApplyItems(cards, streams,
+            card => card.Target.StateKey, data => data.Target.StateKey,
+            data => new LiveStreamCardViewModel(data, OpenLiveStreamCardAsync, thumbnailCacheVersion),
+            (card, data) => card.Update(data, thumbnailCacheVersion), reset: true);
     }
 
     private void ProcessFollowedChannelLiveNotifications(FollowedLiveStreamsResult result)
@@ -2801,22 +2805,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             if (result.IsAvailable)
             {
                 var thumbnailCacheVersion = Interlocked.Increment(ref nextLiveThumbnailCacheVersion);
-                if (reset)
-                {
-                    UpdateLiveStreamCards(BrowseStreams,
-                        result.Items.Select(LiveStreamCardData.FromBrowseStream), thumbnailCacheVersion);
-                    BrowseStreamNextCursor = browseStreamPages.RecordPage(request.Cursor, result.NextCursor);
-                }
-                else
-                {
-                    BrowseStreamNextCursor = browseStreamPages.AppendPage(
-                        BrowseStreams,
-                        result.Items.Select(stream => new LiveStreamCardViewModel(
-                            LiveStreamCardData.FromBrowseStream(stream), OpenLiveStreamCardAsync, thumbnailCacheVersion)),
-                        stream => stream.Target.TabIdentityKey,
-                        request.Cursor,
-                        result.NextCursor);
-                }
+                BrowseStreamNextCursor = browseStreamPages.ApplyPage(
+                    BrowseStreams, result.Items.Select(LiveStreamCardData.FromBrowseStream),
+                    card => card.Target.StateKey, data => data.Target.StateKey,
+                    data => new LiveStreamCardViewModel(data, OpenLiveStreamCardAsync, thumbnailCacheVersion),
+                    (card, data) => card.Update(data, thumbnailCacheVersion),
+                    request.Cursor, result.NextCursor);
             }
             HasBrowseStreamSearchCompleted = true;
             BrowseStatus = result.Message;
@@ -2986,7 +2980,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     /// so a failing command looks like a button that simply does nothing.
     /// </summary>
     private AsyncRelayCommand CreateCommand(Func<Task> execute, Func<bool>? canExecute = null) =>
-        new(execute, canExecute, ReportCommandFailure);
+        new(execute, () => !disposed && (canExecute?.Invoke() ?? true), ReportCommandFailure);
 
     private void ReportCommandFailure(Exception exception)
     {
@@ -3573,6 +3567,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
+        appLogBuffer.Dispose();
         lifetimeCancellation.Cancel();
         tabStartController.Clear();
 
@@ -4169,23 +4164,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             !IsLiveStreamSearchProbe(probe) &&
             probe.Channel?.State == StreamSearchChannelState.Offline);
         var unavailable = probes.Count - live - offline;
-        var parts = new List<string>();
-        if (live > 0)
-        {
-            parts.Add(live == 1 ? "1 live" : $"{live} live");
-        }
-
-        if (offline > 0)
-        {
-            parts.Add(offline == 1 ? "1 offline" : $"{offline} offline");
-        }
-
-        if (unavailable > 0)
-        {
-            parts.Add(unavailable == 1 ? "1 unavailable" : $"{unavailable} unavailable");
-        }
-
-        return $"{string.Join(", ", parts)} channel result{(probes.Count == 1 ? "" : "s")} found for {query}.";
+        return StreamSearchSummary.Format(query, live, offline, unavailable);
     }
 
     private static IReadOnlyList<StreamCandidateProbe> OrderStreamSearchProbesForDisplay(
@@ -4439,9 +4418,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     return;
                 }
 
-                var refreshTask = RefreshFollowedChannelsAsync(
-                    followedChannelsRefreshCancellation.Token,
-                    skipIfRefreshRunning: true);
+                var refreshTask = RefreshFollowedChannelsAsync();
                 backgroundOperationController.Track(ReleaseFollowedChannelsAutomaticRefreshAfterAsync(refreshTask));
             });
         }
@@ -5160,16 +5137,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task PlaySelectedAsync()
+    private Task StartSelectedTabAsync(string action)
     {
-        if (SelectedTab is null)
+        if (SelectedTab is { } tab)
         {
-            return;
+            StatusMessage = $"{action} {tab.Target.DisplayName}";
+            StartTabInBackground(tab, clearInputOnSuccess: false);
         }
 
-        StatusMessage = $"Starting {SelectedTab.Target.DisplayName}";
-        StartTabInBackground(SelectedTab, clearInputOnSuccess: false);
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 
     private bool CanCreateClip()
@@ -5203,10 +5179,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        var cancellationToken = lifetimeCancellation.Token;
         try
         {
             StatusMessage = $"Creating Twitch clip for {tab.Target.DisplayName}";
-            var result = await twitchClipService.CreateLiveClipAsync(tab.Target, Settings.Chat);
+            var result = await twitchClipService.CreateLiveClipAsync(tab.Target, Settings.Chat, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
@@ -5219,44 +5197,39 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 logger.Write(AppLogLevel.Warning, "TwitchClip", "Twitch clip was created but could not be opened in the browser.", ex);
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutdown must not open a browser or publish a late status update.
+        }
         catch (OperationCanceledException)
         {
             StatusMessage = "Twitch clip creation was cancelled.";
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!disposed)
         {
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Warning, "TwitchClip", "Twitch clip creation failed.", ex);
         }
     }
 
-    private async Task ReloadSelectedAsync()
-    {
-        if (SelectedTab is null)
-        {
-            return;
-        }
-
-        StatusMessage = $"Reloading {SelectedTab.Target.DisplayName}";
-        StartTabInBackground(SelectedTab, clearInputOnSuccess: false);
-        await Task.CompletedTask;
-    }
-
     private async Task StopSelectedAsync()
     {
-        if (SelectedTab is not null)
+        if (SelectedTab is { } tab)
         {
-            await SelectedTab.StopAsync();
-            StatusMessage = $"{SelectedTab.Target.DisplayName} stopped";
+            await tab.StopAsync();
+            if (!disposed && ReferenceEquals(SelectedTab, tab))
+                StatusMessage = $"{tab.Target.DisplayName} stopped";
         }
     }
 
     private async Task PauseSelectedAsync()
     {
-        if (SelectedTab is not null)
+        if (SelectedTab is { } tab)
         {
-            await SelectedTab.PauseOrResumeAsync();
-            StatusMessage = $"{SelectedTab.Target.DisplayName}: {SelectedTab.StatusText}";
+            await tab.PauseOrResumeAsync();
+            if (disposed) return;
+            if (ReferenceEquals(SelectedTab, tab))
+                StatusMessage = $"{tab.Target.DisplayName}: {tab.StatusText}";
             ApplyVlcPluginMultiViewChatPolicyInBackground();
         }
     }
@@ -5933,21 +5906,28 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task AuthorizeTwitchAsync()
     {
+        var cancellationToken = lifetimeCancellation.Token;
         try
         {
             StatusMessage = "Waiting for Twitch authorization";
-            var token = await TwitchOAuthService.AuthorizeUserTokenAsync(Settings.Chat);
+            var token = await TwitchOAuthService.AuthorizeUserTokenAsync(Settings.Chat, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             TwitchOAuthService.ApplyTokenResult(Settings.Chat, token);
 
-            await settingsService.SaveAsync(Settings);
+            await settingsService.SaveAsync(Settings, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             await RestartChatTabsAsync();
+            cancellationToken.ThrowIfCancellationRequested();
             ClearTwitchTokenCommand.RaiseCanExecuteChanged();
             StatusMessage = token.ExpiresAtUtc is { } expiresAt
                 ? $"Twitch authorized until {expiresAt.ToLocalTime():g}"
                 : "Twitch authorized";
             _ = RefreshFollowedChannelsAsync();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex) when (!disposed)
         {
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Warning, "TwitchOAuth", "Twitch authorization failed.", ex);
@@ -5975,41 +5955,114 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task AuthorizeKickAsync()
     {
+        var cancellationToken = lifetimeCancellation.Token;
         try
         {
             StatusMessage = "Waiting for Kick authorization";
-            var token = await KickOAuthService.AuthorizeUserTokenAsync(Settings.Chat);
+            var token = await KickOAuthService.AuthorizeUserTokenAsync(Settings.Chat, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             KickOAuthService.ApplyTokenResult(Settings.Chat, token);
 
             if (string.IsNullOrWhiteSpace(Settings.Chat.KickUsername))
             {
-                try
+                var username = await KickOAuthService.TryGetCurrentUsernameAsync(token.AccessToken, cancellationToken, logger);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!string.IsNullOrWhiteSpace(username))
                 {
-                    var username = await KickOAuthService.TryGetCurrentUsernameAsync(token.AccessToken);
-                    if (!string.IsNullOrWhiteSpace(username))
-                    {
-                        Settings.Chat.KickUsername = username;
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    logger.Write(AppLogLevel.Warning, "KickOAuth", "Could not resolve authorized Kick username.", ex);
+                    Settings.Chat.KickUsername = username;
                 }
             }
 
-            await settingsService.SaveAsync(Settings);
+            await settingsService.SaveAsync(Settings, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             await RestartChatTabsAsync();
+            cancellationToken.ThrowIfCancellationRequested();
             ClearKickTokenCommand.RaiseCanExecuteChanged();
             StatusMessage = token.ExpiresAtUtc is { } expiresAt
                 ? $"Kick authorized until {expiresAt.ToLocalTime():g}"
                 : "Kick authorized";
             _ = RefreshFollowedChannelsAsync();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex) when (!disposed)
         {
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Warning, "KickOAuth", "Kick authorization failed.", ex);
         }
+    }
+
+    private async Task ImportKickFollowsAsync()
+    {
+        if (kickFollowedChannelsImporter is null) return;
+        if (Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) != 0) return;
+        var token = lifetimeCancellation.Token;
+        try
+        {
+            ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
+            KickFollowImportStatus = "Sign in to Kick and import your follows in the opened window.";
+            var channels = await kickFollowedChannelsImporter.ImportAsync(token);
+            token.ThrowIfCancellationRequested();
+            if (channels is null)
+            {
+                KickFollowImportStatus = "Detection canceled. Your saved follows were kept.";
+                return;
+            }
+            await SaveImportedKickFollowsAsync(channels, DateTimeOffset.UtcNow, token);
+            token.ThrowIfCancellationRequested();
+            KickFollowImportStatus = $"Imported {channels.Count} Kick follows. Detect again after following or unfollowing channels.";
+            await RefreshFollowedChannelsAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (!disposed)
+        {
+            KickFollowImportStatus = $"Kick follows could not be imported: {ex.Message}";
+        }
+        finally
+        {
+            Volatile.Write(ref kickFollowImportBusy, 0);
+            ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    private async Task ClearImportedKickFollowsAsync()
+    {
+        if (Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) != 0) return;
+        var token = lifetimeCancellation.Token;
+        try
+        {
+            ImportKickFollowsCommand.RaiseCanExecuteChanged();
+            await SaveImportedKickFollowsAsync([], null, token);
+            token.ThrowIfCancellationRequested();
+            KickFollowImportStatus = "Imported Kick follows cleared.";
+            await RefreshFollowedChannelsAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (!disposed) { KickFollowImportStatus = ex.Message; }
+        finally
+        {
+            Volatile.Write(ref kickFollowImportBusy, 0);
+            ImportKickFollowsCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    private async Task SaveImportedKickFollowsAsync(
+        IReadOnlyList<string> channels, DateTimeOffset? importedAt, CancellationToken token)
+    {
+        var settings = Settings.FollowedChannels;
+        var previousChannels = settings.KickImportedChannelSlugs;
+        var previousTime = settings.KickFollowsImportedAtUtc;
+        settings.KickImportedChannelSlugs = channels.ToList();
+        settings.KickFollowsImportedAtUtc = importedAt;
+        try { await settingsService.SaveAsync(Settings, token); }
+        catch
+        {
+            settings.KickImportedChannelSlugs = previousChannels;
+            settings.KickFollowsImportedAtUtc = previousTime;
+            throw;
+        }
+        OnPropertyChanged(nameof(KickImportedFollowsSummary));
     }
 
     private async Task ClearKickTokenAsync()

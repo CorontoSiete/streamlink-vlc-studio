@@ -376,19 +376,11 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
 
             if (string.IsNullOrWhiteSpace(Settings.Chat.KickUsername))
             {
-                try
+                var username = await KickOAuthService.TryGetCurrentUsernameAsync(
+                    token.AccessToken, lifetimeCancellation.Token, logger);
+                if (!string.IsNullOrWhiteSpace(username))
                 {
-                    var username = await KickOAuthService.TryGetCurrentUsernameAsync(
-                        token.AccessToken,
-                        lifetimeCancellation.Token);
-                    if (!string.IsNullOrWhiteSpace(username))
-                    {
-                        Settings.Chat.KickUsername = username;
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    logger.Write(AppLogLevel.Warning, "Setup", "Could not resolve the authorized Kick username.", ex);
+                    Settings.Chat.KickUsername = username;
                 }
             }
 

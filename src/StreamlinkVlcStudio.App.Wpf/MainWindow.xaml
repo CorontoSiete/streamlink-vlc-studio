@@ -1660,27 +1660,36 @@
                             BorderBrush="{DynamicResource StudioBorderBrush}"
                             BorderThickness="1"
                             CornerRadius="9">
-                        <DockPanel LastChildFill="True">
-                            <Border DockPanel.Dock="Left"
-                                    VerticalAlignment="Center"
-                                    Background="#2634D399"
-                                    BorderBrush="{DynamicResource StudioSuccessBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="4"
-                                    Padding="5,1"
-                                    Margin="0,0,8,0">
-                                <TextBlock Text="LIVE CHAT"
-                                           FontSize="9"
-                                           FontWeight="Bold"
-                                           Foreground="{DynamicResource StudioSuccessBrush}" />
-                            </Border>
-                            <TextBlock Text="{Binding SelectedTab.DockedChatHeaderText}"
-                                       ToolTip="{Binding SelectedTab.DockedChatHeaderText}"
-                                       VerticalAlignment="Center"
-                                       FontSize="12"
-                                       FontWeight="SemiBold"
-                                       TextTrimming="CharacterEllipsis" />
-                        </DockPanel>
+                        <StackPanel>
+                            <DockPanel LastChildFill="True">
+                                <Border DockPanel.Dock="Left"
+                                        VerticalAlignment="Center"
+                                        Background="#2634D399"
+                                        BorderBrush="{DynamicResource StudioSuccessBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="5,1"
+                                        Margin="0,0,8,0">
+                                    <TextBlock Text="{Binding SelectedTab.ChatModeText}"
+                                               FontSize="9"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource StudioSuccessBrush}" />
+                                </Border>
+                                <TextBlock Text="{Binding SelectedTab.DockedChatHeaderText}"
+                                           ToolTip="{Binding SelectedTab.DockedChatHeaderText}"
+                                           VerticalAlignment="Center"
+                                           FontSize="12"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis" />
+                            </DockPanel>
+                            <TextBlock x:Name="DockedReplayChatStatus"
+                                       Text="{Binding SelectedTab.ReplayChatStatusText}"
+                                       Visibility="{Binding SelectedTab.HasReplayChatStatus, Converter={StaticResource BoolToVisibility}}"
+                                       Foreground="{DynamicResource StudioTextMutedBrush}"
+                                       TextWrapping="Wrap"
+                                       FontSize="11"
+                                       Margin="0,6,0,6" />
+                        </StackPanel>
                     </Border>
                     <ListBox x:Name="DockedChatListBox"
                              Grid.Row="1"
@@ -3933,7 +3942,16 @@
                                                       ToolTip="Show a Windows toast when a followed channel goes live. Checks every minute while the app is running, including when it is minimized to the tray."
                                                       Content="Windows toast notifications"
                                                       ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
-                                            <TextBlock Text="Kick channel slugs" Style="{StaticResource StudioFieldLabelStyle}" />
+                                            <TextBlock Text="Kick follows" Style="{StaticResource StudioFieldLabelStyle}" />
+                                            <TextBlock Text="Sign in to Kick to detect your followed channels, including channels that are offline."
+                                                       TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <WrapPanel Margin="0,0,0,8">
+                                                <Button Content="Detect Kick follows" Command="{Binding ImportKickFollowsCommand}" Margin="0,0,8,6" />
+                                                <Button Content="Clear imported follows" Command="{Binding ClearImportedKickFollowsCommand}" Margin="0,0,0,6" />
+                                            </WrapPanel>
+                                            <TextBlock Text="{Binding KickImportedFollowsSummary}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <TextBlock Text="{Binding KickFollowImportStatus}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <TextBlock Text="Additional Kick channels (optional)" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding KickFollowedChannelsText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="True"
                                                      MinHeight="112"

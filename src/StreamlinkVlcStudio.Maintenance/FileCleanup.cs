@@ -229,22 +229,28 @@ internal static class ManagedInstallationCleaner
         return false;
     }
 
-    private static void RemoveEmptyManagedDirectories(InstallOwnership ownership, MaintenanceLog log)
+    internal static void RemoveEmptyManagedDirectories(InstallOwnership ownership, MaintenanceLog log)
     {
-        var directories = ownership.Files
-            .Select(file => Path.GetDirectoryName(ownership.GetManagedPath(file)))
-            .Where(path => !string.IsNullOrWhiteSpace(path) && !PathSafety.PathsEqual(path!, ownership.Root))
-            .Select(path => PathSafety.Normalize(path!))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(path => path.Length)
-            .ToArray();
+        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in ownership.Files)
+        {
+            // The manifest lists files, so intermediate directories may have no
+            // direct file entry. Include their ancestors, stopping at the install root.
+            for (var directory = Path.GetDirectoryName(ownership.GetManagedPath(file));
+                 directory is not null && PathSafety.IsSameOrUnder(directory, ownership.Root) &&
+                 !PathSafety.PathsEqual(directory, ownership.Root);
+                 directory = Path.GetDirectoryName(directory))
+            {
+                directories.Add(PathSafety.Normalize(directory));
+            }
+        }
 
-        foreach (var directory in directories)
+        foreach (var directory in directories.OrderByDescending(path => path.Length))
         {
             try
             {
                 if (PathSafety.TryGetAttributes(directory, out var attributes) &&
-                    (attributes & FileAttributes.ReparsePoint) == 0)
+                    PathSafety.IsPlainDirectory(attributes) && !PathSafety.ContainsReparsePoint(directory))
                 {
                     Directory.Delete(directory, recursive: false);
                     log.Write($"Removed empty managed directory: {directory}");
@@ -258,6 +264,7 @@ internal static class ManagedInstallationCleaner
 
         try
         {
+            if (PathSafety.ContainsReparsePoint(ownership.Root)) return;
             Directory.Delete(ownership.Root, recursive: false);
             log.Write($"Removed empty installation directory: {ownership.Root}");
         }
@@ -352,7 +359,11 @@ internal static class UserDataCleaner
 
     internal static IReadOnlyList<string> PurgeCurrentUserData(MaintenanceLog log)
     {
-        return PurgeRoots(PathSafety.GetUserDataRoots(), log, new[] { log.Path }, requireCanonicalRoots: true);
+        // The running stage is removed after this process exits. Treating its locked
+        // executable as leftover personal data would report every uninstall as incomplete.
+        var preserved = new List<string> { log.Path };
+        if (StageLauncher.GetCurrentStageDirectory() is { } stage) preserved.Add(stage);
+        return PurgeRoots(PathSafety.GetUserDataRoots(), log, preserved, requireCanonicalRoots: true);
     }
 
     internal static IReadOnlyList<string> PurgeRootsForTest(

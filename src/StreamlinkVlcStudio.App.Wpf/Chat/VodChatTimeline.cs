@@ -26,6 +26,7 @@ internal sealed class VodChatTimeline
     private readonly HashSet<string> messageKeys = new(StringComparer.Ordinal);
     private int cursor;
     private TimeSpan seekBoundary = TimeSpan.MinValue;
+    private TimeSpan? discardedThrough;
 
     public int Count
     {
@@ -40,14 +41,19 @@ internal sealed class VodChatTimeline
 
     public bool HasMessages => Count > 0;
 
-    public TimeSpan? LastOffset
+    public bool HasMessagesAtOrBefore(TimeSpan position)
     {
-        get
+        lock (gate)
         {
-            lock (gate)
-            {
-                return messages.Count == 0 ? null : messages[^1].Offset;
-            }
+            return messages.Count > 0 && messages[0].Offset <= position;
+        }
+    }
+
+    public bool HasDiscardedMessagesFrom(TimeSpan offset)
+    {
+        lock (gate)
+        {
+            return discardedThrough is { } boundary && offset <= boundary;
         }
     }
 
@@ -59,6 +65,7 @@ internal sealed class VodChatTimeline
             messageKeys.Clear();
             cursor = 0;
             seekBoundary = TimeSpan.MinValue;
+            discardedThrough = null;
         }
     }
 
@@ -186,6 +193,11 @@ internal sealed class VodChatTimeline
         }
 
         var removeCount = messages.Count - maximumMessages;
+        var removedThrough = messages[removeCount - 1].Offset;
+        if (discardedThrough is null || removedThrough > discardedThrough)
+        {
+            discardedThrough = removedThrough;
+        }
         for (var index = 0; index < removeCount; index++)
         {
             messageKeys.Remove(GetMessageKey(messages[index]));

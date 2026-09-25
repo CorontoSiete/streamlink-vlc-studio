@@ -9,6 +9,8 @@ internal static class ReplayChatResilienceTestCatalog
         ("replay chat resilience: malformed Kick cursors cannot terminate pagination", MalformedKickCursors),
         ("replay chat resilience: failed later Kick pages retry the original range", FailedKickPageAsync),
         ("replay chat resilience: repeated Kick cursors do not skip missing history", RepeatedKickCursorAsync),
+        ("replay chat resilience: repeated Kick messages stop changing-cursor requests", RepeatedKickMessagesAsync),
+        ("replay chat resilience: overlapping Kick pages retain new messages", OverlappingKickMessagesAsync),
         ("replay chat resilience: Kick page budget does not claim complete coverage", KickPageBudgetAsync),
         ("replay chat resilience: Kick cancellation remains cancellation", CanceledKickPageAsync),
         ("replay chat resilience: Kick cursors preserve microsecond boundaries", KickCursorPrecision)
@@ -121,12 +123,52 @@ internal static class ReplayChatResilienceTestCatalog
     private static async Task KickPageBudgetAsync()
     {
         var requests = 0;
-        using var client = KickClient(_ => Json(KickPage(15, (++requests).ToString(CultureInfo.InvariantCulture))));
+        using var client = KickClient(_ => Json(KickPage(21 - ++requests, requests.ToString(CultureInfo.InvariantCulture))));
         var result = await FetchKickAsync(client);
         Assert.Equal(VodChatFetchOutcome.Failed, result.Outcome);
         Assert.Equal(TimeSpan.Zero, result.CoveredThroughOffset);
         Assert.Equal(20, requests);
+        Assert.Equal(20, result.Messages.Count);
+        Assert.Equal(TimeSpan.FromSeconds(1), result.Messages[0].Offset);
+    }
+
+    private static async Task RepeatedKickMessagesAsync()
+    {
+        var requests = 0;
+        using var client = KickClient(_ => Json(KickPage(15, (++requests).ToString(CultureInfo.InvariantCulture))));
+        var result = await FetchKickAsync(client);
+        Assert.Equal(VodChatFetchOutcome.Failed, result.Outcome);
+        Assert.Equal(TimeSpan.Zero, result.CoveredThroughOffset);
+        Assert.Equal(2, requests);
         Assert.Equal(TimeSpan.FromSeconds(15), result.Messages.Single().Offset);
+    }
+
+    private static async Task OverlappingKickMessagesAsync()
+    {
+        var requests = 0;
+        using var client = KickClient(_ =>
+        {
+            var offsets = ++requests == 1 ? new[] { 10, 15 } : new[] { 0, 10 };
+            return Json(JsonSerializer.Serialize(new
+            {
+                data = new
+                {
+                    cursor = requests.ToString(CultureInfo.InvariantCulture),
+                    messages = offsets.Select(seconds => new
+                    {
+                        id = $"message-{seconds}",
+                        content = "hello",
+                        created_at = StartedAt.AddSeconds(seconds),
+                        sender = new { username = "viewer" }
+                    })
+                }
+            }));
+        });
+        var result = await FetchKickAsync(client);
+        Assert.Equal(VodChatFetchOutcome.Loaded, result.Outcome);
+        Assert.Equal(KickVodChatFetcher.ChunkSize, result.CoveredThroughOffset);
+        Assert.Equal(2, requests);
+        Assert.SequenceEqual(new[] { 0, 10, 15 }.Select(seconds => TimeSpan.FromSeconds(seconds)), result.Messages.Select(message => message.Offset));
     }
 
     private static async Task CanceledKickPageAsync()

@@ -11,6 +11,22 @@ separators so `-LiteralPath` comparisons behave the same on any drive layout.
 
 $script:PathSeparators = [char[]]@('\', '/')
 
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Write-Info {
     <#
     .SYNOPSIS

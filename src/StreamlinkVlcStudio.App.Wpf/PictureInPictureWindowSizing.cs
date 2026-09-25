@@ -42,13 +42,12 @@ internal static class PictureInPictureWindowSizing
         var availableWidth = Math.Max(1, requestedSize.Width - horizontalInset);
         var availableHeight = Math.Max(1, requestedSize.Height - verticalInset);
         var contentWidth = Math.Min(availableWidth, availableHeight * contentAspectRatio);
-        var contentHeight = contentWidth / contentAspectRatio;
 
         var minimumContentWidth = Math.Max(1, minimumWidth - horizontalInset);
         var minimumContentHeight = Math.Max(1, minimumHeight - verticalInset);
         contentWidth = Math.Max(contentWidth, minimumContentWidth);
         contentWidth = Math.Max(contentWidth, minimumContentHeight * contentAspectRatio);
-        contentHeight = contentWidth / contentAspectRatio;
+        var contentHeight = contentWidth / contentAspectRatio;
 
         return new Size(
             contentWidth + horizontalInset,
@@ -93,19 +92,11 @@ internal static class PictureInPictureWindowSizing
             : verticalEdge && !horizontalEdge
                 ? availableContentHeight * contentAspectRatio
                 : Math.Min(availableContentWidth, availableContentHeight * contentAspectRatio);
-        var contentHeight = contentWidth / contentAspectRatio;
-
-        if (verticalEdge && !horizontalEdge)
-        {
-            contentHeight = availableContentHeight;
-            contentWidth = contentHeight * contentAspectRatio;
-        }
-
         var minimumContentWidth = Math.Max(1, minimumWidth - horizontalInset);
         var minimumContentHeight = Math.Max(1, minimumHeight - verticalInset);
         contentWidth = Math.Max(contentWidth, minimumContentWidth);
         contentWidth = Math.Max(contentWidth, minimumContentHeight * contentAspectRatio);
-        contentHeight = contentWidth / contentAspectRatio;
+        var contentHeight = contentWidth / contentAspectRatio;
 
         var width = Math.Max(1, ToPixel(contentWidth + horizontalInset));
         var height = Math.Max(1, ToPixel(contentHeight + verticalInset));

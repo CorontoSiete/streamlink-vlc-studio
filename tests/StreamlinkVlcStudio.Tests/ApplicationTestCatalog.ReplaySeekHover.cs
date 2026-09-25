@@ -12,6 +12,7 @@ internal static partial class ApplicationTestCatalog
         ("replay seek overlay hover loads bounded provider storyboards and rejects unsafe images", ReplaySeekStoryboardHttpAsync),
         ("replay seek overlay hover decodes thumbnail sprites into frozen images", ReplaySeekPreviewDecodeAsync),
         .. LiveSeekPreviewTests,
+        .. KickSeekPreviewTests,
         .. ReplaySeekHoverProviderTests
     ];
 

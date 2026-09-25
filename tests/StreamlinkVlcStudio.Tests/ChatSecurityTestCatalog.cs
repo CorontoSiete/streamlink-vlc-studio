@@ -216,12 +216,10 @@ internal static class ChatSecurityTestCatalog
         Assert.Equal(false, KickChatClient.IsPusherPing("""{"event":"message","data":"pusher:ping"}"""));
         Assert.Equal(false, KickChatClient.IsPusherPing("""{"event":"pusher:ping-extra"}"""));
 
-        var client = new KickChatClient(new ChatSettings(), new MemoryLogger());
-        var gate = (SemaphoreSlim?)typeof(KickChatClient)
-            .GetField("recentChatBackfillGate", BindingFlags.Instance | BindingFlags.NonPublic)
-            ?.GetValue(client);
-        Assert.NotNull(gate);
-        await gate!.WaitAsync();
+        await using var client = new KickChatClient(new ChatSettings(), new MemoryLogger());
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        typeof(KickChatClient).GetField("recentChatBackfillTask", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(client, pending.Task);
         try
         {
             var stopwatch = Stopwatch.StartNew();
@@ -232,8 +230,7 @@ internal static class ChatSecurityTestCatalog
         }
         finally
         {
-            gate.Release();
-            await client.DisposeAsync();
+            pending.TrySetResult();
         }
     }
 

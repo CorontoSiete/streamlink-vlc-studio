@@ -977,6 +977,7 @@ public partial class MainWindow : Window
             Dispatch = DispatchToUi,
             ViewerCountService = viewerCountService,
             FollowedStreamsService = followedStreamsService,
+            KickFollowedChannelsImporter = new Kick.KickFollowedChannelsImporter(this),
             StreamMetadataService = streamMetadataService,
             ReplayResolver = replayResolver,
             VodChatProvider = vodChatProvider,

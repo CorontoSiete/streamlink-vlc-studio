@@ -106,8 +106,8 @@ jobs:
       - name: Run headless-safe test suite
         env:
           SVS_SKIP_INTERACTIVE_WINDOW_TESTS: "true"
-          # Includes replay controls, live hover, window sharing, hidden emotes, 28 Browse scroll tests, 2 native tab-switch tests, and native resize tracing.
-          SVS_EXPECTED_MAX_SKIPS: "239"
+          # Includes replay controls, live/Kick VOD hover, window sharing, hidden emotes, 28 Browse scroll tests, 2 native tab-switch tests, and native resize tracing.
+          SVS_EXPECTED_MAX_SKIPS: "240"
           SVS_TEST_TIMEOUT_SECONDS: "30"
           SVS_TEST_DRAIN_TIMEOUT_SECONDS: "2"
         run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore --no-build

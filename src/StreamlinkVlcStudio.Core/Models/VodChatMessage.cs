@@ -12,7 +12,10 @@ public enum VodChatFetchOutcome
     /// </summary>
     Loaded,
 
-    /// <summary>The source has no further chat for this VOD. Stop polling.</summary>
+    /// <summary>
+    /// The source currently has no further chat. Stop polling for a finished archive; a current
+    /// broadcast can publish more comments later and must be checked again.
+    /// </summary>
     Completed,
 
     /// <summary>

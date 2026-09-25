@@ -59,8 +59,12 @@ public static class LocalHttpRequestReader
                 return LocalHttpRequestReadResult.Failure(400, "Bad Request", "The request ended before its headers were complete.");
             }
 
+            // Revisit only the overlap needed for a delimiter split across reads. Rechecking
+            // the whole header for every small read makes fragmented requests quadratic.
+            var searchStart = Math.Max(0, totalRead - 3);
             totalRead += read;
-            headerEnd = FindHeaderEnd(buffer.AsSpan(0, totalRead));
+            var delimiterIndex = buffer.AsSpan(searchStart, totalRead - searchStart).IndexOf("\r\n\r\n"u8);
+            if (delimiterIndex >= 0) headerEnd = searchStart + delimiterIndex;
         }
 
         // Decode one-to-one so invalid non-ASCII syntax cannot be replaced before validation.
@@ -187,21 +191,5 @@ public static class LocalHttpRequestReader
     private static bool ContainsInvalidHeaderCharacters(string value)
     {
         return value.Any(static character => (character < 32 && character != '\t') || character == 127);
-    }
-
-    private static int FindHeaderEnd(ReadOnlySpan<byte> bytes)
-    {
-        for (var index = 0; index <= bytes.Length - 4; index++)
-        {
-            if (bytes[index] == '\r' &&
-                bytes[index + 1] == '\n' &&
-                bytes[index + 2] == '\r' &&
-                bytes[index + 3] == '\n')
-            {
-                return index;
-            }
-        }
-
-        return -1;
     }
 }

@@ -13,46 +13,6 @@ public interface IChatClient : IAsyncDisposable
     Task SendMessageAsync(string message, CancellationToken cancellationToken = default);
 }
 
-public interface IChatHistoryBackfillClient
-{
-    Task<ChatHistoryBackfillResult> BackfillRecentChatRangeAsync(
-        DateTimeOffset fromTimestampUtc,
-        DateTimeOffset throughTimestampUtc,
-        CancellationToken cancellationToken = default);
-}
-
-public readonly record struct ChatHistoryBackfillResult
-{
-    private readonly IReadOnlyList<ChatMessage>? messages;
-
-    public ChatHistoryBackfillResult(
-        bool Attempted,
-        int LoadedMessageCount,
-        bool CoveredRequestedRange,
-        DateTimeOffset? CoveredFromTimestampUtc,
-        DateTimeOffset? CoveredThroughTimestampUtc,
-        IReadOnlyList<ChatMessage>? Messages = null)
-    {
-        this.Attempted = Attempted;
-        this.LoadedMessageCount = LoadedMessageCount;
-        this.CoveredRequestedRange = CoveredRequestedRange;
-        this.CoveredFromTimestampUtc = CoveredFromTimestampUtc;
-        this.CoveredThroughTimestampUtc = CoveredThroughTimestampUtc;
-        messages = Messages ?? [];
-    }
-
-    public bool Attempted { get; init; }
-    public int LoadedMessageCount { get; init; }
-    public bool CoveredRequestedRange { get; init; }
-    public DateTimeOffset? CoveredFromTimestampUtc { get; init; }
-    public DateTimeOffset? CoveredThroughTimestampUtc { get; init; }
-    public IReadOnlyList<ChatMessage> Messages
-    {
-        get => messages ?? Array.Empty<ChatMessage>();
-        init => messages = value ?? Array.Empty<ChatMessage>();
-    }
-}
-
 public interface ITwitchPredictionClient
 {
     event EventHandler<TwitchPrediction>? PredictionReceived;

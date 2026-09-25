@@ -8,6 +8,21 @@ internal static class ValidatedReplayHttpClient
 {
     private const int MaximumRedirects = 5;
 
+    /// <summary>Keeps a playlist's final response location with its text for relative URI resolution.</summary>
+    internal static async Task<(string Content, Uri Uri)> ReadPlaylistAsync(
+        HttpClient httpClient,
+        ReplayUrlSecurityValidator validator,
+        Uri uri,
+        PlatformKind platform,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendGetAsync(httpClient, validator, uri, platform,
+            static address => new HttpRequestMessage(HttpMethod.Get, address), cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var content = await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken).ConfigureAwait(false);
+        return (content, response.RequestMessage!.RequestUri!);
+    }
+
     internal static async Task<HttpResponseMessage> SendGetAsync(
         HttpClient httpClient,
         ReplayUrlSecurityValidator validator,
@@ -41,6 +56,7 @@ internal static class ValidatedReplayHttpClient
                 await validator.ValidateAsync(effectiveUri, platform, cancellationToken).ConfigureAwait(false);
                 if (!IsRedirect(response.StatusCode))
                 {
+                    response.RequestMessage ??= request;
                     return response;
                 }
 

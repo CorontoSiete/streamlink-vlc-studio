@@ -20,6 +20,7 @@ internal sealed record MainViewModelDependencies
     public required Action<Action> Dispatch { get; init; }
     public IViewerCountService? ViewerCountService { get; init; }
     public IFollowedStreamsService? FollowedStreamsService { get; init; }
+    public IKickFollowedChannelsImporter? KickFollowedChannelsImporter { get; init; }
     public IStreamMetadataService? StreamMetadataService { get; init; }
     public IReplayResolver? ReplayResolver { get; init; }
     public IVodChatProvider? VodChatProvider { get; init; }
