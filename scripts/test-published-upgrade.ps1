@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.7.0',
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.2',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.3',
     [ValidateSet('source', 'target')][string]$HelperSource = 'source',
     [string]$TargetReleaseDirectory
 )
@@ -125,11 +125,20 @@ try {
     Start-Sleep -Seconds 5
     if (@($restarted | Where-Object { -not $_.HasExited }).Count -eq 0) { throw 'The restarted application exited during startup.' }
     Write-Host 'PASS actual update helper installed the target and restarted the app.'
+    # Restart has been verified. Release the app's executable before MSI repair,
+    # otherwise Windows legitimately schedules replacement of the running file.
+    foreach ($process in $restarted) {
+        if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force
+            if (-not $process.WaitForExit(10000)) { throw 'The restarted test application did not stop before repair.' }
+        }
+    }
     $repairLog = Join-Path $logs 'quiet-repair.log'
     $repair = Start-Process -FilePath $targetSetup -WindowStyle Hidden -PassThru `
         -ArgumentList @('/repair', '/quiet', '/norestart', '/log', ('"' + $repairLog + '"'))
     if (-not $repair.WaitForExit(600000)) { throw 'Quiet repair timed out.' }
-    if ($repair.ExitCode -ne 0) { throw "Quiet repair returned $($repair.ExitCode)." }
+    if ($repair.ExitCode -notin @(0, 3010)) { throw "Quiet repair returned $($repair.ExitCode)." }
+    Write-Host "PASS quiet repair; restart required: $($repair.ExitCode -eq 3010)."
     Assert-InstalledVersion $targetIdentity.VersionText
     & "$PSScriptRoot/test-packaged-updater.ps1" -ExecutablePath $installed -ExpectedInstallKind Managed `
         -ProbePath 'tests/StreamlinkVlcStudio.UpdateProbe/bin/Release/net10.0/StreamlinkVlcStudio.UpdateProbe.dll'
