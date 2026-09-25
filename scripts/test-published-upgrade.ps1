@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.7.0',
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.3',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.4',
     [ValidateSet('source', 'target')][string]$HelperSource = 'source',
     [string]$TargetReleaseDirectory
 )
@@ -103,8 +103,18 @@ try {
         '--target-version', $targetIdentity.VersionText,
         '--install-dir', ('"' + (Split-Path $installed -Parent) + '"'),
         '--result', ('"' + $resultPath + '"'), '--log', ('"' + $updateLog + '"'))
+    # Actions has no interactive desktop. Inspect the actual relaunched executable
+    # before WPF opens its custom chrome, then exit so repair can replace its files.
+    $restartReportPath = Join-Path $logs 'restarted-updater.json'
+    $probePath = (Resolve-Path -LiteralPath 'tests/StreamlinkVlcStudio.UpdateProbe/bin/Release/net10.0/StreamlinkVlcStudio.UpdateProbe.dll').Path
+    $probeEnvironment = @{
+        DOTNET_STARTUP_HOOKS = $probePath
+        SVS_UPDATE_PROBE_RESTART_EXECUTABLE = $installed
+        SVS_UPDATE_PROBE_RESTART_REPORT = $restartReportPath
+    }
     $helper = Start-Process -FilePath $stagedHelper -WorkingDirectory $operation `
         -ArgumentList $helperArguments -WindowStyle Hidden -PassThru `
+        -Environment $probeEnvironment `
         -RedirectStandardError (Join-Path $logs 'helper-stderr.txt') `
         -RedirectStandardOutput (Join-Path $logs 'helper-stdout.txt')
     # Wait only for the helper; Start-Process -Wait would also wait for the relaunched app.
@@ -115,24 +125,18 @@ try {
         throw 'The upgrade removed or changed existing user data.'
     }
     $restartDeadline = [DateTime]::UtcNow.AddSeconds(45)
-    do {
-        $restarted = @(Get-Process -Name StreamlinkVlcStudio -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -eq $installed })
-        if ($restarted.Count -gt 0) { break }
+    while (-not (Test-Path -LiteralPath $restartReportPath)) {
+        if ([DateTime]::UtcNow -ge $restartDeadline) { throw 'The helper did not launch the installed application with its updater probe.' }
         Start-Sleep -Milliseconds 200
-    } while ([DateTime]::UtcNow -lt $restartDeadline)
-    if ($restarted.Count -eq 0) { throw 'The published update helper did not restart the installed application.' }
-    Start-Sleep -Seconds 5
-    if (@($restarted | Where-Object { -not $_.HasExited }).Count -eq 0) { throw 'The restarted application exited during startup.' }
-    Write-Host 'PASS actual update helper installed the target and restarted the app.'
-    # Restart has been verified. Release the app's executable before MSI repair,
-    # otherwise Windows legitimately schedules replacement of the running file.
-    foreach ($process in $restarted) {
-        if (-not $process.HasExited) {
-            Stop-Process -Id $process.Id -Force
-            if (-not $process.WaitForExit(10000)) { throw 'The restarted test application did not stop before repair.' }
-        }
     }
+    $restartReport = Get-Content -LiteralPath $restartReportPath -Raw | ConvertFrom-Json
+    if ($restartReport.ProcessPath -ine $installed -or
+        $restartReport.ConfiguredDirectory -ine (Split-Path $installed -Parent) -or
+        $restartReport.InstallKind -cne 'Managed') { throw 'The relaunched application did not configure its managed updater correctly.' }
+    foreach ($process in @(Get-Process -Name StreamlinkVlcStudio -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installed })) {
+        if (-not $process.WaitForExit(10000)) { throw 'The restarted probe did not exit before repair.' }
+    }
+    Write-Host 'PASS actual update helper installed the target and relaunched its managed updater (desktop UI is outside this headless test).'
     $repairLog = Join-Path $logs 'quiet-repair.log'
     $repair = Start-Process -FilePath $targetSetup -WindowStyle Hidden -PassThru `
         -ArgumentList @('/repair', '/quiet', '/norestart', '/log', ('"' + $repairLog + '"'))

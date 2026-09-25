@@ -15,7 +15,7 @@
     "vlc": {
       "version": "3.0.23",
       "fileName": "vlc-3.0.23-win64.exe",
-      "url": "https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.exe",
+      "url": "https://ftp.osuosl.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.exe",
       "length": 45948080,
       "sha256": "20ad191348684b470ddc4e05204316f3d8e39655f412b3e392a0eef97639daaf",
       "authenticode": "Valid",

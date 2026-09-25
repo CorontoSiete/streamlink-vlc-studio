@@ -5,7 +5,7 @@ param(
     [string]$OverlaySource,
     [string]$OutputRoot,
     [string]$PublishedAppDirectory,
-    [string]$Version = '1.7.3',
+    [string]$Version = '1.7.4',
     [string]$Tag = '',
     [string]$Commit = '',
     [string]$Repository = 'CorontoSiete/streamlink-vlc-studio',
