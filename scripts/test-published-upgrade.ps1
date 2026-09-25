@@ -29,13 +29,15 @@ function Assert-InstalledVersion([string]$Version) {
 function Get-VerifiedSetup([string]$Tag, [string]$Destination) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     & gh release download $Tag --repo $env:GITHUB_REPOSITORY --dir $Destination `
-        --pattern StreamlinkVlcStudio-Setup.exe --pattern UPDATE-MANIFEST.json --pattern UPDATE-MANIFEST.sig
+        --pattern StreamlinkVlcStudio-Setup.exe --pattern StreamlinkVlcStudio-release.zip `
+        --pattern UPDATE-MANIFEST.json --pattern UPDATE-MANIFEST.sig
     if ($LASTEXITCODE -ne 0) { throw "Could not download $Tag." }
     $setup = Join-Path $Destination 'StreamlinkVlcStudio-Setup.exe'
     & "$PSScriptRoot/verify-update-manifest.ps1" `
         -ManifestPath (Join-Path $Destination 'UPDATE-MANIFEST.json') `
         -SignaturePath (Join-Path $Destination 'UPDATE-MANIFEST.sig') `
-        -SetupPath $setup -ExpectedTag $Tag -ExpectedVersion $Tag.Substring(1) | Out-Host
+        -SetupPath $setup -ZipPath (Join-Path $Destination 'StreamlinkVlcStudio-release.zip') `
+        -ExpectedTag $Tag -ExpectedVersion $Tag.Substring(1) | Out-Host
     return $setup
 }
 
@@ -69,8 +71,9 @@ try {
     Assert-WindowsFileVersion $stagedHelper 'Published update helper' $sourceIdentity.VersionText
     $resultPath = Join-Path $results ($operationId.ToString('N') + '.json')
     $updateLog = Join-Path $updateLogs ($operationId.ToString('N') + '.log')
-    $length = (Get-Item -LiteralPath $stagedSetup).Length
-    $hash = (Get-FileHash -LiteralPath $stagedSetup -Algorithm SHA256).Hash.ToLowerInvariant()
+    $verifiedManifest = Get-Content -LiteralPath (Join-Path $root 'target/UPDATE-MANIFEST.json') -Raw | ConvertFrom-Json
+    $length = [long]$verifiedManifest.setup.length
+    $hash = [string]$verifiedManifest.setup.sha256
 
     # Model an app that has already exited, so the published helper can install immediately.
     $parent = Start-Process -FilePath $env:ComSpec -ArgumentList '/c exit 0' -WindowStyle Hidden -PassThru
