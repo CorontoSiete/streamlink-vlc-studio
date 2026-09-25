@@ -58,7 +58,7 @@ jobs:
           } else {
             $tag = ''
             [xml]$buildProperties = Get-Content .\Directory.Build.props -Raw
-            $version = [string]$buildProperties.Project.PropertyGroup.VersionPrefix
+            $version = $buildProperties.SelectSingleNode('/Project/PropertyGroup/VersionPrefix').InnerText
             ConvertTo-StableReleaseVersion $version | Out-Null
             $stable = 'false'
           }

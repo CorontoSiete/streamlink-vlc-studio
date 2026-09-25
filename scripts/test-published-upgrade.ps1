@@ -111,8 +111,10 @@ try {
             Copy-Item -Destination $logs -Force
     }
     foreach ($process in @(Get-Process -Name StreamlinkVlcStudio -ErrorAction SilentlyContinue)) {
-        if ($process.Path -eq $installed -or $process.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or
-            $process.Path.StartsWith($updateRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $processPath = $process.Path
+        if (-not [string]::IsNullOrWhiteSpace($processPath) -and
+            ($processPath -eq $installed -or $processPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or
+            $processPath.StartsWith($updateRoot, [StringComparison]::OrdinalIgnoreCase))) {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
         }
     }
