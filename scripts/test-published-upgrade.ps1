@@ -85,7 +85,9 @@ try {
         '--install-dir', ('"' + (Split-Path $installed -Parent) + '"'),
         '--result', ('"' + $resultPath + '"'), '--log', ('"' + $updateLog + '"'))
     $helper = Start-Process -FilePath $stagedHelper -WorkingDirectory $operation `
-        -ArgumentList $helperArguments -WindowStyle Hidden -PassThru
+        -ArgumentList $helperArguments -WindowStyle Hidden -PassThru `
+        -RedirectStandardError (Join-Path $logs 'helper-stderr.txt') `
+        -RedirectStandardOutput (Join-Path $logs 'helper-stdout.txt')
     # Wait only for the helper; Start-Process -Wait would also wait for the relaunched app.
     if (-not $helper.WaitForExit(600000)) { throw 'The published update helper timed out.' }
     if ($helper.ExitCode -ne 0) { throw "The published update helper returned $($helper.ExitCode)." }
@@ -107,6 +109,10 @@ try {
     Write-Host $summary
     [IO.File]::WriteAllText((Join-Path $logs 'result.txt'), $summary)
 } finally {
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = [DateTime]::Now.AddMinutes(-20) } -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
+        Select-Object TimeCreated, ProviderName, Id, Message |
+        Format-List | Out-File (Join-Path $logs 'application-events.txt') -Encoding utf8
     if (Test-Path -LiteralPath $updateRoot) {
         Get-ChildItem -LiteralPath $updateRoot -Filter *.log -File -Recurse |
             Copy-Item -Destination $logs -Force
