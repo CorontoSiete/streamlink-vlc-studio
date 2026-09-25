@@ -47,7 +47,7 @@ try {
     $targetSetup = Get-VerifiedSetup $TargetTag (Join-Path $root 'target')
     $initialLog = Join-Path $logs 'initial-install.log'
     $initial = Start-Process -FilePath $sourceSetup -WindowStyle Hidden -PassThru `
-        -ArgumentList @('/quiet', '/norestart', '/log', ('"' + $initialLog + '"'))
+        -ArgumentList @('/passive', '/norestart', '/log', ('"' + $initialLog + '"'))
     if (-not $initial.WaitForExit(600000)) { throw 'The initial installation timed out.' }
     if ($initial.ExitCode -ne 0) { throw "Initial installation returned $($initial.ExitCode)." }
     Assert-InstalledVersion $sourceIdentity.VersionText
