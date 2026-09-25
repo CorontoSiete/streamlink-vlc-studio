@@ -2,7 +2,7 @@
 
 Windows-first desktop app for watching Twitch and Kick streams through Streamlink and embedded libVLC.
 
-> **Upgrading from 1.6.65 or earlier:** those builds cannot discover the new signed-update channel. Download and run `StreamlinkVlcStudio-Setup.exe` once from the latest release. Future managed updates are offered in the app. The ZIP/PowerShell install remains an advanced per-user option and receives release notifications only.
+> **Upgrading from 1.7.1 or earlier:** run `StreamlinkVlcStudio-Setup.exe` from the latest release once. Those builds confuse the .NET extraction cache with the installed application directory and cannot reliably install this updater fix themselves. Future managed updates are offered in the app. ZIP/PowerShell installations receive release notifications only.
 
 ## Current Features
 

@@ -159,7 +159,7 @@ internal static class UpdateHelperRunner
         string resultPath,
         string logPath)
     {
-        var helperDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+        var helperDirectory = Path.TrimEndingDirectorySeparator(AppIdentity.ExecutableDirectory);
         if (!string.Equals(Path.GetDirectoryName(setup), helperDirectory, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetFileName(setup), AppIdentity.SetupAssetName, StringComparison.Ordinal) ||
             expectedLength is <= 0 or > 1024L * 1024L * 1024L ||

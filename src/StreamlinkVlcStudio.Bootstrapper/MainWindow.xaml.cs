@@ -16,7 +16,7 @@ public partial class MainWindow : Window
         InitializeComponent();
     }
 
-    public nint WindowHandle => new WindowInteropHelper(this).Handle;
+    public nint WindowHandle => new WindowInteropHelper(this).EnsureHandle();
 
     public void CloseFromApplication()
     {

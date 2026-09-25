@@ -567,7 +567,10 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             vm.StatusText = "Waiting for Windows permission…";
             // Engine callbacks arrive on the engine's thread; window.IsVisible/WindowHandle are
             // dispatcher-affine, so resolve the parent handle here rather than on that thread.
-            engine.Apply(window?.IsVisible == true ? window.WindowHandle : nint.Zero);
+            // Burn requires a real parent HWND even for quiet or related-bundle removal.
+            // EnsureHandle creates the hidden window without displaying setup UI.
+            engine.Apply(window?.WindowHandle
+                ?? throw new InvalidOperationException("The setup window has not been initialized."));
         });
     }
 

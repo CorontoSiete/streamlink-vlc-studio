@@ -2,7 +2,7 @@ param(
     [string]$OutputPath,
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [string]$Version = "1.7.1",
+    [string]$Version = "1.7.2",
     [switch]$Quiet
 )
 

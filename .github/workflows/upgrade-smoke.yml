@@ -10,7 +10,15 @@ on:
       target_tag:
         description: Published version to install
         required: true
-        default: v1.7.1
+        default: v1.7.2
+      helper_source:
+        description: Use target for clients predating the packaged-updater fix
+        required: true
+        type: choice
+        options:
+          - source
+          - target
+        default: target
 
 permissions:
   contents: read
@@ -24,13 +32,23 @@ jobs:
       - name: Check out verification tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Run real published update helper
+      - name: Set up pinned SDK for the packaged probe
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Build packaged updater probe
+        shell: pwsh
+        run: dotnet build tests/StreamlinkVlcStudio.UpdateProbe/StreamlinkVlcStudio.UpdateProbe.csproj --configuration Release -warnaserror
+
+      - name: Exercise installation, update helper, and restart
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_TAG: ${{ inputs.source_tag }}
           TARGET_TAG: ${{ inputs.target_tag }}
-        run: ./scripts/test-published-upgrade.ps1 -SourceTag $env:SOURCE_TAG -TargetTag $env:TARGET_TAG
+          HELPER_SOURCE: ${{ inputs.helper_source }}
+        run: ./scripts/test-published-upgrade.ps1 -SourceTag $env:SOURCE_TAG -TargetTag $env:TARGET_TAG -HelperSource $env:HELPER_SOURCE
 
       - name: Retain installation and updater logs
         if: always()

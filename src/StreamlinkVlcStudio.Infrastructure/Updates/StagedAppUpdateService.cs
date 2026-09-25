@@ -48,7 +48,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     private PreparedAppUpdate? preparedUpdate;
 
     public StagedAppUpdateService(IAppLogger logger)
-        : this(logger, new HttpClient(), AppContext.BaseDirectory, GetUpdateRoot(), () => DateTimeOffset.UtcNow, true)
+        : this(logger, new HttpClient(), AppIdentity.ExecutableDirectory, GetUpdateRoot(), () => DateTimeOffset.UtcNow, true)
     {
     }
 

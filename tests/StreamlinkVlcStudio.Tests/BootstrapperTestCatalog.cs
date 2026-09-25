@@ -21,6 +21,7 @@ internal static class BootstrapperTestCatalog
         ("Bootstrapper reboot-required completion does not offer app launch", RebootRequiredDisablesLaunch),
         ("Bootstrapper cancellation during preparation prevents planning", CancelPreparationAsync),
         ("Bootstrapper cancellation before queued apply prevents elevation", CancelQueuedApplyAsync),
+        ("Bootstrapper quiet apply uses a real hidden window handle", HiddenApplyUsesWindowHandleAsync),
         ("Bootstrapper installs VLC from EXE package instead of MSI", VlcDependencyUsesExePackage),
         ("Scripted installer installs VLC without msiexec", ScriptedInstallerUsesVlcExe)
     ];
@@ -75,6 +76,25 @@ internal static class BootstrapperTestCatalog
         await finished.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.Equal(0, engine.Applies);
         Assert.Equal(1602, (int)GetField(application, "resultCode")!);
+    });
+
+    private static Task HiddenApplyUsesWindowHandleAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        var (application, _, engine) = CreateApplication(RelationType.None, (_, _, _) => 0, Display.None);
+        var window = new BootstrapperAssembly::StreamlinkVlcStudio.Bootstrapper.MainWindow(
+            application, new BootstrapperViewModel(application));
+        SetField(application, "window", window);
+        SetField(application, "dispatcher", System.Windows.Threading.Dispatcher.CurrentDispatcher);
+        try
+        {
+            Assert.Equal(false, window.IsVisible);
+            InvokeHandler(application, "OnPlanComplete", new PlanCompleteEventArgs(0));
+            await TestWait.UntilAsync(() => engine.Applies == 1, TimeSpan.FromSeconds(3));
+            Assert.True(engine.ApplyParent != nint.Zero);
+            Assert.Equal(window.WindowHandle, engine.ApplyParent);
+            Assert.Equal(false, window.IsVisible);
+        }
+        finally { window.CloseFromApplication(); }
     });
 
     private static Task WhenResult(BootstrapperViewModel model)
@@ -406,6 +426,7 @@ public class BootstrapperEngineProbe : DispatchProxy
     public LaunchAction PlannedAction { get; private set; } = LaunchAction.Unknown;
     public int Detections { get; private set; }
     public int Applies { get; private set; }
+    public nint ApplyParent { get; private set; }
     public List<string> Messages { get; } = [];
     public Dictionary<string, string> Variables { get; } = [];
     public Dictionary<string, string> FormattedVariables { get; } = [];
@@ -420,7 +441,7 @@ public class BootstrapperEngineProbe : DispatchProxy
             case "Log": Messages.Add((string)args![1]!); return null;
             case "Plan": PlannedAction = (LaunchAction)args![0]!; return null;
             case "Detect": Detections++; return null;
-            case "Apply": Applies++; return null;
+            case "Apply": ApplyParent = (nint)args![0]!; Applies++; return null;
             case "SetVariableVersion": Variables[(string)args![0]!] = (string)args[1]!; return null;
             case "SetVariableNumeric":
                 if ((string)args![0]! == "PurgeUserData") PurgeUserData = (long)args[1]!;

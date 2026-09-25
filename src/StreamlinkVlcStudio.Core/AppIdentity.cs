@@ -2,6 +2,11 @@ namespace StreamlinkVlcStudio.Core;
 
 public static class AppIdentity
 {
+    // IncludeAllContentForSelfExtract makes AppContext.BaseDirectory point at the
+    // runtime extraction cache. Installation ownership and staged helpers use the apphost.
+    public static string ExecutableDirectory => Path.GetDirectoryName(Environment.ProcessPath)
+        ?? throw new InvalidOperationException("The running application directory is unavailable.");
+
     public const string DisplayName = "Stream Studio";
     public const string ProductDirectoryName = "StreamStudio";
     public const string LegacyProductDirectoryName = "StreamlinkVlcStudio";

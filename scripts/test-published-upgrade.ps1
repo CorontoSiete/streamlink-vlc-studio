@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.7.0',
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.1'
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.2',
+    [ValidateSet('source', 'target')][string]$HelperSource = 'source',
+    [string]$TargetReleaseDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -26,12 +28,18 @@ function Assert-InstalledVersion([string]$Version) {
     Assert-WindowsFileVersion $installed 'Installed application' $Version
 }
 
-function Get-VerifiedSetup([string]$Tag, [string]$Destination) {
+function Get-VerifiedSetup([string]$Tag, [string]$Destination, [string]$LocalReleaseDirectory = '') {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    & gh release download $Tag --repo $env:GITHUB_REPOSITORY --dir $Destination `
-        --pattern StreamlinkVlcStudio-Setup.exe --pattern StreamlinkVlcStudio-release.zip `
-        --pattern UPDATE-MANIFEST.json --pattern UPDATE-MANIFEST.sig
-    if ($LASTEXITCODE -ne 0) { throw "Could not download $Tag." }
+    if ([string]::IsNullOrWhiteSpace($LocalReleaseDirectory)) {
+        & gh release download $Tag --repo $env:GITHUB_REPOSITORY --dir $Destination `
+            --pattern StreamlinkVlcStudio-Setup.exe --pattern StreamlinkVlcStudio-release.zip `
+            --pattern UPDATE-MANIFEST.json --pattern UPDATE-MANIFEST.sig
+        if ($LASTEXITCODE -ne 0) { throw "Could not download $Tag." }
+    } else {
+        foreach ($name in @('StreamlinkVlcStudio-Setup.exe', 'StreamlinkVlcStudio-release.zip', 'UPDATE-MANIFEST.json', 'UPDATE-MANIFEST.sig')) {
+            Copy-Item -LiteralPath (Join-Path $LocalReleaseDirectory $name) -Destination $Destination
+        }
+    }
     $setup = Join-Path $Destination 'StreamlinkVlcStudio-Setup.exe'
     & "$PSScriptRoot/verify-update-manifest.ps1" `
         -ManifestPath (Join-Path $Destination 'UPDATE-MANIFEST.json') `
@@ -44,7 +52,7 @@ function Get-VerifiedSetup([string]$Tag, [string]$Destination) {
 try {
     if (Test-Path -LiteralPath $installed) { throw 'The runner must start without this application installed.' }
     $sourceSetup = Get-VerifiedSetup $SourceTag (Join-Path $root 'source')
-    $targetSetup = Get-VerifiedSetup $TargetTag (Join-Path $root 'target')
+    $targetSetup = Get-VerifiedSetup $TargetTag (Join-Path $root 'target') $TargetReleaseDirectory
     $initialLog = Join-Path $logs 'initial-install.log'
     $initial = Start-Process -FilePath $sourceSetup -WindowStyle Hidden -PassThru `
         -ArgumentList @('/passive', '/norestart', '/log', ('"' + $initialLog + '"'))
@@ -67,8 +75,19 @@ try {
     $stagedSetup = Join-Path $operation 'StreamlinkVlcStudio-Setup.exe'
     $stagedHelper = Join-Path $operation 'StreamlinkVlcStudio.exe'
     Copy-Item -LiteralPath $targetSetup -Destination $stagedSetup
-    Copy-Item -LiteralPath $installed -Destination $stagedHelper
-    Assert-WindowsFileVersion $stagedHelper 'Published update helper' $sourceIdentity.VersionText
+    if ($HelperSource -eq 'target') {
+        # Clients through 1.7.1 use the extraction cache as their helper directory.
+        # Exercise the fixed signed helper against the older installed application.
+        $targetPayload = Join-Path $root 'target-payload'
+        Expand-Archive -LiteralPath (Join-Path $root 'target/StreamlinkVlcStudio-release.zip') -DestinationPath $targetPayload
+        $helpers = @(Get-ChildItem -LiteralPath $targetPayload -Filter StreamStudio.exe -File -Recurse)
+        if ($helpers.Count -ne 1) { throw 'The signed target ZIP must contain exactly one app executable.' }
+        Copy-Item -LiteralPath $helpers[0].FullName -Destination $stagedHelper
+        Assert-WindowsFileVersion $stagedHelper 'Published update helper' $targetIdentity.VersionText
+    } else {
+        Copy-Item -LiteralPath $installed -Destination $stagedHelper
+        Assert-WindowsFileVersion $stagedHelper 'Published update helper' $sourceIdentity.VersionText
+    }
     $resultPath = Join-Path $results ($operationId.ToString('N') + '.json')
     $updateLog = Join-Path $updateLogs ($operationId.ToString('N') + '.log')
     $verifiedManifest = Get-Content -LiteralPath (Join-Path $root 'target/UPDATE-MANIFEST.json') -Raw | ConvertFrom-Json
@@ -105,7 +124,16 @@ try {
     if ($restarted.Count -eq 0) { throw 'The published update helper did not restart the installed application.' }
     Start-Sleep -Seconds 5
     if (@($restarted | Where-Object { -not $_.HasExited }).Count -eq 0) { throw 'The restarted application exited during startup.' }
-    $summary = "PASS: $SourceTag -> $TargetTag through the published helper; exact installed version, retained user data, and app restart verified."
+    Write-Host 'PASS actual update helper installed the target and restarted the app.'
+    $repairLog = Join-Path $logs 'quiet-repair.log'
+    $repair = Start-Process -FilePath $targetSetup -WindowStyle Hidden -PassThru `
+        -ArgumentList @('/repair', '/quiet', '/norestart', '/log', ('"' + $repairLog + '"'))
+    if (-not $repair.WaitForExit(600000)) { throw 'Quiet repair timed out.' }
+    if ($repair.ExitCode -ne 0) { throw "Quiet repair returned $($repair.ExitCode)." }
+    Assert-InstalledVersion $targetIdentity.VersionText
+    & "$PSScriptRoot/test-packaged-updater.ps1" -ExecutablePath $installed -ExpectedInstallKind Managed `
+        -ProbePath 'tests/StreamlinkVlcStudio.UpdateProbe/bin/Release/net10.0/StreamlinkVlcStudio.UpdateProbe.dll'
+    $summary = "PASS: $SourceTag -> $TargetTag using the $HelperSource release helper; exact installed version, retained user data, app restart, and quiet repair verified."
     Write-Host $summary
     [IO.File]::WriteAllText((Join-Path $logs 'result.txt'), $summary)
 } finally {

@@ -204,6 +204,15 @@ jobs:
             --output artifacts\publish\StreamStudio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify updater paths inside the packaged executable
+        shell: pwsh
+        run: |
+          dotnet build tests\StreamlinkVlcStudio.UpdateProbe\StreamlinkVlcStudio.UpdateProbe.csproj --configuration Release -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\scripts\test-packaged-updater.ps1 `
+            -ExecutablePath artifacts\publish\StreamStudio\StreamStudio.exe `
+            -ProbePath tests\StreamlinkVlcStudio.UpdateProbe\bin\Release\net10.0\StreamlinkVlcStudio.UpdateProbe.dll
+
       - name: Inspect pinned publish runtime
         shell: pwsh
         run: |
@@ -437,6 +446,15 @@ jobs:
             --output artifacts\publish\StreamStudio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify final packaged updater paths
+        shell: pwsh
+        run: |
+          dotnet build tests\StreamlinkVlcStudio.UpdateProbe\StreamlinkVlcStudio.UpdateProbe.csproj --configuration Release -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\scripts\test-packaged-updater.ps1 `
+            -ExecutablePath artifacts\publish\StreamStudio\StreamStudio.exe `
+            -ProbePath tests\StreamlinkVlcStudio.UpdateProbe\bin\Release\net10.0\StreamlinkVlcStudio.UpdateProbe.dll
+
       - name: Build final ZIP, internal MSI, and Setup bundle
         shell: pwsh
         run: |
@@ -535,6 +553,37 @@ jobs:
             throw 'Internal MSI must never enter the public release set.'
           }
 
+      - name: Remove signing material before installer execution
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:UPDATE_PRIVATE_KEY_PATH) -and (Test-Path -LiteralPath $env:UPDATE_PRIVATE_KEY_PATH)) {
+            Remove-Item -LiteralPath $env:UPDATE_PRIVATE_KEY_PATH -Force
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:SVS_AUTHENTICODE_CERTIFICATE_THUMBPRINT)) {
+            $certificatePath = "Cert:\CurrentUser\My\$($env:SVS_AUTHENTICODE_CERTIFICATE_THUMBPRINT)"
+            if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath -Force }
+          }
+
+      - name: Verify real upgrade, restart, managed detection, and quiet repair
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .\scripts\test-published-upgrade.ps1 `
+            -SourceTag v1.7.0 `
+            -TargetTag $env:RELEASE_TAG `
+            -HelperSource target `
+            -TargetReleaseDirectory artifacts\release-set
+
+      - name: Retain installer execution logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: StreamStudio-upgrade-check-${{ github.ref_name }}
+          path: artifacts\upgrade-smoke
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload reviewed stable release set
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -565,7 +614,7 @@ jobs:
           $notes = @"
           ## Stream Studio $env:RELEASE_TAG
 
-          **One-time migration for 1.6.65 and earlier:** those clients cannot discover this signed update channel. Download and run `StreamlinkVlcStudio-Setup.exe` manually once. Future managed releases can then be downloaded and installed from inside the app.
+          **One-time migration for 1.7.1 and earlier:** those packaged clients cannot reliably install updates. Download and run `StreamlinkVlcStudio-Setup.exe` manually once. Future managed releases can then be downloaded and installed from inside the app.
 
           `StreamlinkVlcStudio-Setup.exe` is the supported per-machine installer and updater. The ZIP/PowerShell package is an advanced per-user fallback and receives verified release notifications only.
 
