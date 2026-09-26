@@ -1,9 +1,24 @@
 # Replay pause continuity module
 
 `replay_pause.c` is a small VLC 3.0 `demux_filter`, licensed under LGPL-2.1-or-later
-(see `COPYING.LIB`). It attaches only to the adaptive demuxer and only when the
-application supplies a per-input readiness event. It intercepts
+(see `COPYING.LIB`). It attaches only when the application supplies a per-input
+readiness event. On adaptive inputs it intercepts
 `DEMUX_SET_PAUSE_STATE`; all other controls and demux calls pass through.
+
+Completed MPEG-TS Twitch replays on VLC 3.0.23 can instead use the FFmpeg demuxer
+through the validated local HTTP transport. In that mode this module attaches
+only when the app supplies `studio-replay-seek-preroll` in microseconds (positive,
+at most 30 seconds). The value comes from the longest segment in the inspected
+playlist. `DEMUX_SET_TIME` seeks that much earlier and sets VLC's exact next
+display time to the requested timestamp. This avoids FFmpeg HLS skipping to a
+later keyframe while retaining decoder preroll. Other controls, including pause,
+pass through. The same per-input event confirms that this correction attached;
+failure keeps output gated and selects the adaptive fallback.
+
+The application still confirms real playback-clock progress before releasing
+its video/audio gates. Native regression fixtures include long GOPs whose next
+keyframe is a different color, muted segments, cancellation, paused seeks,
+window moves, end-of-media and 33-bit timestamp rollover.
 
 VLC's input loop still pauses the output clock and audio/video decoders. The
 adaptive downloader retains its bounded buffer and its segment position instead
@@ -13,7 +28,7 @@ seeking, teardown, and end-of-stream behavior remain active.
 The module acknowledges attachment through a named Windows event owned by that
 media player. Closing the input clears the event and closes the native handle.
 The application checks and unpauses under its native player lock. Missing modules,
-incompatible VLC versions, non-adaptive media, and replacement inputs cannot
+incompatible VLC versions, unsupported media, and replacement inputs cannot
 inherit the acknowledgement; they retain the existing restoration fallback.
 
 The checked-in DLL is embedded into the .NET assembly and extracted into a

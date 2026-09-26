@@ -9,5 +9,6 @@ public enum PlaybackStatus
     Paused,
     Stopped,
     Offline,
-    Error
+    Error,
+    Finished
 }

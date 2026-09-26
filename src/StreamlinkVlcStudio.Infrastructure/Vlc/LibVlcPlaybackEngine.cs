@@ -49,7 +49,7 @@ public sealed class LibVlcPlaybackEngineFactory : IPlaybackEngineFactory
     }
 }
 
-public sealed class LibVlcPlaybackEngine : IPlaybackEngine
+public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 {
     private const int NativeOverlayShowPlaceholder = 0;
     private static readonly TimeSpan VideoOutputRebindReadinessTimeout = TimeSpan.FromSeconds(5);
@@ -87,11 +87,14 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     private IntPtr media;
     private IntPtr videoHandle;
     private Uri? currentMediaUri;
+    private Uri? originalMediaUri;
     // Keeps currentMediaUri openable (for example a repair proxy session) until the media is cleared.
     private PlaybackMediaSource? currentMediaSource;
     private bool desiredPaused;
     private bool replayOutputPending;
     private bool preserveReplayPause;
+    private bool usingAvformatReplay;
+    private TimeSpan? replayOpeningPosition;
     private readonly bool replayPausePluginAvailable;
     private EventWaitHandle? replayPauseReady;
     private int? lastEnabledAudioTrackId;
@@ -327,19 +330,31 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         return PlayCoreAsync(mediaUri, cancellationToken, position < TimeSpan.Zero ? TimeSpan.Zero : position);
     }
 
-    private async Task PlayCoreAsync(Uri mediaUri, CancellationToken cancellationToken, TimeSpan? startPosition = null)
+    private async Task PlayCoreAsync(Uri mediaUri, CancellationToken cancellationToken, TimeSpan? startPosition = null,
+        long? expectedGeneration = null, bool pauseAfterOpening = false, bool allowFastReplay = true)
     {
-        var mediaSource = await PrepareMediaSourceAsync(mediaUri, cancellationToken).ConfigureAwait(false);
+        if (startPosition is { } preparedPosition && !expectedGeneration.HasValue &&
+            await TryPlayPreparedReplayAsync(mediaUri, preparedPosition, cancellationToken).ConfigureAwait(false)) return;
+        var mediaSource = await PrepareMediaSourceAsync(mediaUri, cancellationToken,
+            allowFastReplay && replayPausePluginAvailable && startPosition > TimeSpan.Zero).ConfigureAwait(false);
         var engineOwnsMediaSource = false;
         long generation = 0;
         try
         {
+            if (startPosition is { } requestedPosition)
+            {
+                mediaSource = await HlsReplayTimeline.PrepareAsync(mediaSource, requestedPosition, cancellationToken).ConfigureAwait(false);
+            }
+            var nativeStartPosition = startPosition - mediaSource.TimelineOffset;
             await RunBlockingNativeAsync(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 lock (nativeGate)
                 {
                     ObjectDisposedException.ThrowIf(disposed, this);
+                    if (expectedGeneration.HasValue && expectedGeneration.Value != playerGeneration)
+                        throw new OperationCanceledException("The playback media changed while preparing the replay seek.");
+                    if (expectedGeneration.HasValue) pauseAfterOpening = desiredPaused;
                     StopCurrentCore();
                     // From here the engine state owns the source: whatever clears the current
                     // media (stop, a newer play, dispose) also releases it.
@@ -347,6 +362,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                     engineOwnsMediaSource = true;
                     var playbackUri = mediaSource.PlaybackUri;
                     currentMediaUri = playbackUri;
+                    originalMediaUri = mediaUri;
                     desiredPaused = false;
                     preserveReplayPause = startPosition.HasValue;
 
@@ -355,7 +371,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                         throw new InvalidOperationException("The video surface is not ready yet.");
                     }
 
-                    CreatePlayerCore(playbackUri, startPosition);
+                    CreatePlayerCore(playbackUri, nativeStartPosition);
                     _ = ApplyAudioCore();
 
                     var result = LibVlcNative.libvlc_media_player_play(player);
@@ -367,7 +383,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                             AppLogLevel.Warning,
                             "libVLC",
                             "Direct3D11 could not start the video output; retrying with GDI.");
-                        SwitchToGdiCore(playbackUri, startPosition);
+                        SwitchToGdiCore(playbackUri, nativeStartPosition);
                         result = LibVlcNative.libvlc_media_player_play(player);
                     }
 
@@ -388,6 +404,9 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                         ScheduleAudioStateConvergence();
                     }
                     generation = playerGeneration;
+                    if (mediaSource.TimelineOffset > TimeSpan.Zero)
+                        logger.Write(AppLogLevel.Info, "libVLC",
+                            $"Rebased HLS replay by {mediaSource.TimelineOffset.TotalSeconds:0.###} seconds; requested position {startPosition!.Value.TotalSeconds:0.###} seconds.");
                 }
             }, cancellationToken).ConfigureAwait(false);
             if (startPosition is { } position)
@@ -400,22 +419,45 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                     {
                         throw new OperationCanceledException("The playback media changed while opening the replay.");
                     }
+                    if (usingAvformatReplay && LibVlcNative.libvlc_media_player_get_state(player) == LibVlcNative.MediaPlayerState.Ended &&
+                        (LibVlcNative.libvlc_media_get_stats(media, out var stats) == 0 || stats.DecodedVideo == 0))
+                        throw new InvalidOperationException("The FFmpeg replay input ended without decoding video.");
+                    if (usingAvformatReplay && replayPauseReady?.WaitOne(0) != true)
+                        throw new InvalidOperationException("The precise FFmpeg replay seek filter did not attach.");
                     ReleaseReplayOutputCore();
+                    if (pauseAfterOpening)
+                    {
+                        desiredPaused = true;
+                        LibVlcNative.libvlc_media_player_set_pause(player, 1);
+                    }
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
             if (!engineOwnsMediaSource)
             {
                 mediaSource.Dispose();
             }
-
+            if (engineOwnsMediaSource && mediaSource.UseAvformatDemuxer && allowFastReplay &&
+                ex is (InvalidOperationException or TimeoutException) && !cancellationToken.IsCancellationRequested)
+            {
+                lock (nativeGate)
+                {
+                    if (disposed || playerGeneration != generation) throw;
+                    pauseAfterOpening |= desiredPaused;
+                }
+                logger.Write(AppLogLevel.Warning, "VOD resume", "FFmpeg could not restore this replay; retrying with VLC's adaptive demuxer.", ex);
+                await PlayCoreAsync(mediaUri, cancellationToken, startPosition, generation, pauseAfterOpening,
+                    allowFastReplay: false).ConfigureAwait(false);
+                return;
+            }
             throw;
         }
     }
 
-    private async Task<PlaybackMediaSource> PrepareMediaSourceAsync(Uri mediaUri, CancellationToken cancellationToken)
+    private async Task<PlaybackMediaSource> PrepareMediaSourceAsync(Uri mediaUri, CancellationToken cancellationToken,
+        bool preferFastReplay = false)
     {
         if (mediaSourceGateway is null)
         {
@@ -425,7 +467,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         try
         {
             return await mediaSourceGateway
-                .PrepareAsync(mediaUri, libVlcVersion, cancellationToken)
+                .PrepareAsync(mediaUri, libVlcVersion, cancellationToken, preferFastReplay)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -501,14 +543,42 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         ObjectDisposedException.ThrowIf(disposed, this);
         var generation = Volatile.Read(ref playerGeneration);
         // Native calls and lock acquisition must stay off the WPF input/dispatcher thread.
-        return Task.Run(() => SeekCoreAsync(position, generation, cancellationToken), cancellationToken);
+        return Task.Run(async () =>
+        {
+            Uri? reopenUri = null;
+            var pauseAfterOpening = false;
+            lock (nativeGate)
+            {
+                if (generation != playerGeneration) throw new OperationCanceledException("The playback media changed while seeking.");
+                var timelineOffset = currentMediaSource?.TimelineOffset ?? TimeSpan.Zero;
+                var relativePosition = (position < TimeSpan.Zero ? TimeSpan.Zero : position) - timelineOffset;
+                if (originalMediaUri is { } original && HlsReplayTimeline.IsPlaylist(original) &&
+                    (relativePosition < TimeSpan.Zero || relativePosition >= HlsReplayTimeline.RebaseThreshold ||
+                        (player != IntPtr.Zero && LibVlcNative.libvlc_media_player_get_time(player) >= HlsReplayTimeline.RebaseThreshold.TotalMilliseconds)))
+                {
+                    // The rollover limit applies to VLC's relative timeline. A rebased
+                    // input already covers later positions; retain its decoder, repair
+                    // lease and connections until a seek actually leaves that safe range.
+                    reopenUri = original;
+                    pauseAfterOpening = desiredPaused;
+                }
+            }
+            if (reopenUri is not null)
+                await PlayCoreAsync(reopenUri, cancellationToken, position < TimeSpan.Zero ? TimeSpan.Zero : position,
+                    generation, pauseAfterOpening).ConfigureAwait(false);
+            else
+                await SeekCoreAsync(position, generation, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
     }
 
-    private async Task SeekCoreAsync(TimeSpan position, long generation, CancellationToken cancellationToken, bool openingAtPosition = false)
+    private async Task SeekCoreAsync(TimeSpan position, long generation, CancellationToken cancellationToken, bool openingAtPosition = false,
+        bool seekAlreadySubmitted = false)
     {
-        var requestedMilliseconds = Math.Max(0, (long)Math.Round(position.TotalMilliseconds));
+        long requestedMilliseconds;
+        lock (nativeGate)
+            requestedMilliseconds = Math.Max(0, (long)Math.Round((position - (currentMediaSource?.TimelineOffset ?? TimeSpan.Zero)).TotalMilliseconds));
         var deadline = Stopwatch.StartNew();
-        long? submittedTarget = null;
+        long? submittedTarget = seekAlreadySubmitted ? requestedMilliseconds : null;
         var lastState = LibVlcNative.MediaPlayerState.NothingSpecial;
         long lastTime = -1;
         long lastLength = -1;
@@ -529,8 +599,12 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                 lastTime = LibVlcNative.libvlc_media_player_get_time(player);
                 lastLength = length;
                 if (state == LibVlcNative.MediaPlayerState.Ended &&
-                    submittedTarget is { } endTarget && length > 0 && endTarget >= length)
+                    (submittedTarget.HasValue || openingAtPosition))
                 {
+                    // A seek into the final frame can reach EOF before another clock sample.
+                    // PlayFromAsync can also end through :start-time before set_time is needed.
+                    // The current input's confirmed EOF completes either operation; it does not
+                    // require the requested timestamp to equal the advertised media length.
                     return;
                 }
 
@@ -550,8 +624,30 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
                     if (submittedTarget is null)
                     {
-                        submittedTarget = Math.Min(requestedMilliseconds, length);
-                        LibVlcNative.libvlc_media_player_set_time(player, submittedTarget.Value);
+                        var target = Math.Min(requestedMilliseconds, length);
+                        if (openingAtPosition && usingAvformatReplay && replayPauseReady?.WaitOne(0) == true)
+                        {
+                            // This input already seeks with decoder preroll before its first
+                            // output. Confirm its clock without resetting that work a second time.
+                            submittedTarget = target;
+                            continue;
+                        }
+                        // HLS publishes Playing and duration before establishing its
+                        // first demux timestamp. A precise seek at that point has no
+                        // timestamp reference: VLC plays the segment's preroll in real
+                        // time. Let :start-time select the segment, then use its first
+                        // real clock sample to either confirm arrival or seek precisely.
+                        // Neither zero nor the start-time echo proves that readiness.
+                        if (!openingAtPosition || (lastTime > 0 && lastTime != target))
+                        {
+                            if (openingAtPosition && lastTime >= target &&
+                                lastTime - target <= SeekConfirmationToleranceMilliseconds)
+                            {
+                                return;
+                            }
+                            submittedTarget = target;
+                            LibVlcNative.libvlc_media_player_set_time(player, target);
+                        }
                         // A paused input cannot advance its playback clock. Its seek is queued
                         // against the initialized timeline and takes effect when it resumes.
                         if (state == LibVlcNative.MediaPlayerState.Paused && !openingAtPosition)
@@ -637,7 +733,8 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
                 duration = mediaDuration;
             }
 
-            clock = new PlaybackClock(position, duration, isSeekable);
+            var offset = currentMediaSource?.TimelineOffset ?? TimeSpan.Zero;
+            clock = new PlaybackClock(position + offset, duration + offset, isSeekable);
             return true;
         }
         catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException or OverflowException)
@@ -648,6 +745,24 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         {
             Monitor.Exit(nativeGate);
         }
+    }
+
+    public bool TryGetPlaybackHealth(out PlaybackHealth health)
+    {
+        health = default;
+        // Never hold up the UI while a native start/stop/rebind owns this gate.
+        if (disposed || !Monitor.TryEnter(nativeGate)) return false;
+        try
+        {
+            if (disposed || player == IntPtr.Zero || media == IntPtr.Zero) return false;
+            _ = LibVlcNative.libvlc_media_get_stats(media, out var stats);
+            health = new PlaybackHealth(playerGeneration,
+                (PlaybackEngineState)LibVlcNative.libvlc_media_player_get_state(player),
+                LibVlcNative.libvlc_media_player_get_time(player) + (long)(currentMediaSource?.TimelineOffset.TotalMilliseconds ?? 0),
+                stats.DecodedVideo, stats.DisplayedPictures, stats.DecodedAudio);
+            return true;
+        }
+        finally { Monitor.Exit(nativeGate); }
     }
 
     private static bool TryCreateTimeSpanFromMilliseconds(long milliseconds, out TimeSpan value)
@@ -833,6 +948,11 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private void StopCurrentCore(bool clearCurrentMedia = true)
     {
+        // Rebinding the current live video to a different HWND does not change its
+        // replay source. Keep that paused input and bind it to the latest HWND on adoption.
+        if (clearCurrentMedia) CancelReplayPreparationCore();
+        usingAvformatReplay = false;
+        replayOpeningPosition = null;
         replayOutputPending = false;
         audioStateController.Invalidate();
         lastEnabledAudioTrackId = null;
@@ -843,12 +963,16 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         {
             preserveReplayPause = false;
             currentMediaUri = null;
+            originalMediaUri = null;
             desiredPaused = false;
             Interlocked.Increment(ref videoOutputVersion);
             releasedMediaSource = currentMediaSource;
             currentMediaSource = null;
         }
 
+        // The FFmpeg HLS reader owns nested HTTP connections that VLC's input
+        // interrupt cannot close. Revoke its local transport before joining it.
+        if (releasedMediaSource?.UseAvformatDemuxer == true) releasedMediaSource.Dispose();
         if (player != IntPtr.Zero)
         {
             LibVlcNative.libvlc_media_player_stop(player);
@@ -866,7 +990,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         replayPauseReady?.Dispose();
         replayPauseReady = null;
 
-        // Released only after the player stopped, so libVLC never reads from a revoked source.
+        // Other adapters retain their source until the player has stopped.
         releasedMediaSource?.Dispose();
     }
 
@@ -889,6 +1013,14 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
             }
             if (startPosition is { } position)
             {
+                usingAvformatReplay = currentMediaSource?.UseAvformatDemuxer == true;
+                if (usingAvformatReplay)
+                {
+                    LibVlcNative.libvlc_media_add_option(media, ":demux=avformat");
+                    ConfigureReplayDecoder(media, UsesNativeOverlay, Environment.ProcessorCount);
+                    LibVlcNative.libvlc_media_add_option(media, ":studio-replay-seek-preroll=" +
+                        (currentMediaSource!.ReplaySeekPreroll.Ticks / 10).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
                 // Per-media input options are consumed before VLC's demux loop starts. Do not
                 // set this on the shared instance, where it would affect other tabs/media.
                 LibVlcNative.libvlc_media_add_option(media,
@@ -902,6 +1034,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
             LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay);
             replayOutputPending = startPosition.HasValue;
+            replayOpeningPosition = startPosition + (currentMediaSource?.TimelineOffset ?? TimeSpan.Zero);
             if (replayOutputPending)
             {
                 // VLC can present preroll before its asynchronous seek finishes. Keep the
@@ -936,6 +1069,17 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         }
     }
 
+    internal static void ConfigureReplayDecoder(IntPtr media, bool usesNativeOverlay, int processorCount)
+    {
+        if (!usesNativeOverlay || processorCount <= 6) return;
+        // VLC 3 caps automatic H.264 decoding at six workers. Software replay
+        // must decode a segment of preroll before showing the bookmark, so let
+        // larger CPUs finish that work in parallel. Keep this per input;
+        // sixteen is VLC's H.264 decoder limit.
+        LibVlcNative.libvlc_media_add_option(media, ":avcodec-threads=" +
+            Math.Min(processorCount, 16).ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     private RuntimeLease AcquireRuntime(VideoRendererMode rendererMode)
     {
         var options = BuildLibVlcOptionsForRenderer(rendererMode, UsesNativeOverlay);
@@ -958,6 +1102,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     {
         LibVlcNative.libvlc_video_set_adjust_int(player, 0, 0);
         replayOutputPending = false;
+        replayOpeningPosition = null;
         if (!ApplyAudioCore())
         {
             ScheduleAudioStateConvergence();
@@ -968,9 +1113,11 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
     {
         // The renderer switch replays the same media, so its source must survive this stop.
         var mediaSource = currentMediaSource;
+        var originalUri = originalMediaUri;
         currentMediaSource = null;
         StopCurrentCore();
         currentMediaSource = mediaSource;
+        originalMediaUri = originalUri;
         runtimeLease?.Dispose();
         runtimeLease = null;
         instance = IntPtr.Zero;
@@ -1003,6 +1150,34 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
 
     private async Task RebindVideoOutputForVersionAsync(int version)
     {
+        // Reopen FFmpeg inputs with a fresh transport lease so stopping the old input
+        // can interrupt its HTTP reads. Long VODs also need a bounded timestamp reference.
+        Uri? longReplayUri = null;
+        TimeSpan longReplayPosition = default;
+        long longReplayGeneration = 0;
+        var longReplayPaused = false;
+        lock (nativeGate)
+        {
+            if (!disposed && player != IntPtr.Zero && version == Volatile.Read(ref videoOutputVersion) &&
+                originalMediaUri is { } original && HlsReplayTimeline.IsPlaylist(original) &&
+                (usingAvformatReplay || (LibVlcNative.libvlc_media_player_is_seekable(player) != 0 &&
+                LibVlcNative.libvlc_media_player_get_time(player) >= HlsReplayTimeline.RebaseThreshold.TotalMilliseconds)))
+            {
+                longReplayUri = original;
+                longReplayPosition = replayOpeningPosition ??
+                    TimeSpan.FromMilliseconds(Math.Max(0, LibVlcNative.libvlc_media_player_get_time(player))) +
+                    (currentMediaSource?.TimelineOffset ?? TimeSpan.Zero);
+                longReplayGeneration = playerGeneration;
+                longReplayPaused = desiredPaused;
+            }
+        }
+        if (longReplayUri is not null)
+        {
+            await PlayCoreAsync(longReplayUri, CancellationToken.None, longReplayPosition, longReplayGeneration,
+                longReplayPaused).ConfigureAwait(false);
+            VideoOutputRebound?.Invoke(this, EventArgs.Empty);
+            return;
+        }
         Uri mediaUri;
         IntPtr reboundPlayer;
         long reboundPlayerGeneration;
@@ -1489,7 +1664,7 @@ public sealed class LibVlcPlaybackEngine : IPlaybackEngine
         [
             "--no-video-title-show",
             "--quiet",
-            $"--vout={LibVlcRendererSelection.GetVoutOption(rendererMode)}",
+            $"--vout={LibVlcRendererSelection.GetVoutOption(rendererMode, usesNativeOverlay)}",
             // MMDevice mute/volume applies to a shared Windows audio session. With
             // background tracks kept alive, use per-player DirectSound buffers so
             // restoring the selected stream cannot also unmute the other streams.

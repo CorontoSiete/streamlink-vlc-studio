@@ -30,7 +30,7 @@ internal static class TwitchMutedSegmentRepairCopier
         Stream destination,
         long maxBytes,
         TimeSpan idleTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool repairTimestamps = true)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(destination);
@@ -73,9 +73,11 @@ internal static class TwitchMutedSegmentRepairCopier
                     continue;
                 }
 
-                repairs += TwitchMutedSegmentSanitizer.Repair(
-                    readBuffer.AsSpan(0, complete),
-                    writeBuffer.AsSpan(0, complete));
+                if (repairTimestamps)
+                    repairs += TwitchMutedSegmentSanitizer.Repair(
+                        readBuffer.AsSpan(0, complete), writeBuffer.AsSpan(0, complete));
+                else
+                    readBuffer.AsSpan(0, complete).CopyTo(writeBuffer);
                 idle.CancelAfter(idleTimeout);
                 await destination.WriteAsync(writeBuffer.AsMemory(0, complete), idle.Token).ConfigureAwait(false);
                 bytesCopied += complete;

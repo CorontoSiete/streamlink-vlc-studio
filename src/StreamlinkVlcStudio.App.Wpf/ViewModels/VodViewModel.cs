@@ -1,5 +1,6 @@
 using System.Globalization;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Services;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 using static StreamlinkVlcStudio.App.Wpf.ViewModels.StreamViewModelHelpers;
 
@@ -9,6 +10,7 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
 {
     private TwitchVodItem? twitchVod;
     private KickVodItem? kickVod;
+    private VodPlaybackBookmark? playbackBookmark;
 
     public VodViewModel(
         TwitchVodItem vod,
@@ -169,6 +171,31 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
     public bool HasProfileImage => !string.IsNullOrWhiteSpace(ProfileImageUrl);
 
     public bool HasThumbnail => !string.IsNullOrWhiteSpace(ThumbnailUrl);
+
+    public bool IsWatched => playbackBookmark is { Completed: true } or { HasBeenWatched: true };
+
+    public bool HasWatchProgress => !IsWatched && playbackBookmark is
+    { Position: var position, Duration: var duration } && position > TimeSpan.Zero && duration > TimeSpan.Zero;
+
+    public double WatchProgressPercent => IsWatched ? 100 : HasWatchProgress
+        ? Math.Clamp(playbackBookmark!.Position.TotalSeconds / playbackBookmark.Duration.TotalSeconds * 100, 0, 100)
+        : 0;
+
+    public string WatchProgressText => IsWatched ? "Watched" : HasWatchProgress
+        ? $"Watched {FormatClockTime(playbackBookmark!.Position)} of {FormatClockTime(playbackBookmark.Duration)} ({WatchProgressPercent:0}%)"
+        : "Not watched";
+
+    internal void UpdateWatchProgress(VodPlaybackBookmark? bookmark)
+    {
+        // A page load or queued notification must not replace a newer playback sample.
+        if (playbackBookmark is not null && (bookmark is null || bookmark.UpdatedAtUtc < playbackBookmark.UpdatedAtUtc)) return;
+        var previous = (IsWatched, HasWatchProgress, WatchProgressPercent, WatchProgressText);
+        playbackBookmark = bookmark;
+        NotifyChanged(previous.IsWatched, IsWatched, nameof(IsWatched));
+        NotifyChanged(previous.HasWatchProgress, HasWatchProgress, nameof(HasWatchProgress));
+        NotifyChanged(previous.WatchProgressPercent, WatchProgressPercent, nameof(WatchProgressPercent));
+        NotifyChanged(previous.WatchProgressText, WatchProgressText, nameof(WatchProgressText));
+    }
 
     public string DurationText => FormatClockTime(twitchVod?.Duration ?? kickVod?.Duration ?? TimeSpan.Zero);
 

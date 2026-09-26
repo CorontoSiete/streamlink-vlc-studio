@@ -10,8 +10,8 @@ using System.Windows.Threading;
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
 
 /// <summary>
-/// Hosts WPF controls in a transparent child of the video HWND. Windows moves and clips
-/// the controls with the video; there is no independent desktop window to reposition.
+/// Hosts WPF controls in a transparent child of the video HWND, or the owning window
+/// for a WPF finished screen. There is no independent desktop window to reposition.
 /// </summary>
 [ContentProperty(nameof(Child))]
 public sealed partial class VideoOverlayHost : FrameworkElement
@@ -26,7 +26,7 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     private const int SwpNoActivate = 0x0010;
     private const int SwpShowWindow = 0x0040;
     private FrameworkElement? child;
-    private VideoSurface? target;
+    private FrameworkElement? target;
     private HwndSource? source;
     private Rect bounds;
     private Int32Rect? appliedPixelBounds;
@@ -51,16 +51,16 @@ public sealed partial class VideoOverlayHost : FrameworkElement
         ? Array.Empty<FrameworkElement>().GetEnumerator()
         : new[] { child }.GetEnumerator();
 
-    internal VideoSurface? PlacementTarget
+    internal FrameworkElement? PlacementTarget
     {
         get => target;
         set
         {
             if (ReferenceEquals(target, value)) return;
             Close();
-            if (target is not null) target.NativeHandleDestroying -= OnTargetDestroying;
+            if (target is VideoSurface previousVideo) previousVideo.NativeHandleDestroying -= OnTargetDestroying;
             target = value;
-            if (target is not null) target.NativeHandleDestroying += OnTargetDestroying;
+            if (target is VideoSurface video) video.NativeHandleDestroying += OnTargetDestroying;
         }
     }
 
@@ -70,7 +70,9 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     {
         get
         {
-            if (target is null || !GetClientRect(target.Handle, out var client)) return Size.Empty;
+            if (target is null) return Size.Empty;
+            if (target is not VideoSurface video) return target.RenderSize;
+            if (!GetClientRect(video.Handle, out var client)) return Size.Empty;
             var scale = VisualTreeHelper.GetDpi(target);
             return new Size(Math.Max(0, client.Right - client.Left) / scale.DpiScaleX,
                 Math.Max(0, client.Bottom - client.Top) / scale.DpiScaleY);
@@ -86,7 +88,10 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     internal void Open(Action updatePlacement)
     {
         if (IsOpen) { updatePlacement(); return; }
-        if (child is null || target is not { Handle: var parent } || parent == IntPtr.Zero) return;
+        if (child is null || target is null) return;
+        var parent = target is VideoSurface video ? video.Handle :
+            (PresentationSource.FromVisual(target) as HwndSource)?.Handle ?? IntPtr.Zero;
+        if (parent == IntPtr.Zero) return;
         var parameters = new HwndSourceParameters("Stream Studio video controls")
         {
             ParentWindow = parent,
@@ -107,7 +112,7 @@ public sealed partial class VideoOverlayHost : FrameworkElement
             source.CompositionTarget.BackgroundColor = Colors.Transparent;
             source.DpiChanged += OnDpiChanged;
             source.RootVisual = child;
-            target.RegisterOverlayWindow(source.Handle);
+            (target as VideoSurface)?.RegisterOverlayWindow(source.Handle);
             // Removing RootVisual suspends WPF layout. Reattach it before measuring,
             // especially when the video changed to compact size while controls were hidden.
             updatePlacement();
@@ -128,7 +133,7 @@ public sealed partial class VideoOverlayHost : FrameworkElement
         if (previous is null) return;
         if (!previous.IsDisposed)
         {
-            target?.UnregisterOverlayWindow(previous.Handle);
+            (target as VideoSurface)?.UnregisterOverlayWindow(previous.Handle);
             previous.DpiChanged -= OnDpiChanged;
             previous.RootVisual = null;
             previous.Dispose();
@@ -153,14 +158,18 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     {
         if (source is not { IsDisposed: false } || target is null) return;
         var scale = VisualTreeHelper.GetDpi(target);
-        // All coordinates are relative to the video client, never to the desktop. A move
-        // of any ancestor therefore carries this HWND even while the dispatcher is busy.
-        var left = (int)Math.Round(bounds.Left * scale.DpiScaleX);
-        var top = (int)Math.Round(bounds.Top * scale.DpiScaleY);
-        var right = (int)Math.Round(bounds.Right * scale.DpiScaleX);
-        var bottom = (int)Math.Round(bounds.Bottom * scale.DpiScaleY);
+        // The finished screen is WPF content with its video HWND hidden. Anchor its
+        // controls to the owning window, including the screen's offset within that window.
+        var origin = target is not VideoSurface && PresentationSource.FromVisual(target)?.RootVisual is Visual root
+            ? target.TransformToAncestor(root).Transform(new Point()) : new Point();
+        // Coordinates are relative to the native parent, never to the desktop, so
+        // moving that parent carries this HWND even while the dispatcher is busy.
+        var left = (int)Math.Round((origin.X + bounds.Left) * scale.DpiScaleX);
+        var top = (int)Math.Round((origin.Y + bounds.Top) * scale.DpiScaleY);
+        var right = (int)Math.Round((origin.X + bounds.Right) * scale.DpiScaleX);
+        var bottom = (int)Math.Round((origin.Y + bounds.Bottom) * scale.DpiScaleY);
         var pixels = new Int32Rect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
-        var aboveRenderer = target.IsOverlayAboveRenderer(source.Handle);
+        var aboveRenderer = target is not VideoSurface surface || surface.IsOverlayAboveRenderer(source.Handle);
         // Hover sampling and video bounds repair can repeat without a pixel changing.
         // Leave layered HWNDs alone in that case, and preserve sibling z-order when
         // merely moving the preview. Still repair a late-created VLC renderer above us.

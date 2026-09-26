@@ -227,7 +227,8 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
                     out height,
                     request.MessageOffset,
                     request.ImageCachePinOwner,
-                    renderContext);
+                    renderContext,
+                    request.SourceSize);
                 frame = renderedFrame?.Frame;
                 hasAnimatedContent = renderedFrame?.HasAnimatedContent == true;
                 hasPendingImageLoads = renderedFrame?.HasPendingImageLoads == true;
@@ -355,7 +356,8 @@ internal sealed record NativeReplayOverlayFrameRequest(
     string ScrollSessionKey = "",
     TimeSpan AnimationClock = default,
     object? ImageCachePinOwner = null,
-    long RenderContentVersion = 0);
+    long RenderContentVersion = 0,
+    NativeOverlaySourceSize? SourceSize = null);
 
 internal sealed record NativeReplayOverlayFrameResult(
     NativeReplayOverlayFrameRequest Request,

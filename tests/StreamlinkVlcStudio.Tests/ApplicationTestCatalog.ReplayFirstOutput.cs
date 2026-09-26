@@ -45,14 +45,20 @@ internal static partial class ApplicationTestCatalog
     [DllImport("libvlc", EntryPoint = "libvlc_audio_get_volume", CallingConvention = CallingConvention.Cdecl)]
     private static extern int GetReplayNativeVolume(IntPtr player);
 
-    private static Task NativeReplayFirstOutputAsync(bool hls, bool pauseAfterOpening = false) => TestSta.RunOffscreenAsync(async () =>
+    private static Task NativeReplayFirstOutputAsync(bool hls, bool pauseAfterOpening = false, bool delayedSegments = false,
+        bool fastReplay = false, bool longGop = false) => TestSta.RunOffscreenAsync(async () =>
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Fixtures",
             hls ? "replay-position-event/index.m3u8" : "replay-position-colors.mp4");
         var handle = NativeWindowTest.CreateHiddenParentWindow();
         var memory = Marshal.AllocHGlobal(64 * 64 * 4 + 31);
         var pixels = new IntPtr((memory.ToInt64() + 31) & ~31L);
-        await using var server = hls ? new ReplayFixtureServer(Path.GetDirectoryName(path)!) : null;
+        await using var server = hls ? new ReplayFixtureServer(Path.GetDirectoryName(path)!,
+            segmentDelay: delayedSegments ? TimeSpan.FromMilliseconds(200) : default) : null;
+        await using var fastFixture = fastReplay ? new FastVodFixture(longGop: longGop) : null;
+        using var fastSource = fastFixture is null ? null : await fastFixture.Gateway.PrepareAsync(
+            FastVodFixture.MediaUri, new Version(3, 0, 23), CancellationToken.None, preferFastReplay: true);
+        var position = TimeSpan.FromSeconds(35.25);
         try
         {
             using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
@@ -89,21 +95,41 @@ internal static partial class ApplicationTestCatalog
             // The same media-creation primitive is used by PlayFromAsync. Video callbacks must
             // be installed after creation and before playing; no visible window is needed.
             var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            if (fastSource is not null)
+            {
+                Assert.True(fastSource.UseAvformatDemuxer);
+                typeof(LibVlcPlaybackEngine).GetField("currentMediaSource", flags)!.SetValue(engine, fastSource);
+            }
             typeof(LibVlcPlaybackEngine).GetMethod("CreatePlayerCore", flags)!
-                .Invoke(engine, [server?.Uri ?? new Uri(path), TimeSpan.FromSeconds(35.25)]);
+                .Invoke(engine, [fastSource?.PlaybackUri ?? server?.Uri ?? new Uri(path), position]);
+            if (fastReplay)
+            {
+                // Memory callbacks use software decoding and cannot capture the native
+                // overlay's window output. Apply the same per-media decoder policy here;
+                // FastVodPlaybackAsync separately exercises the full overlay path.
+                var replayMedia = (IntPtr)typeof(LibVlcPlaybackEngine).GetField("media", flags)!.GetValue(engine)!;
+                LibVlcPlaybackEngine.ConfigureReplayDecoder(replayMedia, usesNativeOverlay: true, Environment.ProcessorCount);
+            }
             var player = (IntPtr)typeof(LibVlcPlaybackEngine).GetField("player", flags)!.GetValue(engine)!;
             LibVlcNative.libvlc_video_set_callbacks(player, lockFrame, unlockFrame,
                 Marshal.GetFunctionPointerForDelegate(displayFrame), IntPtr.Zero);
             LibVlcNative.libvlc_video_set_format(player, "RV32", 64, 64, 64 * 4);
             try
             {
+                var openingWatch = Stopwatch.StartNew();
                 Assert.Equal(0, LibVlcNative.libvlc_media_player_play(player));
                 var generation = (long)typeof(LibVlcPlaybackEngine).GetField("playerGeneration", flags)!.GetValue(engine)!;
                 await (Task)typeof(LibVlcPlaybackEngine).GetMethod("SeekCoreAsync", flags)!
-                    .Invoke(engine, [TimeSpan.FromSeconds(35.25), generation, CancellationToken.None, true])!;
+                    .Invoke(engine, [position, generation, CancellationToken.None, true, false])!;
                 Assert.Equal(false, firstOutput.Task.IsCompleted);
                 typeof(LibVlcPlaybackEngine).GetMethod("ReleaseReplayOutputCore", flags)!.Invoke(engine, null);
                 var first = await firstOutput.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                if (delayedSegments)
+                {
+                    Console.WriteLine($"First correct HLS content after delayed segments: {openingWatch.Elapsed.TotalMilliseconds:0}ms.");
+                    Assert.True(openingWatch.Elapsed < TimeSpan.FromSeconds(4),
+                        "Opening must seek after timestamp initialization, not play through 5.25 seconds of preroll.");
+                }
                 Console.WriteLine($"First content frame after buffering: R={first.Red}, G={first.Green}, B={first.Blue}; held position is green, beginning is red.");
                 Assert.True(first.Green > 200 && first.Red < 30 && first.Blue < 30,
                     "The first content frame must come from the held position, without flashing the VOD beginning.");
@@ -164,7 +190,8 @@ internal static partial class ApplicationTestCatalog
         internal Uri Uri { get; }
         internal ConcurrentQueue<string> Requests { get; } = new();
 
-        internal ReplayFixtureServer(string directory, string? playlist = null)
+        internal ReplayFixtureServer(string directory, string? playlist = null, Func<string, byte[]?>? resolve = null,
+            TimeSpan segmentDelay = default)
         {
             files = new(Directory.GetFiles(directory).ToDictionary(path => "/" + Path.GetFileName(path), File.ReadAllBytes));
             if (playlist is not null) UpdatePlaylist(playlist);
@@ -187,7 +214,10 @@ internal static partial class ApplicationTestCatalog
                             var key = request.Split(' ')[1];
                             Requests.Enqueue(key);
                             var found = files.TryGetValue(key, out var data);
+                            if (!found && resolve?.Invoke(key) is { } resolved) { data = resolved; found = true; }
                             data ??= [];
+                            if (segmentDelay > TimeSpan.Zero && key.EndsWith(".ts", StringComparison.Ordinal))
+                                await Task.Delay(segmentDelay, cancellation.Token);
                             var header = Encoding.ASCII.GetBytes($"HTTP/1.1 {(found ? "200 OK" : "404 Not Found")}\r\nContent-Length: {data.Length}\r\nConnection: close\r\n\r\n");
                             await stream.WriteAsync(header, cancellation.Token);
                             await stream.WriteAsync(data, cancellation.Token);

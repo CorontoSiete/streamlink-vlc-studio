@@ -13,7 +13,7 @@ function Read-NativeOverlayManifest {
         @($manifest.files).Count -eq 0) {
         throw "Unsupported or empty native dependency manifest: $fullPath"
     }
-    if ($manifest.provenance.classification -ne 'opaque-third-party-input' -or
+    if ($manifest.provenance.classification -notin @('opaque-third-party-input', 'source-available-native-input') -or
         [string]::IsNullOrWhiteSpace([string]$manifest.provenance.sourceAvailability) -or
         [string]::IsNullOrWhiteSpace([string]$manifest.provenance.notes)) {
         throw "Native dependency provenance metadata is incomplete: $fullPath"

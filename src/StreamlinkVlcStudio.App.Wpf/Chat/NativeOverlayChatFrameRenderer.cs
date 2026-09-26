@@ -36,10 +36,11 @@ internal static class NativeOverlayChatFrameRenderer
         out int height,
         int messageOffset = 0,
         object? imageCachePinOwner = null,
-        NativeReplayOverlayFrameRenderContext? renderContext = null)
+        NativeReplayOverlayFrameRenderContext? renderContext = null,
+        NativeOverlaySourceSize? sourceSize = null)
     {
         var layout = FitLayoutToProtocolBudget(
-            ResolveReplayOverlayLayout(settings, fontSize, videoHeight, positionStatePath));
+            ResolveReplayOverlayLayout(settings, fontSize, videoHeight, positionStatePath, sourceSize));
         width = layout.FrameWidth;
         height = layout.FrameHeight;
         if (!CanRenderOnCurrentThread)
@@ -347,6 +348,25 @@ internal static class NativeOverlayChatFrameRenderer
         ChatSettings settings,
         double fontSize,
         int videoHeight,
+        string? positionStatePath,
+        NativeOverlaySourceSize? sourceSize = null)
+    {
+        var layout = ResolveUnboundedReplayOverlayLayout(settings, fontSize, videoHeight, positionStatePath);
+        // Constrain the canvas to the decoded video, not the app window. Window
+        // resizing must not change the saved panel size or reflow its messages.
+        return sourceSize is { Width: > 0, Height: > 0 } bounds
+            ? layout with
+            {
+                FrameWidth = Math.Min(layout.FrameWidth, bounds.Width),
+                FrameHeight = Math.Min(layout.FrameHeight, bounds.Height)
+            }
+            : layout;
+    }
+
+    private static NativeReplayOverlayLayout ResolveUnboundedReplayOverlayLayout(
+        ChatSettings settings,
+        double fontSize,
+        int videoHeight,
         string? positionStatePath)
     {
         var defaultReferenceWidth = NativeOverlaySizing.ClampReferenceWidth((int)Math.Round(settings.DockWidth));
@@ -433,18 +453,8 @@ internal static class NativeOverlayChatFrameRenderer
             return layout;
         }
 
-        var scale = Math.Min(
-            fitted.Width / (double)Math.Max(1, layout.FrameWidth),
-            fitted.Height / (double)Math.Max(1, layout.FrameHeight));
-        var fittedVideoHeight = Math.Max(1, (int)Math.Round(layout.VideoHeight * scale));
-        return CreateReplayOverlayLayout(
-            fitted.Width,
-            fitted.Height,
-            layout.ReferenceWidth,
-            layout.ReferenceHeight,
-            fittedVideoHeight,
-            NativeOverlaySizing.GetVideoScale(fittedVideoHeight),
-            layout.EffectiveReferenceFontSize);
+        // Fit fewer rows into the transport budget without reducing legibility.
+        return layout with { FrameWidth = fitted.Width, FrameHeight = fitted.Height };
     }
 
 

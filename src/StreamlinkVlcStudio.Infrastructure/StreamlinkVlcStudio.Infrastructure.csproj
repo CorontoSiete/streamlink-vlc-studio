@@ -17,6 +17,10 @@
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\scripts\build-replay-pause.ps1" Link="scripts\build-replay-pause.ps1"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\native\chat-overlay\**\*" Link="native\chat-overlay\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\scripts\build-chat-overlay.ps1" Link="scripts\build-chat-overlay.ps1"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
 
   <ItemGroup Condition="Exists('$(BundledVlcOverlayRoot)\build\libmyoverlay_plugin.dll') and Exists('$(BundledVlcOverlayRoot)\build\vlc_chat_overlay.exe')">

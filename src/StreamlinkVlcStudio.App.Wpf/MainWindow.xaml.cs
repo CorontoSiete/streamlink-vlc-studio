@@ -981,6 +981,8 @@ public partial class MainWindow : Window
             StreamMetadataService = streamMetadataService,
             ReplayResolver = replayResolver,
             VodChatProvider = vodChatProvider,
+            VodPlaybackHistory = new JsonVodPlaybackHistory(
+                Path.Combine(Path.GetDirectoryName(settingsService.SettingsPath)!, "vod-history.json"), logger),
             TwitchVodService = twitchVodService,
             BrowseService = browseService,
             StreamSearchService = streamSearchService,

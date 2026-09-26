@@ -54,15 +54,6 @@ public static class KickChannelInfoJson
             : null;
     }
 
-    private static JsonElement GetObjectProperty(JsonElement element, string propertyName)
-    {
-        return element.ValueKind == JsonValueKind.Object &&
-            element.TryGetProperty(propertyName, out var property) &&
-            property.ValueKind == JsonValueKind.Object
-            ? property
-            : default;
-    }
-
     private static long? TryGetPositiveInt64(JsonElement element, string propertyName)
     {
         var value = TryGetInt64(element, propertyName);

@@ -442,6 +442,7 @@ public sealed partial class VideoSurface : HwndHost
         var boundsChanged = !lastNativeVisible ||
             width != lastNativeWidth ||
             height != lastNativeHeight;
+        var becomingVisible = !lastNativeVisible;
         if (boundsChanged)
         {
             _ = SetWindowPos(
@@ -455,6 +456,12 @@ public sealed partial class VideoSurface : HwndHost
             lastNativeWidth = width;
             lastNativeHeight = height;
             lastNativeVisible = true;
+            if (becomingVisible)
+            {
+                // A stopped vout has no child to paint over pixels from the previous tab.
+                // Repaint once on reveal; retain pixels during ordinary video resizing.
+                _ = RedrawWindow(handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0100);
+            }
         }
 
         // VLC creates its own child window tree after playback starts. Keep a
@@ -1018,6 +1025,10 @@ public sealed partial class VideoSurface : HwndHost
 
     [LibraryImport("user32")]
     private static partial int FillRect(IntPtr hdc, ref NativeRect rect, IntPtr brush);
+
+    [LibraryImport("user32")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool RedrawWindow(IntPtr hwnd, IntPtr updateRect, IntPtr updateRegion, uint flags);
 
     [LibraryImport("kernel32", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial IntPtr GetModuleHandle(string? moduleName);

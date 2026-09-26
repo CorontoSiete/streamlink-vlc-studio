@@ -2254,6 +2254,14 @@ internal sealed record FakePlaybackAudioCall(FakePlaybackEngine Engine, int Volu
 
 internal sealed class FakePlaybackEngine : IPlaybackEngine
 {
+    public ConcurrentQueue<Uri> PreparedReplayUris { get; } = new();
+    public Func<Uri, CancellationToken, Task>? PrepareReplayOverride { get; init; }
+    public Task PrepareReplayAsync(Uri uri, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        PreparedReplayUris.Enqueue(uri);
+        return PrepareReplayOverride?.Invoke(uri, cancellationToken) ?? Task.CompletedTask;
+    }
     public Action? DisposeAction { get; init; }
     private readonly List<IntPtr> videoHandleHistory = [];
     private readonly List<Uri> playedUris = [];
@@ -2295,6 +2303,12 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public string? NativeOverlayPositionStatePathOverride { get; set; }
     public string? NativeOverlayDirectoryOverride { get; init; }
     public Func<FakePlaybackEngine, (bool IsAvailable, PlaybackClock Clock)>? PlaybackClockOverride { get; set; }
+    public Func<PlaybackHealth>? PlaybackHealthOverride { get; set; }
+    public bool TryGetPlaybackHealth(out PlaybackHealth health)
+    {
+        health = PlaybackHealthOverride?.Invoke() ?? default;
+        return PlaybackHealthOverride is not null;
+    }
     public int VideoWidth { get; set; } = 1920;
     public int VideoHeight { get; set; } = 1080;
     public bool UsesNativeOverlay => UsesNativeOverlayOverride;

@@ -2139,8 +2139,12 @@ internal static partial class ApplicationTestCatalog
 
         await tab.StartAsync(settings);
 
+        // Replay metadata arrives independently of playback startup. The real slider
+        // is disabled until this completes, so wait for the same readiness here.
+        await TestWait.UntilAsync(() => tab.CanSeekReplay, TimeSpan.FromSeconds(1));
+        tab.BeginReplaySeekPreview(tab.ReplaySeekSliderValue);
         tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(40).TotalSeconds;
-        await tab.SeekReplayAsync(TimeSpan.FromSeconds(tab.ReplaySeekSliderValue));
+        await tab.CommitReplaySeekPreviewAsync(tab.ReplaySeekSliderValue);
 
         Assert.Equal(TimeSpan.FromMinutes(40), playbackFactory.Engine!.Position);
         Assert.Equal(TimeSpan.FromMinutes(40).TotalSeconds, tab.ReplaySeekValue);

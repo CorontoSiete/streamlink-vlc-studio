@@ -18,8 +18,9 @@ public readonly record struct TwitchMutedVodPlaylistInspection(
 
 /// <summary>
 /// Pure helpers for Twitch VOD playlists that contain muted segments (<c>N-muted.ts</c>). Those
-/// segments freeze libVLC releases before 3.0.18 (see <see cref="TwitchMutedSegmentSanitizer"/>),
-/// so playback routes them -- and only them -- through a local repair proxy.
+/// segments can freeze playback or prevent end-of-media (see <see cref="TwitchMutedSegmentSanitizer"/>),
+/// so playback routes them through a local repair proxy. The optional completed replay
+/// transport also proxies ordinary segments without altering their bytes.
 /// </summary>
 public static class TwitchMutedVodPlaylist
 {
@@ -96,7 +97,7 @@ public static class TwitchMutedVodPlaylist
     public static string RewriteForRepair(
         string playlistContent,
         Uri playlistUri,
-        Func<Uri, string> selectRepairedSegmentUri)
+        Func<Uri, string> selectRepairedSegmentUri, bool proxyAllSegments = false)
     {
         ArgumentNullException.ThrowIfNull(playlistContent);
         ArgumentNullException.ThrowIfNull(playlistUri);
@@ -109,7 +110,7 @@ public static class TwitchMutedVodPlaylist
         return TwitchPlaylistUriRewriter.Rewrite(
             playlistContent,
             playlistUri,
-            uri => IsMutedSegment(uri) ? selectRepairedSegmentUri(uri) : uri.AbsoluteUri);
+            uri => proxyAllSegments || IsMutedSegment(uri) ? selectRepairedSegmentUri(uri) : uri.AbsoluteUri);
     }
 
     /// <summary>

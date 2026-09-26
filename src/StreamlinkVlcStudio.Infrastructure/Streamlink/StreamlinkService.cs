@@ -5,6 +5,7 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 using StreamlinkVlcStudio.Infrastructure.Text;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Streamlink;
@@ -20,10 +21,20 @@ public sealed partial class StreamlinkService : IStreamlinkService
     private const string DefaultExternalHttpRingBufferSize = "32M";
     private const string MultiStreamExternalHttpRingBufferSize = "16M";
     private readonly IAppLogger logger;
+    private readonly TwitchVodUrlResolver? vodUrlResolver;
+    private readonly Func<StreamTransportRequest, bool> canResolveVodDirectly;
+    private readonly Func<StreamTransportRequest, CancellationToken, Task<StreamlinkResolvedUrl>> resolveWithStreamlink;
 
-    public StreamlinkService(IAppLogger logger)
+    public StreamlinkService(IAppLogger logger) : this(logger, new TwitchVodUrlResolver()) { }
+
+    internal StreamlinkService(IAppLogger logger, TwitchVodUrlResolver? vodUrlResolver,
+        Func<StreamTransportRequest, bool>? canResolveVodDirectly = null,
+        Func<StreamTransportRequest, CancellationToken, Task<StreamlinkResolvedUrl>>? resolveWithStreamlink = null)
     {
         this.logger = logger;
+        this.vodUrlResolver = vodUrlResolver;
+        this.canResolveVodDirectly = canResolveVodDirectly ?? DirectVodResolutionPolicy.CanUse;
+        this.resolveWithStreamlink = resolveWithStreamlink ?? ResolveWithStreamlinkAsync;
     }
 
     public async Task<StreamlinkProbeResult> ProbeStreamsAsync(StreamTransportRequest request, CancellationToken cancellationToken = default)
@@ -67,6 +78,35 @@ public sealed partial class StreamlinkService : IStreamlinkService
             throw new FileNotFoundException("Streamlink executable was not found.", request.StreamlinkPath);
         }
 
+        var elapsed = Stopwatch.StartNew();
+        if (vodUrlResolver is not null && canResolveVodDirectly(request))
+        {
+            try
+            {
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                budget.CancelAfter(TimeSpan.FromSeconds(4));
+                var resolved = await vodUrlResolver.ResolveAsync(request, budget.Token).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                logger.Write(AppLogLevel.Info, "Playback", $"Resolved Twitch VOD {request.Target.MediaId} ({request.Quality}) in {elapsed.ElapsedMilliseconds} ms using the selected playlist.");
+                return resolved;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidDataException or InvalidOperationException or
+                System.Text.Json.JsonException or OperationCanceledException or System.Net.Sockets.SocketException or
+                System.Text.DecoderFallbackException or UriFormatException or TimeoutException)
+            {
+                // Exception messages can contain signed URLs or token payloads.
+                logger.Write(AppLogLevel.Info, "Playback", $"Direct Twitch VOD resolution was unavailable ({ex.GetType().Name}); using Streamlink.");
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return await resolveWithStreamlink(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<StreamlinkResolvedUrl> ResolveWithStreamlinkAsync(StreamTransportRequest request, CancellationToken cancellationToken)
+    {
+        var elapsed = Stopwatch.StartNew();
         var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildStreamUrlArguments(request));
         logger.Write(AppLogLevel.Info, "Streamlink", $"Resolving direct stream URL for {request.Target.Url} ({request.Quality})");
 
@@ -83,6 +123,7 @@ public sealed partial class StreamlinkService : IStreamlinkService
 
         if (result.ExitCode == 0 && TryReadFirstAbsoluteUri(result.StandardOutput, out var streamUri))
         {
+            logger.Write(AppLogLevel.Info, "Streamlink", $"Resolved direct stream URL in {elapsed.ElapsedMilliseconds} ms.");
             return new StreamlinkResolvedUrl(streamUri, "Resolved direct Streamlink URL.");
         }
 
@@ -115,7 +156,7 @@ public sealed partial class StreamlinkService : IStreamlinkService
             }
 
             session.AddLogLine(data);
-            logger.Write(AppLogLevel.Info, "Streamlink", data);
+            logger.Write(AppLogLevel.Info, "Streamlink", $"[{request.Target.DisplayName}] {data}");
 
             if (TryReadLocalHttpUri(data, out var uri))
             {

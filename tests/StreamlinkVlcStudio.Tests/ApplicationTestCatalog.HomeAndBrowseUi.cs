@@ -3633,7 +3633,7 @@ internal static partial class ApplicationTestCatalog
         await firstTab.DisposeAsync();
         await secondTab.DisposeAsync();
     }),
-    ("direct stream open loads live category metadata before creating tab", async () =>
+    ("direct stream open applies available category metadata to the tab", async () =>
     {
         var metadataService = new FakeStreamMetadataService(new StreamMetadataResult(
             StreamMetadataState.Available,
@@ -3661,7 +3661,7 @@ internal static partial class ApplicationTestCatalog
 
         Assert.Equal(1, metadataService.CallCount);
         Assert.Equal(1, viewModel.Tabs.Count);
-        Assert.Equal("Apex Legends", viewModel.Tabs[0].Target.CategoryName);
+        Assert.Equal("Apex Legends", viewModel.Tabs[0].CategoryName);
         Assert.Equal("Apex Legends", viewModel.TabStripItems.Single().SubtitleText);
         await viewModel.DisposeAsync();
     }),

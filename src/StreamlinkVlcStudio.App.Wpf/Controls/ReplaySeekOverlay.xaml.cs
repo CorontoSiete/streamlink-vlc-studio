@@ -113,8 +113,8 @@ public partial class ReplaySeekOverlay : UserControl
 
     private bool CanDisplay => IsLoaded && IsOverlayEnabled &&
         DataContext is StreamTabViewModel && IsOwnerAvailable &&
-        PlacementTarget is VideoSurface { IsVisible: true, ActualWidth: >= 196, ActualHeight: >= 100 } target &&
-        target.Handle != IntPtr.Zero &&
+        PlacementTarget is { IsVisible: true, ActualWidth: >= 196, ActualHeight: >= 100 } target &&
+        (target is not VideoSurface surface || surface.Handle != IntPtr.Zero) &&
         (target.ActualWidth >= 296 || target.ActualHeight >= 126);
 
     private bool IsOwnerAvailable => owner is { IsVisible: true, WindowState: not WindowState.Minimized } &&
@@ -126,8 +126,8 @@ public partial class ReplaySeekOverlay : UserControl
         overlay.DetachTarget();
         if (overlay.IsLoaded) overlay.AttachTarget();
         overlay.HideImmediately();
-        overlay.OverlayHost.PlacementTarget = overlay.IsLoaded ? e.NewValue as VideoSurface : null;
-        overlay.SeekPreviewHost.PlacementTarget = overlay.IsLoaded ? e.NewValue as VideoSurface : null;
+        overlay.OverlayHost.PlacementTarget = overlay.IsLoaded ? e.NewValue as FrameworkElement : null;
+        overlay.SeekPreviewHost.PlacementTarget = overlay.IsLoaded ? e.NewValue as FrameworkElement : null;
         overlay.lastPointer = null;
         overlay.UpdateTimer();
     }
@@ -139,8 +139,8 @@ public partial class ReplaySeekOverlay : UserControl
     {
         DetachOwner();
         AttachTarget();
-        OverlayHost.PlacementTarget = PlacementTarget as VideoSurface;
-        SeekPreviewHost.PlacementTarget = PlacementTarget as VideoSurface;
+        OverlayHost.PlacementTarget = PlacementTarget;
+        SeekPreviewHost.PlacementTarget = PlacementTarget;
         owner = Window.GetWindow(this);
         if (owner is not null)
         {
@@ -173,6 +173,7 @@ public partial class ReplaySeekOverlay : UserControl
         subscribedTarget.IsVisibleChanged += OnTargetVisibilityChanged;
         subscribedTarget.SizeChanged += OnTargetSizeChanged;
         if (subscribedTarget is VideoSurface surface) surface.NativeBoundsChanged += OnNativeBoundsChanged;
+        else subscribedTarget.LayoutUpdated += OnTargetLayoutUpdated;
     }
 
     private void DetachTarget()
@@ -181,6 +182,7 @@ public partial class ReplaySeekOverlay : UserControl
         subscribedTarget.IsVisibleChanged -= OnTargetVisibilityChanged;
         subscribedTarget.SizeChanged -= OnTargetSizeChanged;
         if (subscribedTarget is VideoSurface surface) surface.NativeBoundsChanged -= OnNativeBoundsChanged;
+        else subscribedTarget.LayoutUpdated -= OnTargetLayoutUpdated;
         subscribedTarget = null;
     }
 
@@ -205,6 +207,7 @@ public partial class ReplaySeekOverlay : UserControl
     private void OnTargetVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateTimer();
     private void OnTargetSizeChanged(object sender, SizeChangedEventArgs e) => UpdateOpenPlacement();
     private void OnNativeBoundsChanged(object? sender, EventArgs e) => UpdateOpenPlacement();
+    private void OnTargetLayoutUpdated(object? sender, EventArgs e) => UpdateOpenPlacement();
 
     private void UpdateOpenPlacement()
     {

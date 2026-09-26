@@ -1513,6 +1513,7 @@ internal static partial class ApplicationTestCatalog
         Assert.True(options.Any(option => option == "--avcodec-hw=any"));
         Assert.Equal(false, options.Any(option => option == "--avcodec-hw=none"));
         var overlayOptions = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi, usesNativeOverlay: true);
+        Assert.True(overlayOptions.Contains("--vout=studio_gdi,wingdi"));
         Assert.True(overlayOptions.Contains("--avcodec-hw=none"));
         Assert.Equal(false, overlayOptions.Contains("--avcodec-hw=any"));
         Assert.Equal("none", LibVlcRendererSelection.GetHardwareDecodingOption(VideoRendererMode.Gdi, usesNativeOverlay: true));

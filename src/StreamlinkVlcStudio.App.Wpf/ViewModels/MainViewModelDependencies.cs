@@ -24,6 +24,7 @@ internal sealed record MainViewModelDependencies
     public IStreamMetadataService? StreamMetadataService { get; init; }
     public IReplayResolver? ReplayResolver { get; init; }
     public IVodChatProvider? VodChatProvider { get; init; }
+    public IVodPlaybackHistory? VodPlaybackHistory { get; init; }
     public TimeSpan? RecentThumbnailRefreshInterval { get; init; }
     public TimeSpan? StreamSearchDebounceInterval { get; init; }
     public ITwitchVodService? TwitchVodService { get; init; }

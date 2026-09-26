@@ -38,8 +38,9 @@ internal sealed class TwitchMutedVodRepairSession : IDisposable
 /// <summary>
 /// Loopback HTTP server that lets an affected libVLC play Twitch VODs containing muted segments.
 /// It serves each session's playlist with the muted segments pointed back at itself and streams
-/// those segments from Twitch through <see cref="TwitchMutedSegmentSanitizer"/>. Every other
-/// segment keeps its Twitch URL, so unaffected media never flows through this process.
+/// those segments from Twitch through <see cref="TwitchMutedSegmentSanitizer"/>. Ordinarily
+/// other segments keep their Twitch URL. Completed replays can opt into transporting all
+/// segments for VLC's FFmpeg demuxer, whose bundled HTTP client does not support HTTPS.
 /// <para>
 /// The listener binds to 127.0.0.1 on an ephemeral port, every URL carries an unguessable
 /// per-session token, and only segment URIs taken from a validated playlist can be fetched, through
@@ -102,7 +103,8 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
     /// starting playback does not read the playlist from Twitch twice.
     /// </param>
     /// <exception cref="SocketException">The loopback listener could not be started.</exception>
-    internal TwitchMutedVodRepairSession OpenSession(TwitchVodPlaylistSource source, string? initialPlaylist = null)
+    internal TwitchMutedVodRepairSession OpenSession(TwitchVodPlaylistSource source, string? initialPlaylist = null,
+        bool proxyAllSegments = false)
     {
         ArgumentNullException.ThrowIfNull(source);
         lock (lifecycleGate)
@@ -110,7 +112,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             ObjectDisposedException.ThrowIf(disposalTask is not null, this);
             EnsureListeningCore();
             var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(TokenByteLength));
-            var session = new Session(token, source, initialPlaylist);
+            var session = new Session(token, source, initialPlaylist, proxyAllSegments);
             sessions[token] = session;
             return new TwitchMutedVodRepairSession(
                 new Uri($"http://127.0.0.1:{port}/{token}/{PlaylistFileName}"),
@@ -189,6 +191,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         {
             return;
         }
+        session.Revoke();
 
         var statistics = session.Statistics;
         var unrepaired = statistics.UnrepairedSegments == 0
@@ -205,6 +208,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
     {
         // Runs once disposalTask is set, after which OpenSession refuses to touch listener and
         // acceptLoop; that is what makes reading them here without lifecycleGate safe.
+        foreach (var session in sessions.Values) session.Revoke();
         await cancellation.CancelAsync().ConfigureAwait(false);
         listener?.Dispose();
 
@@ -410,7 +414,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
                 return;
             }
 
-            await RouteAsync(stream, readResult.Request!, cancellationToken).ConfigureAwait(false);
+            await RouteAsync(client, stream, readResult.Request!, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException or ObjectDisposedException)
         {
@@ -427,7 +431,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         }
     }
 
-    private async Task RouteAsync(Stream stream, LocalHttpRequest request, CancellationToken cancellationToken)
+    private async Task RouteAsync(TcpClient client, Stream stream, LocalHttpRequest request, CancellationToken cancellationToken)
     {
         if (!TryParseRoute(request.Path, out var token, out var segmentIndex) ||
             !sessions.TryGetValue(token, out var session))
@@ -457,17 +461,24 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             return;
         }
 
+        if (!session.Attach(client, out var sessionToken))
+        {
+            transferSlots.Release();
+            return;
+        }
+        using var transferCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, sessionToken);
         try
         {
             // A Range header is deliberately ignored: the whole representation is a valid answer
             // to any range request (RFC 9110, 14.2), and libVLC only ever asks for "bytes=0-".
             await (segmentIndex is { } index
-                    ? ServeSegmentAsync(stream, session, index, cancellationToken)
-                    : ServePlaylistAsync(stream, session, cancellationToken))
+                    ? ServeSegmentAsync(stream, session, index, transferCancellation.Token)
+                    : ServePlaylistAsync(stream, session, transferCancellation.Token))
                 .ConfigureAwait(false);
         }
         finally
         {
+            session.Detach(client);
             transferSlots.Release();
         }
     }
@@ -488,7 +499,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             var rewritten = TwitchMutedVodPlaylist.RewriteForRepair(
                 content,
                 session.Source.PlaylistUri,
-                segmentUri => BuildSegmentUrl(session, segmentUri));
+                segmentUri => BuildSegmentUrl(session, segmentUri), session.ProxyAllSegments);
             body = Encoding.UTF8.GetBytes(rewritten);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -569,10 +580,11 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
 
             try
             {
+                var muted = TwitchMutedVodPlaylist.IsMutedSegment(segmentUri);
                 var result = await TwitchMutedSegmentRepairCopier
-                    .CopyAsync(upstream, stream, MaxSegmentBytes, TransferIdleTimeout, cancellationToken)
+                    .CopyAsync(upstream, stream, MaxSegmentBytes, TransferIdleTimeout, cancellationToken, repairTimestamps: muted)
                     .ConfigureAwait(false);
-                if (session.RecordServedSegment(result.Repairs))
+                if (muted && session.RecordServedSegment(result.Repairs))
                 {
                     // Every muted segment seen so far carried the invalid timestamps. One without
                     // them is either harmless or uses a layout the repair does not recognize.
@@ -692,7 +704,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
 
     private readonly record struct SessionStatistics(int ServedSegments, int UnrepairedSegments, int RemovedTimestamps);
 
-    private sealed class Session(string token, TwitchVodPlaylistSource source, string? initialPlaylist)
+    private sealed class Session(string token, TwitchVodPlaylistSource source, string? initialPlaylist, bool proxyAllSegments)
     {
         private readonly object gate = new();
         private readonly List<Uri> segments = [];
@@ -701,6 +713,55 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         private int servedSegments;
         private int unrepairedSegments;
         private int removedTimestamps;
+        private readonly HashSet<TcpClient> clients = [];
+        private readonly CancellationTokenSource requestsCancellation = new();
+        private bool revoked;
+        private bool revoking;
+
+        internal bool ProxyAllSegments { get; } = proxyAllSegments;
+
+        internal bool Attach(TcpClient client, out CancellationToken token)
+        {
+            lock (gate)
+            {
+                token = default;
+                if (revoked) return false;
+                clients.Add(client);
+                token = requestsCancellation.Token;
+                return true;
+            }
+        }
+
+        internal void Detach(TcpClient client)
+        {
+            lock (gate)
+            {
+                clients.Remove(client);
+                if (revoked && !revoking && clients.Count == 0) requestsCancellation.Dispose();
+            }
+        }
+
+        internal void Revoke()
+        {
+            TcpClient[] active;
+            lock (gate)
+            {
+                if (revoked) return;
+                revoked = true;
+                revoking = true;
+                active = [.. clients];
+            }
+            // FFmpeg owns its nested HTTP reads; VLC cannot interrupt those reads.
+            // Closing this session's sockets lets input teardown finish even if an
+            // upstream request is still waiting on its bounded timeout.
+            requestsCancellation.Cancel();
+            foreach (var client in active) client.Dispose();
+            lock (gate)
+            {
+                revoking = false;
+                if (clients.Count == 0) requestsCancellation.Dispose();
+            }
+        }
 
         internal string Token { get; } = token;
 

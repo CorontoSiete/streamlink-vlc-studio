@@ -12,7 +12,7 @@ internal static class TwitchMutedVodRepairTestCatalog
     private const string PlaylistUrl = "https://d2vi6trrdongqn.cloudfront.net/vod_special/chunked/index-muted-ABC123.m3u8";
     private const string SegmentBaseUrl = "https://d2vi6trrdongqn.cloudfront.net/vod_special/chunked/";
 
-    // The libVLC release the freeze was reported on; VLC 3.0.18 is the first one that is unaffected.
+    // The libVLC release on which the original mid-segment freeze was reported.
     private static readonly Version AffectedLibVlc = new(3, 0, 12);
 
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
@@ -34,7 +34,7 @@ internal static class TwitchMutedVodRepairTestCatalog
         ("muted VOD repair proxy reports upstream failures as bad gateway", ProxyReportsUpstreamFailuresAsync),
         ("muted VOD repair proxy logs interrupted upstream segments and muted segments without repairs", ProxyLogsInterruptedAndUnrepairedSegmentsAsync),
         ("muted VOD repair proxy restarts its listener after the accept loop ends", ProxyRestartsListenerAfterAcceptLoopEndsAsync),
-        ("muted VOD gateway only engages for libVLC releases that freeze on muted segments", GatewayOnlyEngagesForAffectedLibVlcAsync),
+        ("muted VOD gateway repairs invalid timestamps regardless of libVLC version", GatewayRepairsAllLibVlcVersionsAsync),
         ("libVLC version text parses release and development builds", LibVlcVersionTextParses),
         ("muted VOD gateway leaves live transports other providers and clean VODs untouched", GatewayLeavesCleanMediaUntouchedAsync),
         ("muted VOD gateway routes muted Twitch VODs through the repair proxy", GatewayRoutesMutedVodsThroughProxyAsync),
@@ -757,7 +757,7 @@ internal static class TwitchMutedVodRepairTestCatalog
             "Query strings must never be logged.");
     }
 
-    private static async Task GatewayOnlyEngagesForAffectedLibVlcAsync()
+    private static async Task GatewayRepairsAllLibVlcVersionsAsync()
     {
         var upstreamRequests = 0;
         using var upstream = new HttpClient(new FakeHttpMessageHandler(_ =>
@@ -771,23 +771,17 @@ internal static class TwitchMutedVodRepairTestCatalog
         await using var gateway = new TwitchMutedVodPlaybackGateway(new MemoryLogger(), upstream, TestReplayUrlSecurity.PublicValidator);
         var uri = new Uri(PlaylistUrl);
 
-        // VLC 3.0.18 fixed the demuxer, so newer releases must not pay for the workaround at all.
-        foreach (var unaffected in new[] { new Version(3, 0, 18), new Version(3, 0, 18, 1), new Version(3, 0, 23), new Version(4, 0, 0) })
-        {
-            using var source = await gateway.PrepareAsync(uri, unaffected, CancellationToken.None);
-            Assert.True(ReferenceEquals(uri, source.PlaybackUri), $"libVLC {unaffected} must play muted VODs directly.");
-        }
-
-        Assert.Equal(0, Volatile.Read(ref upstreamRequests));
-
-        // Releases that were measured to freeze, anything older, and an unknown release get the repair.
-        foreach (var affected in new[] { new Version(3, 0, 12), new Version(3, 0, 17, 4), new Version(2, 2, 8), null })
+        // Invalid optional timestamps are repaired by media shape. Playing through a muted
+        // section on newer VLC did not prove that seeking to its end was safe.
+        Version?[] versions = [new(3, 0, 12), new(3, 0, 17, 4), new(2, 2, 8),
+            new(3, 0, 18), new(3, 0, 18, 1), new(3, 0, 23), new(4, 0, 0), null];
+        foreach (var affected in versions)
         {
             using var source = await gateway.PrepareAsync(uri, affected, CancellationToken.None);
             Assert.True(source.PlaybackUri.IsLoopback, $"libVLC {affected?.ToString() ?? "(unknown)"} must get the repair proxy.");
         }
 
-        Assert.Equal(new Version(3, 0, 18), TwitchMutedVodPlaybackGateway.FirstUnaffectedLibVlcVersion);
+        Assert.Equal(versions.Length, Volatile.Read(ref upstreamRequests));
     }
 
     private static Task LibVlcVersionTextParses()
@@ -845,8 +839,8 @@ internal static class TwitchMutedVodRepairTestCatalog
                 entry.Source == "MutedVodRepair" &&
                 entry.Message.Contains("1 muted segment", StringComparison.Ordinal) &&
                 entry.Message.Contains("libVLC 3.0.12", StringComparison.Ordinal) &&
-                entry.Message.Contains("Updating VLC", StringComparison.Ordinal)),
-            "Engaging the repair proxy must be logged with the muted segment count, the affected libVLC and the remedy.");
+                entry.Message.Contains("removing invalid timestamps", StringComparison.Ordinal)),
+            "Engaging the repair proxy must log the muted segment count, libVLC version and timestamp repair.");
 
         source.Dispose();
         using var released = await player.GetAsync(source.PlaybackUri);
@@ -933,10 +927,10 @@ internal static class TwitchMutedVodRepairTestCatalog
             using var source = await gateway.PrepareAsync(uri, AffectedLibVlc, CancellationToken.None);
             Assert.True(ReferenceEquals(uri, source.PlaybackUri), $"Probe failure '{nextMode}' must fall back to the original URL.");
             Assert.Equal(warningsBefore + 1, logger.Entries.Count(entry => entry.Level == AppLogLevel.Warning));
-            // Falling back can bring the freeze back, so the warning has to say so and name the remedy.
+            // Falling back can bring the timestamp failure back; identify the player and limitation.
             var warning = logger.Entries.Last(entry => entry.Level == AppLogLevel.Warning);
-            Assert.Contains("libVLC 3.0.12 will freeze", warning.Message);
-            Assert.Contains("updating VLC to 3.0.18", warning.Message);
+            Assert.Contains("libVLC 3.0.12", warning.Message);
+            Assert.Contains("invalid timestamps may interrupt playback or prevent end-of-media", warning.Message);
             Assert.NotNull(warning.Exception);
         }
 
@@ -1224,7 +1218,8 @@ internal static class TwitchMutedVodRepairTestCatalog
 
         public CancellationTokenSource? CancelAfterPrepare { get; set; }
 
-        public Task<PlaybackMediaSource> PrepareAsync(Uri mediaUri, Version? libVlcVersion, CancellationToken cancellationToken)
+        public Task<PlaybackMediaSource> PrepareAsync(Uri mediaUri, Version? libVlcVersion, CancellationToken cancellationToken,
+            bool preferFastReplay = false)
         {
             if (PrepareException is not null)
             {

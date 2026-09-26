@@ -24,6 +24,8 @@
     <PackageReference Include="System.Drawing.Common" Version="10.0.10" PrivateAssets="all" />
     <None Update="Fixtures\replay-position-colors.mp4" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\replay-position-event\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\replay-position-long-gop\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\replay-position-audio\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

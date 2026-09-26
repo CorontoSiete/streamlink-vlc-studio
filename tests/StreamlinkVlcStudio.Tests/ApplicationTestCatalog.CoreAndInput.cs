@@ -107,12 +107,9 @@ internal static partial class ApplicationTestCatalog
             action => action());
         viewModel.Tabs.Add(tab);
 
-        var start = typeof(MainViewModel).GetMethod(
-            "StartTabInBackground",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(start);
-        start!.Invoke(viewModel, [tab, false]);
-        start.Invoke(viewModel, [tab, false]);
+        viewModel.SelectedTab = tab;
+        await viewModel.PlaySelectedCommand.ExecuteAsync();
+        await viewModel.PlaySelectedCommand.ExecuteAsync();
 
         Assert.Equal(2, dispatchAttempts);
         await viewModel.DisposeAsync();

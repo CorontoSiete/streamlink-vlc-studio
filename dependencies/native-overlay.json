@@ -2,22 +2,22 @@
   "schemaVersion": 1,
   "component": "bundled-vlc-chat-overlay",
   "provenance": {
-    "classification": "opaque-third-party-input",
-    "sourceAvailability": "unavailable",
-    "reviewedUtc": "2026-08-15T00:00:00Z",
-    "notes": "These unsigned binaries predate this hardening pass. Their original source and reproducible build recipe are unavailable, so releases pin and verify them as opaque inputs. The bundled controller includes a minimal binary patch that clears stale keyboard modifier state before translating overlay chat input."
+    "classification": "source-available-native-input",
+    "sourceAvailability": "native/chat-overlay",
+    "reviewedUtc": "2026-09-26T00:00:00Z",
+    "notes": "Recovered native source is included with scripts/build-chat-overlay.ps1 and deterministic native rendering tests. Built with x64 MSVCRT WinLibs GCC 16.1.0 and VLC 3.0.23 headers. Overlay scale follows the decoded source resolution, not app window dimensions or DPI. Text, emotes and input surfaces use correct straight-alpha output. The existing keyboard modifier fix is implemented in source. This source recovery is not a full security audit of the controller. The overlay DLL includes the LGPL VLC 3.0.23 Windows GDI output with display-resolution, alpha-correct filtered chat composition; source and license are in native/chat-overlay/quality-gdi and accompany app builds. Controller shutdown joins all workers before cleanup and exits the standalone process on a stalled worker; individual threads are never terminated during shared-state cleanup."
   },
   "files": [
     {
       "path": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build/libmyoverlay_plugin.dll",
-      "length": 166773,
-      "sha256": "34fddd30f9a6c163ed14e5992da6f7c8213c809ad60a66a856a017ed2d7a0318",
+      "length": 969072,
+      "sha256": "1c3307706a00aa822592716d57e9457c0e6d7d5772604e546a50157d5ce69248",
       "authenticode": "NotSigned"
     },
     {
       "path": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build/vlc_chat_overlay.exe",
-      "length": 403688,
-      "sha256": "b684b57abb7dd1ed3b551ac9a7b11a9367af2f78f0a8e29720e86f6e8cb1f554",
+      "length": 410791,
+      "sha256": "61291c63440c5b5267093c0c72312ebfa04c5270f04160d275034e5536eb7e56",
       "authenticode": "NotSigned"
     }
   ]

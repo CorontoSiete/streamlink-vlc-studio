@@ -47,6 +47,13 @@ function Test-ThreePartProductVersion([string]$Version) {
 }
 
 function Resolve-DotNetTool {
+    if (-not [string]::IsNullOrWhiteSpace($env:DOTNET_HOST_PATH)) {
+        if (-not (Test-Path -LiteralPath $env:DOTNET_HOST_PATH -PathType Leaf)) {
+            throw "The selected .NET host does not exist: $env:DOTNET_HOST_PATH"
+        }
+        return $env:DOTNET_HOST_PATH
+    }
+
     $repositoryDotNet = Join-Path $repoRoot ".dotnet-sdk\dotnet.exe"
     if (Test-Path -LiteralPath $repositoryDotNet -PathType Leaf) {
         return $repositoryDotNet

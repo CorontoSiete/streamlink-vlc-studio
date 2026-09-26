@@ -291,7 +291,25 @@
                 </ItemsControl.ItemContainerStyle>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Grid>
+                        <Grid x:Name="DetachedSurfaceHost" Background="Black">
+                            <TextBlock Text="VOD finished" Foreground="White" FontSize="30" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       TextAlignment="Center" TextWrapping="Wrap" Margin="16"
+                                       Visibility="{Binding Tab.IsVodFinished, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Text="{Binding Tab.ErrorMessage}" Foreground="White"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       TextWrapping="Wrap" MaxWidth="360" Margin="16">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tab.IsRecoveringLivePlayback}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                             <controls:VideoSurface x:Name="DetachedVideoSurface"
                                                    Loaded="VideoSurface_Loaded"
                                                    Unloaded="VideoSurface_Unloaded"
@@ -300,11 +318,34 @@
                                                    MouseLeftButtonDoubleClicked="VideoSurface_MouseLeftButtonDoubleClicked"
                                                    HorizontalAlignment="Stretch"
                                                    VerticalAlignment="Stretch"
-                                                   Tag="{Binding Tab}" />
+                                                   Tag="{Binding Tab}">
+                                <controls:VideoSurface.Style>
+                                    <Style TargetType="controls:VideoSurface">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tab.IsRecoveringLivePlayback}" Value="True">
+                                                <Setter Property="Visibility" Value="Hidden" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tab.IsVodFinished}" Value="True">
+                                                <Setter Property="Visibility" Value="Hidden" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </controls:VideoSurface.Style>
+                            </controls:VideoSurface>
                             <controls:ReplaySeekOverlay Width="0"
                                                         Height="0"
-                                                        DataContext="{Binding Tab}"
-                                                        PlacementTarget="{Binding ElementName=DetachedVideoSurface}" />
+                                                        DataContext="{Binding Tab}">
+                                <controls:ReplaySeekOverlay.Style>
+                                    <Style TargetType="controls:ReplaySeekOverlay">
+                                        <Setter Property="PlacementTarget" Value="{Binding ElementName=DetachedVideoSurface}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsVodFinished}" Value="True">
+                                                <Setter Property="PlacementTarget" Value="{Binding ElementName=DetachedSurfaceHost}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </controls:ReplaySeekOverlay.Style>
+                            </controls:ReplaySeekOverlay>
                         </Grid>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>

@@ -1775,7 +1775,25 @@
                     </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <Grid x:Name="SurfaceHost">
+                            <Grid x:Name="SurfaceHost" Background="Black">
+                                <TextBlock Text="VOD finished" Foreground="White" FontSize="30" FontWeight="SemiBold"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           TextAlignment="Center" TextWrapping="Wrap" Margin="24"
+                                           Visibility="{Binding IsVodFinished, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Text="{Binding ErrorMessage}" Foreground="White"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           TextWrapping="Wrap" MaxWidth="480" Margin="24">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsRecoveringLivePlayback}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                                 <controls:VideoSurface x:Name="PlayerSurface" Loaded="VideoSurface_Loaded"
                                                        Unloaded="VideoSurface_Unloaded"
                                                        SurfaceMouseLeftButtonPressed="VideoSurface_MouseLeftButtonPressed"
@@ -1791,15 +1809,25 @@
                                                 <DataTrigger Binding="{Binding IsVideoVisible}" Value="True">
                                                     <Setter Property="Visibility" Value="Visible" />
                                                 </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsRecoveringLivePlayback}" Value="True">
+                                                    <Setter Property="Visibility" Value="Hidden" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsVodFinished}" Value="True">
+                                                    <Setter Property="Visibility" Value="Hidden" />
+                                                </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
                                     </controls:VideoSurface.Style>
                                 </controls:VideoSurface>
-                                <controls:ReplaySeekOverlay PlacementTarget="{Binding ElementName=PlayerSurface}">
+                                <controls:ReplaySeekOverlay>
                                     <controls:ReplaySeekOverlay.Style>
                                         <Style TargetType="controls:ReplaySeekOverlay">
+                                            <Setter Property="PlacementTarget" Value="{Binding ElementName=PlayerSurface}" />
                                             <Setter Property="IsOverlayEnabled" Value="{Binding DataContext.IsReplaySeekBarUiVisible, RelativeSource={RelativeSource AncestorType=Window}}" />
                                             <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsVodFinished}" Value="True">
+                                                    <Setter Property="PlacementTarget" Value="{Binding ElementName=SurfaceHost}" />
+                                                </DataTrigger>
                                                 <DataTrigger Binding="{Binding DataContext.IsSettingsOpen, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
                                                     <Setter Property="IsOverlayEnabled" Value="False" />
                                                 </DataTrigger>
@@ -2507,7 +2535,8 @@
                                                    Margin="0,10,0,0" />
                                     </StackPanel>
 
-                                    <ItemsControl ItemsSource="{Binding TwitchVods}"
+                                    <ItemsControl x:Name="VodCardsItemsControl"
+                                                  ItemsSource="{Binding TwitchVods}"
                                                   ItemsPanel="{StaticResource HomeCardItemsPanel}"
                                                   Visibility="{Binding HasTwitchVods, Converter={StaticResource BoolToVisibility}}">
                                         <ItemsControl.ItemTemplate>
@@ -2597,6 +2626,50 @@
                                                                                FontSize="11"
                                                                                FontWeight="SemiBold" />
                                                                 </Border>
+                                                                <Border HorizontalAlignment="Left"
+                                                                        VerticalAlignment="Bottom"
+                                                                        Margin="11"
+                                                                        Padding="8,4"
+                                                                        CornerRadius="6"
+                                                                        Background="#E0232326"
+                                                                        ToolTip="Watched"
+                                                                        AutomationProperties.Name="Watched VOD"
+                                                                        Visibility="{Binding IsWatched, Converter={StaticResource BoolToVisibility}}">
+                                                                    <StackPanel Orientation="Horizontal">
+                                                                        <TextBlock Text="&#xE73E;"
+                                                                                   FontFamily="Segoe MDL2 Assets"
+                                                                                   Foreground="{DynamicResource StudioSuccessBrush}"
+                                                                                   VerticalAlignment="Center"
+                                                                                   Margin="0,0,5,0" />
+                                                                        <TextBlock Text="WATCHED"
+                                                                                   Foreground="White"
+                                                                                   FontSize="11"
+                                                                                   FontWeight="SemiBold" />
+                                                                    </StackPanel>
+                                                                </Border>
+                                                                <ProgressBar Height="5"
+                                                                             VerticalAlignment="Bottom"
+                                                                             Minimum="0"
+                                                                             Maximum="100"
+                                                                             Value="{Binding WatchProgressPercent, Mode=OneWay}"
+                                                                             Foreground="{DynamicResource StudioAccentBrush}"
+                                                                             Background="#B3232326"
+                                                                             Focusable="False"
+                                                                             ToolTip="{Binding WatchProgressText}"
+                                                                             AutomationProperties.Name="VOD watch progress"
+                                                                             AutomationProperties.HelpText="{Binding WatchProgressText}"
+                                                                             Visibility="{Binding HasWatchProgress, Converter={StaticResource BoolToVisibility}}">
+                                                                    <ProgressBar.Template>
+                                                                        <ControlTemplate TargetType="ProgressBar">
+                                                                            <Grid SnapsToDevicePixels="True">
+                                                                                <Border x:Name="PART_Track" Background="{TemplateBinding Background}" />
+                                                                                <Border x:Name="PART_Indicator"
+                                                                                        HorizontalAlignment="Left"
+                                                                                        Background="{TemplateBinding Foreground}" />
+                                                                            </Grid>
+                                                                        </ControlTemplate>
+                                                                    </ProgressBar.Template>
+                                                                </ProgressBar>
                                                             </Grid>
                                                         </controls:RoundedClipBorder>
 
@@ -4224,13 +4297,22 @@
                                                         Background="{DynamicResource StudioSurface2Brush}"
                                                         CornerRadius="6"
                                                         Padding="7,3">
-                                                    <TextBlock Text="{Binding Settings.Chat.FontSize, StringFormat={}{0:0} px}"
+                                                    <TextBlock Text="{Binding ChatTextSize, StringFormat={}{0:0} px}"
                                                                FontSize="11"
                                                                Foreground="{DynamicResource StudioAccentHoverBrush}" />
                                                 </Border>
-                                                <TextBlock Text="Docked chat text size" Style="{StaticResource StudioFieldLabelStyle}" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding ChatTextSizeLabel}" Style="{StaticResource StudioFieldLabelStyle}" VerticalAlignment="Center" />
                                             </DockPanel>
-                                            <Slider Minimum="8" Maximum="36" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding Settings.Chat.FontSize}" Margin="0,0,0,14" />
+                                            <Slider x:Name="ChatTextSizeSlider"
+                                                    Minimum="{x:Static settings:ChatSettings.MinimumFontSize}"
+                                                    Maximum="{x:Static settings:ChatSettings.MaximumFontSize}"
+                                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                                    IsEnabled="{Binding IsChatTextSizeEnabled}"
+                                                    AutomationProperties.Name="{Binding ChatTextSizeLabel}"
+                                                    Value="{Binding ChatTextSize, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <TextBlock Text="{Binding ChatTextSizeDescription}"
+                                                       Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                       Margin="0,8,0,14" />
                                             <DockPanel Margin="0,0,0,4">
                                                 <Border DockPanel.Dock="Right"
                                                         Background="{DynamicResource StudioSurface2Brush}"
@@ -4254,25 +4336,6 @@
                                             <TextBox Text="{Binding Settings.Chat.VlcOverlayDirectory, UpdateSourceTrigger=PropertyChanged}"
                                                      Margin="0,0,0,16"
                                                      ToolTip="Leave blank to use the bundled overlay." />
-                                            <DockPanel Margin="0,0,0,4">
-                                                <Border DockPanel.Dock="Right"
-                                                        Background="{DynamicResource StudioSurface2Brush}"
-                                                        CornerRadius="6"
-                                                        Padding="7,3">
-                                                    <TextBlock Text="{Binding SelectedVlcOverlayFontSize, StringFormat={}{0:0} px}"
-                                                               FontSize="11"
-                                                               Foreground="{DynamicResource StudioAccentHoverBrush}" />
-                                                </Border>
-                                                <TextBlock Text="Selected stream overlay text size"
-                                                           Style="{StaticResource StudioFieldLabelStyle}"
-                                                           VerticalAlignment="Center" />
-                                            </DockPanel>
-                                            <Slider Minimum="8" Maximum="36" TickFrequency="1" IsSnapToTickEnabled="True"
-                                                    IsEnabled="{Binding HasSelectedTab}"
-                                                    Value="{Binding SelectedVlcOverlayFontSize, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBlock Text="Select a stream tab to tune its native overlay size."
-                                                       Style="{StaticResource SettingsPageDescriptionStyle}"
-                                                       Margin="0,12,0,0" />
                                         </StackPanel>
                                     </Border>
                                 </controls:ResponsiveColumnsPanel>

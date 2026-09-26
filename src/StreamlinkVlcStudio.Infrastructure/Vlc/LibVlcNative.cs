@@ -66,6 +66,15 @@ internal static partial class LibVlcNative
     internal static extern void libvlc_release(IntPtr instance);
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void libvlc_retain(IntPtr instance);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr libvlc_video_get_track_description(IntPtr player);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int libvlc_video_set_track(IntPtr player, int track);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr libvlc_media_new_location(
         IntPtr instance,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string mediaLocation);
@@ -129,6 +138,30 @@ internal static partial class LibVlcNative
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern MediaPlayerState libvlc_media_player_get_state(IntPtr player);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int libvlc_media_get_stats(IntPtr media, out MediaStatistics statistics);
+
+    // libvlc_media_stats_t, VLC 3.x: all fields are 32-bit, including the bitrates.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MediaStatistics
+    {
+        public int ReadBytes;
+        public float InputBitrate;
+        public int DemuxReadBytes;
+        public float DemuxBitrate;
+        public int DemuxCorrupted;
+        public int DemuxDiscontinuity;
+        public int DecodedVideo;
+        public int DecodedAudio;
+        public int DisplayedPictures;
+        public int LostPictures;
+        public int PlayedAudioBuffers;
+        public int LostAudioBuffers;
+        public int SentPackets;
+        public int SentBytes;
+        public float SendBitrate;
+    }
 
     internal enum MediaPlayerState
     {

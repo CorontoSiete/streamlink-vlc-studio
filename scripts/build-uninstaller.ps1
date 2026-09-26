@@ -42,7 +42,12 @@ if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
 }
 
 $repoDotNet = Join-Path $repoRoot ".dotnet-sdk\dotnet.exe"
-$dotnet = if (Test-Path -LiteralPath $repoDotNet -PathType Leaf) {
+$dotnet = if (-not [string]::IsNullOrWhiteSpace($env:DOTNET_HOST_PATH)) {
+    if (-not (Test-Path -LiteralPath $env:DOTNET_HOST_PATH -PathType Leaf)) {
+        throw "The selected .NET host does not exist: $env:DOTNET_HOST_PATH"
+    }
+    $env:DOTNET_HOST_PATH
+} elseif (Test-Path -LiteralPath $repoDotNet -PathType Leaf) {
     $repoDotNet
 } else {
     $command = Get-Command "dotnet.exe" -ErrorAction SilentlyContinue

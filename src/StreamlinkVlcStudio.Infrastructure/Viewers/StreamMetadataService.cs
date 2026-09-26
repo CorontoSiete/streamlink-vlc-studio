@@ -126,7 +126,7 @@ public sealed class StreamMetadataService : IStreamMetadataService
 
         try
         {
-            var profileImages = await TwitchProfileImageLookup.GetAsync(
+            var profileImages = await ProfileImageLookup.GetTwitchAsync(
                 httpClient,
                 token,
                 clientId,
@@ -197,7 +197,7 @@ public sealed class StreamMetadataService : IStreamMetadataService
 
         try
         {
-            var profileImages = await KickProfileImageLookup.GetAsync(
+            var profileImages = await ProfileImageLookup.GetKickAsync(
                 httpClient,
                 accessToken,
                 [broadcasterUserId],

@@ -253,7 +253,7 @@ internal static class CodeReviewTestCatalog
     private static string CreateTemporaryDirectory() =>
         Directory.CreateTempSubdirectory("StreamStudio-review-").FullName;
 
-    private sealed class StalledReadStream : Stream
+    internal sealed class StalledReadStream : Stream
     {
         internal bool SawCancellation { get; private set; }
         internal TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

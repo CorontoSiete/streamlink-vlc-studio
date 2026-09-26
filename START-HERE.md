@@ -14,11 +14,13 @@ enough. Internet access is needed for the first NuGet restore.
 Open PowerShell in the folder containing the solution:
 
 ```powershell
-dotnet --version
-dotnet restore StreamlinkVlcStudio.sln
-dotnet build StreamlinkVlcStudio.sln --no-restore
-dotnet run --project src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj --no-restore
+.\scripts\dev.ps1 Run -Configuration Debug
 ```
+
+This restores locked dependencies, builds the app, and launches it. The command
+finds the pinned SDK even when an older SDK is first on PATH. A custom SDK path
+can be supplied with `-DotNetPath 'C:\SDKs\dotnet\dotnet.exe'`. Use
+`.\scripts\dev.ps1 Build` to build the entire solution without launching.
 
 For stream playback, also install Streamlink and 64-bit VLC with `libvlc.dll`.
 See `README.md` for account setup and installer builds.
@@ -26,11 +28,21 @@ Account credentials are configured separately on your own computer.
 
 ## Tests
 
-After restoring packages:
+Run the headless-safe suite with one command:
 
 ```powershell
-dotnet test StreamlinkVlcStudio.sln --no-restore
+.\scripts\dev.ps1 Test
+
+# Focus on one subsystem; omit -NoBuild after changing source.
+.\scripts\dev.ps1 Test -Filter 'stream open workflow:' -NoBuild
+
+# Verify formatting, scripts, native dependencies, build, and the full suite.
+.\scripts\dev.ps1 Check
 ```
+
+Tests restore and build automatically unless `-NoBuild` is supplied. Use
+`-Interactive` to include desktop tests that open windows and send input.
+See [README.md](README.md#test) for skip limits, SDK selection, and test fixtures.
 
 ## Why this package is small
 
@@ -40,7 +52,7 @@ needed outputs, so the working folder will grow again during development.
 
 Keep `src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay\build`: its
 DLL and EXE are required build inputs, pinned by `dependencies\native-overlay.json`.
-They cannot be recreated from this repository's source.
+Their source and rebuild instructions are in `native/chat-overlay/README.md`.
 
 Git history and machine-specific Git configuration are omitted from the ZIP.
 You can use `git init` in the extracted folder to start a new repository.

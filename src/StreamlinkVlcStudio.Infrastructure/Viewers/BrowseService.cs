@@ -429,7 +429,7 @@ public sealed class BrowseService : IBrowseService
         string clientId,
         CancellationToken cancellationToken)
     {
-        return TwitchProfileImageLookup.EnrichAsync(
+        return ProfileImageLookup.EnrichTwitchAsync(
             httpClient,
             streams,
             stream => stream.Channel,

@@ -4,6 +4,8 @@ using StreamlinkVlcStudio.Core.Settings;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
+internal readonly record struct NativeOverlaySourceSize(int Width, int Height);
+
 internal static class NativeOverlaySizing
 {
     internal const int ReferenceVideoHeight = 1080;

@@ -286,7 +286,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         string clientId,
         CancellationToken cancellationToken)
     {
-        return TwitchProfileImageLookup.EnrichAsync(
+        return ProfileImageLookup.EnrichTwitchAsync(
             httpClient,
             streams,
             stream => stream.Channel,
@@ -319,7 +319,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
         try
         {
-            var profileImages = await KickProfileImageLookup.GetAsync(
+            var profileImages = await ProfileImageLookup.GetKickAsync(
                 httpClient,
                 accessToken,
                 userIds,

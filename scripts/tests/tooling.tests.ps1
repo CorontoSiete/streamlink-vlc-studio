@@ -4,6 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $scriptRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot '..'))
+& (Join-Path $PSScriptRoot 'development.tests.ps1')
 . (Join-Path $scriptRoot 'lib\common.ps1')
 . (Join-Path $scriptRoot 'lib\install-state.ps1')
 . (Join-Path $scriptRoot 'lib\dependency-manifest.ps1')

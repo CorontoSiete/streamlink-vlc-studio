@@ -20,7 +20,7 @@ internal static class LibVlcVideoOutputBinding
         // set_hwnd resets vout and avcodec-hw to "", overriding instance options. Media options
         // cannot fix this: the vout is parented to the player, not the media input.
         // Restore the variable using the same checked setter as VLC's var_SetString.
-        SetString(player, "vout", LibVlcRendererSelection.GetVoutOption(renderer));
+        SetString(player, "vout", LibVlcRendererSelection.GetVoutOption(renderer, usesNativeOverlay));
         SetString(player, "avcodec-hw", LibVlcRendererSelection.GetHardwareDecodingOption(renderer, usesNativeOverlay));
     }
 
@@ -41,14 +41,37 @@ internal static class LibVlcVideoOutputBinding
         }
     }
 
+    internal static void EnablePreparedVideo(IntPtr player)
+    {
+        // The prepared VLC 3 input deliberately has no video decoder/output. Its
+        // video variable must be enabled before the public track-selection API can
+        // create that decoder. Use the exported VLC 3 object API, as Bind does.
+        var input = GetInputThread(player);
+        if (input == IntPtr.Zero) throw new InvalidOperationException("The prepared replay input has ended.");
+        try
+        {
+            const int vlcVarBool = 0x0020;
+            if (SetChecked(input, "video", vlcVarBool, new VlcValue { Boolean = 1 }) != 0)
+                throw new InvalidOperationException("VLC could not enable the prepared replay video.");
+        }
+        finally { ReleaseObject(input); }
+    }
+
     // vlc_value_t is an eight-byte union on the supported Windows x64 VLC 3 ABI.
     [StructLayout(LayoutKind.Explicit, Size = 8)]
     private struct VlcValue
     {
         [FieldOffset(0)] public IntPtr String;
+        [FieldOffset(0)] public byte Boolean;
     }
 
     [DllImport("libvlccore", EntryPoint = "var_SetChecked", CallingConvention = CallingConvention.Cdecl)]
     private static extern int SetChecked(IntPtr obj,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string name, int type, VlcValue value);
+
+    [DllImport("libvlc", EntryPoint = "libvlc_get_input_thread", CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr GetInputThread(IntPtr player);
+
+    [DllImport("libvlccore", EntryPoint = "vlc_object_release", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void ReleaseObject(IntPtr obj);
 }

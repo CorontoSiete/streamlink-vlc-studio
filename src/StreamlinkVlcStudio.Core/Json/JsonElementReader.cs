@@ -204,6 +204,16 @@ public static class JsonElementReader
             : "";
     }
 
+    /// <summary>Gets an object property, or an undefined element when it is absent or has another type.</summary>
+    public static JsonElement GetObjectProperty(JsonElement element, string propertyName)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(propertyName, out var property) &&
+            property.ValueKind == JsonValueKind.Object
+            ? property
+            : default;
+    }
+
     /// <summary>Gets an array property without throwing for missing or non-object values.</summary>
     public static bool TryGetArray(JsonElement element, string propertyName, out JsonElement array)
     {

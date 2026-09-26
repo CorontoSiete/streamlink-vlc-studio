@@ -340,15 +340,6 @@ public sealed class KickVodService : IKickVodService
         return ReadProfileImageFields(current);
     }
 
-    private static JsonElement GetObjectProperty(JsonElement element, string propertyName)
-    {
-        return element.ValueKind == JsonValueKind.Object &&
-            element.TryGetProperty(propertyName, out var property) &&
-            property.ValueKind == JsonValueKind.Object
-            ? property
-            : default;
-    }
-
     private static TimeSpan ReadDuration(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Object)

@@ -20,6 +20,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private readonly Func<int> getVideoHeight;
     private readonly Action<int>? replayScrolled;
     private readonly Action<int>? replayScrollPositionChanged;
+    private readonly Action<int>? uiScaleChanged;
     private readonly Action<string, long>? resizeTempWritten;
     private readonly TimeSpan resizeDebounceDelay;
     private readonly object gate = new();
@@ -46,7 +47,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         TimeSpan? resizeDebounceDelay = null,
         Action<int>? replayScrolled = null,
         Action<int>? replayScrollPositionChanged = null,
-        Action<string, long>? resizeTempWritten = null)
+        Action<string, long>? resizeTempWritten = null,
+        Action<int>? uiScaleChanged = null)
     {
         this.logger = logger;
         this.dispatch = dispatch;
@@ -55,6 +57,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         this.replayScrolled = replayScrolled;
         this.replayScrollPositionChanged = replayScrollPositionChanged;
         this.resizeTempWritten = resizeTempWritten;
+        this.uiScaleChanged = uiScaleChanged;
         this.resizeDebounceDelay = resizeDebounceDelay ?? DefaultResizeDebounceDelay;
         if (this.resizeDebounceDelay < TimeSpan.Zero)
         {
@@ -341,6 +344,21 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     {
         if (!NativeOverlayProtocolCodec.TryReadEvent(message, out var eventType, out var value))
         {
+            return;
+        }
+
+        if (eventType == NativeOverlayProtocolCodec.UiScaleEventType)
+        {
+            if (value is > 0 and <= 65535)
+            {
+                dispatch(() =>
+                {
+                    if (IsResizeSessionActive(activePositionStatePath, activeResizeSessionId))
+                    {
+                        uiScaleChanged?.Invoke(value);
+                    }
+                });
+            }
             return;
         }
 

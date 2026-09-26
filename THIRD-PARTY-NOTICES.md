@@ -11,9 +11,13 @@ are included under `native/replay-pause`; the build script is
 
 ## Bundled VLC chat overlay binaries
 
-`libmyoverlay_plugin.dll` and `vlc_chat_overlay.exe` are unsigned opaque native
-inputs whose original source and reproducible build recipe are not available in
-this workspace. They are not represented as reviewed source. Their exact sizes,
+`libmyoverlay_plugin.dll` and `vlc_chat_overlay.exe` are unsigned native inputs.
+Their recovered source and rebuild instructions are in `native/chat-overlay`.
+The overlay DLL also contains a modified VLC 3.0.23 Windows GDI output,
+licensed under LGPL-2.1-or-later. Its source, upstream attribution, change
+description and license accompany the app under `native/chat-overlay/quality-gdi`.
+The source recovery and display sizing changes are not a security audit of the
+entire native controller. Their exact sizes,
 SHA-256 values, and signature state are pinned in
 `dependencies/native-overlay.json`, verified during build and packaging, and
 included in release artifacts as `native-overlay-provenance.json`.

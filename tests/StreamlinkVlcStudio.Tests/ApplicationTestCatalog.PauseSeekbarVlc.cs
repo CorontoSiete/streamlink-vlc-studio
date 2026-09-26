@@ -268,7 +268,8 @@ internal static partial class ApplicationTestCatalog
     private sealed class DelayedPauseMediaGateway(Uri httpUri) : IPlaybackMediaSourceGateway
     {
         public bool UseHttp { get; set; }
-        public Task<PlaybackMediaSource> PrepareAsync(Uri mediaUri, Version? libVlcVersion, CancellationToken cancellationToken) =>
+        public Task<PlaybackMediaSource> PrepareAsync(Uri mediaUri, Version? libVlcVersion, CancellationToken cancellationToken,
+            bool preferFastReplay = false) =>
             Task.FromResult(PlaybackMediaSource.Direct(UseHttp ? httpUri : mediaUri));
     }
 

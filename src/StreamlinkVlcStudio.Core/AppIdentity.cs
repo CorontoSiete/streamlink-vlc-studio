@@ -12,7 +12,6 @@ public static class AppIdentity
     public const string LegacyProductDirectoryName = "StreamlinkVlcStudio";
     // Keep completion records and staged updates readable across the display-name change.
     public const string UpdateDirectoryName = LegacyProductDirectoryName;
-    public const string ExecutableName = "StreamStudio.exe";
     // Published 1.7.0 helpers verify and restart this exact managed-install filename.
     public const string ManagedExecutableName = "StreamlinkVlcStudio.exe";
     // Protocol 1 asset names are stable even when the display name changes.

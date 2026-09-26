@@ -52,18 +52,20 @@ internal static class LibVlcRendererSelection
         }
     }
 
-    internal static string GetVoutOption(VideoRendererMode rendererMode)
+    internal static string GetVoutOption(VideoRendererMode rendererMode, bool usesNativeOverlay = false)
     {
         return rendererMode == VideoRendererMode.Direct3D11
             ? "direct3d11"
-            : "wingdi";
+            // The bundled overlay also provides GDI output that filters chat
+            // separately. Retain stock GDI for older custom overlay plugins.
+            : usesNativeOverlay ? "studio_gdi,wingdi" : "wingdi";
     }
 
     internal static string GetHardwareDecodingOption(VideoRendererMode rendererMode, bool usesNativeOverlay)
     {
-        // VLC 3 blends GDI subpictures before converting hardware surfaces to RGB.
-        // Its software blender cannot write to DX11/DXVA surfaces, so native chat
-        // disappears even while the controller and video output are healthy.
+        // Keep software decoding for the stock-GDI fallback: its early subtitle
+        // blender cannot write to DX11/DXVA surfaces. Studio GDI also consumes
+        // CPU-accessible RGB frames for its final window composition.
         return rendererMode != VideoRendererMode.Direct3D11 && usesNativeOverlay ? "none" : "any";
     }
 }

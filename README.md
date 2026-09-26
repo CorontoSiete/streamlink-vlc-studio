@@ -12,12 +12,13 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - Quality presets: `best`, `source`, `1080p60`, `1080p`, `720p60`, `720p`, `480p`, `audio_only`, `worst`.
 - Low-latency Streamlink defaults for Twitch/HLS.
 - Platform replay seekbar for Twitch and best-effort Kick replays. Live playback keeps the existing Streamlink HTTP path; seeking behind live switches to platform VOD HLS playback in libVLC.
+- Twitch and Kick VODs automatically resume at the last confirmed playback position when reopened, including after restarting the app. Progress is saved every five seconds and on pause, seek, stop, or close; backward seeks are remembered too. Replay chat follows the restored position. The latest 1,000 videos are remembered in `vod-history.json` beside settings. A VOD that reaches its end starts over next time. VOD thumbnails show a bottom progress bar for partially watched videos and a Watched badge for completed videos; the badge stays visible when rewatching, while the new resume position is still saved.
 - Subscriber-only Twitch VOD playback: if Streamlink cannot resolve a Twitch VOD, the app falls back to a direct CloudFront playlist derived from the VOD's public storyboard metadata (TwitchNoSub technique). Pasting a `https://www.twitch.tv/videos/{id}` URL into the search box opens it directly. Very recent uploads cannot be resolved this way, and `audio_only` maps to the lowest video variant.
 - Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. By default, the selected main stream keeps its audio when a picture-in-picture window is focused; inactive visible streams stay muted. Clicking a picture-in-picture window leaves the main tab and layout in place. When no stream is selected in the main window, audio follows the activated picture-in-picture stream. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted. Enable **Never mute** beside the mute button to keep that tab unmuted and playing when switching tabs or opening Home. It clears manual mute and disables the mute button until turned off; volume, manual pause, and stop still work. A speaker icon beside the tab title marks tabs with Never mute enabled, including in the compact tab selector; for grouped tabs, its tooltip names the protected streams. The toggle is separate for each open tab, survives playback reloads, and resets when the tab is closed. Turning it off restores the normal inactive-tab mute and pause behavior.
 - Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL.
 - Home page showing live followed Twitch streams, imported Kick follows and additional Kick channels that are currently live, Twitch/Kick VOD browsing, and recently watched streams.
 - Per-tab state: target, quality, status, mute, never mute, chat visibility, logs, chat messages.
-- Per-stream state: volume, VLC plugin chat overlay position, and VLC plugin chat text size are remembered by platform/channel.
+- Per-stream state: volume, VLC plugin chat overlay position, and VLC plugin chat text size are remembered by platform/channel. In **Settings > Chat**, the text-size slider follows the selected layout. With **Overlay** selected, it adjusts the selected stream, or the default for streams without a saved size when opened from Home. Click **Save changes** to keep the size across restarts.
 - Configurable shortcuts in **Settings > Hotkeys**: **Mouse4** (the first side button) goes back to the previous page, including the same open stream after visiting Settings; **M** toggles the multi-stream grid; and **Up/Down** change the selected stream's volume by 5%. The toolbar's **M** button highlights when the grid is enabled. Mouse-wheel volume controls are unchanged. Change **Back to previous page** in Hotkeys to choose a keyboard shortcut or mouse side button, then click **Save changes** to keep it across restarts.
 - Twitch chat via anonymous read-only IRC, or authenticated IRC sending with a Twitch OAuth token.
 - Automatic Twitch channel-point bonus claims for open live streams, using a separate in-app Twitch website sign-in (Settings > Accounts > Channel-point bonuses).
@@ -32,7 +33,7 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - 64-bit Windows 10 or Windows 11.
 - Administrator permission for the per-machine installation under `C:\Program Files`.
 - Internet access for platform sign-in and streaming. The full installer embeds its reviewed dependency installers and does not download them during setup.
-- VLC 3.0.18 or newer when you bring your own VLC (the installer provides a newer one). Older releases freeze on Twitch VODs with muted sections; the app works around that (see "Replay Seekbar"), but updating VLC is the better fix.
+- VLC 3.0.18 or newer when you bring your own VLC (the installer provides a newer one). The app repairs invalid timestamps in Twitch's muted VOD segments, including end-of-media failures on VLC 3.0.23 (see "Replay Seekbar").
 
 `StreamlinkVlcStudio-Setup.exe` is the normal installer. It contains the self-contained app MSI and the reviewed, version-locked x64 Streamlink and VLC installers. It installs the app and any missing dependencies, creates the Start Menu shortcut, and offers to launch the first-run account wizard. The wizard never asks for a Twitch or Kick password: sign-in and consent happen in the platform browser. Streamlink and VLC are treated as shared dependencies and are left installed if the app is later removed.
 
@@ -95,39 +96,63 @@ powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 -ForceStopApp
 
 ## Build And Run
 
-From the repo root:
+Use the development command from PowerShell (Windows PowerShell 5.1 or PowerShell 7):
 
 ```powershell
-$root = (Get-Location).Path
-$env:TEMP = Join-Path $root ".tmp"
-$env:TMP = $env:TEMP
-$env:DOTNET_CLI_HOME = Join-Path $root ".dotnet-home"
-New-Item -ItemType Directory -Path $env:TEMP, $env:DOTNET_CLI_HOME -Force | Out-Null
-$dotnet = (Get-Command dotnet -ErrorAction Stop).Source
-
-& $dotnet restore StreamlinkVlcStudio.sln --ignore-failed-sources
-& $dotnet build StreamlinkVlcStudio.sln --no-restore
-& $dotnet run --project src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj --no-restore
+.\scripts\dev.ps1 Build
+.\scripts\dev.ps1 Run -Configuration Debug
 ```
+
+The command finds the exact SDK selected by `global.json`, including installations
+in `.dotnet-sdk`, `DOTNET_ROOT_X64`/`DOTNET_ROOT`, PATH, and `%USERPROFILE%\.dotnet`.
+It puts the selected SDK first on PATH for child scripts, so packaging tests use
+the same SDK as the build. For a custom installation, pass
+`-DotNetPath 'C:\SDKs\dotnet\dotnet.exe'`. Missing SDKs produce an actionable error;
+the command does not install them automatically.
+
+Builds default to Release with warnings treated as errors. Dependencies restore
+in locked mode, temporary files use `.tmp`, and CLI state uses `.dotnet-home`.
+The command works from another directory when invoked by path and restores the
+caller's environment and working directory on success or failure.
 
 ## Test
 
 ```powershell
-$root = (Get-Location).Path
-$env:DOTNET_CLI_HOME = Join-Path $root ".dotnet-home"
-New-Item -ItemType Directory -Path $env:DOTNET_CLI_HOME -Force | Out-Null
-$dotnet = (Get-Command dotnet -ErrorAction Stop).Source
+# Restore, build once, and run the headless-safe suite (also the default task).
+.\scripts\dev.ps1 Test
 
-& $dotnet test StreamlinkVlcStudio.sln --no-restore
+# Run a subsystem by case-insensitive test-name substring.
+.\scripts\dev.ps1 Test -Filter 'stream open workflow:'
+
+# Rerun existing build output without restoring or rebuilding.
+.\scripts\dev.ps1 Test -Filter 'stream open workflow:' -NoBuild
+
+# Full local checks: formatting, PowerShell/tooling, native inputs, build, tests.
+.\scripts\dev.ps1 Check
+
+# Opt into tests that create windows and drive desktop input.
+.\scripts\dev.ps1 Test -Interactive
 ```
+
+`Test` and `Check` use the current CI headless skip ceiling of 246; interactive
+runs allow zero skips by default. `-ExpectedMaxSkips` provides an explicit override.
+`Check` always builds and runs the full suite, rejecting `-Filter` and `-NoBuild`.
+The test phase never rebuilds WPF output. `-NoRestore` keeps the build but skips
+restore; `-NoBuild` is available only for `Test` and `Run` and can use stale output.
+Local checks do not package or sign releases.
+
+The command clears inherited `SVS_TEST_FILTER` and desktop-mode values for its run;
+use `-Filter` and `-Interactive` to choose them explicitly. Other test settings,
+including timeouts, VLC fixtures, and artifact directories, can still be supplied
+through the existing environment variables. A filter matching no tests fails.
 
 Twitch/Kick routes that are platform pages rather than channels are defined in
 `shared\platform-routes.json`, embedded by Core and covered by the .NET parser tests.
 
-The .NET test project is a dependency-free executable runner. Use `SVS_TEST_FILTER` for a focused
-subsystem run, and `SVS_SKIP_INTERACTIVE_WINDOW_TESTS=true` on headless Windows agents. Verification
-also includes PowerShell parser checks and a Release build; timed-out tests are reported and return
-failure rather than silently passing.
+The .NET test project remains a dependency-free executable runner. When invoking
+`dotnet test` or the test executable directly, use `SVS_TEST_FILTER` for a focused
+subsystem run and `SVS_SKIP_INTERACTIVE_WINDOW_TESTS=true` on headless Windows
+agents. Timed-out tests are reported and return failure rather than silently passing.
 
 For the replay-chat CPU/allocation benchmark, build Release, set
 `SVS_RESOURCE_BENCHMARK=1` and `SVS_TEST_FILTER='resource benchmark'`, then run the test
@@ -166,6 +191,18 @@ Headless CI enforces its reviewed interactive-test skip ceiling. The manually di
 Use the home search bar to enter a Twitch/Kick channel name or URL, or open a card from
 Followed, Browse, or Recent. VODs remain available from the in-app VOD browser and
 supported VOD URLs.
+
+New live-stream tabs appear immediately, with playback starting while missing
+category and profile details load in the background. You can keep browsing, open
+another stream, or close the tab without a late lookup switching you back.
+Recent records successful playback immediately and fills in metadata without
+changing watch order. See [stream opening checks](docs/stream-open-responsiveness-2026-09-26.md).
+
+Opening a stream or VOD that already has a tab returns to that tab without a
+metadata lookup or playback restart. Manual pause and the playback position are
+preserved; tabs paused automatically while hidden resume when selected. Stopped
+tabs start again. Search text clears after a successful open only if that search
+has not changed, so you can type the next search while playback starts.
 
 Pressing Enter while a Home search is running uses that search's pending result.
 Pressing Enter after it finishes runs a fresh search. Viewer counts update the
@@ -308,6 +345,8 @@ The installer script runs the package script when `-ReleaseZip` is not supplied 
 
 Stable releases are created only from exact `vMAJOR.MINOR.PATCH` tags by the protected `release` GitHub environment. Main and pull-request runs upload validation artifacts only. The protected environment must provide `UPDATE_MANIFEST_PRIVATE_KEY_PEM`, matching `shared/update-signing-public-key.pem`; a missing or mismatched key fails closed. The workflow signs the exact UTF-8 manifest with RSA-PSS/SHA-256 and independently verifies every version, asset name, length, and hash before publishing. Optional Authenticode secrets are all-or-nothing. When configured, the workflow signs app/helper binaries and MSI, then follows the required Burn sequence: detach and sign the engine, reattach it, and sign the final bundle with an RFC3161 timestamp.
 
+Publication uploads into a workflow-owned draft and checks all seven uploaded asset names, states, lengths, and GitHub SHA-256 digests before making it public. If an upload or publication fails, rerun the protected workflow: a draft for the same tag and source commit is resumed, matching uploads are reused, and missing or changed files are replaced. Published releases and unrelated drafts are never overwritten. Release jobs run one at a time; preflight checks every page of existing releases and rechecks the remote tag and version immediately before publication. See [release retry and verification](docs/release-publication-workflow.md) for recovery and local tests.
+
 Framework-dependent Windows publish without creating a zip:
 
 ```powershell
@@ -368,7 +407,7 @@ Hover over the timeline to preview its timestamp without seeking. Twitch archive
 - Twitch replay lookup uses the saved Twitch OAuth token and Client ID to match the current live stream to a public `archive` VOD by stream ID or start time. If Twitch does not expose a public archive for the current stream, the seekbar stays disabled with the reason in its tooltip/status text.
 - Seeking behind live resolves the matched VOD through `streamlink --stream-url`, plays the raw VOD HLS URL in libVLC, and uses libVLC time seeking. Dragging to the live edge or clicking `Live` restarts normal live playback.
 - If the matched live VOD is subscriber-only and Streamlink rejects it, the seekbar uses the same storyboard-derived CloudFront fallback as an explicit subscriber-only Twitch VOD.
-- Twitch VODs with muted sections need VLC 3.0.18 or newer to play unaided. Twitch's muted segments (`N-muted.ts`) carry an invalid clock reference every two seconds, and libVLC releases before 3.0.18 freeze two seconds into the first of them -- usually right at the start of a VOD with a muted intro -- while still reporting that they are playing. The installer's pinned VLC is not affected; **updating an older VLC is the real fix**. When the app finds itself running on an affected libVLC it works around the bug: it reads the Twitch VOD playlist once and, only if it lists muted segments, serves the playlist from `127.0.0.1` (ephemeral port, per-session token) and streams those segments through a repair that removes the invalid values. Every other segment is still fetched straight from Twitch, clean VODs are untouched, and any failure falls back to direct playback. `studio.log` records the libVLC version at playback start and `MutedVodRepair` entries whenever the workaround engages.
+- Twitch's muted VOD segments (`N-muted.ts`) can contain invalid clock references and presentation timestamps. Older VLC releases freeze during playback; VLC 3.0.23 can keep reporting Playing after seeking to a muted ending, preventing the VOD finished screen. The app repairs these timestamps regardless of VLC version: it reads the Twitch VOD playlist and, only if it lists muted segments, serves the playlist from `127.0.0.1` (ephemeral port, per-session token) and streams those segments through the repair. Other segments are fetched straight from Twitch. Clean VOD media is unchanged, and inspection failures fall back to direct playback with a warning. `studio.log` records the VLC version and `MutedVodRepair` activity. Completion still requires VLC's actual end-of-media state.
 - Twitch VODs opened from Home use the selected video URL directly, initialize the seekbar from Twitch metadata, and replay chat by VOD ID. Kick VODs play the returned HLS source directly and replay chat aligned to the broadcast start time. Live viewer polling, live chat sending, the `Live` return action, and Recent-stream recording are disabled for explicit VOD tabs.
 - Chat sending is disabled while behind live. VOD chat keeps a fetch frontier about 45 seconds ahead of playback and loads roughly half a minute of chat before the resume point, so the panel is never blank after a seek. Seeking back into chat that was already downloaded replays it without asking the network again. Twitch VOD comments are paged by content offset only, because Twitch now rejects its cursor variable without a Client-Integrity token that only its own web client can mint.
 - Current-live Twitch DVR replays use captured-only chat until Twitch publishes the normal VOD/comments ID. Chat before this tab connected is unavailable, and captured messages appear when replay playback reaches their timestamps. Kick live seekback chat is timestamp-aligned too; after a message appears at the replay time, it remains in chat like live chat until the normal 100-message limit is reached or you seek again.

@@ -107,7 +107,8 @@ jobs:
         env:
           SVS_SKIP_INTERACTIVE_WINDOW_TESTS: "true"
           # Includes replay controls, live/Kick VOD hover, window sharing, hidden emotes, 28 Browse scroll tests, 2 native tab-switch tests, and native resize tracing.
-          SVS_EXPECTED_MAX_SKIPS: "240"
+          # Also includes 1 VOD completion control test, 2 overlay readability tests, and 3 chat text-size tests.
+          SVS_EXPECTED_MAX_SKIPS: "246"
           SVS_TEST_TIMEOUT_SECONDS: "30"
           SVS_TEST_DRAIN_TIMEOUT_SECONDS: "2"
         run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore --no-build
@@ -124,6 +125,7 @@ jobs:
           }
           if ($errors.Count -gt 0) { $errors | Write-Error; exit 1 }
           .\scripts\tests\tooling.tests.ps1
+          .\scripts\tests\release-publication.tests.ps1
           .\scripts\verify-native-dependencies.ps1
 
       - name: Exercise RSA-PSS manifest signing and tamper rejection
@@ -302,7 +304,7 @@ jobs:
       - name: Upload validation artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: StreamStudio-validation-${{ github.sha }}
+          name: StreamStudio-validation-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: artifacts\validation\*
           if-no-files-found: error
           retention-days: 7
@@ -314,6 +316,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 60
     environment: release
+    concurrency:
+      group: stable-release-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: write
       id-token: write
@@ -357,15 +362,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:RELEASE_COMMIT) {
             throw "Stable tag does not resolve exactly to workflow commit $env:RELEASE_COMMIT."
           }
-          $published = @(& gh api "repos/$env:RELEASE_REPOSITORY/releases?per_page=100" | ConvertFrom-Json)
-          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect existing releases.' }
-          foreach ($item in $published) {
-            if ([bool]$item.draft -or [bool]$item.prerelease -or [string]$item.tag_name -notmatch '^v') { continue }
-            try { $other = Get-StableReleaseIdentity -Tag ([string]$item.tag_name) -MinimumVersion '0.0.0' } catch { continue }
-            if ($other.Version -ge $identity.Version) {
-              throw "A final release at or above $env:RELEASE_TAG already exists: $($item.tag_name)."
-            }
-          }
+          .\scripts\publish-release.ps1 -Preflight `
+            -Tag $env:RELEASE_TAG `
+            -Commit $env:RELEASE_COMMIT `
+            -Repository $env:RELEASE_REPOSITORY
 
       - name: Restore release runtime graph
         shell: pwsh
@@ -579,7 +579,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: StreamStudio-upgrade-check-${{ github.ref_name }}
+          name: StreamStudio-upgrade-check-${{ github.ref_name }}-attempt-${{ github.run_attempt }}
           path: artifacts\upgrade-smoke
           if-no-files-found: warn
           retention-days: 14
@@ -587,7 +587,7 @@ jobs:
       - name: Upload reviewed stable release set
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: StreamlinkVlcStudio-release-${{ github.ref_name }}
+          name: StreamlinkVlcStudio-release-${{ github.ref_name }}-attempt-${{ github.run_attempt }}
           path: artifacts\release-set\*
           if-no-files-found: error
           retention-days: 30
@@ -603,34 +603,30 @@ jobs:
           subject-path: artifacts\release-set\StreamlinkVlcStudio-release.zip
           sbom-path: artifacts\release-set\StreamStudio.spdx.json
 
-      - name: Publish exact stable-tag GitHub release
+      - name: Upload, verify, and publish resumable stable release draft
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          & gh release view $env:RELEASE_TAG --repo $env:RELEASE_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) { throw "GitHub release $env:RELEASE_TAG already exists." }
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          $notes = @"
-          ## Stream Studio $env:RELEASE_TAG
+          $notes = @'
+          ## Stream Studio
 
           **One-time migration for 1.7.1 and earlier:** those packaged clients cannot reliably install updates. Download and run `StreamlinkVlcStudio-Setup.exe` manually once. Future managed releases can then be downloaded and installed from inside the app.
 
           `StreamlinkVlcStudio-Setup.exe` is the supported per-machine installer and updater. The ZIP/PowerShell package is an advanced per-user fallback and receives verified release notifications only.
 
           Initial releases may be Authenticode-unsigned and show an “unknown publisher” warning. In every release, `UPDATE-MANIFEST.json` is integrity-protected by the detached RSA-PSS/SHA-256 signature, and `SHA256SUMS.txt` covers the complete public release set.
-          "@
+          '@
           [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
           $versionNotes = Join-Path 'docs/releases' "$env:RELEASE_TAG.md"
           if (Test-Path -LiteralPath $versionNotes) { $notesPath = $versionNotes }
-          $assets = @(Get-ChildItem artifacts\release-set -File | Sort-Object Name | ForEach-Object { $_.FullName })
-          & gh release create $env:RELEASE_TAG @assets `
-            --repo $env:RELEASE_REPOSITORY `
-            --verify-tag `
-            --title "Stream Studio $env:RELEASE_TAG" `
-            --notes-file $notesPath `
-            --latest
-          if ($LASTEXITCODE -ne 0) { throw "GitHub release publication failed with exit code $LASTEXITCODE." }
+          .\scripts\publish-release.ps1 `
+            -Tag $env:RELEASE_TAG `
+            -Commit $env:RELEASE_COMMIT `
+            -Repository $env:RELEASE_REPOSITORY `
+            -ReleaseDirectory artifacts\release-set `
+            -NotesPath $notesPath
 
       - name: Remove protected signing material
         if: always()

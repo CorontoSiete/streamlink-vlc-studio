@@ -12,21 +12,16 @@ using StreamlinkVlcStudio.Infrastructure.Vlc;
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 
 /// <summary>
-/// Compatibility shim for libVLC releases that freeze on Twitch's muted VOD segments. For those
-/// releases it decides, per media URL, whether libVLC can open it as is: Twitch VOD playlists that
-/// list muted segments -- and only those -- are played through
-/// <see cref="TwitchMutedVodRepairProxy"/>. Newer libVLC, live transports, other providers and VODs
-/// without muted segments get their URL back untouched, and any failure while inspecting a
-/// playlist falls back to the original URL: playback is never worse off for having asked.
+/// Repairs invalid timestamps in Twitch's muted VOD segments. It decides, per media URL,
+/// whether libVLC can open it as is: Twitch VOD playlists that
+/// list muted segments are played through <see cref="TwitchMutedVodRepairProxy"/>.
+/// Live transports, other providers and VODs
+/// without muted segments ordinarily get their URL back untouched. A timestamped open can
+/// also request the validated local transport for a completed TS replay on supported VLC.
+/// Inspection failures fall back to the original URL.
 /// </summary>
 internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGateway, IAsyncDisposable
 {
-    /// <summary>
-    /// The first libVLC release that plays muted segments unaided. Measured against one muted VOD:
-    /// 3.0.12, 3.0.14, 3.0.16 and 3.0.17.4 freeze at the same frame; 3.0.18 and 3.0.23 play it.
-    /// </summary>
-    internal static readonly Version FirstUnaffectedLibVlcVersion = new(3, 0, 18);
-
     private const string PlaylistExtension = ".m3u8";
     private static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan UpstreamRequestTimeout = TimeSpan.FromSeconds(30);
@@ -40,15 +35,16 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
     private readonly ReplayUrlSecurityValidator replayUrlValidator;
     private readonly TimeSpan probeTimeout;
     private readonly TwitchMutedVodRepairProxy proxy;
+    private readonly TwitchVodPlaylistHandoff playlistHandoff;
     private int disposed;
 
-    internal TwitchMutedVodPlaybackGateway(IAppLogger logger)
+    internal TwitchMutedVodPlaybackGateway(IAppLogger logger, TwitchVodPlaylistHandoff? playlistHandoff = null)
         : this(
             logger,
             HttpClientFactory.Create(UpstreamRequestTimeout, allowAutoRedirect: false),
             ReplayUrlSecurityValidator.Shared,
             DefaultProbeTimeout,
-            ownsHttpClient: true)
+            ownsHttpClient: true, playlistHandoff ?? TwitchVodPlaylistHandoff.Shared)
     {
     }
 
@@ -56,8 +52,9 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
         IAppLogger logger,
         HttpClient httpClient,
         ReplayUrlSecurityValidator replayUrlValidator,
-        TimeSpan? probeTimeout = null)
-        : this(logger, httpClient, replayUrlValidator, probeTimeout ?? DefaultProbeTimeout, ownsHttpClient: false)
+        TimeSpan? probeTimeout = null, TwitchVodPlaylistHandoff? playlistHandoff = null)
+        : this(logger, httpClient, replayUrlValidator, probeTimeout ?? DefaultProbeTimeout, ownsHttpClient: false,
+            playlistHandoff ?? new TwitchVodPlaylistHandoff())
     {
     }
 
@@ -66,7 +63,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
         HttpClient httpClient,
         ReplayUrlSecurityValidator replayUrlValidator,
         TimeSpan probeTimeout,
-        bool ownsHttpClient)
+        bool ownsHttpClient, TwitchVodPlaylistHandoff playlistHandoff)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(probeTimeout, TimeSpan.Zero);
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -74,17 +71,17 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
         this.replayUrlValidator = replayUrlValidator ?? throw new ArgumentNullException(nameof(replayUrlValidator));
         this.probeTimeout = probeTimeout;
         this.ownsHttpClient = ownsHttpClient;
+        this.playlistHandoff = playlistHandoff;
         proxy = new TwitchMutedVodRepairProxy(logger, httpClient, replayUrlValidator);
     }
 
     public async Task<PlaybackMediaSource> PrepareAsync(
         Uri mediaUri,
         Version? libVlcVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool preferFastReplay = false)
     {
         ArgumentNullException.ThrowIfNull(mediaUri);
         if (Volatile.Read(ref disposed) != 0 ||
-            !IsAffected(libVlcVersion) ||
             !IsTwitchVodPlaylist(mediaUri))
         {
             return PlaybackMediaSource.Direct(mediaUri);
@@ -103,11 +100,14 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             using (var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
                 probe.CancelAfter(probeTimeout);
-                playlist = await source.ReadAsync(probe.Token).ConfigureAwait(false);
+                probe.Token.ThrowIfCancellationRequested();
+                playlist = playlistHandoff.Take(mediaUri) ?? await source.ReadAsync(probe.Token).ConfigureAwait(false);
             }
 
             var inspection = TwitchMutedVodPlaylist.Inspect(playlist);
-            if (inspection.MutedSegments == 0)
+            var preroll = preferFastReplay ? TwitchVodReplayPolicy.GetPreroll(playlist, libVlcVersion) : TimeSpan.Zero;
+            var fastReplay = preroll > TimeSpan.Zero;
+            if (inspection.MutedSegments == 0 && !fastReplay)
             {
                 LogDirectPlayback(media, player, inspection);
                 return PlaybackMediaSource.Direct(mediaUri);
@@ -115,14 +115,15 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
 
             // Reject a playlist the proxy could not serve now, while falling back is still possible.
             _ = TwitchMutedVodPlaylist.RewriteForRepair(playlist, mediaUri, static uri => uri.AbsoluteUri);
-            var session = proxy.OpenSession(source, playlist);
-            logger.Write(
+            var session = proxy.OpenSession(source, playlist, proxyAllSegments: fastReplay);
+            if (inspection.MutedSegments > 0) logger.Write(
                 AppLogLevel.Info,
                 TwitchMutedVodRepairLog.Source,
-                $"{media} lists {inspection.MutedSegments} muted segment(s), whose timestamps freeze {player} " +
-                $"(fixed in VLC {FirstUnaffectedLibVlcVersion}); playing it through the local repair proxy. " +
-                "Updating VLC removes the need for this workaround.");
-            return new PlaybackMediaSource(session.PlaylistUri, session);
+                $"{media} lists {inspection.MutedSegments} muted segment(s); removing invalid timestamps " +
+                $"through the local repair proxy for {player}. These can prevent end-of-media even in VLC 3.0.23.");
+            if (fastReplay)
+                logger.Write(AppLogLevel.Info, "VOD resume", "Using VLC's FFmpeg demuxer for a completed MPEG-TS replay through the validated local transport.");
+            return new PlaybackMediaSource(session.PlaylistUri, session, useAvformatDemuxer: fastReplay, replaySeekPreroll: preroll);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -134,8 +135,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
                 AppLogLevel.Warning,
                 TwitchMutedVodRepairLog.Source,
                 $"Could not inspect {media} for muted segments within {probeTimeout.TotalSeconds:0.#} seconds; playing it directly. " +
-                $"If it has muted segments, {player} will freeze two seconds into the first one; updating VLC to " +
-                $"{FirstUnaffectedLibVlcVersion} or newer avoids that.",
+                $"If it has muted segments, their invalid timestamps may interrupt playback or prevent end-of-media in {player}.",
                 ex);
             return PlaybackMediaSource.Direct(mediaUri);
         }
@@ -154,10 +154,6 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             httpClient.Dispose();
         }
     }
-
-    /// <summary>An unknown release is treated as affected: the repair is harmless on fixed ones.</summary>
-    private static bool IsAffected(Version? libVlcVersion) =>
-        libVlcVersion is null || libVlcVersion < FirstUnaffectedLibVlcVersion;
 
     private static string DescribePlayer(Version? libVlcVersion) =>
         libVlcVersion is null ? "this libVLC release" : $"libVLC {libVlcVersion}";
