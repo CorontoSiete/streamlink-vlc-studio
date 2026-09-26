@@ -4,7 +4,15 @@ param()
 $ErrorActionPreference = 'Stop'
 $scriptRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot '..'))
+$developmentExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+$developmentHadExitCode = $null -ne $developmentExitCode
+$developmentSavedExitCode = if ($developmentHadExitCode) { $developmentExitCode.Value } else { $null }
 & (Join-Path $PSScriptRoot 'development.tests.ps1')
+$developmentExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+if (($null -ne $developmentExitCode) -ne $developmentHadExitCode -or
+    ($developmentHadExitCode -and $developmentExitCode.Value -ne $developmentSavedExitCode)) {
+    throw 'Development tests leaked an expected failure into the caller exit code.'
+}
 . (Join-Path $scriptRoot 'lib\common.ps1')
 . (Join-Path $scriptRoot 'lib\install-state.ps1')
 . (Join-Path $scriptRoot 'lib\dependency-manifest.ps1')

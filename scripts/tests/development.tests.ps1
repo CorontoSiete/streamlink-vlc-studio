@@ -5,6 +5,9 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $entryPoint = Join-Path $repoRoot 'scripts\dev.ps1'
 . (Join-Path $repoRoot 'scripts\lib\common.ps1')
+$exitCodeVariable = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+$hadExitCode = $null -ne $exitCodeVariable
+$savedExitCode = if ($hadExitCode) { $exitCodeVariable.Value } else { $null }
 
 function Assert-Development([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -159,6 +162,12 @@ $global:LASTEXITCODE = if ($args[0] -eq $env:STUDIO_DEV_TEST_FAIL) { 19 } else {
     }
     Write-Host 'PASS development: packaging scripts honor the selected SDK host'
 } finally {
+    # Expected native-command failures must not fail the caller's CI step.
+    if ($hadExitCode) {
+        $global:LASTEXITCODE = $savedExitCode
+    } else {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+    }
     Pop-Location
     foreach ($name in $environmentNames) {
         if ($null -eq $savedEnvironment[$name]) {
