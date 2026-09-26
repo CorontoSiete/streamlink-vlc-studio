@@ -61,6 +61,7 @@ struct vout_display_sys_t
     /* Our offscreen bitmap and its framebuffer */
     HDC        off_dc;
     HBITMAP    off_bitmap;
+    HANDLE     replay_output_ready;
 
     /* Video and chat are composed at window resolution into one GDI bitmap. */
     studio_gdi_compositor_t compositor;
@@ -104,6 +105,16 @@ int StudioGdiOpen(vlc_object_t *object)
     if (Init(vd, &fmt, fmt.i_width, fmt.i_height))
         goto error;
 
+    /* The player owns this per-input gate. It is installed before any vout can
+     * exist (including prepared replay adoption), and signalled only after seek
+     * confirmation. Missing/invalid named events must not expose preroll. */
+    char *ready_name = var_InheritString(vd, "studio-replay-output-ready");
+    if (ready_name) {
+        sys->replay_output_ready = OpenEventA(SYNCHRONIZE, FALSE, ready_name);
+        free(ready_name);
+        if (!sys->replay_output_ready) goto error;
+    }
+
     vout_display_info_t info = vd->info;
     info.is_slow              = false;
     info.has_double_click     = true;
@@ -132,6 +143,8 @@ void StudioGdiClose(vlc_object_t *object)
 {
     vout_display_t *vd = (vout_display_t *)object;
 
+    if (vd->sys->replay_output_ready) CloseHandle(vd->sys->replay_output_ready);
+
     Clean(vd);
 
     CommonClean(vd);
@@ -158,6 +171,16 @@ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
     HDC hdc = GetDC(sys->sys.hvideownd);
 
     OffsetRect(&rect_dst, -rect_dest.left, -rect_dest.top);
+
+    if (sys->replay_output_ready) {
+        if (WaitForSingleObject(sys->replay_output_ready, 0) != WAIT_OBJECT_0) {
+            PatBlt(hdc, rect_dst.left, rect_dst.top,
+                   rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top, BLACKNESS);
+            goto displayed;
+        }
+        CloseHandle(sys->replay_output_ready);
+        sys->replay_output_ready = NULL;
+    }
     SelectObject(sys->off_dc, sys->off_bitmap);
 
     const int width = rect_dst.right - rect_dst.left;
@@ -183,6 +206,7 @@ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
         BitBlt(hdc, rect_dst.left, rect_dst.top, width, height,
                sys->compositor.dc, 0, 0, SRCCOPY);
     }
+displayed:
     GdiFlush();
 
     ReleaseDC(sys->sys.hvideownd, hdc);

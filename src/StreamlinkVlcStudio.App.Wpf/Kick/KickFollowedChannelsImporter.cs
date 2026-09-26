@@ -131,7 +131,7 @@ internal sealed class KickFollowedChannelsImporter(Window owner) : IKickFollowed
         return imported;
     }
 
-    internal static void ConfigureBrowser(CoreWebView2 core)
+    internal static void ConfigureBrowser(CoreWebView2 core, bool blockMedia = true)
     {
         core.IsMuted = true;
         core.Settings.AreHostObjectsAllowed = false;
@@ -150,7 +150,7 @@ internal sealed class KickFollowedChannelsImporter(Window owner) : IKickFollowed
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
         core.WebResourceRequested += (_, args) =>
         {
-            if (TwitchBonusBrowser.IsStreamResource(args.Request.Uri, args.ResourceContext))
+            if (blockMedia && TwitchBonusBrowser.IsStreamResource(args.Request.Uri, args.ResourceContext))
                 args.Response = core.Environment.CreateWebResourceResponse(null, 403, "Media disabled", "Cache-Control: no-store");
         };
     }

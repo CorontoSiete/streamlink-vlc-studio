@@ -81,6 +81,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private readonly Task audioApplyTask;
     private readonly IPlaybackMediaSourceGateway? mediaSourceGateway;
     private readonly Version? libVlcVersion;
+    private readonly bool hardwareOverlayComposition;
     private RuntimeLease? runtimeLease;
     private IntPtr instance;
     private IntPtr player;
@@ -97,6 +98,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private TimeSpan? replayOpeningPosition;
     private readonly bool replayPausePluginAvailable;
     private EventWaitHandle? replayPauseReady;
+    private EventWaitHandle? replayVideoReady;
     private int? lastEnabledAudioTrackId;
     private int videoOutputVersion;
     private long playerGeneration;
@@ -203,9 +205,19 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         RendererMode = selectedRenderer;
         // The runtime above loaded libvlc.dll, so its version can be read without side effects.
         libVlcVersion = LibVlcVersion.TryReadLoaded();
-        var decodingDescription = LibVlcRendererSelection.GetHardwareDecodingOption(RendererMode, UsesNativeOverlay) == "none"
-            ? "software decoding for native chat composition"
-            : "automatic hardware decoding";
+        // Query the loaded VLC 3 module bank, not filenames: custom installs can
+        // omit swscale, in which case Studio GDI declines and stock GDI needs
+        // software decoding. Bind applies this final policy before every input.
+        hardwareOverlayComposition = libVlcVersion is { Major: 3 } && UsesNativeOverlay &&
+            VlcOverlayBundledResourceExtractor.IsBundledPluginHash(nativeOverlay?.PluginSha256) &&
+            LibVlcNative.module_exists("swscale");
+        var decodingDescription = LibVlcRendererSelection.GetHardwareDecodingOption(RendererMode, UsesNativeOverlay,
+            hardwareOverlayComposition) switch
+        {
+            "none" => "software decoding for native chat composition",
+            "dxva2" => "DXVA2 hardware decoding when available",
+            _ => "automatic hardware decoding"
+        };
         logger.Write(
             AppLogLevel.Info,
             "libVLC",
@@ -241,6 +253,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     }
 
     public bool UsesNativeOverlay { get; }
+    internal bool HardwareOverlayComposition => hardwareOverlayComposition;
     public bool PreservesReplayPositionOnResume
     {
         get
@@ -295,7 +308,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         {
             if (!disposed && player != IntPtr.Zero)
             {
-                LibVlcVideoOutputBinding.Bind(player, Volatile.Read(ref videoHandle), RendererMode, libVlcVersion, UsesNativeOverlay);
+                LibVlcVideoOutputBinding.Bind(player, Volatile.Read(ref videoHandle), RendererMode, libVlcVersion, UsesNativeOverlay, hardwareOverlayComposition);
             }
         }
         finally
@@ -989,6 +1002,8 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
         replayPauseReady?.Dispose();
         replayPauseReady = null;
+        replayVideoReady?.Dispose();
+        replayVideoReady = null;
 
         // Other adapters retain their source until the player has stopped.
         releasedMediaSource?.Dispose();
@@ -1032,17 +1047,12 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                 throw new InvalidOperationException("libVLC could not create a media player.");
             }
 
-            LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay);
+            LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay, hardwareOverlayComposition);
             replayOutputPending = startPosition.HasValue;
             replayOpeningPosition = startPosition + (currentMediaSource?.TimelineOffset ?? TimeSpan.Zero);
             if (replayOutputPending)
             {
-                // VLC can present preroll before its asynchronous seek finishes. Keep the
-                // new input black and silent until its actual playback clock is restored.
-                // Set this on the player before any vout exists so its first frame is gated.
-                LibVlcNative.libvlc_video_set_adjust_float(player, 2, 0); // brightness
-                LibVlcNative.libvlc_video_set_adjust_float(player, 4, 0); // saturation
-                LibVlcNative.libvlc_video_set_adjust_int(player, 0, 1); // enable
+                GateReplayVideoCore();
             }
             lastNativeMuteState = null;
             audioTrackDisabledByEngine = false;
@@ -1064,6 +1074,8 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
             replayPauseReady?.Dispose();
             replayPauseReady = null;
+            replayVideoReady?.Dispose();
+            replayVideoReady = null;
 
             throw;
         }
@@ -1098,9 +1110,29 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             compatibilityKey: Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH"));
     }
 
+    private void GateReplayVideoCore()
+    {
+        // Hardware pictures cannot pass through VLC 3's CPU adjust filter. Gate
+        // the bundled renderer's final presentation instead, keeping decoding and
+        // seek confirmation active without exposing preroll or rebuilding filters.
+        if (hardwareOverlayComposition)
+        {
+            var eventName = $"Local\\StreamStudio.ReplayOutput.{Guid.NewGuid():N}";
+            replayVideoReady = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
+            LibVlcVideoOutputBinding.SetReplayOutputReadyEvent(player, eventName);
+        }
+        else
+        {
+            LibVlcNative.libvlc_video_set_adjust_float(player, 2, 0);
+            LibVlcNative.libvlc_video_set_adjust_float(player, 4, 0);
+            LibVlcNative.libvlc_video_set_adjust_int(player, 0, 1);
+        }
+    }
+
     private void ReleaseReplayOutputCore()
     {
-        LibVlcNative.libvlc_video_set_adjust_int(player, 0, 0);
+        if (replayVideoReady is not null) replayVideoReady.Set();
+        else LibVlcNative.libvlc_video_set_adjust_int(player, 0, 0);
         replayOutputPending = false;
         replayOpeningPosition = null;
         if (!ApplyAudioCore())

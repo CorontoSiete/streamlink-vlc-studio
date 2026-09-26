@@ -21,6 +21,23 @@ After an intentional binary update, update the lengths and SHA-256 hashes in
 `dependencies/native-overlay.json`; ordinary .NET builds still verify and embed
 these pinned binaries without requiring GCC.
 
+## Reusing native overlay images
+
+The sub-source retains immutable region images for the last visual state. Each
+video frame still emits its own timed subpicture and source-size observer, but
+holds the existing pixels instead of allocating and discarding a chat-sized
+bitmap. Hidden chat, placeholder, hover controls and scrollbar images are reused
+until their visual state changes. New chat pixels, opacity, position, footprint,
+source scale and interaction changes update immediately. Closing the filter
+releases its cache; already queued subpictures retain their own picture references.
+
+`scripts/test-chat-subpictures.ps1` takes the same toolchain/VLC arguments as
+`test-chat-compositor.ps1`. It compares cached and freshly rendered pixels and
+metadata, exercises state transitions and allocation failures, and verifies
+picture lifetimes across replacement and teardown. Repeated unchanged frames
+must allocate zero pixel buffers. See the additional measurements in
+[`docs/stream-playback-resources-2026-09-26.md`](../../docs/stream-playback-resources-2026-09-26.md).
+
 ## Overlay sizing
 
 The overlay uses decoded-video coordinates. Resizing the app must not resize

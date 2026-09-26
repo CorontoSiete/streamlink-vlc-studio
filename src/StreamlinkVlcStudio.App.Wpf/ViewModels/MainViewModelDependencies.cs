@@ -37,6 +37,7 @@ internal sealed record MainViewModelDependencies
     public ILiveNotificationService? LiveNotificationService { get; init; }
     public ITwitchSubOnlyVodResolver? TwitchSubOnlyVodResolver { get; init; }
     public ITwitchClipService? TwitchClipService { get; init; }
+    public IKickClipService? KickClipService { get; init; }
     public IAppUpdateService? AppUpdateService { get; init; }
     public Action<Uri>? OpenBrowser { get; init; }
     public Action? RequestShutdown { get; init; }

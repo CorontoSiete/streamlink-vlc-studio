@@ -990,6 +990,7 @@ public partial class MainWindow : Window
             LiveNotificationService = liveNotificationService,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver,
             TwitchClipService = twitchClipService,
+            KickClipService = new Kick.KickClipService(this),
             AppUpdateService = appUpdateService,
             RequestShutdown = RequestApplicationExit,
             TryDispatch = TryDispatchToUi

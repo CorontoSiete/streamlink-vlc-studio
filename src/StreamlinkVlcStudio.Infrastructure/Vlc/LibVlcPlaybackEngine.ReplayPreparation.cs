@@ -63,7 +63,7 @@ public sealed partial class LibVlcPlaybackEngine
             input.Player = LibVlcNative.libvlc_media_player_new_from_media(input.Media);
             if (input.Player == IntPtr.Zero) throw new InvalidOperationException("Could not prepare a replay player.");
             input.VideoHandle = preparedHandle;
-            LibVlcVideoOutputBinding.Bind(input.Player, preparedHandle, RendererMode, libVlcVersion, UsesNativeOverlay);
+            LibVlcVideoOutputBinding.Bind(input.Player, preparedHandle, RendererMode, libVlcVersion, UsesNativeOverlay, hardwareOverlayComposition);
             LibVlcNative.libvlc_audio_set_volume(input.Player, 0);
             LibVlcNative.libvlc_audio_set_mute(input.Player, 1);
             if (LibVlcNative.libvlc_media_player_play(input.Player) != 0)
@@ -166,10 +166,8 @@ public sealed partial class LibVlcPlaybackEngine
                     replayOpeningPosition = position;
                     generation = Interlocked.Increment(ref playerGeneration);
                     if (input.VideoHandle != videoHandle)
-                        LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay);
-                    LibVlcNative.libvlc_video_set_adjust_float(player, 2, 0);
-                    LibVlcNative.libvlc_video_set_adjust_float(player, 4, 0);
-                    LibVlcNative.libvlc_video_set_adjust_int(player, 0, 1);
+                        LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay, hardwareOverlayComposition);
+                    GateReplayVideoCore();
                     _ = ApplyAudioCore();
                     LibVlcVideoOutputBinding.EnablePreparedVideo(player);
                     if (LibVlcNative.libvlc_video_set_track(player, input.VideoTrack) != 0)

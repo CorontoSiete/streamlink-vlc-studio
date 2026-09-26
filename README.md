@@ -6,9 +6,10 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 
 ## Current Features
 
-- Official Twitch live-clip button on the selected stream tab; Kick clipping remains disabled because Kick has no official clip-creation API.
+- Clip the selected live Twitch or Kick stream. Kick silently creates and publishes a 30-second clip with an automatic title, then opens it in your default browser. Twitch also creates a 30-second clip.
 - Streamlink external HTTP transport.
 - Embedded libVLC playback in a WPF HWND surface.
+- GPU decoding with the bundled native chat compositor, plus reuse of unchanged chat images and controls, reduces overhead when watching multiple streams. GDI presentation uses DXVA2 to avoid VLC 3's green frames after HLS decoder resets; replay preparation remains black until the requested position is ready. Unchanged native overlays no longer allocate pixel buffers on every video frame. Stream quality, frame rate and chat filtering are preserved. Older/custom overlays retain software decoding. See [playback resource measurements](docs/stream-playback-resources-2026-09-26.md) and the [replay fix diagnosis](docs/replay-green-screen-2026-09-26.md).
 - Quality presets: `best`, `source`, `1080p60`, `1080p`, `720p60`, `720p`, `480p`, `audio_only`, `worst`.
 - Low-latency Streamlink defaults for Twitch/HLS.
 - Platform replay seekbar for Twitch and best-effort Kick replays. Live playback keeps the existing Streamlink HTTP path; seeking behind live switches to platform VOD HLS playback in libVLC.
@@ -484,7 +485,7 @@ Example:
   - Enter a live Kick channel URL in the app's home search bar, or open a followed Kick channel.
   - Confirm Streamlink resolves and plays.
   - Test low-latency on/off if buffering occurs.
-  - Confirm the `Clip` button is disabled for a Kick tab.
+  - Sign in to Kick once through `Detect Kick follows` in Settings. Select a live Kick tab and click `Clip`. Confirm no editor window or audio appears, and the published 30-second clip opens in your default browser with an automatic title. Kick website sign-in is shared with follow detection and is separate from Kick OAuth. Errors appear in the app status bar. VOD tabs remain disabled.
 
 - Multiple tabs:
   - Click two or more live streams.

@@ -128,6 +128,18 @@ public static class VlcOverlayBundledResourceExtractor
     public const string ExtractedOverlayDirectoryName = "vlc-overlay-bundled";
 
     private const string ResourcePrefix = "StreamlinkVlcStudio.Infrastructure.Vlc.BundledOverlay";
+    private static readonly Lazy<string?> BundledPluginHash = new(() =>
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(
+            $"{ResourcePrefix}.build.{VlcOverlayDirectoryResolver.PluginFileName}");
+        return stream is null ? null : Convert.ToHexString(SHA256.HashData(stream));
+    });
+
+    // A directory name or module shortcut cannot establish a custom plugin's
+    // composition capabilities. Only enable this for the binary we ship/test.
+    internal static bool IsBundledPluginHash(string? hash) =>
+        hash is not null && BundledPluginHash.Value is { } bundled &&
+        string.Equals(hash, bundled, StringComparison.OrdinalIgnoreCase);
     private static readonly object ExtractGate = new();
     private static readonly BundledOverlayFile[] RequiredFiles =
     [

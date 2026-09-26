@@ -52,20 +52,27 @@ internal static class LibVlcRendererSelection
         }
     }
 
-    internal static string GetVoutOption(VideoRendererMode rendererMode, bool usesNativeOverlay = false)
+    internal static string GetVoutOption(VideoRendererMode rendererMode, bool usesNativeOverlay = false,
+        bool hardwareOverlayComposition = false)
     {
         return rendererMode == VideoRendererMode.Direct3D11
             ? "direct3d11"
             // The bundled overlay also provides GDI output that filters chat
             // separately. Retain stock GDI for older custom overlay plugins.
-            : usesNativeOverlay ? "studio_gdi,wingdi" : "wingdi";
+            : usesNativeOverlay ? hardwareOverlayComposition ? "studio_gdi" : "studio_gdi,wingdi" : "wingdi";
     }
 
-    internal static string GetHardwareDecodingOption(VideoRendererMode rendererMode, bool usesNativeOverlay)
+    internal static string GetHardwareDecodingOption(VideoRendererMode rendererMode, bool usesNativeOverlay,
+        bool hardwareOverlayComposition = false)
     {
-        // Keep software decoding for the stock-GDI fallback: its early subtitle
-        // blender cannot write to DX11/DXVA surfaces. Studio GDI also consumes
-        // CPU-accessible RGB frames for its final window composition.
-        return rendererMode != VideoRendererMode.Direct3D11 && usesNativeOverlay ? "none" : "any";
+        if (rendererMode == VideoRendererMode.Direct3D11) return "any";
+        // Stock GDI blends subtitles before downloading hardware surfaces.
+        if (usesNativeOverlay && !hardwareOverlayComposition) return "none";
+        // VLC 3's D3D11 download filter retains its staging texture when HLS
+        // restarts the decoder on seek. Reading a new decoder's surfaces through
+        // that stale resource fails (0x887a0005) and presents green frames. DXVA2
+        // keeps GPU decoding with a download path that survives those restarts.
+        // If unsupported, VLC falls back to software, not another HW module.
+        return "dxva2";
     }
 }

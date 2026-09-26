@@ -1510,7 +1510,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, options.Any(option =>
             option.Contains("direct3d", StringComparison.OrdinalIgnoreCase) ||
             option.Contains("dxgi", StringComparison.OrdinalIgnoreCase)));
-        Assert.True(options.Any(option => option == "--avcodec-hw=any"));
+        Assert.True(options.Any(option => option == "--avcodec-hw=dxva2"));
         Assert.Equal(false, options.Any(option => option == "--avcodec-hw=none"));
         var overlayOptions = LibVlcPlaybackEngine.BuildLibVlcOptionsForRenderer(VideoRendererMode.Gdi, usesNativeOverlay: true);
         Assert.True(overlayOptions.Contains("--vout=studio_gdi,wingdi"));
@@ -1518,6 +1518,14 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, overlayOptions.Contains("--avcodec-hw=any"));
         Assert.Equal("none", LibVlcRendererSelection.GetHardwareDecodingOption(VideoRendererMode.Gdi, usesNativeOverlay: true));
         Assert.Equal("any", LibVlcRendererSelection.GetHardwareDecodingOption(VideoRendererMode.Direct3D11, usesNativeOverlay: false));
+        Assert.Equal("dxva2", LibVlcRendererSelection.GetHardwareDecodingOption(VideoRendererMode.Gdi,
+            usesNativeOverlay: true, hardwareOverlayComposition: true));
+        // An accelerated overlay must never fall through to stock GDI's early
+        // blender, which cannot draw chat on opaque hardware-decoded surfaces.
+        Assert.Equal("studio_gdi", LibVlcRendererSelection.GetVoutOption(VideoRendererMode.Gdi,
+            usesNativeOverlay: true, hardwareOverlayComposition: true));
+        Assert.Equal(false, VlcOverlayBundledResourceExtractor.IsBundledPluginHash(null));
+        Assert.Equal(false, VlcOverlayBundledResourceExtractor.IsBundledPluginHash(new string('0', 64)));
         return Task.CompletedTask;
     }),
     ("reuses cached Kick overlay channel info for launch keys", async () =>

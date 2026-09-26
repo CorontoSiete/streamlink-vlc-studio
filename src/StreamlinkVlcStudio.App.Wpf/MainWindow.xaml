@@ -1045,11 +1045,7 @@
         </Style>
 
         <Style x:Key="NeverMuteToggleButton" TargetType="ToggleButton" BasedOn="{StaticResource TopControlButtonBase}">
-            <Setter Property="Width" Value="64" />
-            <Setter Property="FontFamily" Value="Segoe UI" />
-            <Setter Property="FontSize" Value="10" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="ToolTip" Value="Keep this tab unmuted, including when switching tabs." />
+            <Setter Property="ToolTip" Value="Never mute: keep this tab unmuted, including when switching tabs." />
             <Style.Triggers>
                 <Trigger Property="IsChecked" Value="True">
                     <Setter Property="Background" Value="{StaticResource TopControlSelectedBackgroundBrush}" />
@@ -3654,14 +3650,26 @@
                                 Content="&#xE72C;"
                                 Command="{Binding ReloadSelectedCommand}"
                                 ToolTip="Reload stream" />
-                        <Button Style="{StaticResource PlaybackTopControlIconButton}"
-                                Content="Clip"
-                                FontFamily="Segoe UI"
-                                FontSize="11"
-                                Width="44"
+                        <Button x:Name="TopClipButton"
+                                Style="{StaticResource PlaybackTopControlIconButton}"
                                 Command="{Binding CreateClipCommand}"
                                 ToolTip="{Binding ClipButtonToolTip}"
-                                AutomationProperties.Name="Create Twitch clip" />
+                                ToolTipService.ShowOnDisabled="True"
+                                AutomationProperties.Name="Create stream clip">
+                            <Grid Width="20" Height="20" IsHitTestVisible="False">
+                                <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.6"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round">
+                                    <Path.Data>
+                                        <GeometryGroup>
+                                            <EllipseGeometry Center="5,5" RadiusX="2.5" RadiusY="2.5" />
+                                            <EllipseGeometry Center="5,15" RadiusX="2.5" RadiusY="2.5" />
+                                            <PathGeometry Figures="M7,6.5 L17.5,17 M7,13.5 L17.5,3" />
+                                        </GeometryGroup>
+                                    </Path.Data>
+                                </Path>
+                            </Grid>
+                        </Button>
                         <Button Style="{StaticResource PlaybackChatToggleIconButton}"
                                 Content="&#xE8F2;"
                                 Command="{Binding ToggleChatCommand}"
@@ -3730,11 +3738,27 @@
                     </Button>
                     <ToggleButton x:Name="TopNeverMuteButton"
                                   Style="{StaticResource NeverMuteToggleButton}"
-                                  Content="Never mute"
                                   IsChecked="{Binding SelectedTab.NeverMute, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                   IsEnabled="{Binding HasSelectedTab}"
                                   AutomationProperties.Name="Never mute tab"
-                                  AutomationProperties.HelpText="When enabled, this tab stays unmuted. Turn it off to allow muting." />
+                                  AutomationProperties.HelpText="When enabled, this tab stays unmuted. Turn it off to allow muting.">
+                        <Grid Width="20" Height="20" IsHitTestVisible="False">
+                            <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                  StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                  Data="M2,8 L5,8 L9,4.5 L9,15.5 L5,12 L2,12 Z M11.5,7 A4.25,4.25 0 0 1 11.5,13" />
+                            <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
+                                  StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round">
+                                <Path.Data>
+                                    <GeometryGroup>
+                                        <RectangleGeometry Rect="13.5,12,5,5" RadiusX="1" RadiusY="1" />
+                                        <PathGeometry Figures="M14.5,12 L14.5,10 A1.5,1.5 0 0 1 17.5,10 L17.5,12" />
+                                    </GeometryGroup>
+                                </Path.Data>
+                            </Path>
+                        </Grid>
+                    </ToggleButton>
                 </ToolBar>
             </controls:ResponsiveGrid>
         </Border>

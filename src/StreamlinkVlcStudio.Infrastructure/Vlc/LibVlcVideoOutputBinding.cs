@@ -6,7 +6,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 internal static class LibVlcVideoOutputBinding
 {
     internal static void Bind(IntPtr player, IntPtr window, VideoRendererMode renderer, Version? version,
-        bool usesNativeOverlay)
+        bool usesNativeOverlay, bool hardwareOverlayComposition = false)
     {
         // This adapter uses VLC 3's exported plugin ABI. Do not apply it to a different
         // major version: libvlc_media_player_t must embed vlc_object_t as its first field.
@@ -20,8 +20,8 @@ internal static class LibVlcVideoOutputBinding
         // set_hwnd resets vout and avcodec-hw to "", overriding instance options. Media options
         // cannot fix this: the vout is parented to the player, not the media input.
         // Restore the variable using the same checked setter as VLC's var_SetString.
-        SetString(player, "vout", LibVlcRendererSelection.GetVoutOption(renderer, usesNativeOverlay));
-        SetString(player, "avcodec-hw", LibVlcRendererSelection.GetHardwareDecodingOption(renderer, usesNativeOverlay));
+        SetString(player, "vout", LibVlcRendererSelection.GetVoutOption(renderer, usesNativeOverlay, hardwareOverlayComposition));
+        SetString(player, "avcodec-hw", LibVlcRendererSelection.GetHardwareDecodingOption(renderer, usesNativeOverlay, hardwareOverlayComposition));
     }
 
     private static void SetString(IntPtr player, string name, string text)
@@ -39,6 +39,17 @@ internal static class LibVlcVideoOutputBinding
         {
             Marshal.FreeCoTaskMem(value);
         }
+    }
+
+    internal static void SetReplayOutputReadyEvent(IntPtr player, string eventName)
+    {
+        // Called only for the verified bundled Studio GDI output on the VLC 3 ABI.
+        // Vouts inherit from the player, not the media input. Each new player owns
+        // one variable and one event; prepared inputs set it before enabling video.
+        const string name = "studio-replay-output-ready";
+        if (CreateVariable(player, name, 0x0040) != 0)
+            throw new InvalidOperationException("VLC could not create the replay output gate.");
+        SetString(player, name, eventName);
     }
 
     internal static void EnablePreparedVideo(IntPtr player)
@@ -68,6 +79,10 @@ internal static class LibVlcVideoOutputBinding
     [DllImport("libvlccore", EntryPoint = "var_SetChecked", CallingConvention = CallingConvention.Cdecl)]
     private static extern int SetChecked(IntPtr obj,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string name, int type, VlcValue value);
+
+    [DllImport("libvlccore", EntryPoint = "var_Create", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int CreateVariable(IntPtr obj,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, int type);
 
     [DllImport("libvlc", EntryPoint = "libvlc_get_input_thread", CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr GetInputThread(IntPtr player);

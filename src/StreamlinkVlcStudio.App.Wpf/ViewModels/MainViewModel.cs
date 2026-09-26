@@ -66,6 +66,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IKickVodService? kickVodService;
     private readonly ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver;
     private readonly ITwitchClipService? twitchClipService;
+    private readonly IKickClipService? kickClipService;
     private readonly IAppUpdateService? appUpdateService;
     private readonly IBrowseService? browseService;
     private readonly TimeSpan recentThumbnailRefreshInterval;
@@ -242,6 +243,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.kickVodService = kickVodService;
         this.twitchSubOnlyVodResolver = twitchSubOnlyVodResolver;
         this.twitchClipService = twitchClipService;
+        kickClipService = dependencies.KickClipService;
         this.appUpdateService = appUpdateService;
         if (appUpdateService is not null)
         {
@@ -1313,10 +1315,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public string ClipButtonToolTip => SelectedTab?.Target switch
     {
-        { Platform: PlatformKind.Kick } => "Kick clipping is disabled",
+        { Platform: PlatformKind.Kick, Kind: StreamTargetKind.Live } => "Create a 30-second Kick clip in the background and open it in your browser",
+        { Platform: PlatformKind.Kick } => "Kick clips are available for live tabs only",
         { Platform: PlatformKind.Twitch, Kind: StreamTargetKind.Live } => "Create a 30-second Twitch clip",
         { Platform: PlatformKind.Twitch } => "Twitch clips are available for live tabs only",
-        _ => "Select a live Twitch tab to create a clip"
+        _ => "Select a live Twitch or Kick tab to create a clip"
     };
 
     public bool IsSelectedTabDetached => SelectedTab?.IsDetached == true;
@@ -5260,8 +5263,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private bool CanCreateClip()
     {
-        return twitchClipService is not null &&
-            SelectedTab?.Target is { Platform: PlatformKind.Twitch, Kind: StreamTargetKind.Live };
+        return SelectedTab?.Target switch
+        {
+            { Platform: PlatformKind.Twitch, Kind: StreamTargetKind.Live } => twitchClipService is not null,
+            { Platform: PlatformKind.Kick, Kind: StreamTargetKind.Live } => kickClipService is not null,
+            _ => false
+        };
     }
 
     private async Task CreateClipAsync()
@@ -5271,40 +5278,44 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (tab.Target.Platform == PlatformKind.Kick)
-        {
-            StatusMessage = "Kick clipping is disabled because no official clip API is available.";
-            return;
-        }
-
         if (tab.Target.Kind != StreamTargetKind.Live)
         {
-            StatusMessage = "Twitch clips are available for live tabs only.";
+            StatusMessage = "Clips are available for live tabs only.";
             return;
         }
 
-        if (twitchClipService is null)
+        var platform = tab.Target.Platform.ToString();
+        if (!CanCreateClip())
         {
-            StatusMessage = "Twitch clip service is unavailable.";
+            StatusMessage = $"{platform} clip service is unavailable.";
             return;
         }
 
         var cancellationToken = lifetimeCancellation.Token;
         try
         {
-            StatusMessage = $"Creating Twitch clip for {tab.Target.DisplayName}";
-            var result = await twitchClipService.CreateLiveClipAsync(tab.Target, Settings.Chat, cancellationToken);
+            StatusMessage = $"Creating {platform} clip for {tab.Target.Channel}";
+            Uri? clipUri;
+            if (tab.Target.Platform == PlatformKind.Kick)
+                clipUri = (await kickClipService!.CreateLiveClipAsync(tab.Target, cancellationToken))?.ClipUri;
+            else
+                clipUri = (await twitchClipService!.CreateLiveClipAsync(tab.Target, Settings.Chat, cancellationToken)).ClipUri;
             cancellationToken.ThrowIfCancellationRequested();
+            if (clipUri is null)
+            {
+                StatusMessage = "Kick clip creation ended without a confirmed publication.";
+                return;
+            }
 
             try
             {
-                openBrowser(result.ClipUri);
-                StatusMessage = $"Twitch clip opened for {tab.Target.DisplayName}";
+                openBrowser(clipUri);
+                StatusMessage = $"{platform} clip opened for {tab.Target.Channel}";
             }
             catch (Exception ex)
             {
-                StatusMessage = $"Twitch clip created, but the browser could not be opened: {result.ClipUri}";
-                logger.Write(AppLogLevel.Warning, "TwitchClip", "Twitch clip was created but could not be opened in the browser.", ex);
+                StatusMessage = $"{platform} clip created, but the browser could not be opened: {clipUri}";
+                logger.Write(AppLogLevel.Warning, $"{platform}Clip", $"{platform} clip was created but could not be opened in the browser.", ex);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -5313,12 +5324,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Twitch clip creation was cancelled.";
+            StatusMessage = $"{platform} clip creation was cancelled.";
         }
         catch (Exception ex) when (!disposed)
         {
             StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Warning, "TwitchClip", "Twitch clip creation failed.", ex);
+            logger.Write(AppLogLevel.Warning, $"{platform}Clip", $"{platform} clip creation failed.", ex);
         }
     }
 

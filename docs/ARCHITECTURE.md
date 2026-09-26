@@ -179,10 +179,11 @@ predates 3.0.18, not part of normal playback.
 ## Clip Flow
 
 - The top `Clip` button is bound to `MainViewModel.CreateClipCommand`, so it acts only on the selected tab.
-- The command is enabled only for a live Twitch target. Twitch VOD and Kick tabs remain disabled.
+- The command is enabled for live Twitch and Kick targets with the corresponding service available. VOD tabs remain disabled.
 - `TwitchClipService` validates the Twitch user token, requires `clips:edit`, resolves the selected channel to a broadcaster ID through Helix `users`, and starts a 30-second clip through Helix `clips`.
 - Twitch clip creation is asynchronous. The service polls Helix `clips?id=...` for up to 60 seconds, then opens the returned public clip URL with the system browser.
-- Kick has no official clip-creation path in this application, so no private Kick website endpoint is called.
+- `KickClipService` runs Kick's editor in a muted WebView2 controller with a hidden native parent using the existing Kick follow-detection profile. A bridge dispatches the website's verified `openClipCreator` event after its provider mounts, fills a timestamped title, and clicks Publish once when a verified draft and the editor are ready. Kick's default selection is the latest 30 seconds. The app never copies website credentials or sends its own clip-creation requests.
+- `KickClipBrowserClient` observes the website's draft and finalization responses in order. `KickClipPublicationTracker` verifies the origin, route, successful response, and that the finalization request matches a draft from this page before opening the returned public clip ID in the default browser. Cancellation, timeout, or shutdown closes the hidden controller and cannot report a late success. Errors appear in the status bar; sign-in is available through Detect Kick follows. See [Kick clipping](kick-clipping.md) for the verified contracts and validation limits.
 
 ## Chat Flow
 

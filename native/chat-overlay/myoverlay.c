@@ -102,6 +102,17 @@ struct subpicture_updater_sys_t {
     overlay_video_metrics_t *metrics;
 };
 
+/* Only the video thread accesses this cache. Its region pictures are immutable
+ * and held separately by every emitted SPU, so replacing the cache cannot change
+ * a frame that VLC is still presenting. */
+typedef struct overlay_visual_state_t {
+    picture_t *picture;
+    int32_t x, y, scroll_offset, scroll_max;
+    uint32_t w, h, video_h, scroll_visible, scroll_total;
+    uint8_t alpha;
+    bool blank, hidden, placeholder, button, scrollbar;
+} overlay_visual_state_t;
+
 static void ReleaseVideoMetrics(overlay_video_metrics_t *metrics)
 {
     if (metrics && InterlockedDecrement(&metrics->refs) == 0) {
@@ -143,6 +154,9 @@ static void DestroyVideoObserver(subpicture_t *spu)
 struct filter_sys_t
 {
     overlay_video_metrics_t *metrics;
+    overlay_visual_state_t cached_visual;
+    subpicture_region_t *cached_regions;
+    bool cached_visual_valid;
     HANDLE       thread;
     HANDLE       stop_event;
     char         pipe_name[MAX_PATH];
@@ -1162,7 +1176,7 @@ static subpicture_t *NewSubpictureFromRegion( filter_t *p_filter,
     subpicture_t *spu = NewObservedSubpicture( p_filter );
     if( spu == NULL )
     {
-        subpicture_region_Delete( region );
+        subpicture_region_ChainDelete( region );
         return NULL;
     }
 
@@ -1182,26 +1196,62 @@ static subpicture_region_t *NewPictureRegion( picture_t *picture,
     InitRgbaFormat( &fmt, picture->format.i_visible_width,
                     picture->format.i_visible_height );
 
+    /* VLC 3's text-region constructor allocates the region without a bitmap.
+     * We supply an existing RGBA picture instead. Preserve the same sRGB/full
+     * range region metadata that its RGBA constructor normally initializes. */
+    fmt.i_chroma = VLC_CODEC_TEXT;
     subpicture_region_t *region = subpicture_region_New( &fmt );
     if( region == NULL )
         return NULL;
 
-    picture_t *held_picture = picture_Hold( picture );
-    if( held_picture == NULL )
-    {
-        subpicture_region_Delete( region );
-        return NULL;
-    }
-
-    if( region->p_picture != NULL )
-        picture_Release( region->p_picture );
-    region->p_picture = held_picture;
+    region->fmt.i_chroma = VLC_CODEC_RGBA;
+    region->fmt.transfer = TRANSFER_FUNC_SRGB;
+    region->fmt.primaries = COLOR_PRIMARIES_SRGB;
+    region->fmt.space = COLOR_SPACE_SRGB;
+    region->fmt.b_color_range_full = true;
+    region->p_picture = picture_Hold( picture );
 
     region->i_x     = x;
     region->i_y     = y;
     region->i_align = SUBPICTURE_ALIGN_LEFT | SUBPICTURE_ALIGN_TOP;
     region->i_alpha = alpha;
     return region;
+}
+
+static subpicture_t *CopyCachedOverlay( filter_t *filter, vlc_tick_t date )
+{
+    subpicture_region_t *head = NULL;
+    subpicture_region_t **next = &head;
+    for( const subpicture_region_t *source = filter->p_sys->cached_regions;
+         source != NULL; source = source->p_next )
+    {
+        *next = NewPictureRegion( source->p_picture, source->i_x, source->i_y,
+                                  source->i_alpha );
+        if( *next == NULL )
+        {
+            subpicture_region_ChainDelete( head );
+            return NULL;
+        }
+        next = &(*next)->p_next;
+    }
+    return NewSubpictureFromRegion( filter, date, head );
+}
+
+static subpicture_t *CacheOverlay( filter_t *filter, vlc_tick_t date,
+                                   const overlay_visual_state_t *visual,
+                                   subpicture_t *spu )
+{
+    filter_sys_t *sys = filter->p_sys;
+    subpicture_region_ChainDelete( sys->cached_regions );
+    sys->cached_regions = NULL;
+    sys->cached_visual_valid = false;
+    if( spu == NULL ) return NULL;
+    sys->cached_regions = spu->p_region;
+    spu->p_region = NULL;
+    subpicture_Delete( spu );
+    memcpy( &sys->cached_visual, visual, sizeof(*visual) );
+    sys->cached_visual_valid = true;
+    return CopyCachedOverlay( filter, date );
 }
 
 static subpicture_region_t *NewWritableRegion( uint32_t w, uint32_t h,
@@ -1277,6 +1327,7 @@ static subpicture_t *FrameSubpicture( filter_t *p_filter, vlc_tick_t date,
             subpicture_region_t *region =
                 NewWritableRegion( track_w, track_h, track_x, track_y,
                                    &pixels, &pitch );
+            if( region == NULL ) goto failed;
             if( region != NULL )
             {
                 MyFillRect( pixels, pitch, track_w, track_h, 0, 0,
@@ -1317,6 +1368,7 @@ static subpicture_t *FrameSubpicture( filter_t *p_filter, vlc_tick_t date,
         int pitch = 0;
         subpicture_region_t *button =
             NewWritableRegion( bw, bh, bx, by, &pixels, &pitch );
+        if( button == NULL ) goto failed;
         if( button != NULL )
         {
             DrawToggleButtonRect( pixels, pitch, bw, bh, 0, 0, bw, bh,
@@ -1331,6 +1383,7 @@ static subpicture_t *FrameSubpicture( filter_t *p_filter, vlc_tick_t date,
         {
             subpicture_region_t *resize =
                 NewWritableRegion( rw, rh, rx, ry, &pixels, &pitch );
+            if( resize == NULL ) goto failed;
             if( resize != NULL )
             {
                 DrawResizeHandle( pixels, pitch, rw, rh, video_h );
@@ -1340,6 +1393,9 @@ static subpicture_t *FrameSubpicture( filter_t *p_filter, vlc_tick_t date,
     }
 
     return NewSubpictureFromRegion( p_filter, date, head );
+failed:
+    subpicture_region_ChainDelete( head );
+    return NULL;
 }
 
 /*****************************************************************************
@@ -1433,6 +1489,7 @@ static void Close( vlc_object_t *p_this )
     sys->frame = NULL;
     LeaveCriticalSection( &sys->lock );
     FrameBufferRelease( frame );
+    subpicture_region_ChainDelete( sys->cached_regions );
     DeleteCriticalSection( &sys->lock );
     ReleaseVideoMetrics(sys->metrics);
     free( sys );
@@ -1815,28 +1872,48 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
     }
     LeaveCriticalSection( &sys->lock );
 
+    overlay_visual_state_t visual;
+    /* Clear padding as well, since equality below compares the complete key. */
+    memset( &visual, 0, sizeof(visual) );
+    visual.picture = frame != NULL ? frame->picture : NULL;
+    visual.x = x; visual.y = y;
+    visual.w = footprint_w; visual.h = footprint_h;
+    visual.video_h = video_h; visual.alpha = alpha;
+    visual.blank = blank_until_frame; visual.hidden = hidden;
+    visual.placeholder = show_placeholder; visual.button = show_button;
+    visual.scrollbar = show_scrollbar; visual.scroll_offset = scroll_offset;
+    visual.scroll_max = scroll_max; visual.scroll_visible = scroll_visible;
+    visual.scroll_total = scroll_total;
+    if( sys->cached_visual_valid &&
+        !memcmp( &sys->cached_visual, &visual, sizeof(visual) ) )
+    {
+        FrameBufferRelease( frame );
+        return CopyCachedOverlay( p_filter, date );
+    }
+
     if( blank_until_frame )
     {
         FrameBufferRelease( frame );
         uint8_t *pixels; int pitch;
         subpicture_t *blank = NewOverlaySubpicture(p_filter, date, 1, 1, 0, 0, 0, &pixels, &pitch);
         if (blank) memset(pixels, 0, 4);
-        return blank;
+        return CacheOverlay( p_filter, date, &visual, blank );
     }
 
     if( hidden )
     {
         FrameBufferRelease( frame );
-        return HiddenButton( p_filter, date, x, y,
+        return CacheOverlay( p_filter, date, &visual, HiddenButton( p_filter, date, x, y,
                              footprint_w, footprint_h, show_button,
-                             video_h );
+                             video_h ) );
     }
 
     if( !have )
     {
         if( !show_placeholder )
-            return NULL;
-        return Placeholder( p_filter, date, x, y, show_button, video_h );
+            return CacheOverlay( p_filter, date, &visual, NULL );
+        return CacheOverlay( p_filter, date, &visual,
+            Placeholder( p_filter, date, x, y, show_button, video_h ) );
     }
 
     subpicture_t *spu = FrameSubpicture( p_filter, date,
@@ -1849,7 +1926,7 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
                                           scroll_visible, scroll_total,
                                           video_h );
     FrameBufferRelease( frame );
-    return spu;
+    return CacheOverlay( p_filter, date, &visual, spu );
 }
 
 /* Placeholder: translucent red box with a black border. Drawn whenever no

@@ -10,8 +10,8 @@
   "files": [
     {
       "path": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledOverlay/build/libmyoverlay_plugin.dll",
-      "length": 969072,
-      "sha256": "1c3307706a00aa822592716d57e9457c0e6d7d5772604e546a50157d5ce69248",
+      "length": 970959,
+      "sha256": "5c1742fd224771657e1faf9d95357d0041bd988762f92f67601fa9c48edbcd77",
       "authenticode": "NotSigned"
     },
     {

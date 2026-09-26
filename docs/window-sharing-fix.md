@@ -1,5 +1,11 @@
 # Window Sharing During Playback
 
+**September 26 update:** the bundled Studio GDI compositor now receives chat
+separately from the decoded video. It supports automatic GPU decoding while
+retaining GDI window presentation. The software-decoding repair below remains
+the fallback policy for custom/older overlay plugins or VLC without swscale.
+See [the playback resource measurements](stream-playback-resources-2026-09-26.md).
+
 ## Reproduced Cause
 
 The app selected GDI and logged that choice, but its real VLC child window reported

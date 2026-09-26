@@ -62,6 +62,10 @@ internal static partial class LibVlcNative
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr libvlc_get_version();
 
+    [DllImport("libvlccore", CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    internal static extern bool module_exists([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void libvlc_release(IntPtr instance);
 

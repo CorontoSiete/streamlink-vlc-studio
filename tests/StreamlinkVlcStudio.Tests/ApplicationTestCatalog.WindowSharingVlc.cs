@@ -35,6 +35,7 @@ internal static partial class ApplicationTestCatalog
             try
             {
                 Assert.Equal(nativeOverlay, engine.UsesNativeOverlay);
+                Assert.Equal(nativeOverlay, ((LibVlcPlaybackEngine)engine).HardwareOverlayComposition);
                 engine.SetVideoHandle(surface.Handle);
                 await engine.PlayAsync(new Uri(Path.GetFullPath(
                     Environment.GetEnvironmentVariable("SVS_TEST_VLC_MEDIA")!)), 0, PlaybackAudioState.HardMuted);
@@ -151,7 +152,7 @@ internal static partial class ApplicationTestCatalog
             var factory = new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings());
             using var engine = await factory.CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!,
-                enableNativeOverlay: false, rendererMode: VideoRendererMode.Automatic);
+                enableNativeOverlay: true, rendererMode: VideoRendererMode.Automatic);
             var detachedSurface = new VideoSurface();
             var detached = new Window { Content = detachedSurface, Width = 640, Height = 400, ShowInTaskbar = false };
             try

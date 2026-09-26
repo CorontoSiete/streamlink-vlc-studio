@@ -467,7 +467,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Contains("maximum 60 seconds", error.Message);
         return;
     }),
-    ("selected Twitch tab clips and Kick tab stays disabled", async () =>
+    ("selected Twitch tab clips and missing Kick service stays disabled", async () =>
     {
         var settings = new AppSettings
         {
@@ -519,7 +519,7 @@ internal static partial class ApplicationTestCatalog
 
         viewModel.SelectedTab = kickTab;
         Assert.Equal(false, viewModel.CreateClipCommand.CanExecute(null));
-        Assert.Equal("Kick clipping is disabled", viewModel.ClipButtonToolTip);
+        Assert.Equal("Create a 30-second Kick clip in the background and open it in your browser", viewModel.ClipButtonToolTip);
         await viewModel.DisposeAsync();
         return;
     }),

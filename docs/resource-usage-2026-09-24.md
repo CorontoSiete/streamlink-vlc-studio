@@ -111,6 +111,10 @@ environment variables before running the complete suite.
 
 ## Playback investigation
 
+The software-only native-chat policy described below was superseded on September
+26 by [hardware decoding with Studio GDI](stream-playback-resources-2026-09-26.md).
+The renderer measurements above remain the results of the September 24 change.
+
 Four local 1920×1080 H.264 streams at 60 fps played through VLC's existing GDI
 path without reported lost pictures in the initial 12-second sample. Limiting
 decoder threads did not give a reliable improvement, so decoder threading was

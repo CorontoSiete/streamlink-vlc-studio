@@ -7,6 +7,8 @@
 typedef struct studio_gdi_layer_t {
     studio_gdi_scaler_t scale;
     picture_t *premultiplied;
+    picture_t *source;
+    bool source_valid, scaled_valid;
     struct studio_gdi_layer_t *next;
 } studio_gdi_layer_t;
 
@@ -24,6 +26,7 @@ static void CleanLayers(studio_gdi_layer_t *layer)
         studio_gdi_layer_t *next = layer->next;
         CleanScaler(&layer->scale);
         if (layer->premultiplied) picture_Release(layer->premultiplied);
+        if (layer->source) picture_Release(layer->source);
         free(layer);
         layer = next;
     }
@@ -78,26 +81,42 @@ static bool PrepareLayer(vlc_object_t *owner, studio_gdi_layer_t *layer,
         (uint64_t)format->i_x_offset + format->i_visible_width > region->p_picture->format.i_width ||
         (uint64_t)format->i_y_offset + format->i_visible_height > region->p_picture->format.i_height)
         return false;
-    if (!layer->premultiplied ||
+    if (!layer->premultiplied || !layer->source ||
         layer->premultiplied->format.i_visible_width != format->i_visible_width ||
         layer->premultiplied->format.i_visible_height != format->i_visible_height) {
         CleanScaler(&layer->scale);
         memset(&layer->scale, 0, sizeof(layer->scale));
         if (layer->premultiplied) picture_Release(layer->premultiplied);
+        if (layer->source) picture_Release(layer->source);
+        layer->source_valid = layer->scaled_valid = false;
         video_format_t input;
         video_format_Init(&input, VLC_CODEC_BGRA);
         video_format_Setup(&input, VLC_CODEC_BGRA, format->i_visible_width, format->i_visible_height,
                           format->i_visible_width, format->i_visible_height, 1, 1);
         layer->premultiplied = picture_NewFromFormat(&input);
-        if (!layer->premultiplied) return false;
+        input.i_chroma = VLC_CODEC_RGBA;
+        layer->source = picture_NewFromFormat(&input);
+        if (!layer->premultiplied || !layer->source) return false;
     }
     picture_t *input = layer->premultiplied;
+    /* A video frame need not be a new chat frame. Compare the visible bytes,
+     * not picture addresses: VLC can reuse pictures or update them in place.
+     * A bounded snapshot also handles fresh pictures with identical content. */
+    bool changed = !layer->source_valid;
+    const size_t row_bytes = (size_t)format->i_visible_width * 4;
+    for (unsigned y = 0; !changed && y < format->i_visible_height; y++) {
+        const uint8_t *src = region->p_picture->p[0].p_pixels +
+            (y + format->i_y_offset) * region->p_picture->p[0].i_pitch + format->i_x_offset * 4;
+        changed = memcmp(src, layer->source->p[0].p_pixels + y * layer->source->p[0].i_pitch,
+                         row_bytes) != 0;
+    }
     /* Filter premultiplied coverage, so transparent texels cannot darken thin
      * white strokes or bleed invisible RGB into colored glyphs and emotes. */
-    for (unsigned y = 0; y < format->i_visible_height; y++) {
+    for (unsigned y = 0; changed && y < format->i_visible_height; y++) {
         const uint8_t *src = region->p_picture->p[0].p_pixels +
             (y + format->i_y_offset) * region->p_picture->p[0].i_pitch + format->i_x_offset * 4;
         uint8_t *dst = input->p[0].p_pixels + y * input->p[0].i_pitch;
+        memcpy(layer->source->p[0].p_pixels + y * layer->source->p[0].i_pitch, src, row_bytes);
         for (unsigned x = 0; x < format->i_visible_width; x++, src += 4, dst += 4) {
             dst[0] = (src[2] * src[3] + 127) / 255;
             dst[1] = (src[1] * src[3] + 127) / 255;
@@ -105,11 +124,16 @@ static bool PrepareLayer(vlc_object_t *owner, studio_gdi_layer_t *layer,
             dst[3] = src[3];
         }
     }
+    layer->source_valid = true;
+    if (changed || layer->scale.scale_width != width || layer->scale.scale_height != height)
+        layer->scaled_valid = false;
+    if (layer->scaled_valid) return true;
     RECT source = {0, 0, format->i_visible_width, format->i_visible_height};
     if (!EnsureScaler(owner, &layer->scale, &input->format, dc, &source, width, height)) return false;
     picture_t *scaled = layer->scale.scaler->pf_video_filter(layer->scale.scaler, picture_Hold(input));
     if (!scaled) return false;
     picture_Release(scaled);
+    layer->scaled_valid = true;
     return true;
 }
 
@@ -136,7 +160,7 @@ static void ComposeChat(vlc_object_t *owner, studio_gdi_compositor_t *compositor
                 AlphaBlend(compositor->dc, video->left - clipped->left + left,
                            video->top - clipped->top + top, width, height,
                            layer->scale.scale_dc, 0, 0, width, height, blend);
-                /* The cached DIB is written again on the next frame. */
+                /* Finish GDI reads before a later content change rewrites the DIB. */
                 GdiFlush();
             }
             slot = &layer->next;
