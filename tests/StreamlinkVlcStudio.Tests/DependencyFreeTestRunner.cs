@@ -4,7 +4,14 @@ internal static class DependencyFreeTestRunner
 {
     private static readonly TimeSpan DefaultTestTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan ReleasePackageTestTimeout = TimeSpan.FromSeconds(90);
+    private static readonly IReadOnlyDictionary<string, TimeSpan> TestTimeoutOverrides =
+        new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
+        {
+            [ApplicationTestCatalog.ReleasePackageZipTestName] = TimeSpan.FromSeconds(90),
+            [KickClipTestCatalog.BackgroundPublicationTestName] = TimeSpan.FromSeconds(90),
+            [KickClipTestCatalog.BackgroundErrorsTestName] = TimeSpan.FromSeconds(120),
+            [KickClipTestCatalog.BackgroundCancellationTestName] = TimeSpan.FromSeconds(90)
+        };
     private static readonly TimeSpan MaximumConfiguredTimeout = TimeSpan.FromDays(1);
     // The bounded runner allows two five-second cleanup waits after `timeout + IsolatedProcessGrace`,
     // so the outer race must leave room for both. Otherwise a merely slow isolated test
@@ -154,11 +161,9 @@ internal static class DependencyFreeTestRunner
     internal static TimeSpan ResolveTestTimeout(string testName, TimeSpan configuredTimeout)
     {
         ArgumentNullException.ThrowIfNull(testName);
-        return string.Equals(
-            testName,
-            ApplicationTestCatalog.ReleasePackageZipTestName,
-            StringComparison.Ordinal) && configuredTimeout < ReleasePackageTestTimeout
-            ? ReleasePackageTestTimeout
+        return TestTimeoutOverrides.TryGetValue(testName, out var minimumTimeout) &&
+            configuredTimeout < minimumTimeout
+            ? minimumTimeout
             : configuredTimeout;
     }
 

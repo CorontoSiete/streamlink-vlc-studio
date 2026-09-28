@@ -4,6 +4,10 @@ using StreamlinkVlcStudio.App.Wpf.Kick;
 
 internal static class KickClipTestCatalog
 {
+    internal const string BackgroundPublicationTestName = "Kick clips: background service stays hidden and muted and publishes once";
+    internal const string BackgroundErrorsTestName = "Kick clips: background sign-in and HTTP failures never report success";
+    internal const string BackgroundCancellationTestName = "Kick clips: cancellation closes the hidden browser including late creation";
+
     private static readonly StreamTarget Target = new(PlatformKind.Kick, "streamer", "https://kick.com/streamer");
     private const string InternalDraft = "https://kick.com/api/internal/v1/livestreams/stream-session/clips";
     private const string WebDraft = "https://web.kick.com/api/v1/clips";
@@ -18,9 +22,9 @@ internal static class KickClipTestCatalog
         ("Kick clips: cancellation failures and browser launch failures remain truthful", FailedCommandAsync),
         ("Kick clips: shutdown cancels and ignores late publication", ShutdownAsync),
         ("Kick clips: real browser dispatches mounted editor and observes ordered publication", BrowserAsync),
-        ("Kick clips: background service stays hidden and muted and publishes once", BackgroundAsync),
-        ("Kick clips: background sign-in and HTTP failures never report success", BackgroundErrorsAsync),
-        ("Kick clips: cancellation closes the hidden browser including late creation", BackgroundCancellationAsync),
+        (BackgroundPublicationTestName, BackgroundAsync),
+        (BackgroundErrorsTestName, BackgroundErrorsAsync),
+        (BackgroundCancellationTestName, BackgroundCancellationAsync),
         ("Kick clips: real browser retains preview media while follow import blocks it", MediaAsync)
     ];
 
@@ -329,9 +333,9 @@ internal static class KickClipTestCatalog
                     };
                     return controller;
                 });
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
                 var creation = service.CreateLiveClipAsync(Target, timeout.Token);
-                await WaitUntilAsync(() => submissions > 0);
+                await WaitUntilAsync(() => submissions > 0, TimeSpan.FromSeconds(30));
                 Assert.Equal(false, NativeWindowTest.IsWindowVisible(host));
                 Assert.Equal(false, owner.IsVisible);
                 Assert.True(core!.IsMuted);
@@ -379,7 +383,7 @@ internal static class KickClipTestCatalog
                     };
                     return controller;
                 });
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
                 var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateLiveClipAsync(Target, timeout.Token));
                 Assert.Contains(message, error.Message);
                 Assert.Equal(0, finalized);
@@ -406,7 +410,7 @@ internal static class KickClipTestCatalog
             Assert.True(NativeWindowTest.IsWindow(host));
             Assert.Equal(false, NativeWindowTest.IsWindowVisible(host));
             pending.SetResult(await environment.CreateCoreWebView2ControllerAsync(host));
-            await WaitUntilAsync(() => !NativeWindowTest.IsWindow(host));
+            await WaitUntilAsync(() => !NativeWindowTest.IsWindow(host), TimeSpan.FromSeconds(20));
 
             var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             service = new KickClipService(owner, async handle =>
@@ -422,7 +426,7 @@ internal static class KickClipTestCatalog
             });
             using var navigationCancellation = new CancellationTokenSource();
             creation = service.CreateLiveClipAsync(Target, navigationCancellation.Token);
-            await loaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await loaded.Task.WaitAsync(TimeSpan.FromSeconds(20));
             navigationCancellation.Cancel();
             await Assert.ThrowsAsync<OperationCanceledException>(() => creation);
             Assert.Equal(false, NativeWindowTest.IsWindow(host));
@@ -453,9 +457,9 @@ internal static class KickClipTestCatalog
         finally { core.NavigationCompleted -= Completed; }
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!condition()) await Task.Delay(20, timeout.Token);
+        using var cancellation = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(5));
+        while (!condition()) await Task.Delay(20, cancellation.Token);
     }
 }

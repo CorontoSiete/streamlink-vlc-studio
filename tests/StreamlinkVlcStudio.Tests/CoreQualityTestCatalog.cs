@@ -15,7 +15,7 @@ internal static class CoreQualityTestCatalog
         ("Windows command line tokenizer handles quote runs and rejects nulls", CommandLineTokenizerHandlesQuoteRuns),
         ("duration conversion rejects the rounded Int64 overflow boundary", DurationConversionRejectsOverflowBoundary),
         ("Core shared values are canonical and immutable", KickBadgeAliasesAreCanonical),
-        ("test runner extends only the release packaging smoke-test timeout", TestRunnerUsesTargetedTimeout),
+        ("test runner applies targeted budgets to slow integration smoke tests", TestRunnerUsesTargetedTimeout),
         ("test runner reports tests not started after a noncooperative timeout", TestRunnerReportsNotRunAsync),
         ("test runner rejects overflowing timeout configuration", TestRunnerRejectsOverflowingTimeout)
     ];
@@ -405,6 +405,21 @@ internal static class CoreQualityTestCatalog
             TimeSpan.FromSeconds(90),
             DependencyFreeTestRunner.ResolveTestTimeout(
                 ApplicationTestCatalog.ReleasePackageZipTestName,
+                TimeSpan.FromSeconds(30)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(90),
+            DependencyFreeTestRunner.ResolveTestTimeout(
+                KickClipTestCatalog.BackgroundPublicationTestName,
+                TimeSpan.FromSeconds(30)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(120),
+            DependencyFreeTestRunner.ResolveTestTimeout(
+                KickClipTestCatalog.BackgroundErrorsTestName,
+                TimeSpan.FromSeconds(30)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(90),
+            DependencyFreeTestRunner.ResolveTestTimeout(
+                KickClipTestCatalog.BackgroundCancellationTestName,
                 TimeSpan.FromSeconds(30)));
         Assert.Equal(
             TimeSpan.FromSeconds(120),
