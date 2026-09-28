@@ -86,7 +86,17 @@ foreach ($hash in $coreHashes) {
         throw 'Bundled VLC core provenance contains an invalid SHA-256 value.'
     }
 }
-$actualCoreHash = (Get-FileHash -LiteralPath $coreBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sha256 = [Security.Cryptography.SHA256]::Create()
+try {
+    $coreStream = [IO.File]::OpenRead($coreBinaryPath)
+    try {
+        $actualCoreHash = [BitConverter]::ToString($sha256.ComputeHash($coreStream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $coreStream.Dispose()
+    }
+} finally {
+    $sha256.Dispose()
+}
 if ($actualCoreHash -cne [string]$coreProvenance.binarySha256) {
     throw "Bundled VLC core SHA-256 mismatch: expected $($coreProvenance.binarySha256), got $actualCoreHash."
 }
