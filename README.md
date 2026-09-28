@@ -146,7 +146,7 @@ caller's environment and working directory on success or failure.
 .\scripts\dev.ps1 Test -Interactive
 ```
 
-`Test` and `Check` use the current CI headless skip ceiling of 255; interactive
+`Test` and `Check` use the current CI headless skip ceiling of 256; interactive
 runs allow zero skips by default. `-ExpectedMaxSkips` provides an explicit override.
 `Check` always builds and runs the full suite, rejecting `-Filter` and `-NoBuild`.
 The test phase never rebuilds WPF output. `-NoRestore` keeps the build but skips

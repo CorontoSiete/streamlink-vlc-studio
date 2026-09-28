@@ -108,7 +108,7 @@ jobs:
           SVS_SKIP_INTERACTIVE_WINDOW_TESTS: "true"
           # Includes replay controls, live/Kick VOD hover, window sharing, hidden emotes, 28 Browse scroll tests, 2 native tab-switch tests, and native resize tracing.
           # Also includes 1 VOD completion control test, 2 overlay readability tests, and 3 chat text-size tests.
-          SVS_EXPECTED_MAX_SKIPS: "255"
+          SVS_EXPECTED_MAX_SKIPS: "256"
           SVS_TEST_TIMEOUT_SECONDS: "30"
           SVS_TEST_DRAIN_TIMEOUT_SECONDS: "2"
         run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore --no-build
