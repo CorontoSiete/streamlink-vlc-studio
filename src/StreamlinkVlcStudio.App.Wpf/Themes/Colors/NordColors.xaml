@@ -18,15 +18,15 @@
     <!-- Accent (Frost Blue) -->
     <Color x:Key="StudioAccentColor">#88C0D0</Color>
     <Color x:Key="StudioAccentHoverColor">#8FBCBB</Color>
-    <Color x:Key="StudioAccentPressedColor">#5E81AC</Color>
+    <Color x:Key="StudioAccentPressedColor">#323E49</Color>
     <Color x:Key="StudioFocusColor">#88C0D0</Color>
     <Color x:Key="StudioAccentTextColor">#A3D5E0</Color>
 
     <!-- Text -->
     <Color x:Key="StudioTextColor">#ECEFF4</Color>
     <Color x:Key="StudioTextSecondaryColor">#D8DEE9</Color>
-    <Color x:Key="StudioTextMutedColor">#7B88A1</Color>
-    <Color x:Key="StudioTextPlaceholderColor">#6B7890</Color>
+    <Color x:Key="StudioTextMutedColor">#A9B2C2</Color>
+    <Color x:Key="StudioTextPlaceholderColor">#ABB2C0</Color>
     <Color x:Key="StudioTextDimColor">#5B6880</Color>
 
     <!-- UI Elements -->
@@ -60,11 +60,6 @@
     <Color x:Key="StudioKickColor">#53FC18</Color>
     <Color x:Key="StudioKickSubtleColor">#152A10</Color>
     <Color x:Key="StudioKickTextColor">#CCFFC0</Color>
-
-    <!-- Category Badge -->
-    <Color x:Key="StudioCategoryBgColor">#2A2820</Color>
-    <Color x:Key="StudioCategoryBorderColor">#8A7B5A</Color>
-    <Color x:Key="StudioCategoryTextColor">#EBCB8B</Color>
 
     <!-- Brushes -->
     <SolidColorBrush x:Key="StudioBaseBrush" Color="{StaticResource StudioBaseColor}" />
@@ -104,7 +99,7 @@
     <SolidColorBrush x:Key="StudioKickBrush" Color="{StaticResource StudioKickColor}" />
     <SolidColorBrush x:Key="StudioKickSubtleBrush" Color="{StaticResource StudioKickSubtleColor}" />
     <SolidColorBrush x:Key="StudioKickTextBrush" Color="{StaticResource StudioKickTextColor}" />
-    <SolidColorBrush x:Key="StudioCategoryBgBrush" Color="{StaticResource StudioCategoryBgColor}" />
-    <SolidColorBrush x:Key="StudioCategoryBorderBrush" Color="{StaticResource StudioCategoryBorderColor}" />
-    <SolidColorBrush x:Key="StudioCategoryTextBrush" Color="{StaticResource StudioCategoryTextColor}" />
+    <!-- Primary actions may use a filled accent independently of selected surfaces. -->
+    <SolidColorBrush x:Key="StudioPrimaryBrush" Color="{StaticResource StudioAccentPressedColor}" />
+    <SolidColorBrush x:Key="StudioPrimaryTextBrush" Color="{StaticResource StudioAccentTextColor}" />
 </ResourceDictionary>

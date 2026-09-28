@@ -119,6 +119,21 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         }
     }
 
+    internal Task<bool> HandleTextSelectionEventAsync(uint eventType, int packedPoint) =>
+        InvokeOnRendererAsync(
+            context => context.HandleTextSelectionEvent(eventType, packedPoint),
+            fallback: false);
+
+    internal Task<Uri?> HandleTextClickEventAsync(int packedPoint) =>
+        InvokeOnRendererAsync(
+            context => context.HandleTextClickEvent(packedPoint),
+            fallback: null);
+
+    internal Task<string?> GetSelectedMessageBodyTextAsync() =>
+        InvokeOnRendererAsync(
+            context => context.GetSelectedMessageBodyText(),
+            fallback: null);
+
     public ValueTask DisposeAsync()
     {
         lock (gate)
@@ -156,6 +171,59 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         {
             SafeLog(AppLogLevel.Warning, "Timed out stopping the native VLC replay overlay renderer.");
         }
+    }
+
+    private Task<TResult> InvokeOnRendererAsync<TResult>(
+        Func<NativeReplayOverlayFrameRenderContext, TResult> action,
+        TResult fallback)
+    {
+        if (dispatcher.CheckAccess())
+        {
+            if (renderContext is null)
+            {
+                return Task.FromResult(fallback);
+            }
+
+            return Task.FromResult(action(renderContext));
+        }
+
+        var completion = new TaskCompletionSource<TResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (gate)
+        {
+            if (disposed)
+            {
+                completion.TrySetResult(fallback);
+                return completion.Task;
+            }
+        }
+
+        try
+        {
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (renderContext is null)
+                {
+                    completion.TrySetResult(fallback);
+                    return;
+                }
+
+                try
+                {
+                    completion.TrySetResult(action(renderContext));
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }), DispatcherPriority.Input);
+        }
+        catch (InvalidOperationException)
+        {
+            completion.TrySetResult(fallback);
+        }
+
+        return completion.Task;
     }
 
     private static void RunDispatcher(

@@ -123,6 +123,7 @@ internal static class LibVlcRuntime
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vlcDirectory);
         ArgumentNullException.ThrowIfNull(options);
+        LibVlcNative.ConfigureVlcDirectory(vlcDirectory);
 
         if (!share)
         {

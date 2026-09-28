@@ -14,6 +14,7 @@ internal sealed record StreamTabViewModelDependencies
     public required IChatClientFactory ChatFactory { get; init; }
     public required IAppLogger Logger { get; init; }
     public required Action<Action> Dispatch { get; init; }
+    public Action<Uri>? OpenChatLink { get; init; }
     public int InitialVolume { get; init; } = StreamTabViewModel.DefaultVolume;
     public IViewerCountService? ViewerCountService { get; init; }
     public IReplayResolver? ReplayResolver { get; init; }

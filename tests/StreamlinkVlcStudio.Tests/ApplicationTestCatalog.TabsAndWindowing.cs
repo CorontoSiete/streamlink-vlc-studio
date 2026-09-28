@@ -1472,10 +1472,10 @@ internal static partial class ApplicationTestCatalog
         var chatSettingsField = typeof(StreamTabViewModel).GetField(
             "chatSettings",
             BindingFlags.Instance | BindingFlags.NonPublic);
-        var nativeOverlayProcessField = typeof(StreamTabViewModel).GetField(
+        var nativeOverlayProcessField = typeof(NativeChatOverlayController).GetField(
             "nativeOverlayProcess",
             BindingFlags.Instance | BindingFlags.NonPublic);
-        var nativeOverlayPipeNameField = typeof(StreamTabViewModel).GetField(
+        var nativeOverlayPipeNameField = typeof(NativeChatOverlayController).GetField(
             "nativeOverlayPipeName",
             BindingFlags.Instance | BindingFlags.NonPublic);
         var updateNativeChatOverlay = typeof(StreamTabViewModel).GetMethod(
@@ -1494,8 +1494,8 @@ internal static partial class ApplicationTestCatalog
 
         playbackEngineField!.SetValue(tab, engine);
         chatSettingsField!.SetValue(tab, settings.Chat);
-        nativeOverlayProcessField!.SetValue(tab, new Process());
-        nativeOverlayPipeNameField!.SetValue(tab, "svs_test");
+        nativeOverlayProcessField!.SetValue(tab.NativeOverlay, new Process());
+        nativeOverlayPipeNameField!.SetValue(tab.NativeOverlay, "svs_test");
 
         updateNativeChatOverlay!.Invoke(tab, []);
         var isCurrent = (bool)isNativeOverlayChatCurrent!.Invoke(tab, [settings])!;
@@ -1524,6 +1524,10 @@ internal static partial class ApplicationTestCatalog
         // blender, which cannot draw chat on opaque hardware-decoded surfaces.
         Assert.Equal("studio_gdi", LibVlcRendererSelection.GetVoutOption(VideoRendererMode.Gdi,
             usesNativeOverlay: true, hardwareOverlayComposition: true));
+        Assert.True(LibVlcRendererSelection.SupportsGpuScaling(new Version(3, 0, 23), hardwareOverlayComposition: true));
+        Assert.Equal(false, LibVlcRendererSelection.SupportsGpuScaling(new Version(3, 0, 23), hardwareOverlayComposition: false));
+        foreach (var version in new Version?[] { null, new(3, 0, 22), new(3, 0, 24), new(4, 0, 0) })
+            Assert.Equal(false, LibVlcRendererSelection.SupportsGpuScaling(version, hardwareOverlayComposition: true));
         Assert.Equal(false, VlcOverlayBundledResourceExtractor.IsBundledPluginHash(null));
         Assert.Equal(false, VlcOverlayBundledResourceExtractor.IsBundledPluginHash(new string('0', 64)));
         return Task.CompletedTask;
@@ -1542,7 +1546,7 @@ internal static partial class ApplicationTestCatalog
             logger,
             action => action());
 
-        var infoType = typeof(StreamTabViewModel).GetNestedType("KickOverlayChannelInfo", BindingFlags.NonPublic);
+        var infoType = typeof(KickOverlayChannelInfo);
         Assert.NotNull(infoType);
         var info = Activator.CreateInstance(
             infoType!,
@@ -1552,25 +1556,25 @@ internal static partial class ApplicationTestCatalog
             culture: null);
         Assert.NotNull(info);
 
-        var cacheMethod = typeof(StreamTabViewModel).GetMethod(
+        var cacheMethod = typeof(NativeChatOverlayController).GetMethod(
             "CacheResolvedKickOverlayChannelInfo",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(cacheMethod);
-        cacheMethod!.Invoke(tab, [info]);
+        cacheMethod!.Invoke(tab.NativeOverlay, [info]);
 
         var settings = new AppSettings();
         settings.StreamVlcOverlayFontSizes[tab.Target.StateKey] = 22;
-        var buildKeyMethod = typeof(StreamTabViewModel).GetMethod(
+        var buildKeyMethod = typeof(NativeChatOverlayController).GetMethod(
             "BuildNativeOverlayLaunchKey",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(buildKeyMethod);
-        var key = (string)buildKeyMethod!.Invoke(tab, [settings, null, null, null, null])!;
+        var key = (string)buildKeyMethod!.Invoke(tab.NativeOverlay, [settings, null, null, null, null])!;
 
         Assert.Contains("|123|456|", key);
         Assert.Equal("22", key.Split('|')[4]);
 
         Assert.True(settings.Chat.SetKickChatroomId("some-channel", "789"));
-        var overrideKey = (string)buildKeyMethod.Invoke(tab, [settings, null, null, null, null])!;
+        var overrideKey = (string)buildKeyMethod.Invoke(tab.NativeOverlay, [settings, null, null, null, null])!;
 
         Assert.Contains("|789|456|", overrideKey);
         await tab.DisposeAsync();
@@ -4099,7 +4103,7 @@ internal static partial class ApplicationTestCatalog
             var tabDetachDragStartScreenPointField = typeof(MainWindow).GetField(
                 "tabDetachDragStartScreenPoint",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(nativePointType);

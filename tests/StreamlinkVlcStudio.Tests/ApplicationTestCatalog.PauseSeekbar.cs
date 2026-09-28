@@ -19,8 +19,75 @@ internal static partial class ApplicationTestCatalog
         ("pause seekbar: failed resume restoration stops the restarted replay and reports the error", FailedPauseRestoreAsync),
         ("pause seekbar: behind-live resume opens at the held position without unpausing old media", () => ResumeOpensAtHeldPositionAsync(false)),
         ("pause seekbar: hidden behind-live resume opens at the held position without unpausing old media", () => ResumeOpensAtHeldPositionAsync(true)),
+        ("pause seekbar: VOD seeking and skipping preserve pause", () => PausedSeekAsync(true, false)),
+        ("pause seekbar: replay seeking and skipping preserve pause", () => PausedSeekAsync(false, false)),
+        ("pause seekbar: replay replacement preserves pause and resumes at the new position", () => PausedSeekAsync(false, true)),
+        ("pause seekbar: near-live seeks stay paused until explicit Return to Live", PausedNearLiveSeekAsync),
+        ("pause seekbar: a failed in-place seek preserves the frozen clock and resume position", FailedPausedSeekAsync),
         .. NativePauseSeekbarTests
     ];
+
+    private static async Task PausedSeekAsync(bool explicitVod, bool reload)
+    {
+        var (tab, engine) = await CreatePauseClockTabAsync(PlatformKind.Twitch, explicitVod);
+        await using (tab)
+        {
+            await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+            await tab.PauseOrResumeAsync();
+            await tab.SeekReplayAsync(TimeSpan.FromMinutes(12), forceReload: reload);
+            Assert.Equal(PlaybackStatus.Paused, tab.Status);
+            Assert.True(engine.Paused);
+            await StopReplayClockPollingAsync(tab);
+            MarkReplayClockSeekConfirmed(tab, TimeSpan.FromMinutes(5));
+            InvokeReplayClockUpdate(tab);
+            AssertPauseClockPosition(tab, TimeSpan.FromMinutes(12));
+            await tab.RewindReplay30SecondsAsync();
+            Assert.Equal(PlaybackStatus.Paused, tab.Status);
+            Assert.True(engine.Paused);
+            AssertPauseClockPosition(tab, TimeSpan.FromMinutes(11.5));
+            await tab.PauseOrResumeAsync();
+            Assert.Equal(PlaybackStatus.Playing, tab.Status);
+            Assert.Equal(false, engine.Paused);
+            Assert.Equal(TimeSpan.FromMinutes(11.5), engine.Position);
+        }
+    }
+
+    private static async Task PausedNearLiveSeekAsync()
+    {
+        var (tab, engine) = await CreatePauseClockTabAsync(PlatformKind.Twitch, explicitVod: false);
+        await using (tab)
+        {
+            await tab.PauseOrResumeAsync();
+            var target = engine.Duration - TimeSpan.FromSeconds(5);
+            await tab.SeekReplayAsync(target);
+            Assert.Equal(PlaybackStatus.Paused, tab.Status);
+            Assert.True(engine.Paused);
+            Assert.True(tab.IsBehindLive);
+            AssertPauseClockPosition(tab, target);
+            await tab.ReturnToLiveAsync();
+            Assert.Equal(PlaybackStatus.Playing, tab.Status);
+            Assert.Equal(false, tab.IsBehindLive);
+        }
+    }
+
+    private static async Task FailedPausedSeekAsync()
+    {
+        var (tab, engine) = await CreatePauseClockTabAsync(PlatformKind.Twitch, explicitVod: true);
+        await using (tab)
+        {
+            await tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+            await tab.PauseOrResumeAsync();
+            engine.FailingSeekCount = 1;
+            await tab.SeekReplayAsync(TimeSpan.FromMinutes(12));
+            Assert.Equal(PlaybackStatus.Paused, tab.Status);
+            Assert.True(engine.Paused);
+            await StopReplayClockPollingAsync(tab);
+            InvokeReplayClockUpdate(tab);
+            AssertPauseClockPosition(tab, TimeSpan.FromMinutes(10));
+            await tab.PauseOrResumeAsync();
+            Assert.Equal(TimeSpan.FromMinutes(10), engine.Position);
+        }
+    }
 
     private static async Task PreservedReplayResumeAsync(PlatformKind platform, bool hidden)
     {

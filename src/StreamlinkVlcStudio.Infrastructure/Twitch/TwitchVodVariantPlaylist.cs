@@ -8,6 +8,11 @@ namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 internal static partial class TwitchVodVariantPlaylist
 {
     internal static Uri Select(string content, Uri baseUri, string quality)
+        => Select(content, baseUri, [quality], uri => ProviderUriPolicy.IsApprovedReplayUri(uri, PlatformKind.Twitch));
+
+    // Twitch and Kick both publish these IVS variant names. Preview selection uses
+    // the same parser, its ordered quality fallbacks, and its own provider URL policy.
+    internal static Uri Select(string content, Uri baseUri, IReadOnlyList<string> qualities, Func<Uri, bool> isAllowedUri)
     {
         var lines = content.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (lines.Length == 0 || lines[0] != "#EXTM3U") throw Unsupported();
@@ -45,19 +50,23 @@ internal static partial class TwitchVodVariantPlaylist
             else if (name is not ("source" or "audio" or "audio_only")) throw Unsupported();
 
             if (++i >= lines.Length || lines[i].StartsWith('#') || variants.Any(variant => variant.Name == name) ||
-                !ProviderUriPolicy.TryResolveReplayUri(lines[i], baseUri, PlatformKind.Twitch, out var uri)) throw Unsupported();
+                lines[i].Any(char.IsControl) || !Uri.TryCreate(baseUri, lines[i], out var uri) || !isAllowedUri(uri)) throw Unsupported();
             variants.Add((name, weight, uri));
         }
         if (variants.Count == 0) throw Unsupported();
-        if (quality is "best" or "worst")
+        foreach (var quality in qualities)
         {
-            // Streamlink excludes unweighted audio from best/worst when video exists.
-            var ranked = variants.Where(variant => variant.Weight > 0 || variants.Count == 1)
-                .OrderBy(variant => variant.Weight).ToArray();
-            if (ranked.Length == 0) throw Unsupported();
-            return quality == "best" ? ranked[^1].Uri : ranked[0].Uri;
+            if (quality is "best" or "worst")
+            {
+                // Streamlink excludes unweighted audio from best/worst when video exists.
+                var ranked = variants.Where(variant => variant.Weight > 0 || variants.Count == 1)
+                    .OrderBy(variant => variant.Weight).ToArray();
+                if (ranked.Length == 0) throw Unsupported();
+                return quality == "best" ? ranked[^1].Uri : ranked[0].Uri;
+            }
+            if (variants.FirstOrDefault(variant => variant.Name == quality).Uri is { } selected) return selected;
         }
-        return variants.FirstOrDefault(variant => variant.Name == quality).Uri ?? throw Unsupported();
+        throw Unsupported();
     }
 
     private static Dictionary<string, string> ParseAttributes(string text)

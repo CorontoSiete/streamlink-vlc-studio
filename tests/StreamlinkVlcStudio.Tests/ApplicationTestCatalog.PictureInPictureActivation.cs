@@ -243,7 +243,7 @@ internal static partial class ApplicationTestCatalog
             Assert.NotNull(detach);
             detach!.Invoke(window, [pip.Tab, new Point(350, 250), false]);
             var detachedWindows = (IDictionary<StreamTabViewModel, DetachedVideoWindow>)typeof(MainWindow)
-                .GetField("detachedWindows", flags)!.GetValue(window)!;
+                .GetProperty("detachedWindows", flags)!.GetValue(window)!;
             detached = detachedWindows[pip.Tab];
             Assert.True(pip.Tab.IsDetached);
             Assert.True(fixture.Main.TryMergeTabsIntoMultiView([peer.Tab], main.Tab));

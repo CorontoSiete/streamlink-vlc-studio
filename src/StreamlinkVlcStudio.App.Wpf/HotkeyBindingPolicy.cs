@@ -15,7 +15,9 @@ internal enum AppHotkeyAction
     ToggleMultiStream,
     VolumeUp,
     VolumeDown,
-    GoBack
+    GoBack,
+    SkipBackward,
+    SkipForward
 }
 
 internal static class HotkeyBindingPolicy
@@ -117,6 +119,8 @@ internal static class HotkeyBindingPolicy
             AppHotkeyAction.VolumeUp => settings.VolumeUp,
             AppHotkeyAction.VolumeDown => settings.VolumeDown,
             AppHotkeyAction.GoBack => settings.GoBack,
+            AppHotkeyAction.SkipBackward => settings.SkipBackward,
+            AppHotkeyAction.SkipForward => settings.SkipForward,
             _ => throw new ArgumentOutOfRangeException(nameof(action))
         };
     }
@@ -153,6 +157,12 @@ internal static class HotkeyBindingPolicy
             case AppHotkeyAction.GoBack:
                 settings.GoBack = gesture;
                 break;
+            case AppHotkeyAction.SkipBackward:
+                settings.SkipBackward = gesture;
+                break;
+            case AppHotkeyAction.SkipForward:
+                settings.SkipForward = gesture;
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(action));
         }
@@ -170,6 +180,8 @@ internal static class HotkeyBindingPolicy
             AppHotkeyAction.VolumeUp => HotkeySettings.DefaultVolumeUp,
             AppHotkeyAction.VolumeDown => HotkeySettings.DefaultVolumeDown,
             AppHotkeyAction.GoBack => HotkeySettings.DefaultGoBack,
+            AppHotkeyAction.SkipBackward => HotkeySettings.DefaultSkipBackward,
+            AppHotkeyAction.SkipForward => HotkeySettings.DefaultSkipForward,
             _ => throw new ArgumentOutOfRangeException(nameof(action))
         };
     }

@@ -1,0 +1,74 @@
+[
+    {
+        "trial":  1,
+        "provider":  "Twitch",
+        "version":  "before",
+        "milliseconds":  2563
+    },
+    {
+        "trial":  1,
+        "provider":  "Twitch",
+        "version":  "after",
+        "milliseconds":  1160
+    },
+    {
+        "trial":  1,
+        "provider":  "Kick",
+        "version":  "before",
+        "milliseconds":  2436
+    },
+    {
+        "trial":  1,
+        "provider":  "Kick",
+        "version":  "after",
+        "milliseconds":  1052
+    },
+    {
+        "trial":  2,
+        "provider":  "Twitch",
+        "version":  "after",
+        "milliseconds":  1169
+    },
+    {
+        "trial":  2,
+        "provider":  "Twitch",
+        "version":  "before",
+        "milliseconds":  2362
+    },
+    {
+        "trial":  2,
+        "provider":  "Kick",
+        "version":  "after",
+        "milliseconds":  1058
+    },
+    {
+        "trial":  2,
+        "provider":  "Kick",
+        "version":  "before",
+        "milliseconds":  2332
+    },
+    {
+        "trial":  3,
+        "provider":  "Twitch",
+        "version":  "before",
+        "milliseconds":  2463
+    },
+    {
+        "trial":  3,
+        "provider":  "Twitch",
+        "version":  "after",
+        "milliseconds":  1055
+    },
+    {
+        "trial":  3,
+        "provider":  "Kick",
+        "version":  "before",
+        "milliseconds":  2227
+    },
+    {
+        "trial":  3,
+        "provider":  "Kick",
+        "version":  "after",
+        "milliseconds":  847
+    }
+]

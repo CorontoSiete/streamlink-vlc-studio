@@ -25,6 +25,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     private const string Repository = "CorontoSiete/streamlink-vlc-studio";
     private const long MaximumPackageBytes = 1024L * 1024L * 1024L;
     private static readonly TimeSpan CheckLifetime = TimeSpan.FromHours(24);
+    private static readonly TimeSpan PreparedPackageLifetime = TimeSpan.FromDays(7);
     private static readonly TimeSpan PackageDownloadTimeout = TimeSpan.FromMinutes(30);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly byte[] PublicModulus = Convert.FromBase64String(
@@ -43,6 +44,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     private readonly bool disposeClient;
     private readonly TimeSpan downloadIdleTimeout;
     private readonly Threading.AsyncOperationGate operationGate = new();
+    private readonly HashSet<Guid> consumedCompletions = [];
     private AppUpdateState state = AppUpdateState.Idle;
     private AppUpdateRelease? lastVerifiedRelease;
     private PreparedAppUpdate? preparedUpdate;
@@ -97,6 +99,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
 
     private async Task<AppUpdateCheckResult> CheckCoreAsync(UpdateCheckReason reason, CancellationToken cancellationToken)
     {
+        ExpirePreparedUpdate();
         var previousState = State;
         // Restore the trusted identity and cache ownership together with the visible state
         // if a refresh fails after verifying a different release.
@@ -160,14 +163,15 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             lastVerifiedRelease = previousRelease;
-            preparedUpdate = previousPreparedUpdate;
-            SetState(previousState);
+            preparedUpdate = previousPreparedUpdate is { } saved && IsPackageFresh(saved.VerifiedAt) ? saved : null;
+            SetState(WithoutExpiredPreparedState(previousState));
             throw;
         }
         catch (Exception ex)
         {
             lastVerifiedRelease = previousRelease;
-            preparedUpdate = previousPreparedUpdate;
+            preparedUpdate = previousPreparedUpdate is { } saved && IsPackageFresh(saved.VerifiedAt) ? saved : null;
+            previousState = WithoutExpiredPreparedState(previousState);
             // A failed refresh must not strand a previously verified release or package.
             // Downloads and installation still validate that release's identity and bytes.
             var recoveryMessage = previousState.Phase switch
@@ -352,8 +356,12 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 TryDeleteCacheEntryWithRetries(path);
                 continue;
             }
-            DeleteCacheEntry(path);
-            CleanupCompletedOperation(completion);
+            // Completion is authoritative even when antivirus or another process
+            // temporarily prevents housekeeping. Retry the file without showing
+            // the same result repeatedly during this session.
+            TryCleanup(() => DeleteCacheEntry(path));
+            TryCleanup(() => CleanupCompletedOperation(completion));
+            if (!consumedCompletions.Add(completion.OperationId)) continue;
             SetState(new(completion.Outcome == AppUpdateCompletionOutcome.Failed ? AppUpdatePhase.Failed : AppUpdatePhase.Completed, completion.Message));
             return completion;
         }
@@ -499,10 +507,12 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
 
     private void AssertPrepared(PreparedAppUpdate update, bool verifyHelper = true)
     {
+        if (!IsPackageFresh(update.VerifiedAt))
+            throw new InvalidDataException("The downloaded update expired or has a future verification time. Download it again before installing.");
         var processPath = Environment.ProcessPath ?? throw new InvalidOperationException("The running executable path is unavailable.");
         var operation = Path.TrimEndingDirectorySeparator(Path.GetFullPath(update.OperationDirectory));
         var operationsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(updateRoot, "operations")));
-        if (!IsSamePath(operation, Path.Combine(operationsRoot, update.OperationId.ToString("N"))) ||
+        if (update.OperationId == Guid.Empty || !IsSamePath(operation, Path.Combine(operationsRoot, update.OperationId.ToString("N"))) ||
             !string.Equals(Path.GetFileName(operation), update.OperationId.ToString("N"), StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetDirectoryName(Path.GetFullPath(update.SetupPath)), operation, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetFileName(update.SetupPath), SetupAssetName, StringComparison.Ordinal) ||
@@ -540,8 +550,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 if (stream.Length is <= 0 or > 64 * 1024) continue;
                 var saved = await JsonSerializer.DeserializeAsync<PreparedAppUpdate>(stream, JsonOptions, token).ConfigureAwait(false);
                 if (saved?.Release is null || saved.OperationId != id || !ReleaseEquals(saved.Release, release) ||
-                    !IsSamePath(saved.OperationDirectory, operation) || saved.VerifiedAt > utcNow() ||
-                    utcNow() - saved.VerifiedAt > TimeSpan.FromDays(7)) continue;
+                    !IsSamePath(saved.OperationDirectory, operation) || !IsPackageFresh(saved.VerifiedAt)) continue;
                 // Local metadata is not a trust root: bind it to the signed check and rehash the installer.
                 var restored = saved with { Release = release };
                 await Task.Run(() => AssertPrepared(restored, verifyHelper: false), token).ConfigureAwait(false);
@@ -595,8 +604,29 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         left.ProtocolVersion == right.ProtocolVersion &&
         left.Setup == right.Setup;
 
+    private bool IsPackageFresh(DateTimeOffset verifiedAt)
+    {
+        var now = utcNow();
+        return verifiedAt <= now && now - verifiedAt < PreparedPackageLifetime;
+    }
+
+    private AppUpdateState WithoutExpiredPreparedState(AppUpdateState value) =>
+        value.PreparedUpdate is { } prepared && !IsPackageFresh(prepared.VerifiedAt)
+            ? new(AppUpdatePhase.Available, "The downloaded update expired. Download it again when you're ready.", value.Release)
+            : value;
+
+    private void ExpirePreparedUpdate()
+    {
+        if (preparedUpdate is { } prepared && !IsPackageFresh(prepared.VerifiedAt)) preparedUpdate = null;
+        var unexpiredState = WithoutExpiredPreparedState(State);
+        if (unexpiredState != State) SetState(unexpiredState);
+    }
+
     private void TryCleanupCache()
     {
+        // A running app must enforce the same retention window as a restarted app.
+        // Clear Ready before deleting its package, including when the next check is offline.
+        ExpirePreparedUpdate();
         TryCleanup(() => CleanupOperations(Path.Combine(updateRoot, "operations")));
         TryCleanup(() => CleanupDirectory(Path.Combine(updateRoot, "results"), TimeSpan.FromDays(30)));
         TryCleanup(() => CleanupDirectory(Path.Combine(updateRoot, "logs"), TimeSpan.FromDays(30)));
@@ -647,7 +677,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                     (currentVersion is null || prepared.Release.Version > currentVersion)) continue;
                 var modified = new DateTimeOffset(File.GetLastWriteTimeUtc(entry), TimeSpan.Zero);
                 var verified = File.Exists(Path.Combine(entry, "operation.json"));
-                var maximumAge = verified ? TimeSpan.FromDays(7) : TimeSpan.FromHours(24);
+                var maximumAge = verified ? PreparedPackageLifetime : TimeSpan.FromHours(24);
                 shouldRemove = utcNow() - modified > maximumAge || IsObsoleteOperation(entry, currentVersion);
                 if (shouldRemove)
                 {
@@ -698,7 +728,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
 
             // Metadata can only select a directory already inside our cache. It is
             // never used as a deletion target or as permission to install a package.
-            return utcNow() - saved.VerifiedAt > TimeSpan.FromDays(7) ||
+            return !IsPackageFresh(saved.VerifiedAt) ||
                    (currentVersion is not null && version <= currentVersion) ||
                    (preparedUpdate is { } ready && version <= ready.Release.Version &&
                     !IsSamePath(ready.OperationDirectory, operation));

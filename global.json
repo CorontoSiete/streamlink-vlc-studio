@@ -2,6 +2,10 @@
   "sdk": {
     "version": "10.0.302",
     "rollForward": "disable",
-    "allowPrerelease": false
+    "allowPrerelease": false,
+    "paths": [
+      "../../../.dotnet",
+      "$host$"
+    ]
   }
 }

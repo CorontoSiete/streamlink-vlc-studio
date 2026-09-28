@@ -248,14 +248,11 @@ internal static class RecentRefreshResourceTestCatalog
         Assert.True(viewModel.RecentStreams.All(card => card.DisplayName != "late"));
     });
 
-    private static Task RefreshAsync(MainViewModel viewModel) => (Task)typeof(MainViewModel)
-        .GetMethod("RefreshRecentThumbnailsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-        .Invoke(viewModel, [((CancellationTokenSource)typeof(MainViewModel)
-            .GetField("recentThumbnailRefreshCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(viewModel)!).Token, true])!;
+    private static Task RefreshAsync(MainViewModel viewModel) => ((RecentStreamsViewModel)typeof(MainViewModel)
+        .GetField("recent", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(viewModel)!).RefreshAsync(force: true);
 
-    private static void Rebuild(MainViewModel viewModel) => typeof(MainViewModel)
-        .GetMethod("RebuildRecentStreams", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(viewModel, null);
+    private static void Rebuild(MainViewModel viewModel) => ((RecentStreamsViewModel)typeof(MainViewModel)
+        .GetField("recent", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(viewModel)!).RebuildRecentStreams();
 
     private static MainViewModel Create(AppSettings settings, IStreamMetadataService? metadata = null, FakeSettingsService? storage = null) =>
         TestViewModels.CreateMain(settings, storage ?? new FakeSettingsService(settings), new FakeStreamlinkService(),

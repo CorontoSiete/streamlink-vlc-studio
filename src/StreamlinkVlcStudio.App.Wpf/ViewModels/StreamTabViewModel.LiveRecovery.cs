@@ -6,7 +6,9 @@ namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 public sealed partial class StreamTabViewModel
 {
     private readonly LivePlaybackHealthMonitor liveHealthMonitor = new();
+    private readonly object liveHealthTimerGate = new();
     private System.Threading.Timer? liveHealthTimer;
+    private bool liveHealthMonitoringEnabled;
     private CancellationTokenSource? liveRecoveryCancellation;
     private StreamTransportRequest? liveRecoveryRequest;
     private long liveHealthVersion;
@@ -26,25 +28,52 @@ public sealed partial class StreamTabViewModel
 
     private void StartLivePlaybackMonitoring()
     {
-        if (Target.Kind != StreamTargetKind.Live || liveHealthTimer is not null) return;
-        var version = ++liveHealthVersion;
-        liveHealthTimer = new System.Threading.Timer(ignored =>
+        if (Target.Kind != StreamTargetKind.Live) return;
+        lock (liveHealthTimerGate) liveHealthMonitoringEnabled = true;
+        UpdateLivePlaybackMonitoring();
+    }
+
+    private void UpdateLivePlaybackMonitoring()
+    {
+        lock (liveHealthTimerGate)
         {
-            if (Interlocked.CompareExchange(ref liveHealthTickQueued, 1, 0) != 0) return;
-            try { dispatch(() => _ = ObserveLivePlaybackAsync(version, Environment.TickCount64)); }
-            catch (Exception ex)
+            if (!liveHealthMonitoringEnabled || !ShouldMonitorLivePlayback)
             {
-                Interlocked.Exchange(ref liveHealthTickQueued, 0);
-                logger.Write(AppLogLevel.Warning, "Playback", $"Could not check playback for {Target.DisplayName}.", ex);
+                if (liveHealthTimer is null) return;
+                ++liveHealthVersion;
+                liveHealthTimer.Dispose();
+                liveHealthTimer = null;
+                liveHealthMonitor.Reset();
+                return;
             }
-        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
+            if (liveHealthTimer is not null) return;
+            var version = ++liveHealthVersion;
+            liveHealthTimer = new System.Threading.Timer(ignored =>
+            {
+                // Dispose can race an already queued timer callback. Do not post
+                // work for paused, hidden, replaying, or replaced playback.
+                if (version != Volatile.Read(ref liveHealthVersion) || !ShouldMonitorLivePlayback || IsBusy ||
+                    Interlocked.CompareExchange(ref liveHealthTickQueued, 1, 0) != 0) return;
+                try { dispatch(() => _ = ObserveLivePlaybackAsync(version, Environment.TickCount64)); }
+                catch (Exception ex)
+                {
+                    Interlocked.Exchange(ref liveHealthTickQueued, 0);
+                    logger.Write(AppLogLevel.Warning, "Playback", $"Could not check playback for {Target.DisplayName}.", ex);
+                }
+            }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        }
     }
 
     private void StopLivePlaybackMonitoring()
     {
-        ++liveHealthVersion;
-        liveHealthTimer?.Dispose();
-        liveHealthTimer = null;
+        lock (liveHealthTimerGate)
+        {
+            liveHealthMonitoringEnabled = false;
+            ++liveHealthVersion;
+            liveHealthTimer?.Dispose();
+            liveHealthTimer = null;
+        }
         CancelLivePlaybackRecovery();
         liveRecoveryRequest = null;
         liveHealthMonitor.Reset();
@@ -75,7 +104,8 @@ public sealed partial class StreamTabViewModel
         var transitionAcquired = false;
         try
         {
-            if (version != liveHealthVersion || !ShouldMonitorLivePlayback || IsBusy)
+            if (version != Volatile.Read(ref liveHealthVersion)) return;
+            if (!ShouldMonitorLivePlayback || IsBusy)
             {
                 liveHealthMonitor.Reset();
                 return;

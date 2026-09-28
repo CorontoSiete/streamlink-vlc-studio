@@ -4,6 +4,12 @@ namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 
 internal static class LibVlcRendererSelection
 {
+    // The opaque DXVA2 picture context is a private VLC ABI. Enable the bundled
+    // renderer's direct surface path only for the version whose layout we build
+    // and exercise; other VLC 3 builds retain the existing download converter.
+    internal static bool SupportsGpuScaling(Version? version, bool hardwareOverlayComposition) =>
+        hardwareOverlayComposition && version is { Major: 3, Minor: 0, Build: 23 };
+
     internal static VideoRendererMode Resolve(
         string vlcDirectory,
         VideoRendererMode requestedMode,

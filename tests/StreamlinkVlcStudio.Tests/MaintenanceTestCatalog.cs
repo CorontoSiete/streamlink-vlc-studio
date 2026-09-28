@@ -14,7 +14,13 @@ internal static class MaintenanceTestCatalog
         ("ZIP cleanup removes modified managed files and preserves unknown files", ModifiedManagedFilesAreRemoved),
         ("ZIP cleanup removes empty managed ancestors and preserves unrelated directories", EmptyManagedAncestorsAreRemoved),
         ("ZIP cleanup preserves retry ownership while a managed file is locked", LockedManagedFilesPreserveRetryState),
+        ("ZIP cleanup preserves all retry files when a control file denies deletion", LockedControlFilesPreserveRetryState),
+        ("ZIP cleanup cancels pending control-file deletion when a later file is mapped", MappedControlFilePreservesRetryState),
+        ("ZIP cleanup preserves personal data until application removal succeeds", FailedUninstallPreservesPersonalData),
+        ("Maintenance cleanup retries attribute preparation failures", CleanupPreparationFailuresAreRetried),
+        ("Personal-data cleanup removes read-only directories and continues past locked files", ReadOnlyDirectoryCleanup),
         ("ZIP cleanup rejects corrupt ownership state before deletion", CorruptOwnershipStateIsRejected),
+        ("ZIP cleanup treats malformed JSON types as invalid state and preserves retry files", MalformedOwnershipTypesAreRejected),
         ("ZIP cleanup rejects duplicate paths with different directory separators", DuplicatePathAliasesAreRejected)
     ];
 
@@ -312,6 +318,191 @@ internal static class MaintenanceTestCatalog
         return Task.CompletedTask;
     }
 
+    private static Task LockedControlFilesPreserveRetryState()
+    {
+        string[] controlFiles = ["StreamStudio.exe", "Uninstall.exe", InstallOwnership.ManifestFileName, InstallOwnership.OwnerFileName];
+        foreach (var lockedName in controlFiles)
+        {
+            var testRoot = CreateRoot();
+            try
+            {
+                var installRoot = Path.Combine(testRoot, "install");
+                Directory.CreateDirectory(installRoot);
+                File.WriteAllText(Path.Combine(installRoot, "StreamStudio.exe"), "app");
+                File.WriteAllText(Path.Combine(installRoot, "Uninstall.exe"), "maintenance");
+                WriteOwnership(installRoot, ["StreamStudio.exe", "Uninstall.exe"]);
+                var ownership = InstallOwnership.Load(installRoot);
+                var original = controlFiles.ToDictionary(name => name, name => File.ReadAllBytes(Path.Combine(installRoot, name)));
+                using var log = MaintenanceLog.Create();
+                // Antivirus and indexing commonly allow readers while withholding delete sharing.
+                using (var locked = new FileStream(Path.Combine(installRoot, lockedName), FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    var outcome = ManagedInstallationCleaner.Clean(ownership, log);
+                    Assert.Equal(false, outcome.ApplicationRemoved);
+                    foreach (var name in controlFiles)
+                    {
+                        var path = Path.Combine(installRoot, name);
+                        Assert.True(File.Exists(path), $"Locking {lockedName} lost the retry file {name}.");
+                        Assert.True(original[name].AsSpan().SequenceEqual(File.ReadAllBytes(path)));
+                    }
+                    _ = InstallOwnership.Load(installRoot);
+                }
+
+                Assert.True(ManagedInstallationCleaner.Clean(InstallOwnership.Load(installRoot), log).ApplicationRemoved);
+                Assert.Equal(false, Directory.Exists(installRoot));
+            }
+            finally { Directory.Delete(testRoot, recursive: true); }
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task MappedControlFilePreservesRetryState()
+    {
+        var testRoot = CreateRoot();
+        try
+        {
+            var installRoot = Path.Combine(testRoot, "install");
+            Directory.CreateDirectory(installRoot);
+            File.WriteAllText(Path.Combine(installRoot, "StreamStudio.exe"), "app");
+            File.WriteAllText(Path.Combine(installRoot, "Uninstall.exe"), "maintenance");
+            WriteOwnership(installRoot, ["StreamStudio.exe", "Uninstall.exe"]);
+            var ownership = InstallOwnership.Load(installRoot);
+            using var mapping = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile(ownership.OwnerPath,
+                FileMode.Open, null, 0, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
+            using var view = mapping.CreateViewAccessor(0, 0, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
+            // Keep only the mapped view: exclusive deletion access can be acquired,
+            // but Windows still rejects marking the last control file for deletion.
+            mapping.Dispose();
+            using var log = MaintenanceLog.Create();
+            Assert.Equal(false, ManagedInstallationCleaner.Clean(ownership, log).ApplicationRemoved);
+            Assert.True(File.Exists(Path.Combine(installRoot, "StreamStudio.exe")));
+            Assert.True(File.Exists(Path.Combine(installRoot, "Uninstall.exe")));
+            _ = InstallOwnership.Load(installRoot);
+
+            view.Dispose();
+            Assert.True(ManagedInstallationCleaner.Clean(InstallOwnership.Load(installRoot), log).ApplicationRemoved);
+            Assert.Equal(false, Directory.Exists(installRoot));
+        }
+        finally { Directory.Delete(testRoot, recursive: true); }
+        return Task.CompletedTask;
+    }
+
+    private static Task FailedUninstallPreservesPersonalData()
+    {
+        var testRoot = CreateRoot();
+        try
+        {
+            var installRoot = Path.Combine(testRoot, "install");
+            var personalRoot = Path.Combine(testRoot, "personal");
+            Directory.CreateDirectory(installRoot);
+            Directory.CreateDirectory(personalRoot);
+            var lockedPath = Path.Combine(installRoot, "locked.bin");
+            File.WriteAllText(lockedPath, "locked");
+            File.WriteAllText(Path.Combine(installRoot, "StreamStudio.exe"), "app");
+            File.WriteAllText(Path.Combine(installRoot, "Uninstall.exe"), "maintenance");
+            File.WriteAllText(Path.Combine(personalRoot, "settings.json"), "keep my settings");
+            WriteOwnership(installRoot, ["locked.bin", "StreamStudio.exe", "Uninstall.exe"]);
+            var calls = new List<string>();
+            var purges = 0;
+            var options = CommandLineOptions.Parse(["/quiet"]);
+            using var log = MaintenanceLog.Create();
+            bool RunMaintenance(string path, string argument, TimeSpan timeout, MaintenanceLog output)
+            {
+                calls.Add(argument);
+                return true;
+            }
+            IReadOnlyList<string> Purge(MaintenanceLog output)
+            {
+                purges++;
+                return UserDataCleaner.PurgeRootsForTest([personalRoot], output);
+            }
+
+            using (var locked = new FileStream(lockedPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                Assert.Equal(1, MaintenanceApplication.RemoveInstallation(
+                    options, InstallOwnership.Load(installRoot), log, RunMaintenance, Purge));
+                Assert.Equal(0, purges);
+                Assert.Equal("keep my settings", File.ReadAllText(Path.Combine(personalRoot, "settings.json")));
+                Assert.True(calls.Contains("--maintenance-register-notifications"));
+                Assert.True(File.Exists(Path.Combine(installRoot, "Uninstall.exe")));
+            }
+
+            Assert.Equal(0, MaintenanceApplication.RemoveInstallation(
+                options, InstallOwnership.Load(installRoot), log, RunMaintenance, Purge));
+            Assert.Equal(1, purges);
+            Assert.Equal(false, Directory.Exists(personalRoot));
+            Assert.Equal(false, Directory.Exists(installRoot));
+        }
+        finally { Directory.Delete(testRoot, recursive: true); }
+        return Task.CompletedTask;
+    }
+
+    private static Task CleanupPreparationFailuresAreRetried()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var path = Path.Combine(root, "locked-attributes.bin");
+            File.WriteAllText(path, "cleanup fixture");
+            using var log = MaintenanceLog.Create();
+            var preparations = 0;
+            Assert.True(DeleteRetry.Run(path, () =>
+            {
+                if (++preparations < 3) throw new UnauthorizedAccessException("Transient attribute lock.");
+                return true;
+            }, () => File.Delete(path), log, "Removed", "Retained"));
+            Assert.Equal(3, preparations);
+            Assert.Equal(false, File.Exists(path));
+
+            File.WriteAllText(path, "preserve after exhausted retries");
+            preparations = 0;
+            Assert.Equal(false, DeleteRetry.Run(path, () =>
+            {
+                preparations++;
+                throw new IOException("Attribute access remains unavailable.");
+            }, () => throw new InvalidOperationException("Deletion must not follow failed validation."), log, "Removed", "Retained"));
+            Assert.Equal(5, preparations);
+            Assert.True(File.Exists(path));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+        return Task.CompletedTask;
+    }
+
+    private static Task ReadOnlyDirectoryCleanup()
+    {
+        var root = CreateRoot();
+        var directories = new[] { Path.Combine(root, "data"), Path.Combine(root, "data", "nested"), Path.Combine(root, "cache") };
+        try
+        {
+            foreach (var directory in directories)
+            {
+                Directory.CreateDirectory(directory);
+                File.SetAttributes(directory, File.GetAttributes(directory) | FileAttributes.ReadOnly);
+            }
+            var lockedPath = Path.Combine(directories[1], "locked.bin");
+            File.WriteAllText(lockedPath, "locked");
+            File.WriteAllText(Path.Combine(directories[1], "removable.bin"), "remove");
+            File.WriteAllText(Path.Combine(directories[2], "removable.bin"), "remove");
+            using var log = MaintenanceLog.Create();
+            using (var locked = new FileStream(lockedPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var retained = UserDataCleaner.PurgeRootsForTest([directories[0], directories[2]], log);
+                Assert.True(retained.Contains(lockedPath));
+                Assert.Equal(false, File.Exists(Path.Combine(directories[1], "removable.bin")));
+                Assert.Equal(false, Directory.Exists(directories[2]));
+            }
+            Assert.Equal(0, UserDataCleaner.PurgeRootsForTest([directories[0], directories[2]], log).Count);
+            Assert.True(directories.All(path => !Directory.Exists(path)));
+        }
+        finally
+        {
+            foreach (var directory in directories)
+                if (Directory.Exists(directory)) File.SetAttributes(directory, FileAttributes.Directory);
+            Directory.Delete(root, recursive: true);
+        }
+        return Task.CompletedTask;
+    }
+
     private static Task CorruptOwnershipStateIsRejected()
     {
         var testRoot = CreateRoot();
@@ -332,6 +523,47 @@ internal static class MaintenanceTestCatalog
             Directory.Delete(testRoot, recursive: true);
         }
 
+        return Task.CompletedTask;
+    }
+
+    private static Task MalformedOwnershipTypesAreRejected()
+    {
+        var root = CreateRoot();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "managed.bin"), "preserve me");
+            File.WriteAllText(Path.Combine(root, "Uninstall.exe"), "retry uninstall");
+            var invalidValues = new[] { "null", "true", "\"1\"", "{}", "[]", "1.5", "1e100" };
+            foreach (var location in new[] { "ownerSchema", "manifestSchema", "file", "length" })
+                foreach (var value in invalidValues)
+                {
+                    WriteOwnership(root, ["managed.bin", "Uninstall.exe"]);
+                    var ownerPath = Path.Combine(root, InstallOwnership.OwnerFileName);
+                    var manifestPath = Path.Combine(root, InstallOwnership.ManifestFileName);
+                    var owner = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(ownerPath))!;
+                    var manifest = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(manifestPath))!;
+                    var invalid = System.Text.Json.Nodes.JsonNode.Parse(value);
+                    switch (location)
+                    {
+                        case "ownerSchema": owner["schemaVersion"] = invalid; break;
+                        case "manifestSchema": manifest["schemaVersion"] = invalid; break;
+                        case "file": manifest["files"]![0] = invalid; break;
+                        case "length": manifest["files"]![0]!["length"] = invalid; break;
+                    }
+                    File.WriteAllText(manifestPath, manifest.ToJsonString());
+                    owner["manifestSha256"] = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(manifestPath)));
+                    File.WriteAllText(ownerPath, owner.ToJsonString());
+                    var originalOwner = File.ReadAllBytes(ownerPath);
+                    var originalManifest = File.ReadAllBytes(manifestPath);
+
+                    Assert.Throws<InvalidDataException>(() => InstallOwnership.Load(root));
+                    Assert.Equal("preserve me", File.ReadAllText(Path.Combine(root, "managed.bin")));
+                    Assert.Equal("retry uninstall", File.ReadAllText(Path.Combine(root, "Uninstall.exe")));
+                    Assert.True(originalOwner.SequenceEqual(File.ReadAllBytes(ownerPath)));
+                    Assert.True(originalManifest.SequenceEqual(File.ReadAllBytes(manifestPath)));
+                }
+        }
+        finally { Directory.Delete(root, recursive: true); }
         return Task.CompletedTask;
     }
 

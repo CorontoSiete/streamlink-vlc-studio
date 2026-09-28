@@ -90,12 +90,12 @@ internal static partial class ApplicationTestCatalog
     static void MarkReplayClockSeekConfirmed(StreamTabViewModel tab, TimeSpan? elapsedSinceAnchor = null)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(StreamTabViewModel).GetField("replayClockAnchorAwaitingSeekConfirmation", flags)!.SetValue(tab, false);
+        typeof(ReplayClockState).GetField("replayClockAnchorAwaitingSeekConfirmation", flags)!.SetValue(tab.ReplayClock, false);
         if (elapsedSinceAnchor is { } elapsed)
         {
-            typeof(StreamTabViewModel)
+            typeof(ReplayClockState)
                 .GetField("replayClockAnchorObservedAtUtc", flags)!
-                .SetValue(tab, DateTimeOffset.UtcNow - elapsed);
+                .SetValue(tab.ReplayClock, DateTimeOffset.UtcNow - elapsed);
         }
     }
 
@@ -108,10 +108,12 @@ internal static partial class ApplicationTestCatalog
     static void InvokeReplayClockUpdate(StreamTabViewModel tab)
     {
         var updateClock = typeof(StreamTabViewModel).GetMethod(
-            "UpdateReplayClock",
+            "UpdateReplayClockAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(updateClock);
-        updateClock!.Invoke(tab, []);
+        var updateTask = (Task?)updateClock!.Invoke(tab, [CancellationToken.None]);
+        Assert.NotNull(updateTask);
+        updateTask!.GetAwaiter().GetResult();
     }
 
     static async Task StopReplayClockPollingAsync(StreamTabViewModel tab)
@@ -953,7 +955,7 @@ internal static partial class ApplicationTestCatalog
 
     static void ExitMainWindowFullscreenIfActive(MainWindow window)
     {
-        var fullscreenField = typeof(MainWindow).GetField(
+        var fullscreenField = typeof(MainWindow).GetProperty(
             "fullscreen",
             BindingFlags.Instance | BindingFlags.NonPublic);
         var exitFullscreen = typeof(MainWindow).GetMethod(
@@ -1077,10 +1079,15 @@ internal static partial class ApplicationTestCatalog
         Assert.NotNull(cardButton);
         Assert.NotNull(homeScrollViewer);
 
-        var leftEdge = cardButton!.TranslatePoint(new Point(0, 0), homeScrollViewer).X;
-        var rightEdge = cardButton.TranslatePoint(new Point(cardButton.ActualWidth, 0), homeScrollViewer).X;
-        AssertNear(16, leftEdge);
-        AssertNear(16, homeScrollViewer!.ActualWidth - rightEdge);
+        // The scroll content viewport excludes the scrollbar and its template margins.
+        var viewport = homeScrollViewer!.Template.FindName("PART_ScrollContentPresenter", homeScrollViewer) as ScrollContentPresenter;
+        Assert.NotNull(viewport);
+        AssertNear(16, homeScrollViewer.Padding.Left);
+        AssertNear(16, homeScrollViewer.Padding.Right);
+        var leftEdge = cardButton!.TranslatePoint(new Point(0, 0), viewport).X;
+        var rightEdge = cardButton.TranslatePoint(new Point(cardButton.ActualWidth, 0), viewport).X;
+        AssertNear(0, leftEdge);
+        AssertNear(viewport!.ActualWidth, rightEdge);
     }
 
     static void AssertHomeMediaThumbnailClip(RoundedClipBorder clipBorder)
@@ -1089,13 +1096,13 @@ internal static partial class ApplicationTestCatalog
         Assert.NotNull(cardButton);
         var cardChrome = VisualTreeHelper.GetChild(cardButton!, 0) as Border;
         Assert.NotNull(cardChrome);
-        Assert.Equal(12d, cardChrome!.CornerRadius.TopLeft);
+        Assert.Equal(14d, cardChrome!.CornerRadius.TopLeft);
         Assert.Equal(1d, cardChrome.BorderThickness.Left);
         Assert.Equal(1d, cardChrome.BorderThickness.Top);
         Assert.Equal<Geometry?>(null, cardChrome.Clip);
-        Assert.NotNull(cardChrome.Effect);
+        Assert.Equal<System.Windows.Media.Effects.Effect?>(null, cardChrome.Effect);
 
-        var expectedInnerRadius = cardChrome.CornerRadius.TopLeft - (cardChrome.BorderThickness.Top / 2);
+        var expectedInnerRadius = cardChrome.CornerRadius.TopLeft - cardChrome.BorderThickness.Top;
         Assert.Equal(expectedInnerRadius, clipBorder.CornerRadius.TopLeft);
         Assert.Equal(expectedInnerRadius, clipBorder.CornerRadius.TopRight);
         Assert.Equal(0d, clipBorder.CornerRadius.BottomRight);

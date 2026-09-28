@@ -676,6 +676,10 @@ function Stop-AppIfNeeded {
         Wait-Process -Id $ids -Timeout 10 -ErrorAction SilentlyContinue
     } catch {
     }
+    $remaining = @(Get-Process -Id $ids -ErrorAction SilentlyContinue)
+    if ($remaining.Count -gt 0) {
+        throw "Stream Studio is still running after the shutdown attempt. Close it before retrying; the existing installation was not changed."
+    }
 }
 
 function Copy-DirectoryContents([string]$SourceDirectory, [string]$DestinationDirectory) {
@@ -696,6 +700,21 @@ function Copy-DirectoryContents([string]$SourceDirectory, [string]$DestinationDi
 
 function Assert-AppPayload([string]$PayloadRoot) {
     Assert-ReleasePayload -PayloadRoot $PayloadRoot -Contract $script:ReleaseContract
+}
+
+function Remove-InstallWorkingDirectory([string]$Directory) {
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-DirectoryTreeSafely $Directory
+            return
+        } catch {
+            if ($attempt -eq 5) {
+                Write-Warning "Installation cleanup could not remove '$Directory'. Close programs using it and remove this leftover folder. $($_.Exception.Message)"
+            } else {
+                Start-Sleep -Milliseconds (100 * $attempt)
+            }
+        }
+    }
 }
 
 function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescription) {
@@ -735,6 +754,10 @@ function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescr
             Get-InstallRelativePath $stage $_.FullName
         } | Where-Object { $_ -notin @($script:InstallOwnerFileName, $script:InstallManifestFileName) })
 
+        # The app may save user-created files while closing. Snapshot them only
+        # after shutdown, and re-read ownership before replacing the installation.
+        Stop-AppIfNeeded
+        $existingState = Assert-OwnedOrEmptyInstallDestination $destination
         if ($null -ne $existingState) {
             Copy-UnmanagedInstallFiles `
                 -ExistingDirectory $destination `
@@ -745,7 +768,6 @@ function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescr
         Write-InstallOwnershipState -Directory $stage -InstallId $installId -ManagedRelativePaths $managedPaths | Out-Null
         Read-InstallOwnershipState $stage | Out-Null
 
-        Stop-AppIfNeeded
         if (Test-Path -LiteralPath $destination -PathType Container) {
             [IO.Directory]::Move($destination, $backup)
             $movedExisting = $true
@@ -762,16 +784,12 @@ function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescr
         throw "Atomic app installation failed; the previous installation was restored when possible. $($failure.Exception.Message)"
     } finally {
         if (Test-Path -LiteralPath $stage -PathType Container) {
-            Remove-DirectoryTreeSafely $stage
+            Remove-InstallWorkingDirectory $stage
         }
     }
 
     if ($installedStage -and (Test-Path -LiteralPath $backup -PathType Container)) {
-        try {
-            Remove-DirectoryTreeSafely $backup
-        } catch {
-            Write-Warning "The upgrade succeeded, but its rollback backup could not be removed: $backup"
-        }
+        Remove-InstallWorkingDirectory $backup
     }
 
     $appExe = Join-Path $destination "StreamStudio.exe"
@@ -1216,7 +1234,7 @@ function Remove-TempRoot {
     $systemTempFull = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
     if ($tempRootFull.StartsWith($systemTempFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
         Assert-NoReparsePointInExistingPath (Split-Path -Parent $tempRootFull)
-        Remove-DirectoryTreeSafely $tempRootFull
+        Remove-InstallWorkingDirectory $tempRootFull
     }
 }
 
@@ -1230,12 +1248,16 @@ try {
         Install-App
     }
 
+    # The app replacement has already committed. Register it before installing
+    # shared dependencies so a failed or canceled dependency still leaves a
+    # removable installation, with the correct version and installation path.
+    Register-AppUninstallEntry $appExe
+    New-StartMenuShortcut $appExe
+
     $streamlinkPath = if ($SkipStreamlink) { Find-Streamlink } else { Ensure-LockedStreamlink }
     $vlcDirectory = if ($SkipVlc) { Find-VlcDirectory } else { Ensure-LockedVlc }
 
     Update-AppSettings $streamlinkPath $vlcDirectory
-    New-StartMenuShortcut $appExe
-    Register-AppUninstallEntry $appExe
 
     Write-Step "Done"
     if (-not [string]::IsNullOrWhiteSpace($appExe)) {
@@ -1251,7 +1273,7 @@ try {
         Write-Detail "A dependency installer requested a reboot to complete installation."
     }
 
-    if ($Launch -and -not [string]::IsNullOrWhiteSpace($appExe)) {
+    if ($Launch -and -not $script:RebootRequired -and -not [string]::IsNullOrWhiteSpace($appExe)) {
         Start-Process -FilePath $appExe
     }
 } finally {

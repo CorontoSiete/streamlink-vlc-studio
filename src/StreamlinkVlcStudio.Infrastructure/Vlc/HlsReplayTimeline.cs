@@ -59,7 +59,7 @@ internal static class HlsReplayTimeline
         {
             await File.WriteAllTextAsync(path, timeline.Value.Playlist, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
             return new PlaybackMediaSource(new Uri(path), new TimelineLease(path, source), timeline.Value.Offset,
-                source.UseAvformatDemuxer, source.ReplaySeekPreroll);
+                source.UseAvformatDemuxer, source.ReplaySeekPreroll, source.UseLiveReplayDemuxer);
         }
         catch
         {

@@ -5,6 +5,11 @@ Twitch/Kick controller. The recovered plugin binary matched the previously
 pinned SHA-256 `34fddd30f9a6c163ed14e5992da6f7c8213c809ad60a66a856a017ed2d7a0318`.
 The shipped controller's stale keyboard-modifier fix is now expressed in source.
 
+The controller now indexes emote codes, reuses unchanged static chat frames,
+allocates pixel buffers near the panel size, and releases cached DirectWrite
+measurement references. Animation, input and pipe heartbeats retain their
+existing behavior. See the [resource measurements and regression coverage](../../docs/multistream-chat-resources-2026-09-27.md).
+
 Build with x64 MSVCRT MinGW-w64 GCC (verified with WinLibs GCC 16.1.0) and the
 VLC 3.0.23 headers/import library:
 
@@ -31,10 +36,19 @@ until their visual state changes. New chat pixels, opacity, position, footprint,
 source scale and interaction changes update immediately. Closing the filter
 releases its cache; already queued subpictures retain their own picture references.
 
+The pipe receiver also retains bounded scratch storage across heartbeats and
+reconnections. Identical dimensions, alpha, and visible pixel bytes reuse the
+current immutable picture and its cached regions. The 80 ms heartbeat and
+resize acknowledgments continue normally; changed pixels create a new picture
+without changing pictures already held by VLC. Real named-pipe tests cover
+these cases and allocation failures. See the
+[four/eight-stream measurements](../../docs/multistream-efficiency-2026-09-27.md).
+
 `scripts/test-chat-subpictures.ps1` takes the same toolchain/VLC arguments as
 `test-chat-compositor.ps1`. It compares cached and freshly rendered pixels and
-metadata, exercises state transitions and allocation failures, and verifies
-picture lifetimes across replacement and teardown. Repeated unchanged frames
+metadata, rejects invalid or overflowing frame dimensions, exercises state
+transitions and allocation failures, and verifies picture lifetimes across
+replacement and teardown. Repeated unchanged frames
 must allocate zero pixel buffers. See the additional measurements in
 [`docs/stream-playback-resources-2026-09-26.md`](../../docs/stream-playback-resources-2026-09-26.md).
 

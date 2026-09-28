@@ -2193,18 +2193,14 @@ internal static partial class ApplicationTestCatalog
         tab.BeginReplaySeekPreview();
         tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(10).TotalSeconds;
 
-        var updateClock = typeof(StreamTabViewModel).GetMethod(
-            "UpdateReplayClock",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(updateClock);
-        updateClock!.Invoke(tab, []);
+        InvokeReplayClockUpdate(tab);
 
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
         Assert.Equal(TimeSpan.FromMinutes(10).TotalSeconds, tab.ReplaySeekSliderValue);
         Assert.Equal("10:00", tab.ReplayElapsedText);
 
         tab.CancelReplaySeekPreview();
-        updateClock.Invoke(tab, []);
+        InvokeReplayClockUpdate(tab);
 
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekSliderValue);
@@ -2431,13 +2427,14 @@ internal static partial class ApplicationTestCatalog
     ("isolates throwing Streamlink log subscribers", async () =>
     {
         var logger = new MemoryLogger();
-        using var process = new Process();
+        using var owner = RedirectedProcessOwner.Start(BoundedProcessRunner.CreateRedirectedStartInfo(
+            Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe", ["/d", "/c", "exit 0"]));
         var sessionType = typeof(StreamlinkService).Assembly.GetType(
             "StreamlinkVlcStudio.Infrastructure.Streamlink.StreamlinkExternalHttpSession",
             throwOnError: true)!;
         await using var session = (IStreamTransportSession)Activator.CreateInstance(
             sessionType,
-            process,
+            owner,
             logger)!;
         var logLineReceived = sessionType.GetEvent("LogLineReceived");
         var addLogLine = sessionType.GetMethod(

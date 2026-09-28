@@ -35,7 +35,7 @@ foreach ($name in @('wingdi.c', 'common.c', 'events.c', 'win32touch.c', 'sensors
     -I $VlcIncludeDirectory -L $VlcLibraryDirectory `
     (Join-Path $source 'myoverlay.c') `
     @objects -o (Join-Path $OutputDirectory 'libmyoverlay_plugin.dll') -lvlccore `
-    -lgdi32 -lmsimg32 -luser32 -lole32 -luuid -lpropsys -lstdc++ -lwinpthread `
+    -lgdi32 -lmsimg32 -ld3d9 -ldxva2 -ldxguid -luser32 -lole32 -luuid -lpropsys -lstdc++ -lwinpthread `
     '-Wl,--no-insert-timestamp,--image-base,0x180000000'
 if ($LASTEXITCODE -ne 0) { throw "Overlay plugin build failed ($LASTEXITCODE)." }
 foreach ($objectPath in $objects) { Remove-Item -LiteralPath $objectPath }
@@ -43,7 +43,7 @@ Remove-Item -LiteralPath $objectsDirectory
 & $Gcc -O2 -Wall -Wextra -Werror -static-libgcc "-ffile-prefix-map=$repositoryRoot=." `
     (Join-Path $source 'vlc_chat_overlay.c') (Join-Path $source 'tls.c') `
     -o (Join-Path $OutputDirectory 'vlc_chat_overlay.exe') `
-    -lws2_32 -lsecur32 -lcrypt32 -lgdi32 -luser32 -lwinhttp -lole32 -lgdiplus -ld2d1 -ldwrite -luuid `
+    -lws2_32 -lsecur32 -lcrypt32 -lgdi32 -luser32 -lwinhttp -lole32 -lgdiplus -ld2d1 -ldwrite -luuid -lshell32 `
     '-Wl,--no-insert-timestamp'
 if ($LASTEXITCODE -ne 0) { throw "Overlay controller build failed ($LASTEXITCODE)." }
 $objdump = Join-Path (Split-Path -Parent $Gcc) 'objdump.exe'

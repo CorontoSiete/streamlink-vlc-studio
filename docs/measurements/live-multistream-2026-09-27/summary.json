@@ -1,0 +1,656 @@
+{
+  "trials": [
+    {
+      "trial": "4-1-after",
+      "version": "after",
+      "utc": "2026-09-27T09:41:53.2100074Z",
+      "seconds": 60.0181933,
+      "cpuCores": 0.7315490118227201,
+      "privateMiB": 2112.912044270833,
+      "workingSetMiB": 1609.7371744791667,
+      "allocatedMiBPerSecond": 2.283389022442089,
+      "gc": [
+        8,
+        3,
+        1
+      ],
+      "gpuDecode": 36.19944635215653,
+      "gpu3D": 7.42386960402796,
+      "gpuError": null,
+      "fps": [
+        59.915165756913915,
+        60.165089974476125,
+        59.86518091340147,
+        59.88184252790562
+      ],
+      "displayed": [
+        3596,
+        3611,
+        3593,
+        3594
+      ],
+      "lost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "audioLost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "chatCounts": [
+        7,
+        45,
+        100,
+        52
+      ],
+      "dockedRows": 0,
+      "visibleDockedRows": 0,
+      "selectedForAudioCount": 1,
+      "processCountMinMax": [
+        21,
+        21
+      ],
+      "ioReadMiB": 1130.3294067382812,
+      "ioWriteMiB": 1130.329475402832,
+      "channels": [
+        "https://www.twitch.tv/eslcs",
+        "https://www.twitch.tv/valorant",
+        "https://kick.com/cuffem",
+        "https://kick.com/deenthegreat"
+      ],
+      "qualities": [
+        "best",
+        "best",
+        "best",
+        "best"
+      ],
+      "dimensions": [
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "testsSha256": "b95cd472729c9792e7ba7de15efb3948461fcdae77914a33172e134a4ce67e8f",
+      "applicationSha256": "a0251027d8ac44fe101d914a314726a0c5303072021ae6635a3dab92f8ceeeed",
+      "infrastructureSha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15",
+      "cleanup": {
+        "allObservedChildrenExited": true
+      }
+    },
+    {
+      "trial": "4-1-before",
+      "version": "before",
+      "utc": "2026-09-27T09:40:23.2170883Z",
+      "seconds": 60.0195028,
+      "cpuCores": 0.8106739931207828,
+      "privateMiB": 2323.6310546875,
+      "workingSetMiB": 1764.9459635416667,
+      "allocatedMiBPerSecond": 13.797387585731094,
+      "gc": [
+        34,
+        22,
+        17
+      ],
+      "gpuDecode": 38.44032245937597,
+      "gpu3D": 9.197551348951952,
+      "gpuError": null,
+      "fps": [
+        60.01382603922537,
+        60.11379354512081,
+        60.230422301998814,
+        59.963842286277654
+      ],
+      "displayed": [
+        3602,
+        3608,
+        3615,
+        3599
+      ],
+      "lost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "audioLost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "chatCounts": [
+        11,
+        100,
+        100,
+        44
+      ],
+      "dockedRows": 14,
+      "visibleDockedRows": 0,
+      "selectedForAudioCount": 1,
+      "processCountMinMax": [
+        21,
+        21
+      ],
+      "ioReadMiB": 1115.556526184082,
+      "ioWriteMiB": 1115.5565948486328,
+      "channels": [
+        "https://www.twitch.tv/eslcs",
+        "https://www.twitch.tv/valorant",
+        "https://kick.com/cuffem",
+        "https://kick.com/deenthegreat"
+      ],
+      "qualities": [
+        "best",
+        "best",
+        "best",
+        "best"
+      ],
+      "dimensions": [
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "testsSha256": "b95cd472729c9792e7ba7de15efb3948461fcdae77914a33172e134a4ce67e8f",
+      "applicationSha256": "e3450db30c98603ff1fc5cd5c97541c557078b26f85a456468e252c640b6eefd",
+      "infrastructureSha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15",
+      "cleanup": {
+        "allObservedChildrenExited": true
+      }
+    },
+    {
+      "trial": "4-2-after",
+      "version": "after",
+      "utc": "2026-09-27T09:43:21.640299Z",
+      "seconds": 60.0186932,
+      "cpuCores": 0.676872451464838,
+      "privateMiB": 2105.9025390625,
+      "workingSetMiB": 1609.6020182291666,
+      "allocatedMiBPerSecond": 2.3220448341348097,
+      "gc": [
+        8,
+        3,
+        1
+      ],
+      "gpuDecode": 37.596478781737346,
+      "gpu3D": 8.416761226512568,
+      "gpuError": null,
+      "fps": [
+        60.08128147648506,
+        59.96465114638651,
+        59.96465114638651,
+        59.96465114638651
+      ],
+      "displayed": [
+        3606,
+        3599,
+        3599,
+        3599
+      ],
+      "lost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "audioLost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "chatCounts": [
+        8,
+        73,
+        100,
+        81
+      ],
+      "dockedRows": 0,
+      "visibleDockedRows": 0,
+      "selectedForAudioCount": 1,
+      "processCountMinMax": [
+        21,
+        21
+      ],
+      "ioReadMiB": 1143.9659118652344,
+      "ioWriteMiB": 1143.9659805297852,
+      "channels": [
+        "https://www.twitch.tv/eslcs",
+        "https://www.twitch.tv/valorant",
+        "https://kick.com/cuffem",
+        "https://kick.com/deenthegreat"
+      ],
+      "qualities": [
+        "best",
+        "best",
+        "best",
+        "best"
+      ],
+      "dimensions": [
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "testsSha256": "b95cd472729c9792e7ba7de15efb3948461fcdae77914a33172e134a4ce67e8f",
+      "applicationSha256": "a0251027d8ac44fe101d914a314726a0c5303072021ae6635a3dab92f8ceeeed",
+      "infrastructureSha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15",
+      "cleanup": {
+        "allObservedChildrenExited": true
+      }
+    },
+    {
+      "trial": "4-2-before",
+      "version": "before",
+      "utc": "2026-09-27T09:44:51.6970037Z",
+      "seconds": 60.0210326,
+      "cpuCores": 0.8169011407511173,
+      "privateMiB": 2239.840755208333,
+      "workingSetMiB": 1768.8492838541667,
+      "allocatedMiBPerSecond": 9.582030919570583,
+      "gc": [
+        35,
+        20,
+        17
+      ],
+      "gpuDecode": 37.17716021862828,
+      "gpu3D": 8.735704279681318,
+      "gpuError": null,
+      "fps": [
+        59.97897477025412,
+        60.06227890187947,
+        59.962313943929054,
+        59.962313943929054
+      ],
+      "displayed": [
+        3600,
+        3605,
+        3599,
+        3599
+      ],
+      "lost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "audioLost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "chatCounts": [
+        7,
+        90,
+        100,
+        83
+      ],
+      "dockedRows": 15,
+      "visibleDockedRows": 0,
+      "selectedForAudioCount": 1,
+      "processCountMinMax": [
+        21,
+        21
+      ],
+      "ioReadMiB": 1140.5714130401611,
+      "ioWriteMiB": 1140.5568542480469,
+      "channels": [
+        "https://www.twitch.tv/eslcs",
+        "https://www.twitch.tv/valorant",
+        "https://kick.com/cuffem",
+        "https://kick.com/deenthegreat"
+      ],
+      "qualities": [
+        "best",
+        "best",
+        "best",
+        "best"
+      ],
+      "dimensions": [
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "testsSha256": "b95cd472729c9792e7ba7de15efb3948461fcdae77914a33172e134a4ce67e8f",
+      "applicationSha256": "e3450db30c98603ff1fc5cd5c97541c557078b26f85a456468e252c640b6eefd",
+      "infrastructureSha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15",
+      "cleanup": {
+        "allObservedChildrenExited": true
+      }
+    },
+    {
+      "trial": "4-3-after",
+      "version": "after",
+      "utc": "2026-09-27T09:47:49.5321584Z",
+      "seconds": 60.0196082,
+      "cpuCores": 0.8309784334780113,
+      "privateMiB": 2100.955013020833,
+      "workingSetMiB": 1624.7059895833333,
+      "allocatedMiBPerSecond": 2.3378811447680934,
+      "gc": [
+        8,
+        2,
+        1
+      ],
+      "gpuDecode": 38.491006055801414,
+      "gpu3D": 10.633346313189186,
+      "gpuError": null,
+      "fps": [
+        59.89709209731229,
+        60.06370431455099,
+        59.89709209731229,
+        58.08101892941047
+      ],
+      "displayed": [
+        3595,
+        3605,
+        3595,
+        3486
+      ],
+      "lost": [
+        0,
+        0,
+        0,
+        45
+      ],
+      "audioLost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "chatCounts": [
+        11,
+        100,
+        100,
+        99
+      ],
+      "dockedRows": 0,
+      "visibleDockedRows": 0,
+      "selectedForAudioCount": 1,
+      "processCountMinMax": [
+        21,
+        21
+      ],
+      "ioReadMiB": 1140.1779594421387,
+      "ioWriteMiB": 1140.1780624389648,
+      "channels": [
+        "https://www.twitch.tv/eslcs",
+        "https://www.twitch.tv/valorant",
+        "https://kick.com/cuffem",
+        "https://kick.com/deenthegreat"
+      ],
+      "qualities": [
+        "best",
+        "best",
+        "best",
+        "best"
+      ],
+      "dimensions": [
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "testsSha256": "b95cd472729c9792e7ba7de15efb3948461fcdae77914a33172e134a4ce67e8f",
+      "applicationSha256": "a0251027d8ac44fe101d914a314726a0c5303072021ae6635a3dab92f8ceeeed",
+      "infrastructureSha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15",
+      "cleanup": {
+        "allObservedChildrenExited": true
+      }
+    },
+    {
+      "trial": "4-3-before",
+      "version": "before",
+      "utc": "2026-09-27T09:46:21.2282955Z",
+      "seconds": 60.0190159,
+      "cpuCores": 0.8403586637281069,
+      "privateMiB": 2230.7776692708335,
+      "workingSetMiB": 1760.8418619791667,
+      "allocatedMiBPerSecond": 13.18521073589836,
+      "gc": [
+        38,
+        24,
+        19
+      ],
+      "gpuDecode": 37.17806099206312,
+      "gpu3D": 8.779745739471014,
+      "gpuError": null,
+      "fps": [
+        60.01431289712299,
+        59.914344580248276,
+        59.947667352539845,
+        59.96432873868564
+      ],
+      "displayed": [
+        3602,
+        3596,
+        3598,
+        3599
+      ],
+      "lost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "audioLost": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "chatCounts": [
+        17,
+        87,
+        100,
+        80
+      ],
+      "dockedRows": 17,
+      "visibleDockedRows": 0,
+      "selectedForAudioCount": 1,
+      "processCountMinMax": [
+        21,
+        21
+      ],
+      "ioReadMiB": 1151.5515041351318,
+      "ioWriteMiB": 1151.5417861938477,
+      "channels": [
+        "https://www.twitch.tv/eslcs",
+        "https://www.twitch.tv/valorant",
+        "https://kick.com/cuffem",
+        "https://kick.com/deenthegreat"
+      ],
+      "qualities": [
+        "best",
+        "best",
+        "best",
+        "best"
+      ],
+      "dimensions": [
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "testsSha256": "b95cd472729c9792e7ba7de15efb3948461fcdae77914a33172e134a4ce67e8f",
+      "applicationSha256": "e3450db30c98603ff1fc5cd5c97541c557078b26f85a456468e252c640b6eefd",
+      "infrastructureSha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15",
+      "cleanup": {
+        "allObservedChildrenExited": true
+      }
+    }
+  ],
+  "aggregates": {
+    "before": {
+      "trials": 3,
+      "cpuCores": {
+        "median": 0.8169011407511173,
+        "min": 0.8106739931207828,
+        "max": 0.8403586637281069
+      },
+      "privateMiB": {
+        "median": 2239.840755208333,
+        "min": 2230.7776692708335,
+        "max": 2323.6310546875
+      },
+      "workingSetMiB": {
+        "median": 1764.9459635416667,
+        "min": 1760.8418619791667,
+        "max": 1768.8492838541667
+      },
+      "allocatedMiBPerSecond": {
+        "median": 13.18521073589836,
+        "min": 9.582030919570583,
+        "max": 13.797387585731094
+      },
+      "gpuDecode": {
+        "median": 37.17806099206312,
+        "min": 37.17716021862828,
+        "max": 38.44032245937597
+      },
+      "gpu3D": {
+        "median": 8.779745739471014,
+        "min": 8.735704279681318,
+        "max": 9.197551348951952
+      },
+      "ioReadMiB": {
+        "median": 1140.5714130401611,
+        "min": 1115.556526184082,
+        "max": 1151.5515041351318
+      },
+      "ioWriteMiB": {
+        "median": 1140.5568542480469,
+        "min": 1115.5565948486328,
+        "max": 1151.5417861938477
+      },
+      "lostPicturesTotal": 0,
+      "displayedPicturesTotal": 43222,
+      "lostAudioTotal": 0
+    },
+    "after": {
+      "trials": 3,
+      "cpuCores": {
+        "median": 0.7315490118227201,
+        "min": 0.676872451464838,
+        "max": 0.8309784334780113
+      },
+      "privateMiB": {
+        "median": 2105.9025390625,
+        "min": 2100.955013020833,
+        "max": 2112.912044270833
+      },
+      "workingSetMiB": {
+        "median": 1609.7371744791667,
+        "min": 1609.6020182291666,
+        "max": 1624.7059895833333
+      },
+      "allocatedMiBPerSecond": {
+        "median": 2.3220448341348097,
+        "min": 2.283389022442089,
+        "max": 2.3378811447680934
+      },
+      "gpuDecode": {
+        "median": 37.596478781737346,
+        "min": 36.19944635215653,
+        "max": 38.491006055801414
+      },
+      "gpu3D": {
+        "median": 8.416761226512568,
+        "min": 7.42386960402796,
+        "max": 10.633346313189186
+      },
+      "ioReadMiB": {
+        "median": 1140.1779594421387,
+        "min": 1130.3294067382812,
+        "max": 1143.9659118652344
+      },
+      "ioWriteMiB": {
+        "median": 1140.1780624389648,
+        "min": 1130.329475402832,
+        "max": 1143.9659805297852
+      },
+      "lostPicturesTotal": 45,
+      "displayedPicturesTotal": 43078,
+      "lostAudioTotal": 0
+    }
+  }
+}

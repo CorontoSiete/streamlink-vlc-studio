@@ -64,24 +64,22 @@ internal static class ProcessExtensions
             throw new ArgumentException("The process must redirect stdout and stderr without shell execution.", nameof(startInfo));
         }
 
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException($"Process '{startInfo.FileName}' could not be started.");
-        }
+        using var owner = RedirectedProcessOwner.Start(startInfo);
+        var process = owner.Process;
 
-        var standardOutputEncoding = process.StandardOutput.CurrentEncoding;
-        var standardErrorEncoding = process.StandardError.CurrentEncoding;
+        var standardOutputEncoding = owner.StandardOutput.CurrentEncoding;
+        var standardErrorEncoding = owner.StandardError.CurrentEncoding;
         var standardOutputCollector = new BoundedProcessOutputCollector(PayloadLimits.ProcessOutputBytes);
         var standardErrorCollector = new BoundedProcessOutputCollector(PayloadLimits.ProcessOutputBytes);
-        var standardOutputTask = ReadOutputAsync(process.StandardOutput.BaseStream, standardOutputCollector);
-        var standardErrorTask = ReadOutputAsync(process.StandardError.BaseStream, standardErrorCollector);
+        var standardOutputTask = ReadOutputAsync(owner.StandardOutput.BaseStream, standardOutputCollector);
+        var standardErrorTask = ReadOutputAsync(owner.StandardError.BaseStream, standardErrorCollector);
 
         try
         {
             await process.WaitForExitAsync(timeoutSource.Token).ConfigureAwait(false);
+            owner.Terminate();
             var outputDrained = await DrainOutputAfterExitAsync(
-                process,
+                owner,
                 standardOutputTask,
                 standardErrorTask).ConfigureAwait(false);
             var standardOutput = standardOutputCollector.ToOutput(standardOutputEncoding, !outputDrained);
@@ -96,7 +94,7 @@ internal static class ProcessExtensions
         }
         catch (OperationCanceledException)
         {
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
+            await owner.StopAsync(CleanupTimeout).ConfigureAwait(false);
             await ObserveOutputReadsAsync(standardOutputTask, standardErrorTask).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var standardOutput = standardOutputCollector.ToOutput(
@@ -117,7 +115,7 @@ internal static class ProcessExtensions
         {
             // A redirected pipe can fail independently of WaitForExitAsync. Ensure the child
             // cannot survive an output-read failure before propagating the original exception.
-            await KillProcessTreeAsync(process).ConfigureAwait(false);
+            await owner.StopAsync(CleanupTimeout).ConfigureAwait(false);
             await ObserveOutputReadsAsync(standardOutputTask, standardErrorTask).ConfigureAwait(false);
             throw;
         }
@@ -172,7 +170,7 @@ internal static class ProcessExtensions
     }
 
     private static async Task<bool> DrainOutputAfterExitAsync(
-        Process process,
+        RedirectedProcessOwner owner,
         Task standardOutputTask,
         Task standardErrorTask)
     {
@@ -187,8 +185,8 @@ internal static class ProcessExtensions
         {
             // A descendant can inherit redirected handles and keep the pipes open after the
             // process we launched has exited. Close our readers so completion stays bounded.
-            process.StandardOutput.Dispose();
-            process.StandardError.Dispose();
+            owner.StandardOutput.Dispose();
+            owner.StandardError.Dispose();
             await ObserveOutputReadsAsync(standardOutputTask, standardErrorTask).ConfigureAwait(false);
             return false;
         }

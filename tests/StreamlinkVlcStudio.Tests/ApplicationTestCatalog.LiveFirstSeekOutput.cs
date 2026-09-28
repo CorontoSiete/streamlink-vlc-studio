@@ -8,7 +8,7 @@ internal static partial class ApplicationTestCatalog
         var movedHandle = NativeWindowTest.CreateHiddenParentWindow();
         try
         {
-            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
+            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings(), new LiveReplayFixtureGateway()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: true);
             engine.SetVideoHandle(originalHandle);
             await engine.PlayAsync(new Uri(Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-colors.mp4")), 0, PlaybackAudioState.Muted);
@@ -33,14 +33,14 @@ internal static partial class ApplicationTestCatalog
     [DllImport("libvlc", EntryPoint = "libvlc_media_player_get_hwnd", CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr GetPreparedReplayWindow(IntPtr player);
 
-    private static Task PreparedReplayAudioAsync(bool muted) => TestSta.RunOffscreenAsync(async () =>
+    private static Task PreparedReplayAudioAsync(bool muted, bool startPaused = false) => TestSta.RunOffscreenAsync(async () =>
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
         await using var server = new ReplayFixtureServer(directory, segmentDelay: TimeSpan.FromMilliseconds(500));
         var handle = NativeWindowTest.CreateHiddenParentWindow();
         try
         {
-            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
+            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings(), new LiveReplayFixtureGateway()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: false);
             engine.SetVideoHandle(handle);
             await engine.PlayAsync(new Uri(Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-colors.mp4")), 0, PlaybackAudioState.Muted);
@@ -50,7 +50,7 @@ internal static partial class ApplicationTestCatalog
             var native = GetPreparedReplayField<IntPtr>(input!, "Player");
             var playerField = typeof(LibVlcPlaybackEngine).GetField("player", BindingFlags.Instance | BindingFlags.NonPublic)!;
             // The fixture contains silent PCM/AAC; audible state never emits test noise.
-            var opening = engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(35.25), 67, PlaybackAudioState.Audible);
+            var opening = engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(35.25), 67, PlaybackAudioState.Audible, startPaused);
             await TestWait.UntilAsync(() => (IntPtr)playerField.GetValue(engine)! == native, TimeSpan.FromSeconds(3));
             Assert.Equal(0, GetReplayNativeVolume(native));
             var applied = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -60,14 +60,16 @@ internal static partial class ApplicationTestCatalog
             if (!muted) await applied.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.True(!opening.IsCompleted);
             Assert.Equal(0, GetReplayNativeVolume(native));
+            if (startPaused) await AssertSilentUntilPausedAsync(engine, opening, native);
             await opening;
             Assert.Equal(muted ? 0 : 43, GetReplayNativeVolume(native));
             Assert.True(engine.TryGetPlaybackClock(out var clock) && clock.Position >= TimeSpan.FromSeconds(35.25));
+            if (startPaused) await AssertNativeClockHeldAsync(engine);
         }
         finally { NativeWindowTest.DestroyWindow(handle); }
     });
 
-    private static Task PreparedReplayGrowthAsync() => TestSta.RunOffscreenAsync(async () =>
+    private static Task PreparedReplayGrowthAsync(bool completed = false) => TestSta.RunOffscreenAsync(async () =>
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
         var complete = File.ReadAllText(Path.Combine(directory, "index.m3u8"));
@@ -77,7 +79,7 @@ internal static partial class ApplicationTestCatalog
         var handle = NativeWindowTest.CreateHiddenParentWindow();
         try
         {
-            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
+            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings(), new LiveReplayFixtureGateway()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: false);
             engine.SetVideoHandle(handle);
             await engine.PlayAsync(new Uri(Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-colors.mp4")), 0, PlaybackAudioState.Muted);
@@ -86,22 +88,26 @@ internal static partial class ApplicationTestCatalog
             Assert.True(input is not null);
             var native = GetPreparedReplayField<IntPtr>(input!, "Player");
             Assert.Equal(40000L, LibVlcNative.libvlc_media_player_get_length(native));
-            server.UpdatePlaylist(complete);
-            await Task.Delay(TimeSpan.FromSeconds(12));
+            await Task.Delay(TimeSpan.FromSeconds(2));
             Console.WriteLine($"Paused preparation: length={LibVlcNative.libvlc_media_player_get_length(native)}ms, playlist requests={server.Requests.Count(request => request == "/index.m3u8")}.");
             Assert.Equal(LibVlcNative.MediaPlayerState.Paused, LibVlcNative.libvlc_media_player_get_state(native));
             Assert.True(LibVlcNative.libvlc_media_get_stats(GetPreparedReplayField<IntPtr>(input!, "Media"), out var stats) != 0);
             Assert.Equal(0, stats.DecodedVideo);
+            server.UpdatePlaylist(completed ? complete + "#EXT-X-ENDLIST\n" : complete);
             var watch = Stopwatch.StartNew();
-            await engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(45.25), 0, PlaybackAudioState.Muted);
+            await engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(53.75), 0, PlaybackAudioState.Muted);
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), "A paused input must refresh a stale playlist before seeking into newly appended media.");
             Assert.Equal(native, (IntPtr)typeof(LibVlcPlaybackEngine).GetField("player", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(engine)!);
-            await ConfirmLongVodOutputAsync(engine, TimeSpan.FromSeconds(45.25), TimeSpan.FromSeconds(60));
+            await ConfirmLongVodOutputAsync(engine, TimeSpan.FromSeconds(53.75), TimeSpan.FromSeconds(60));
             Console.WriteLine($"Prepared growing replay: first seek into appended media produced output in {watch.ElapsedMilliseconds}ms.");
+            if (completed)
+                await TestWait.UntilAsync(() => LibVlcNative.libvlc_media_player_get_state(native) == LibVlcNative.MediaPlayerState.Ended,
+                    TimeSpan.FromSeconds(10), "Completing the growing playlist must still drain its last frames and end normally.");
         }
         finally { NativeWindowTest.DestroyWindow(handle); }
     });
 
-    private static Task PreparedReplayTabAsync() => TestSta.RunOffscreenAsync(async () =>
+    private static Task PreparedReplayTabAsync(bool nearEdge = false) => TestSta.RunOffscreenAsync(async () =>
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
         await using var server = new ReplayFixtureServer(directory);
@@ -109,7 +115,7 @@ internal static partial class ApplicationTestCatalog
         try
         {
             var replay = new ReplaySessionInfo(PlatformKind.Twitch, "streamer", "https://www.twitch.tv/videos/123",
-                "123", null, TimeSpan.FromSeconds(60), true, "");
+                "123", null, TimeSpan.FromSeconds(nearEdge ? 83.75 : 60), true, "");
             var streamlink = new FakeStreamlinkService
             {
                 ResolveStreamUrlOverride = (_, _) => Task.FromResult(new StreamlinkResolvedUrl(server.Uri, "Local HLS")),
@@ -120,7 +126,7 @@ internal static partial class ApplicationTestCatalog
             settings.Chat.Layout = ChatLayout.Overlay;
             var logger = new MemoryLogger();
             await using var tab = TestViewModels.CreateTab(StreamInputParser.Parse("streamer", PlatformKind.Twitch), "best", streamlink,
-                new LibVlcPlaybackEngineFactory(logger, settings.Chat), new FakeChatClientFactory(), logger, action => action(),
+                new LibVlcPlaybackEngineFactory(logger, settings.Chat, new LiveReplayFixtureGateway()), new FakeChatClientFactory(), logger, action => action(),
                 initialVolume: 0, replayResolver: new FakeReplayResolver(replay),
                 vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
             tab.SetVideoHandle(handle);
@@ -130,16 +136,20 @@ internal static partial class ApplicationTestCatalog
             await TestWait.UntilAsync(() => GetPreparedReplayInput(engine) is not null, TimeSpan.FromSeconds(10));
             var preparedPlayer = GetPreparedReplayField<IntPtr>(GetPreparedReplayInput(engine)!, "Player");
             Assert.True(!tab.IsReplayMode && tab.CanSeekReplay);
-            await tab.SeekReplayAsync(TimeSpan.FromSeconds(35.25));
+            var watch = Stopwatch.StartNew();
+            if (nearEdge) await tab.SkipBackwardCommand.ExecuteAsync();
+            else await tab.SeekReplayAsync(TimeSpan.FromSeconds(35.25));
+            Console.WriteLine($"First skip button transition: {watch.ElapsedMilliseconds}ms.");
+            if (nearEdge) Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5));
             Assert.Equal(PlaybackStatus.Playing, tab.Status);
             Assert.True(tab.IsReplayMode && tab.IsBehindLive);
             Assert.Equal(preparedPlayer, (IntPtr)typeof(LibVlcPlaybackEngine).GetField("player", flags)!.GetValue(engine)!);
-            await ConfirmLongVodOutputAsync(engine, TimeSpan.FromSeconds(35.25), TimeSpan.FromSeconds(60));
+            await ConfirmLongVodOutputAsync(engine, TimeSpan.FromSeconds(nearEdge ? 53.75 : 35.25), TimeSpan.FromSeconds(60));
         }
         finally { NativeWindowTest.DestroyWindow(handle); }
     });
 
-    private static Task PreparedReplayFirstPixelsAsync() => TestSta.RunOffscreenAsync(async () =>
+    private static Task PreparedReplayFirstPixelsAsync(bool nearEdge) => TestSta.RunOffscreenAsync(async () =>
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
         await using var server = new ReplayFixtureServer(directory, segmentDelay: TimeSpan.FromMilliseconds(200));
@@ -148,7 +158,7 @@ internal static partial class ApplicationTestCatalog
         var pixels = new IntPtr((memory.ToInt64() + 31) & ~31L);
         try
         {
-            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
+            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings(), new LiveReplayFixtureGateway()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: false);
             engine.SetVideoHandle(handle);
             await engine.PlayAsync(new Uri(Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-colors.mp4")), 0, PlaybackAudioState.Muted);
@@ -171,13 +181,16 @@ internal static partial class ApplicationTestCatalog
             try
             {
                 var watch = Stopwatch.StartNew();
-                await engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(35.25), 0, PlaybackAudioState.Muted);
+                await engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(nearEdge ? 53.75 : 35.25), 0, PlaybackAudioState.Muted);
                 var color = await firstContent.Task.WaitAsync(TimeSpan.FromSeconds(3));
                 Console.WriteLine($"Prepared first content: {watch.ElapsedMilliseconds}ms R={color.R} G={color.G} B={color.B}.");
-                Assert.True(color.G > 200 && color.R < 30 && color.B < 30, "The first content must be the requested green frame, not red preroll or the blue live edge.");
+                bool IsTarget((byte B, byte G, byte R) frame) => frame.R < 30 &&
+                    (nearEdge ? frame.B > 200 && frame.G < 30 : frame.G > 200 && frame.B < 30);
+                Assert.True(IsTarget(color), "The first visible content must be at the requested position, with no preroll flash.");
+                if (nearEdge) Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5));
                 await Task.Delay(750);
                 Assert.True(frames.All(frame => (frame.R < 30 && frame.G < 30 && frame.B < 30) ||
-                    (frame.G > 200 && frame.R < 30 && frame.B < 30)));
+                    IsTarget(frame)));
                 Assert.Equal(native, (IntPtr)typeof(LibVlcPlaybackEngine).GetField("player", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(engine)!);
             }
             finally
@@ -198,7 +211,7 @@ internal static partial class ApplicationTestCatalog
         var handle = NativeWindowTest.CreateHiddenParentWindow();
         try
         {
-            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
+            using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings(), new LiveReplayFixtureGateway()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: false);
             engine.SetVideoHandle(handle);
             await engine.PlayAsync(new Uri(Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-colors.mp4")), 0, PlaybackAudioState.Muted);

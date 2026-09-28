@@ -291,7 +291,6 @@ public static class KickPusherParser
             "og" => "OG",
             "staff" => "Staff",
             "sub_gifter" => "Sub Gifter",
-            "subgifter" => "Sub Gifter",
             "subscriber" => "Subscriber",
             "verified" => "Verified",
             "vip" => "VIP",

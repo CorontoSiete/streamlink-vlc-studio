@@ -11,7 +11,11 @@ internal static partial class ApplicationTestCatalog
                 ("picture-in-picture resize physical edges and cursors work over real Direct3D11 VLC descendants",
                     () => PictureInPictureResizeRealVlcAsync(VideoRendererMode.Direct3D11)),
                 ("picture-in-picture resize physical edges and cursors work over real GDI VLC descendants",
-                    () => PictureInPictureResizeRealVlcAsync(VideoRendererMode.Gdi))
+                    () => PictureInPictureResizeRealVlcAsync(VideoRendererMode.Gdi)),
+                ("picture-in-picture resize keeps real Direct3D11 frames visible without white edges",
+                    () => PictureInPictureResizeVideoFrames(VideoRendererMode.Direct3D11)),
+                ("picture-in-picture resize keeps real GDI frames visible without white edges",
+                    () => PictureInPictureResizeVideoFrames(VideoRendererMode.Gdi))
             ];
 
     private static Task PictureInPictureResizeRealVlcAsync(VideoRendererMode rendererMode) => TestSta.RunAsync(async () =>
@@ -36,7 +40,7 @@ internal static partial class ApplicationTestCatalog
         var main = new MainWindow(false);
         RemoveMainWindowAutomaticStartup(main);
         var detachedWindows = (IDictionary<StreamTabViewModel, DetachedVideoWindow>)typeof(MainWindow)
-            .GetField("detachedWindows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+            .GetProperty("detachedWindows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
         detachedWindows.Add(session.Tab, window);
         var logger = new MemoryLogger();
         using var mouseHook = new LowLevelMouseHookPump(new LowLevelMouseHookDispatcher(
@@ -168,6 +172,9 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(false, window.IsStreamFullscreen);
                 using var resizedVideo = CaptureReplayVlcSurface(surface);
                 AssertReplayVlcVideoPixels(resizedVideo);
+                using var resizedWindow = CapturePictureInPictureWindow(handle);
+                Assert.True(!HasUnexpectedWhitePictureInPictureEdge(resizedWindow),
+                    $"Real {rendererMode} hit {direction} left a white frame at the PiP edge.");
                 SaveReplayVlcArtifact(resizedVideo, rendererMode, $"pip-resize-{direction}");
             }
         }

@@ -239,20 +239,20 @@ internal static class ChatCatalogResourceTestCatalog
             "best", new FakeStreamlinkService(), new FakePlaybackEngineFactory(), new FakeChatClientFactory(),
             new MemoryLogger(), pending.Enqueue);
         var method = typeof(StreamTabViewModel).GetMethod("OnChatRenderCatalogChanged", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var version = typeof(StreamTabViewModel).GetField("nativeReplayOverlayRenderContentVersion", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var initial = (long)version.GetValue(tab)!;
+        var version = typeof(NativeChatOverlayController).GetField("nativeReplayOverlayRenderContentVersion", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var initial = (long)version.GetValue(tab.NativeOverlay)!;
         pending.Clear();
         void Notify(EventArgs changes) => method.Invoke(tab, [null, changes]);
         Notify(new CatalogChangedEventArgs([CatalogChangeScope.ForChannel(PlatformKind.Kick, "streamer")]));
         Notify(new CatalogChangedEventArgs([CatalogChangeScope.ForChannel(PlatformKind.Twitch, "other")]));
         Notify(new CatalogChangedEventArgs([CatalogChangeScope.ForTwitchRoom("456")]));
-        Assert.Equal(initial, (long)version.GetValue(tab)!);
+        Assert.Equal(initial, (long)version.GetValue(tab.NativeOverlay)!);
         Assert.Equal(0, pending.Count);
         Notify(new CatalogChangedEventArgs([CatalogChangeScope.ForChannel(PlatformKind.Twitch, " STREAMER ")]));
         Notify(new CatalogChangedEventArgs([CatalogChangeScope.ForTwitchRoom("123")]));
         Notify(new CatalogChangedEventArgs([CatalogChangeScope.ForChannel(PlatformKind.Twitch)]));
         Notify(EventArgs.Empty);
-        Assert.Equal(initial + 4, (long)version.GetValue(tab)!);
+        Assert.Equal(initial + 4, (long)version.GetValue(tab.NativeOverlay)!);
         Assert.Equal(4, pending.Count);
         var roomChange = new CatalogChangedEventArgs([CatalogChangeScope.ForTwitchRoom("123")]);
         Assert.True(roomChange.MayAffect(tab.Target with { BroadcasterId = "" }), "Unresolved live targets must still refresh.");

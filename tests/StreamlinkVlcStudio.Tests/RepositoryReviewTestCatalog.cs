@@ -1,5 +1,6 @@
 using System.Net;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 internal static class RepositoryReviewTestCatalog
 {
@@ -11,6 +12,7 @@ internal static class RepositoryReviewTestCatalog
         ("repository review: canceled Kick waiters can recover refreshed credentials", KickCanceledRefreshAsync),
         ("repository review: active tab starts can finish after disposal", TabStartDisposalAsync),
         ("repository review: queued tab starts cannot run after disposal", QueuedTabStartDisposalAsync),
+        ("repository review: cancellation wins a concurrently released operation slot", CanceledOperationSlotAsync),
         ("repository review: optional catalogs tolerate unsupported charsets", OptionalCatalogCharsetAsync),
         ("repository review: updater disposal preserves in-flight errors", UpdaterDisposalAsync),
         ("repository review: canceled direct Kick token requests have no side effects", DirectKickCancellationAsync),
@@ -18,8 +20,34 @@ internal static class RepositoryReviewTestCatalog
         ("repository review: delayed Kick UI callbacks preserve edited credentials", () => KickUiCallbackAsync(cancel: false)),
         ("repository review: timed-out Kick UI callbacks do not mutate credentials", () => KickUiCallbackAsync(cancel: false, timeout: true)),
         ("repository review: direct Kick refresh reads a snapshot and preserves account edits", DirectKickRefreshIsolationAsync),
-        ("repository review: background credential changes dispatch UI notifications", ChatSettingsDispatchAsync)
+        ("repository review: background credential changes dispatch UI notifications", ChatSettingsDispatchAsync),
+        ("repository review: repeated overlay frame acknowledgments retain a pending resize", RepeatedOverlayAcknowledgmentAsync)
     ];
+
+    private static async Task RepeatedOverlayAcknowledgmentAsync()
+    {
+        var statePath = Path.Combine(Path.GetTempPath(), $"overlay-resize-ack-{Guid.NewGuid():N}");
+        var invalidated = NewCompletion();
+        NativeOverlayReplayEventHost? host = null;
+        host = new NativeOverlayReplayEventHost(
+            new MemoryLogger(), action => action(), () => invalidated.TrySetResult(), () => 1080,
+            resizeDebounceDelay: TimeSpan.FromMilliseconds(1),
+            // A second frame can finish while the resize is being persisted.
+            resizeTempWritten: (_, _) => host!.ResumeResizePersistence());
+        try
+        {
+            host.Start($"overlay-resize-ack-{Guid.NewGuid():N}", statePath);
+            host.ResumeResizePersistence();
+            host.QueueResizeFlushForTest(680, 292);
+            await invalidated.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal("reference 680 292", File.ReadAllText($"{statePath}.size"));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            File.Delete($"{statePath}.size");
+        }
+    }
 
     private static async Task KickCacheIsolationAsync()
     {
@@ -108,13 +136,14 @@ internal static class RepositoryReviewTestCatalog
         using var controller = new TabStartController(1);
         var release = NewCompletion();
         var tabId = Guid.NewGuid();
-        Assert.True(controller.TryBegin(tabId));
-        var pending = controller.RunBegunAsync(tabId, _ => release.Task, default);
+        var registration = controller.TryBegin(tabId);
+        Assert.True(registration is not null);
+        var pending = controller.RunBegunAsync(registration!, _ => release.Task, default);
         controller.Dispose();
         release.SetResult();
         await pending;
         Assert.True(!controller.IsActive(tabId));
-        Assert.True(!controller.TryBegin(Guid.NewGuid()));
+        Assert.True(controller.TryBegin(Guid.NewGuid()) is null);
     }
 
     private static async Task QueuedTabStartDisposalAsync()
@@ -124,10 +153,12 @@ internal static class RepositoryReviewTestCatalog
         var active = Guid.NewGuid();
         var queued = Guid.NewGuid();
         var startedQueued = false;
-        Assert.True(controller.TryBegin(active));
-        Assert.True(controller.TryBegin(queued));
-        var first = controller.RunBegunAsync(active, _ => release.Task, default);
-        var second = controller.RunBegunAsync(queued, _ =>
+        var activeRegistration = controller.TryBegin(active);
+        var queuedRegistration = controller.TryBegin(queued);
+        Assert.True(activeRegistration is not null);
+        Assert.True(queuedRegistration is not null);
+        var first = controller.RunBegunAsync(activeRegistration!, _ => release.Task, default);
+        var second = controller.RunBegunAsync(queuedRegistration!, _ =>
         {
             startedQueued = true;
             return Task.CompletedTask;
@@ -135,8 +166,31 @@ internal static class RepositoryReviewTestCatalog
         controller.Dispose();
         release.SetResult();
         await first;
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => second.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => second.WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.True(!startedQueued);
+    }
+
+    private static async Task CanceledOperationSlotAsync()
+    {
+        using var gate = new AsyncOperationGate();
+        using var cancellation = new CancellationTokenSource();
+        using var active = await gate.EnterAsync(CancellationToken.None);
+        var queued = gate.EnterAsync(cancellation.Token).AsTask();
+        // Cancellation callbacks run in reverse registration order. Releasing the active
+        // slot here lets semaphore admission win before its waiter observes cancellation.
+        using var release = cancellation.Token.Register(active.Dispose);
+        cancellation.Cancel();
+        try
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(() => queued);
+        }
+        finally
+        {
+            if (queued.IsCompletedSuccessfully) queued.Result.Dispose();
+        }
+
+        using var next = await gate.EnterAsync(CancellationToken.None).AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     private static async Task OptionalCatalogCharsetAsync()
@@ -201,10 +255,10 @@ internal static class RepositoryReviewTestCatalog
             new MemoryLogger(), action => { if (defer) queued = action; else action(); });
         using var cancellation = new CancellationTokenSource();
         var settings = ExpiredCredentials();
-        var method = typeof(StreamTabViewModel).GetMethod("ApplyKickTokenResultOnUiThreadAsync",
+        var method = typeof(NativeChatOverlayController).GetMethod("ApplyKickTokenResultOnUiThreadAsync",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
         defer = true;
-        var pending = (Task)method.Invoke(tab,
+        var pending = (Task)method.Invoke(tab.NativeOverlay,
             [settings, new KickOAuthTokenResult("refreshed", "rotated", DateTimeOffset.UtcNow.AddHours(1), "Bearer", []), cancellation.Token])!;
         defer = false;
         Assert.True(queued is not null);

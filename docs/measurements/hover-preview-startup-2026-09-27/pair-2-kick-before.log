@@ -1,0 +1,10 @@
+Live card 113 ms: transport starting
+Live card 775 ms: provider plugin ready
+Live card 1560 ms: provider qualities resolved
+Live card 1563 ms: transport ready
+Live card 1607 ms: VLC connected
+Live card 1607 ms: provider stream opening
+Live card first visible frame: 2332 ms.
+Live Kick card first visible frame 2332 ms after hover; rendered changing video; settings toggle cleared the image and stopped playback.
+PASS stream hover preview: real live video renders in the production card on hover
+All 1 tests passed; 0 skipped.

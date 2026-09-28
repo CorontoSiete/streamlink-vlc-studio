@@ -26,7 +26,7 @@ param(
     [switch]$NoRestore,
     [switch]$Interactive,
     [ValidateRange(0, 2147483647)]
-    [int]$ExpectedMaxSkips = 246,
+    [int]$ExpectedMaxSkips = 255,
     [string]$DotNetPath
 )
 

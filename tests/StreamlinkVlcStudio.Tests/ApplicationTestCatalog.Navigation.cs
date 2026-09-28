@@ -1,7 +1,14 @@
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using System.Windows.Threading;
+
 internal static partial class ApplicationTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> NavigationTests { get; } =
     [
+        ("home navigation closes every settings category and preserves the selected Home page", HomeFromSettingsPreservesPageAsync),
+        ("home navigation from settings preserves playing streams and visit order", HomeFromSettingsPreservesStreamsAsync),
+        ("home navigation button closes settings and records one destination at wide and compact sizes", HomeButtonFromSettingsAsync),
         ("back navigation restores the same playing stream from settings without restarting", BackFromSettingsPreservesStreamAsync),
         ("back navigation follows Home pages and stream tabs in visit order", BackNavigationVisitOrderAsync),
         ("back navigation ignores repeated selections and disables when history is exhausted", BackNavigationRepeatedSelectionAsync),
@@ -9,6 +16,160 @@ internal static partial class ApplicationTestCatalog
         ("back navigation restores browse categories after platform changes", BackNavigationBrowseCategoryAsync),
         ("back navigation can reload categories after canceling an asynchronous platform restore", BackNavigationAsyncBrowseCategoryAsync)
     ];
+
+    private static async Task HomeFromSettingsPreservesPageAsync()
+    {
+        await using var fixture = new NavigationFixture();
+        var main = fixture.Main;
+        foreach (var (selectPage, isSelected) in new (RelayCommand Select, Func<bool> IsSelected)[]
+        {
+            (main.ShowFollowedHomePageCommand, () => main.IsFollowedHomePageSelected),
+            (main.ShowRecentHomePageCommand, () => main.IsRecentHomePageSelected),
+            (main.ShowTwitchVodsHomePageCommand, () => main.IsTwitchVodsHomePageSelected),
+            (main.ShowBrowseHomePageCommand, () => main.IsBrowseHomePageSelected)
+        })
+        {
+            selectPage.Execute(null);
+            foreach (var category in Enum.GetValues<SettingsCategory>())
+            {
+                main.SelectedSettingsCategory = category;
+                main.ToggleSettingsCommand.Execute(null);
+                Assert.True(main.IsSettingsOpen);
+                Assert.True(main.SelectHomeCommand.CanExecute(null));
+
+                main.SelectHomeCommand.Execute(null);
+
+                Assert.True(!main.IsSettingsOpen, $"Home must close {category} settings.");
+                Assert.True(main.IsPlaybackWorkspaceVisible && main.IsHomeVisible);
+                Assert.Equal<StreamTabViewModel?>(null, main.SelectedTab);
+                Assert.True(isSelected(), "Home should preserve the last selected library page.");
+                Assert.Equal(category, main.SelectedSettingsCategory);
+            }
+        }
+    }
+
+    private static async Task HomeFromSettingsPreservesStreamsAsync()
+    {
+        await using var fixture = new NavigationFixture();
+        fixture.Settings.KeepInactiveTabsRunning = true;
+        var main = fixture.Main;
+        main.ShowRecentHomePageCommand.Execute(null);
+        var first = fixture.AddTab("albralelie");
+        var second = fixture.AddTab("summit1g");
+        main.SelectedTab = first;
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        first.SetVideoHandle(new IntPtr(1234));
+        await first.StartAsync(fixture.Settings);
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        var engine = fixture.Playback.Engine!;
+        var plays = engine.PlayCount;
+        var starts = fixture.Streamlink.StartCount;
+        var creates = fixture.Playback.CreateCount;
+
+        main.ToggleSettingsCommand.Execute(null);
+        main.SelectHomeCommand.Execute(null);
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(false, main.IsSettingsOpen);
+        Assert.True(main.IsHomeVisible && main.IsPlaybackWorkspaceVisible);
+        Assert.Equal<StreamTabViewModel?>(null, main.SelectedTab);
+        Assert.True(main.IsRecentHomePageSelected);
+        Assert.True(main.Tabs.SequenceEqual([first, second]));
+        Assert.Equal(PlaybackStatus.Playing, first.Status);
+
+        // Repeated Home selections must not add duplicate or intermediate destinations.
+        main.SelectHomeCommand.Execute(null);
+        main.GoBackCommand.Execute(null);
+        Assert.True(main.IsSettingsOpen, "Back from Home should return directly to Settings.");
+        main.GoBackCommand.Execute(null);
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(false, main.IsSettingsOpen);
+        Assert.Equal(first, main.SelectedTab);
+        Assert.Equal(false, main.IsHomeSelected);
+        Assert.Equal(PlaybackStatus.Playing, first.Status);
+        Assert.Equal(plays, engine.PlayCount);
+        Assert.Equal(starts, fixture.Streamlink.StartCount);
+        Assert.Equal(creates, fixture.Playback.CreateCount);
+
+        main.GoBackCommand.Execute(null);
+        Assert.True(main.IsHomeSelected && main.IsRecentHomePageSelected);
+        main.GoBackCommand.Execute(null);
+        Assert.True(main.IsFollowedHomePageSelected);
+        Assert.Equal(false, main.CanGoBack);
+    }
+
+    private static Task HomeButtonFromSettingsAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        await using var fixture = new NavigationFixture();
+        var main = fixture.Main;
+        var tab = fixture.AddTab("navigationfixture");
+        var window = new MainWindow { DataContext = main };
+        RemoveMainWindowAutomaticStartup(window);
+        var root = (FrameworkElement)window.Content;
+        var topBar = (FrameworkElement)window.FindName("TopControlsBar");
+        var settingsPanel = (FrameworkElement)window.FindName("SettingsPanel");
+        var playbackHost = (FrameworkElement)window.FindName("PlaybackHost");
+
+        void Layout(Size size)
+        {
+            root.Measure(size);
+            root.Arrange(new Rect(size));
+            root.UpdateLayout();
+            root.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            root.UpdateLayout();
+        }
+
+        static void Invoke(Button button)
+        {
+            Assert.True(button.IsEnabled);
+            Assert.Equal(Visibility.Visible, button.Visibility);
+            Assert.True(button.ActualWidth > 0 && button.ActualHeight > 0);
+            var peer = new ButtonAutomationPeer(button);
+            var provider = (IInvokeProvider?)peer.GetPattern(PatternInterface.Invoke);
+            Assert.NotNull(provider);
+            provider!.Invoke();
+        }
+
+        try
+        {
+            foreach (var size in new[] { new Size(1320, 820), new Size(600, 480) })
+            {
+                main.SelectedTab = tab;
+                Layout(size);
+                var home = FindVisualDescendants<Button>(topBar)
+                    .Single(button => ReferenceEquals(button.Command, main.SelectHomeCommand));
+                var settings = FindVisualDescendants<ToolBar>(topBar)
+                    .SelectMany(toolbar => toolbar.Items.OfType<Button>())
+                    .Single(button => ReferenceEquals(button.Command, main.ToggleSettingsCommand));
+                Invoke(settings);
+                Layout(size);
+                Assert.True(main.IsSettingsOpen);
+                Assert.Equal(Visibility.Visible, settingsPanel.Visibility);
+                Assert.Equal(Visibility.Collapsed, playbackHost.Visibility);
+
+                Invoke(home);
+                Layout(size);
+                Assert.Equal(false, main.IsSettingsOpen);
+                Assert.True(main.IsHomeVisible);
+                Assert.Equal<StreamTabViewModel?>(null, main.SelectedTab);
+                Assert.Equal(Visibility.Collapsed, settingsPanel.Visibility);
+                Assert.Equal(Visibility.Visible, playbackHost.Visibility);
+                SaveResponsiveWindowImage(window, $"home-after-settings-{size.Width}x{size.Height}");
+
+                main.GoBackCommand.Execute(null);
+                Layout(size);
+                Assert.True(main.IsSettingsOpen, "The Home button must record one navigation, without an intermediate stream visit.");
+                main.GoBackCommand.Execute(null);
+                Layout(size);
+                Assert.Equal(false, main.IsSettingsOpen);
+                Assert.Equal(tab, main.SelectedTab);
+            }
+        }
+        finally
+        {
+            window.Close();
+        }
+    });
 
     private static async Task BackFromSettingsPreservesStreamAsync()
     {

@@ -1,0 +1,27 @@
+[
+  {
+    "path": "baseline-harness-four-stream.zip",
+    "length": 19675,
+    "sha256": "720938b317ef76f9a8553b27d2f1b89eeb3dea9a62aecc496e282d047d2750fa"
+  },
+  {
+    "path": "baseline-harness-query-only.zip",
+    "length": 20262,
+    "sha256": "c72ce6e9ef06794b2092512394dc2d4411ccba2994add7e38eb43ce8ecd1503c"
+  },
+  {
+    "path": "baseline-harness.zip",
+    "length": 20392,
+    "sha256": "fb1a9898c0a45bb2ad6cca169653c051c59dd307c4f7177172db4280dad93682"
+  },
+  {
+    "path": "baseline-sources.zip",
+    "length": 6118433,
+    "sha256": "2bb0e9f9153c233c9f7daaef52fb9bc3a998c9adf07f8f51a99fdedbe70ad018"
+  },
+  {
+    "path": "raw-results.zip",
+    "length": 25988080,
+    "sha256": "f84985304ae1dd813779db09bfe6013c0665eec3925a230eb078c1fda1d5f036"
+  }
+]

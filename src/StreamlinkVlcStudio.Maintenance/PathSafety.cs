@@ -160,6 +160,21 @@ public static partial class PathSafety
         return false;
     }
 
+    // Cleanup must distinguish a missing path from one it cannot inspect. Treating
+    // an access failure as absence can incorrectly report a complete uninstall.
+    internal static bool TryGetCleanupAttributes(string path, out FileAttributes attributes)
+    {
+        try
+        {
+            attributes = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
+        attributes = default;
+        return false;
+    }
+
     public static bool PathsEqual(string left, string right)
     {
         return string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);

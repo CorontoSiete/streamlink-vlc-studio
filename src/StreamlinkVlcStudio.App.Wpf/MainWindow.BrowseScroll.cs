@@ -7,109 +7,125 @@ namespace StreamlinkVlcStudio.App.Wpf;
 
 public partial class MainWindow
 {
-    private MainViewModel? browseScrollViewModel;
-    private bool browseScrollCategoriesVisible;
-    private BrowseCategoryViewModel? browseScrollStreamCategory;
-    private double browseCategoryVerticalOffset;
-    private DispatcherOperation? pendingBrowseScroll;
+    private enum LibraryScrollPage { Following, Broadcasts, Recent, Categories, Streams }
 
-    private void SetBrowseScrollViewModel(MainViewModel? model)
+    private MainViewModel? libraryScrollViewModel;
+    private LibraryScrollPage? libraryScrollPage;
+    private BrowseCategoryViewModel? libraryScrollStreamCategory;
+    private readonly Dictionary<LibraryScrollPage, double> libraryScrollOffsets = [];
+    private DispatcherOperation? pendingHomeScroll;
+
+    private void SetLibraryScrollViewModel(MainViewModel? model)
     {
-        if (browseScrollViewModel is not null)
+        if (libraryScrollViewModel is not null)
         {
-            browseScrollViewModel.PropertyChanged -= BrowseScrollOnPropertyChanged;
-            browseScrollViewModel.BrowseCategories.CollectionChanged -= BrowseScrollCategoriesChanged;
+            libraryScrollViewModel.PropertyChanged -= LibraryScrollOnPropertyChanged;
+            libraryScrollViewModel.BrowseCategories.CollectionChanged -= LibraryScrollCollectionChanged;
+            libraryScrollViewModel.TwitchVods.CollectionChanged -= LibraryScrollCollectionChanged;
+            libraryScrollViewModel.RecentStreams.CollectionChanged -= LibraryScrollCollectionChanged;
+            libraryScrollViewModel.LiveFollowedChannels.CollectionChanged -= LibraryScrollCollectionChanged;
         }
 
-        pendingBrowseScroll?.Abort();
-        pendingBrowseScroll = null;
-        browseScrollViewModel = model;
-        browseScrollCategoriesVisible = false;
-        browseScrollStreamCategory = null;
-        browseCategoryVerticalOffset = 0;
+        pendingHomeScroll?.Abort();
+        pendingHomeScroll = null;
+        libraryScrollViewModel = model;
+        libraryScrollPage = null;
+        libraryScrollStreamCategory = null;
+        libraryScrollOffsets.Clear();
         if (model is not null)
         {
-            model.PropertyChanged += BrowseScrollOnPropertyChanged;
-            model.BrowseCategories.CollectionChanged += BrowseScrollCategoriesChanged;
-            UpdateBrowseScrollPage();
+            model.PropertyChanged += LibraryScrollOnPropertyChanged;
+            model.BrowseCategories.CollectionChanged += LibraryScrollCollectionChanged;
+            model.TwitchVods.CollectionChanged += LibraryScrollCollectionChanged;
+            model.RecentStreams.CollectionChanged += LibraryScrollCollectionChanged;
+            model.LiveFollowedChannels.CollectionChanged += LibraryScrollCollectionChanged;
+            UpdateLibraryScrollPage();
         }
     }
 
-    private void BrowseScrollOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    private void LibraryScrollOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(MainViewModel.IsBrowseCategoriesPageVisible) or
+        if (e.PropertyName is nameof(MainViewModel.IsFollowedHomePageVisible) or
+            nameof(MainViewModel.IsTwitchVodsHomePageVisible) or nameof(MainViewModel.IsRecentHomePageVisible) or
+            nameof(MainViewModel.IsBrowseCategoriesPageVisible) or
             nameof(MainViewModel.IsBrowseStreamsPageVisible) or nameof(MainViewModel.SelectedBrowseCategory))
         {
-            UpdateBrowseScrollPage();
+            UpdateLibraryScrollPage();
         }
     }
 
-    private void UpdateBrowseScrollPage()
+    private void UpdateLibraryScrollPage()
     {
-        var categoriesVisible = browseScrollViewModel?.IsBrowseCategoriesPageVisible == true;
-        var streamCategory = browseScrollViewModel?.IsBrowseStreamsPageVisible == true
-            ? browseScrollViewModel.SelectedBrowseCategory
-            : null;
-        if (categoriesVisible == browseScrollCategoriesVisible &&
-            ReferenceEquals(streamCategory, browseScrollStreamCategory))
+        if (libraryScrollViewModel is not { } model) return;
+        var page = model.IsBrowseStreamsPageVisible ? LibraryScrollPage.Streams
+            : model.IsBrowseCategoriesPageVisible ? LibraryScrollPage.Categories
+            : model.IsTwitchVodsHomePageVisible ? LibraryScrollPage.Broadcasts
+            : model.IsRecentHomePageVisible ? LibraryScrollPage.Recent
+            : LibraryScrollPage.Following;
+        var streamCategory = page == LibraryScrollPage.Streams ? model.SelectedBrowseCategory : null;
+        if (page == libraryScrollPage && ReferenceEquals(streamCategory, libraryScrollStreamCategory))
         {
             return;
         }
 
-        // Capture before layout replaces the category grid. If a restore has not run yet,
-        // the shared viewer still belongs to the previous page, so keep the saved offset.
-        if (browseScrollCategoriesVisible && pendingBrowseScroll is null)
+        // Navigation raises several notifications before layout. Only the first one can
+        // capture the outgoing page; subsequent notifications describe intermediate states.
+        if (libraryScrollPage is { } previousPage && pendingHomeScroll is null)
         {
-            browseCategoryVerticalOffset = HomeContentScrollViewer.VerticalOffset;
+            libraryScrollOffsets[previousPage] = HomeContentScrollViewer.VerticalOffset;
         }
 
-        browseScrollCategoriesVisible = categoriesVisible;
-        browseScrollStreamCategory = streamCategory;
+        libraryScrollPage = page;
+        libraryScrollStreamCategory = streamCategory;
         ClearHomeAutoScroll();
-        QueueBrowseScrollPosition();
+        QueueLibraryScrollPosition();
     }
 
-    private void BrowseScrollCategoriesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void LibraryScrollCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        if (e.Action != NotifyCollectionChangedAction.Reset)
+        if (e.Action != NotifyCollectionChangedAction.Reset || libraryScrollViewModel is not { } model)
         {
             return;
         }
 
-        // A new platform or query replaces the category list. Refreshing retained cards,
-        // appending a page, and updating viewer counts leave the saved position intact.
-        browseCategoryVerticalOffset = 0;
-        if (browseScrollCategoriesVisible)
+        // A replacement query/platform starts at the top. Refreshing retained cards and
+        // appending pages do not reset the user's position.
+        var page = ReferenceEquals(sender, model.BrowseCategories) ? LibraryScrollPage.Categories
+            : ReferenceEquals(sender, model.TwitchVods) ? LibraryScrollPage.Broadcasts
+            : ReferenceEquals(sender, model.RecentStreams) ? LibraryScrollPage.Recent
+            : LibraryScrollPage.Following;
+        libraryScrollOffsets[page] = 0;
+        if (libraryScrollPage == page)
         {
-            QueueBrowseScrollPosition();
+            QueueLibraryScrollPosition();
         }
     }
 
-    private void QueueBrowseScrollPosition()
+    private void QueueLibraryScrollPosition()
     {
-        pendingBrowseScroll?.Abort();
-        pendingBrowseScroll = null;
-        if (!browseScrollCategoriesVisible && browseScrollStreamCategory is null)
+        pendingHomeScroll?.Abort();
+        pendingHomeScroll = null;
+        if (libraryScrollPage is null)
         {
             return;
         }
 
         // Run after the navigation notifications, before the destination's first render.
         // Waiting for idle lets an inherited scroll position reach the screen first.
-        pendingBrowseScroll = Dispatcher.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
+        pendingHomeScroll = Dispatcher.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
         {
             try
             {
                 // Visibility bindings and layout must settle before WPF clamps the offset
                 // to the destination's extent. Suppress pagination at the inherited offset.
                 HomeContentScrollViewer.UpdateLayout();
-                HomeContentScrollViewer.ScrollToVerticalOffset(
-                    browseScrollCategoriesVisible ? browseCategoryVerticalOffset : 0);
+                HomeContentScrollViewer.ScrollToVerticalOffset(libraryScrollPage is { } page && page != LibraryScrollPage.Streams
+                    ? libraryScrollOffsets.GetValueOrDefault(page) : 0);
                 HomeContentScrollViewer.UpdateLayout();
             }
             finally
             {
-                pendingBrowseScroll = null;
+                pendingHomeScroll = null;
             }
 
             TryLoadMoreBrowseCategories();

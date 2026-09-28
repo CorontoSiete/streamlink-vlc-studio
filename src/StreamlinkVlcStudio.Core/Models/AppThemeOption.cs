@@ -7,7 +7,7 @@ public sealed record AppThemeOption(AppTheme Value, string DisplayName)
     public static IReadOnlyList<AppThemeOption> All { get; } =
         Array.AsReadOnly<AppThemeOption>(
         [
-            new(AppTheme.Dark, "Dark"),
+            new(AppTheme.Dark, "Dark Grey & Green"),
             new(AppTheme.Light, "Light"),
             new(AppTheme.MidnightBlue, "Midnight Blue"),
             new(AppTheme.Dracula, "Dracula"),

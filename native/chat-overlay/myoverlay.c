@@ -55,6 +55,8 @@ int poll( struct pollfd *fds, unsigned nfds, int timeout );
 #define HIDE_BUTTON_H       22u
 #define SHOW_BUTTON_W       96u
 #define SHOW_BUTTON_H       28u
+#define MOVE_HANDLE_W       68u
+#define MOVE_HANDLE_H       22u
 #define BUTTON_MARGIN       6
 #define BUTTON_MOVE_LIMIT   4
 #define SCROLLBAR_W         10u
@@ -159,6 +161,9 @@ struct filter_sys_t
     bool cached_visual_valid;
     HANDLE       thread;
     HANDLE       stop_event;
+    /* Pipe-worker-only scratch space, reused across heartbeats and reconnects. */
+    uint8_t     *receive_buffer;
+    size_t       receive_capacity;
     char         pipe_name[MAX_PATH];
     char         event_pipe_name[MAX_PATH];
     char         position_state_path[MAX_PATH];
@@ -175,6 +180,12 @@ struct filter_sys_t
     bool         mouse_over_chat;
     bool         input_hovered;
     bool         dragging;
+    bool         selecting_text;
+    bool         text_selection_moved;
+    int32_t      text_selection_down_x;
+    int32_t      text_selection_down_y;
+    int32_t      selection_last_x;
+    int32_t      selection_last_y;
     bool         button_pressed;
     bool         button_moved;
     int32_t      button_down_x;
@@ -229,6 +240,15 @@ static void DrawToggleButtonRect( uint8_t *pixels, int pitch,
                                   int bx, int by,
                                   uint32_t bw, uint32_t bh,
                                   bool hidden, uint32_t video_h );
+static void DrawMoveHandleRect( uint8_t *pixels, int pitch,
+                                uint32_t w, uint32_t h,
+                                int bx, int by,
+                                uint32_t bw, uint32_t bh,
+                                uint32_t video_h );
+static void MoveHandleRect( int32_t x, int32_t y,
+                            int32_t *out_x, int32_t *out_y,
+                            uint32_t *out_w, uint32_t *out_h,
+                            uint32_t video_h );
 
 /*****************************************************************************
  * Module descriptor
@@ -263,6 +283,10 @@ vlc_module_begin()
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VOUT )
     add_shortcut( "studio_gdi" )
+    add_bool( "studio-gdi-gpu-scaling", false,
+              N_("Scale DXVA2 video before downloading"),
+              N_("Requires the VLC 3.0.23 opaque picture ABI. Enabled by the verified application runtime."),
+              true )
     set_callbacks( StudioGdiOpen, StudioGdiClose )
 vlc_module_end()
 
@@ -279,7 +303,7 @@ static void InitRgbaFormat( video_format_t *fmt, uint32_t w, uint32_t h )
 }
 
 static overlay_frame_buffer_t *FrameBufferCreate( const overlay_msg_v1 *hdr,
-                                                  uint8_t *rgba )
+                                                  const uint8_t *rgba )
 {
     if( hdr == NULL || rgba == NULL )
         return NULL;
@@ -333,6 +357,22 @@ static void FrameBufferRelease( overlay_frame_buffer_t *frame )
         picture_Release( frame->picture );
         free( frame );
     }
+}
+
+static bool FrameBufferMatches( const overlay_frame_buffer_t *frame,
+                                const overlay_msg_v1 *hdr, const uint8_t *rgba )
+{
+    if( frame == NULL || frame->w != hdr->w || frame->h != hdr->h
+        || frame->alpha != hdr->alpha )
+        return false;
+
+    const size_t row_bytes = (size_t)hdr->w * 4u;
+    for( uint32_t row = 0; row < hdr->h; row++ )
+        if( memcmp( frame->picture->p[0].p_pixels
+                        + (size_t)row * frame->picture->p[0].i_pitch,
+                    rgba + (size_t)row * row_bytes, row_bytes ) != 0 )
+            return false;
+    return true;
 }
 
 /*****************************************************************************
@@ -590,9 +630,10 @@ static void InitPipeName( filter_t *p_filter, filter_sys_t *sys )
 static bool SendOverlayEvents( const filter_sys_t *sys,
                                uint32_t type1, int32_t value1,
                                uint32_t type2, int32_t value2,
-                               uint32_t type3, int32_t value3 )
+                               uint32_t type3, int32_t value3,
+                               uint32_t type4, int32_t value4 )
 {
-    if( type1 == 0 && type2 == 0 && type3 == 0 )
+    if( type1 == 0 && type2 == 0 && type3 == 0 && type4 == 0 )
         return false;
 
     HANDLE pipe = CreateFileA( sys->event_pipe_name, GENERIC_WRITE, 0, NULL,
@@ -604,12 +645,12 @@ static bool SendOverlayEvents( const filter_sys_t *sys,
     event.magic   = MYO_MAGIC;
     event.version = MYO_VERSION;
 
-    const uint32_t types[3] = { type1, type2, type3 };
-    const int32_t values[3] = { value1, value2, value3 };
+    const uint32_t types[4] = { type1, type2, type3, type4 };
+    const int32_t values[4] = { value1, value2, value3, value4 };
     DWORD written = 0;
     bool sent = false;
     bool ok = true;
-    for( size_t i = 0; i < 3; i++ )
+    for( size_t i = 0; i < 4; i++ )
     {
         if( types[i] == 0 )
             continue;
@@ -642,6 +683,23 @@ static uint32_t VisibleVideoHeight( const video_format_t *p_fmt )
     return p_fmt != NULL && p_fmt->i_visible_height > 0
         ? p_fmt->i_visible_height
         : UI_REFERENCE_VIDEO_H;
+}
+
+static int32_t SelectionPointEventValue( int32_t mouse_x, int32_t mouse_y,
+                                         int32_t overlay_x, int32_t overlay_y,
+                                         uint32_t overlay_w, uint32_t overlay_h )
+{
+    int32_t local_x = mouse_x - overlay_x;
+    int32_t local_y = mouse_y - overlay_y;
+    if( local_x < 0 ) local_x = 0;
+    if( local_y < 0 ) local_y = 0;
+    if( overlay_w > 0 && local_x >= (int32_t)overlay_w )
+        local_x = (int32_t)overlay_w - 1;
+    if( overlay_h > 0 && local_y >= (int32_t)overlay_h )
+        local_y = (int32_t)overlay_h - 1;
+    if( local_x > 65535 ) local_x = 65535;
+    if( local_y > 65535 ) local_y = 65535;
+    return MYO_PACK_SIZE_EVENT( local_x, local_y );
 }
 
 static uint32_t ScaleUiU( uint32_t video_h, uint32_t value )
@@ -685,7 +743,8 @@ static void MaybeSendVideoSizeEvent( filter_t *filter,
     sys->video_size_attempt_ms = now + 50u;
     if( SendOverlayEvents( sys, MYO_EVENT_VIDEO_SIZE,
                            MYO_PACK_SIZE_EVENT( video_w, video_h ),
-                           MYO_EVENT_UI_SCALE, (int32_t)ui_h, 0, 0 ) )
+                           MYO_EVENT_UI_SCALE, (int32_t)ui_h, 0, 0,
+                           0, 0 ) )
     {
         sys->sent_ui_scale_h = ui_h;
         sys->sent_video_w = video_w;
@@ -720,6 +779,18 @@ static void ToggleButtonRect( bool hidden, int32_t x, int32_t y,
     *out_h = ScaleUiU( video_h, HIDE_BUTTON_H );
     *out_x = x + (int32_t)w - (int32_t)*out_w - (int32_t)margin;
     *out_y = y + (int32_t)margin;
+}
+
+static void MoveHandleRect( int32_t x, int32_t y,
+                            int32_t *out_x, int32_t *out_y,
+                            uint32_t *out_w, uint32_t *out_h,
+                            uint32_t video_h )
+{
+    const uint32_t margin = ScaleUiU( video_h, BUTTON_MARGIN );
+    *out_x = x + (int32_t)margin;
+    *out_y = y + (int32_t)margin;
+    *out_w = ScaleUiU( video_h, MOVE_HANDLE_W );
+    *out_h = ScaleUiU( video_h, MOVE_HANDLE_H );
 }
 
 static bool ScrollbarTrackRect( int32_t x, int32_t y, uint32_t w, uint32_t h,
@@ -988,9 +1059,11 @@ static const uint8_t *Glyph5x7( char c )
     static const uint8_t E[7] = { 0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F };
     static const uint8_t H[7] = { 0x11,0x11,0x11,0x1F,0x11,0x11,0x11 };
     static const uint8_t I[7] = { 0x1F,0x04,0x04,0x04,0x04,0x04,0x1F };
+    static const uint8_t M[7] = { 0x11,0x1B,0x15,0x15,0x11,0x11,0x11 };
     static const uint8_t O[7] = { 0x0E,0x11,0x11,0x11,0x11,0x11,0x0E };
     static const uint8_t S[7] = { 0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E };
     static const uint8_t T[7] = { 0x1F,0x04,0x04,0x04,0x04,0x04,0x04 };
+    static const uint8_t V[7] = { 0x11,0x11,0x11,0x11,0x11,0x0A,0x04 };
     static const uint8_t W[7] = { 0x11,0x11,0x11,0x15,0x15,0x15,0x0A };
     static const uint8_t BLANK[7] = { 0,0,0,0,0,0,0 };
 
@@ -1002,9 +1075,11 @@ static const uint8_t *Glyph5x7( char c )
     case 'E': return E;
     case 'H': return H;
     case 'I': return I;
+    case 'M': return M;
     case 'O': return O;
     case 'S': return S;
     case 'T': return T;
+    case 'V': return V;
     case 'W': return W;
     default:  return BLANK;
     }
@@ -1074,6 +1149,29 @@ static void DrawToggleButtonRect( uint8_t *pixels, int pitch,
                 hidden ? 159 : 30, hidden ? 39 : 125, hidden ? 59 : 58, 235 );
     MyStrokeRect( pixels, pitch, w, h, bx, by, (int)bw, (int)bh,
                   255, 255, 255, 120 );
+    DrawText5x7( pixels, pitch, w, h, tx + 1, ty + 1, label, scale,
+                 0, 0, 0, 170 );
+    DrawText5x7( pixels, pitch, w, h, tx, ty, label, scale,
+                 255, 255, 255, 255 );
+}
+
+static void DrawMoveHandleRect( uint8_t *pixels, int pitch,
+                                uint32_t w, uint32_t h,
+                                int bx, int by,
+                                uint32_t bw, uint32_t bh,
+                                uint32_t video_h )
+{
+    const char *label = "MOVE";
+    const int scale = ScaleUiI( video_h, 2 );
+    const int text_w = Text5x7Width( label, scale );
+    const int text_h = 7 * scale;
+    const int tx = bx + ( (int)bw - text_w ) / 2;
+    const int ty = by + ( (int)bh - text_h ) / 2;
+
+    MyFillRect( pixels, pitch, w, h, bx, by, (int)bw, (int)bh,
+                34, 62, 83, 232 );
+    MyStrokeRect( pixels, pitch, w, h, bx, by, (int)bw, (int)bh,
+                  210, 231, 247, 155 );
     DrawText5x7( pixels, pitch, w, h, tx + 1, ty + 1, label, scale,
                  0, 0, 0, 170 );
     DrawText5x7( pixels, pitch, w, h, tx, ty, label, scale,
@@ -1376,6 +1474,19 @@ static subpicture_t *FrameSubpicture( filter_t *p_filter, vlc_tick_t date,
             AppendRegion( &tail, button );
         }
 
+        int32_t mx = 0, my = 0;
+        uint32_t mw = 0, mh = 0;
+        MoveHandleRect( x, y, &mx, &my, &mw, &mh, video_h );
+        subpicture_region_t *move_handle =
+            NewWritableRegion( mw, mh, mx, my, &pixels, &pitch );
+        if( move_handle == NULL ) goto failed;
+        if( move_handle != NULL )
+        {
+            DrawMoveHandleRect( pixels, pitch, mw, mh, 0, 0, mw, mh,
+                                video_h );
+            AppendRegion( &tail, move_handle );
+        }
+
         int32_t rx = 0, ry = 0;
         uint32_t rw = 0, rh = 0;
         if( ResizeHandleRect( x, y, footprint_w, footprint_h,
@@ -1489,6 +1600,7 @@ static void Close( vlc_object_t *p_this )
     sys->frame = NULL;
     LeaveCriticalSection( &sys->lock );
     FrameBufferRelease( frame );
+    free( sys->receive_buffer );
     subpicture_region_ChainDelete( sys->cached_regions );
     DeleteCriticalSection( &sys->lock );
     ReleaseVideoMetrics(sys->metrics);
@@ -1520,6 +1632,8 @@ static int SubMouse( filter_t *p_filter,
     int32_t hover_event_value = 0;
     uint32_t focus_event_type = 0;
     int32_t focus_event_value = 0;
+    uint32_t selection_event_type = 0;
+    int32_t selection_event_value = 0;
     int32_t save_x = 0, save_y = 0;
     bool    save_hidden = false;
 
@@ -1528,6 +1642,8 @@ static int SubMouse( filter_t *p_filter,
     {
         sys->mouse_over_chat = false;
         sys->dragging = false;
+        sys->selecting_text = false;
+        sys->text_selection_moved = false;
         sys->button_pressed = false;
         sys->button_moved = false;
         sys->scrollbar_pressed = false;
@@ -1541,7 +1657,8 @@ static int SubMouse( filter_t *p_filter,
         LeaveCriticalSection( &sys->lock );
         SendOverlayEvents( sys, 0, 0,
                            hover_event_type, hover_event_value,
-                           0, 0 );
+                           0, 0,
+                           MYO_EVENT_TEXT_SELECT_CANCEL, 0 );
         return VLC_SUCCESS;
     }
 
@@ -1565,6 +1682,13 @@ static int SubMouse( filter_t *p_filter,
     const bool b_over_button = b_over_chat
                             && PointInRect( p_new->i_x, p_new->i_y,
                                             bx, by, bw, bh );
+    int32_t move_x = 0, move_y = 0;
+    uint32_t move_w = 0, move_h = 0;
+    MoveHandleRect( sys->x, sys->y, &move_x, &move_y,
+                    &move_w, &move_h, video_h );
+    const bool b_over_move = !hidden && b_over_chat
+        && PointInRect( p_new->i_x, p_new->i_y,
+                        move_x, move_y, move_w, move_h );
     int32_t track_x = 0, track_y = 0;
     uint32_t track_w = 0, track_h = 0;
     const bool have_scrollbar = !hidden
@@ -1607,6 +1731,11 @@ static int SubMouse( filter_t *p_filter,
     {
         focus_event_type = MYO_EVENT_CHAT_INPUT_FOCUS;
         focus_event_value = b_over_input ? 1 : 0;
+        if( hidden || !b_over_chat || b_over_button || b_over_move
+            || b_over_resize || b_over_scrollbar || b_over_input )
+        {
+            selection_event_type = MYO_EVENT_TEXT_SELECT_CANCEL;
+        }
     }
 
     if( left_pressed && b_over_button )
@@ -1653,18 +1782,32 @@ static int SubMouse( filter_t *p_filter,
     {
         /* Focus event is queued above; this branch exists to consume the click. */
     }
-    else if( left_pressed && !hidden && b_over_chat )
+    else if( left_pressed && b_over_move )
     {
         sys->dragging = true;
+    }
+    else if( left_pressed && !hidden && b_over_chat )
+    {
+        sys->selecting_text = true;
+        sys->text_selection_moved = false;
+        sys->text_selection_down_x = p_new->i_x;
+        sys->text_selection_down_y = p_new->i_y;
+        sys->selection_last_x = p_new->i_x;
+        sys->selection_last_y = p_new->i_y;
+        selection_event_type = MYO_EVENT_TEXT_SELECT_BEGIN;
+        selection_event_value = SelectionPointEventValue(
+            p_new->i_x, p_new->i_y, sys->x, sys->y, sys->w, sys->h );
     }
     else if( vlc_mouse_HasReleased( p_old, p_new, MOUSE_BUTTON_LEFT ) )
     {
         ui_release = sys->button_pressed || sys->scrollbar_pressed
-                  || sys->resizing;
+                  || sys->resizing || sys->selecting_text;
         if( sys->button_pressed && b_over_button && !sys->button_moved )
         {
             sys->hidden = !sys->hidden;
             toggled = true;
+            selection_event_type = MYO_EVENT_TEXT_SELECT_CANCEL;
+            selection_event_value = 0;
             save_now = true;
             save_x = sys->x;
             save_y = sys->y;
@@ -1686,6 +1829,22 @@ static int SubMouse( filter_t *p_filter,
         }
         sys->resizing = false;
 
+        if( sys->selecting_text )
+        {
+            const int64_t dx = (int64_t)p_new->i_x - sys->text_selection_down_x;
+            const int64_t dy = (int64_t)p_new->i_y - sys->text_selection_down_y;
+            const int64_t click_slop = ScaleUiI( video_h, BUTTON_MOVE_LIMIT );
+            if( dx * dx + dy * dy > click_slop * click_slop )
+                sys->text_selection_moved = true;
+            selection_event_type = sys->text_selection_moved
+                ? MYO_EVENT_TEXT_SELECT_END
+                : MYO_EVENT_TEXT_CLICK;
+            selection_event_value = SelectionPointEventValue(
+                p_new->i_x, p_new->i_y, sys->x, sys->y, sys->w, sys->h );
+        }
+        sys->selecting_text = false;
+        sys->text_selection_moved = false;
+
         if( sys->dragging )
         {
             save_now = true;
@@ -1694,6 +1853,26 @@ static int SubMouse( filter_t *p_filter,
             save_hidden = sys->hidden;
         }
         sys->dragging = false;
+    }
+
+    if( sys->selecting_text
+        && p_new->i_x == sys->selection_last_x
+        && p_new->i_y == sys->selection_last_y )
+    {
+        /* No new native hit-test position to send for this video frame. */
+    }
+    else if( sys->selecting_text )
+    {
+        const int64_t dx = (int64_t)p_new->i_x - sys->text_selection_down_x;
+        const int64_t dy = (int64_t)p_new->i_y - sys->text_selection_down_y;
+        const int64_t drag_slop = ScaleUiI( video_h, BUTTON_MOVE_LIMIT );
+        if( dx * dx + dy * dy > drag_slop * drag_slop )
+            sys->text_selection_moved = true;
+        sys->selection_last_x = p_new->i_x;
+        sys->selection_last_y = p_new->i_y;
+        selection_event_type = MYO_EVENT_TEXT_SELECT_UPDATE;
+        selection_event_value = SelectionPointEventValue(
+            p_new->i_x, p_new->i_y, sys->x, sys->y, sys->w, sys->h );
     }
 
     if( sys->button_pressed )
@@ -1746,7 +1925,8 @@ static int SubMouse( filter_t *p_filter,
         sys->y = VLC_CLIP( sys->y + dy, 0, max_y );
     }
 
-    sys->mouse_over_chat = b_over_chat || sys->dragging || sys->button_pressed
+    sys->mouse_over_chat = b_over_chat || sys->dragging
+                         || sys->selecting_text || sys->button_pressed
                          || sys->scrollbar_pressed || sys->resizing
                          || b_over_input;
     const bool input_hovered_now = !sys->hidden && b_over_input;
@@ -1757,7 +1937,8 @@ static int SubMouse( filter_t *p_filter,
         hover_event_value = input_hovered_now ? 1 : 0;
     }
 
-    const bool consume = sys->dragging || sys->button_pressed
+    const bool consume = sys->dragging || sys->selecting_text
+                       || sys->button_pressed
                        || sys->scrollbar_pressed || sys->resizing || toggled
                        || ui_release || event_type != 0
                        || ( focus_event_type != 0 && focus_event_value != 0 );
@@ -1797,7 +1978,8 @@ static int SubMouse( filter_t *p_filter,
 
     SendOverlayEvents( sys, event_type, event_value,
                        hover_event_type, hover_event_value,
-                       focus_event_type, focus_event_value );
+                       focus_event_type, focus_event_value,
+                       selection_event_type, selection_event_value );
 
     if( save_now )
         SaveOverlayState( sys, save_x, save_y, save_hidden );
@@ -1963,6 +2145,11 @@ static subpicture_t *Placeholder( filter_t *p_filter, vlc_tick_t date,
     if( show_button )
     {
         DrawToggleButton( pixels, pitch, W, H, false, video_h );
+        int32_t mx = 0, my = 0;
+        uint32_t mw = 0, mh = 0;
+        MoveHandleRect( x, y, &mx, &my, &mw, &mh, video_h );
+        DrawMoveHandleRect( pixels, pitch, W, H,
+                            mx - x, my - y, mw, mh, video_h );
         DrawResizeHandle( pixels, pitch, W, H, video_h );
     }
     return spu;
@@ -2010,10 +2197,11 @@ static bool ReadAll( HANDLE pipe, void *buf, DWORD bytes )
     return true;
 }
 
-/* Apply one validated message to plugin state. The frame payload is copied
- * into a VLC picture before the state lock is taken. */
+/* Apply a validated message, borrowing the worker's receive storage. Compare
+ * immutable visible rows outside the state lock, including odd/padded pitches.
+ * Identical heartbeats keep picture identity and the video-thread region cache. */
 static void ApplyMessage( filter_t *p_filter, filter_sys_t *sys,
-                          const overlay_msg_v1 *hdr, uint8_t *payload )
+                          const overlay_msg_v1 *hdr, const uint8_t *payload )
 {
     bool save_position = false;
     int32_t save_x = 0;
@@ -2026,12 +2214,16 @@ static void ApplyMessage( filter_t *p_filter, filter_sys_t *sys,
 
     if( hdr->type == MYO_TYPE_FRAME )
     {
-        new_frame = FrameBufferCreate( hdr, payload );
-        if( new_frame == NULL )
+        EnterCriticalSection( &sys->lock );
+        new_frame = FrameBufferAddRef( sys->frame );
+        LeaveCriticalSection( &sys->lock );
+        if( !FrameBufferMatches( new_frame, hdr, payload ) )
         {
-            free( payload );
-            return;
+            FrameBufferRelease( new_frame );
+            new_frame = FrameBufferCreate( hdr, payload );
         }
+        if( new_frame == NULL )
+            return;
     }
 
     EnterCriticalSection( &sys->lock );
@@ -2103,7 +2295,6 @@ static void ApplyMessage( filter_t *p_filter, filter_sys_t *sys,
     LeaveCriticalSection( &sys->lock );
     FrameBufferRelease( old_frame );
     FrameBufferRelease( new_frame );
-    free( payload );  /* NULL if FRAME moved ownership; harmless */
     if( log_first_frame )
     {
         msg_Dbg( p_filter,
@@ -2135,13 +2326,32 @@ static bool HeaderIsValid( const overlay_msg_v1 *hdr )
         return false;
     if( hdr->type == MYO_TYPE_FRAME )
     {
-        const uint64_t expect = (uint64_t)hdr->w * hdr->h * 4u;
-        return expect != 0 && expect == hdr->payload_size;
+        /* Two uint32 dimensions fit in uint64, but their RGBA byte count may not. */
+        const uint64_t pixels = (uint64_t)hdr->w * hdr->h;
+        return pixels != 0 && pixels <= MYO_MAX_PAYLOAD / 4u
+            && pixels * 4u == hdr->payload_size;
     }
     if( hdr->type == MYO_TYPE_CLEAR || hdr->type == MYO_TYPE_POSITION
         || hdr->type == MYO_TYPE_SCROLL_STATE )
         return hdr->payload_size == 0;
     return false;
+}
+
+static bool ReserveReceiveBuffer( filter_sys_t *sys, size_t required )
+{
+    if( required > MYO_MAX_PAYLOAD )
+        return false;
+    if( required <= sys->receive_capacity )
+        return true;
+    size_t capacity = sys->receive_capacity ? sys->receive_capacity : 64u * 1024u;
+    while( capacity < required )
+        capacity = capacity > MYO_MAX_PAYLOAD / 2u ? MYO_MAX_PAYLOAD : capacity * 2u;
+    uint8_t *grown = realloc( sys->receive_buffer, capacity );
+    if( grown == NULL )
+        return false;
+    sys->receive_buffer = grown;
+    sys->receive_capacity = capacity;
+    return true;
 }
 
 /* Service one connected client until the pipe breaks or stop is signalled. */
@@ -2181,14 +2391,14 @@ static void ServeClient( filter_t *p_filter, HANDLE pipe )
         uint8_t *payload = NULL;
         if( hdr.payload_size > 0 )
         {
-            payload = malloc( hdr.payload_size );
-            if( payload == NULL )
+            if( !ReserveReceiveBuffer( sys, hdr.payload_size ) )
             {
                 msg_Warn( p_filter,
                           "myoverlay payload allocation failed payload=%u pipe=%s",
                           hdr.payload_size, sys->pipe_name );
                 break;
             }
+            payload = sys->receive_buffer;
             if( !ReadAll( pipe, payload, hdr.payload_size ) )
             {
                 DWORD gle = GetLastError();
@@ -2202,7 +2412,6 @@ static void ServeClient( filter_t *p_filter, HANDLE pipe )
                                (unsigned)hdr.type, hdr.payload_size,
                                sys->pipe_name,
                                (unsigned long)gle );
-                free( payload );
                 break;
             }
         }

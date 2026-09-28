@@ -5,7 +5,7 @@ param(
     [string]$OverlaySource,
     [string]$OutputRoot,
     [string]$PublishedAppDirectory,
-    [string]$Version = '1.7.6',
+    [string]$Version,
     [string]$Tag = '',
     [string]$Commit = '',
     [string]$Repository = 'CorontoSiete/streamlink-vlc-studio',
@@ -19,6 +19,9 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
 . (Join-Path $scriptRoot "lib\common.ps1")
+$versionArguments = @{ RepositoryRoot = $repoRoot }
+if ($PSBoundParameters.ContainsKey('Version')) { $versionArguments.Version = $Version }
+$Version = Resolve-PackageVersion @versionArguments
 . (Join-Path $scriptRoot "lib\install-state.ps1")
 . (Join-Path $scriptRoot "lib\native-overlay.ps1")
 . (Join-Path $scriptRoot "lib\release-contract.ps1")

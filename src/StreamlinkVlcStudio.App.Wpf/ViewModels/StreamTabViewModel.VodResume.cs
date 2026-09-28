@@ -81,7 +81,7 @@ public sealed partial class StreamTabViewModel
                     Status is not (PlaybackStatus.Playing or PlaybackStatus.Paused) ||
                     playbackEngine is not { } engine) return;
                 var seekVersion = Volatile.Read(ref replaySeekOperationVersion);
-                var stateVersion = Volatile.Read(ref replayClockPlaybackStateVersion);
+                var stateVersion = replayClock.PlaybackStateVersion;
                 var hasHealth = engine.TryGetPlaybackHealth(out var health);
                 if (hasHealth && health.State == PlaybackEngineState.Ended)
                 {

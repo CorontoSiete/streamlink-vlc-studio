@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "upstream": "https://codeload.github.com/videolan/vlc/tar.gz/refs/tags/3.0.23",
+  "upstreamSha256": "847f1c4d7b848b3f6a3c04b7d0c05ab9fbc5f174c9f8adcd6203057e8908285e",
+  "sourcePath": "src/win32/thread.c",
+  "patch": "windows-address-waits.patch",
+  "configuration": "core-config.h",
+  "license": "LGPL-3.0-or-later",
+  "vlcSourceLicense": "LGPL-2.1-or-later",
+  "licenseFiles": [
+    "COPYING.LIB",
+    "COPYING.LESSER",
+    "COPYING.GCC",
+    "COPYING.RUNTIME",
+    "COPYING.MinGW",
+    "COPYING.Winpthreads"
+  ],
+  "buildInputs": {
+    "toolchain": {
+      "archive": "winlibs-16.1.0-msvcrt-r2.7z",
+      "archiveSha256": "d70530a1299af5b3697840f35e4116ab7dffe50148b5b17697dcdc4c41952007",
+      "compiler": "WinLibs GCC 16.1.0 x86_64-w64-mingw32 MSVCRT",
+      "compilerBinarySha256": "a8014aaf397ba4c7575659cc19de45acddb1b8b2972a425b9ac8112c0c5a4477",
+      "linkedRuntimeLibraries": [
+        {
+          "name": "libgcc.a",
+          "sha256": "a12c4fa86d653b1741390b51222bc4c035efd59494f98e4731ae73d054a19b28"
+        },
+        {
+          "name": "libwinpthread.a",
+          "sha256": "9616366320d33dfb5acad2220bf8ebe1b02a16110b00ea3e115aab0cffb1329e"
+        }
+      ]
+    },
+    "contribPackages": [
+      {
+        "name": "mingw-w64-x86_64-gettext-runtime",
+        "version": "1.0-1",
+        "archive": "mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+        "archiveSha256": "be68d7f260633284b910c588c6d82ee304a81c8817a686d2cd9df83f872c27af",
+        "archiveUrl": "https://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+        "packageLicenseMetadata": "GPL-3.0-or-later AND LGPL-2.1-or-later",
+        "linkedLibraryLicense": "LGPL-2.1-or-later",
+        "upstream": "https://www.gnu.org/software/gettext/",
+        "library": "lib/libintl.a",
+        "librarySha256": "a771727654b0465ccb01933954f6ba4b71eca1442dd3c18da14b1d3b20422698"
+      },
+      {
+        "name": "mingw-w64-x86_64-libgcrypt",
+        "version": "1.12.4-1",
+        "archive": "mingw-w64-x86_64-libgcrypt-1.12.4-1-any.pkg.tar.zst",
+        "archiveSha256": "e8a245cf4c678718e1dc23004d37b524abb53bf28307ed98fb66d6cf84b7544a",
+        "archiveUrl": "https://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-libgcrypt-1.12.4-1-any.pkg.tar.zst",
+        "packageLicenseMetadata": "LGPL-2.1-or-later AND GPL-2.0-or-later",
+        "linkedLibraryLicense": "LGPL-2.1-or-later",
+        "upstream": "https://gnupg.org/software/libgcrypt/",
+        "library": "lib/libgcrypt.a",
+        "librarySha256": "f3e540409d25b9dc6c1a85f0e33d847078c9f6202421cf06a33c60c01bfe6713"
+      },
+      {
+        "name": "mingw-w64-x86_64-libgpg-error",
+        "version": "1.61-1",
+        "archive": "mingw-w64-x86_64-libgpg-error-1.61-1-any.pkg.tar.zst",
+        "archiveSha256": "b6933a26d865e980abf259bb2546f9462fb9700c2a54dc91b1585c04a9794cba",
+        "archiveUrl": "https://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-libgpg-error-1.61-1-any.pkg.tar.zst",
+        "packageLicenseMetadata": "LGPL-2.1-or-later",
+        "linkedLibraryLicense": "LGPL-2.1-or-later",
+        "upstream": "https://gnupg.org/related_software/libgpg-error/",
+        "library": "lib/libgpg-error.a",
+        "librarySha256": "c3722291c948a38f1346961ea87d0c6932fa83f704a0798ade343b5fa7a8886c"
+      },
+      {
+        "name": "mingw-w64-x86_64-libiconv",
+        "version": "1.19-1",
+        "archive": "mingw-w64-x86_64-libiconv-1.19-1-any.pkg.tar.zst",
+        "archiveSha256": "21e334d0911f25de75d3e18e0697648bcecfa9658256d600cad0827d719c2f35",
+        "archiveUrl": "https://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-libiconv-1.19-1-any.pkg.tar.zst",
+        "packageLicenseMetadata": "LGPL-2.1-or-later",
+        "linkedLibraryLicense": "LGPL-2.1-or-later",
+        "upstream": "https://www.gnu.org/software/libiconv/",
+        "library": "lib/libiconv.a",
+        "librarySha256": "53bb47cdd782bf0bfcb680a631ca8d42ceb90f04fbca2c46ff175ec834693ac4"
+      },
+      {
+        "name": "mingw-w64-x86_64-libidn",
+        "version": "1.44-1",
+        "archive": "mingw-w64-x86_64-libidn-1.44-1-any.pkg.tar.zst",
+        "archiveSha256": "4b82640fa8e647ae1547b475e986091f2a78f91ed2a0ec89e135552527c21429",
+        "archiveUrl": "https://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-libidn-1.44-1-any.pkg.tar.zst",
+        "packageLicenseMetadata": "GPL-3.0-or-later AND LGPL-3.0-or-later",
+        "linkedLibraryLicense": "LGPL-3.0-or-later",
+        "upstream": "https://www.gnu.org/software/libidn/",
+        "library": "lib/libidn.a",
+        "librarySha256": "273ca8ab06da2fb5a65e48e48a85f05d504d9670fdfa577406545b66c631550d"
+      }
+    ]
+  },
+  "compiler": "WinLibs GCC 16.1.0 x86_64-msvcrt-posix-seh (Brecht Sanders r2)",
+  "referenceVlcVersion": "3.0.23",
+  "referenceVlcSha256": "8ae9f16a72441f43fb4ae8f72c843736726e067ea4a8def2646748631cc4e872",
+  "referenceVlcCoreSha256": "d3475b834dd3eb77910f37f71b0341d358bcbdda5b9f04cc4a3a8e2be1bc8e35",
+  "binary": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledVlcCore/libvlccore.dll",
+  "binarySha256": "6efb3c92094ddfe9aca032910a4fadf1a5ce53488488720ca84bba56722291a2"
+}

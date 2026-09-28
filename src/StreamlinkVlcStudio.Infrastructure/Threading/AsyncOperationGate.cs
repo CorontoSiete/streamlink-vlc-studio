@@ -27,6 +27,9 @@ internal sealed class AsyncOperationGate(int maximumConcurrency = 1) : IDisposab
             acquired = true;
             lock (gate)
             {
+                // Semaphore release can win its race with a cancellation callback. Do not
+                // admit canceled work, or turn its cancellation into a disposal error.
+                cancellationToken.ThrowIfCancellationRequested();
                 ObjectDisposedException.ThrowIf(disposed, this);
             }
 

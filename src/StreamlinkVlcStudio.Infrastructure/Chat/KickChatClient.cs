@@ -794,9 +794,7 @@ public sealed class KickChatClient : IChatClient
 
         try
         {
-            var refreshed = await KickOAuthService.RefreshUserTokenAsync(settings, cancellationToken);
-            KickOAuthService.ApplyTokenResult(settings, refreshed);
-            var refreshedToken = NormalizeBearerToken(refreshed.AccessToken);
+            var refreshedToken = await KickOAuthService.ForceRefreshUserTokenAsync(settings, previousToken, logger, cancellationToken);
             if (string.IsNullOrWhiteSpace(refreshedToken) ||
                 string.Equals(refreshedToken, previousToken, StringComparison.Ordinal))
             {
@@ -806,7 +804,8 @@ public sealed class KickChatClient : IChatClient
             var tokenInfo = await IntrospectTokenAsync(refreshedToken, cancellationToken);
             if (!tokenInfo.Active ||
                 !string.Equals(tokenInfo.TokenType, "user", StringComparison.OrdinalIgnoreCase) ||
-                !tokenInfo.Scopes.Contains("chat:write"))
+                !tokenInfo.Scopes.Contains("chat:write") ||
+                !string.Equals(NormalizeBearerToken(settings.KickOAuthToken), refreshedToken, StringComparison.Ordinal))
             {
                 return null;
             }

@@ -32,7 +32,7 @@ internal static class PictureInPictureWindowResize
         }
 
         // Subtract before comparing so negative monitor coordinates work too. Keep the top
-        // band aligned with WindowChrome: title buttons begin just below its six-DIP border.
+        // band above the title buttons, which begin just below the six-DIP resize border.
         var fromLeft = x - (long)bounds.Left;
         var fromRight = bounds.Right - 1L - x;
         var fromTop = y - (long)bounds.Top;

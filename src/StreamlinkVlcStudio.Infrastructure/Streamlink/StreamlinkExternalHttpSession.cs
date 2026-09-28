@@ -4,6 +4,7 @@ using System.Diagnostics;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Processes;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Streamlink;
@@ -12,6 +13,7 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
 {
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(3);
     private readonly Process process;
+    private readonly RedirectedProcessOwner owner;
     private readonly IAppLogger logger;
     private readonly ConcurrentQueue<string> recentLogLines = new();
     private readonly object uriGate = new();
@@ -21,9 +23,10 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
     private Task standardOutputPump = Task.CompletedTask;
     private Task standardErrorPump = Task.CompletedTask;
 
-    public StreamlinkExternalHttpSession(Process process, IAppLogger logger)
+    public StreamlinkExternalHttpSession(RedirectedProcessOwner owner, IAppLogger logger)
     {
-        this.process = process;
+        this.owner = owner;
+        process = owner.Process;
         this.logger = logger;
     }
 
@@ -83,7 +86,7 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
         }
         finally
         {
-            process.Dispose();
+            owner.Dispose();
         }
     }
 
@@ -91,12 +94,7 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
     {
         try
         {
-            if (process.HasExited)
-            {
-                return;
-            }
-
-            await KillProcessTreeAsync(process, StopTimeout).ConfigureAwait(false);
+            await owner.StopAsync(StopTimeout).ConfigureAwait(false);
             if (!process.HasExited)
             {
                 logger.Write(AppLogLevel.Warning, "Streamlink", "Timed out waiting for the Streamlink process to exit after kill.");

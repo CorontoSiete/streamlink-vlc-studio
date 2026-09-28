@@ -7,7 +7,8 @@ internal static partial class ApplicationTestCatalog
             ("VOD fast resume: long GOP preroll does not skip to the next keyframe", () => NativeReplayFirstOutputAsync(true, fastReplay: true, longGop: true)),
             ("VOD fast resume: buffered pause keeps the input and correct pixels", () => NativeReplayFirstOutputAsync(true, pauseAfterOpening: true, fastReplay: true)),
             ("VOD fast resume: ordinary and muted transport preserve seeking duration and completion", FastVodPlaybackAsync),
-            ("VOD fast resume: missing precise seek filter falls back before releasing output", FastVodFallbackAsync),
+            ("VOD fast resume: missing precise seek filter falls back before releasing output", () => FastVodFallbackAsync()),
+            ("VOD fast resume: decoder fallback preserves a paused replacement", () => FastVodFallbackAsync(startPaused: true)),
             ("VOD fast resume: cancellation and stop interrupt a stalled native HTTP read", FastVodCancellationAsync),
             ("VOD fast resume: long timelines preserve seeking window moves and timestamp rollover", FastLongVodAsync)
         ];
@@ -44,7 +45,7 @@ internal static partial class ApplicationTestCatalog
         public async ValueTask DisposeAsync() { await Gateway.DisposeAsync(); upstream.Dispose(); }
     }
 
-    private static Task FastVodFallbackAsync() => TestSta.RunOffscreenAsync(async () =>
+    private static Task FastVodFallbackAsync(bool startPaused = false) => TestSta.RunOffscreenAsync(async () =>
     {
         await using var fixture = new FastVodFixture();
         var handle = NativeWindowTest.CreateHiddenParentWindow();
@@ -53,9 +54,10 @@ internal static partial class ApplicationTestCatalog
             using var engine = await new LibVlcPlaybackEngineFactory(fixture.Logger, new ChatSettings(), new UnavailableReplayFilterGateway(fixture.Gateway)).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: false);
             engine.SetVideoHandle(handle);
-            await engine.PlayFromAsync(FastVodFixture.MediaUri, TimeSpan.FromSeconds(35.25), 0, PlaybackAudioState.Muted);
+            await engine.PlayFromAsync(FastVodFixture.MediaUri, TimeSpan.FromSeconds(35.25), 0, PlaybackAudioState.Muted, startPaused);
             Assert.True(fixture.Logger.Entries.Any(entry => entry.Message.Contains("retrying with VLC")));
-            await ConfirmLongVodOutputAsync(engine, TimeSpan.FromSeconds(35.25), TimeSpan.FromSeconds(60));
+            if (startPaused) await AssertNativeClockHeldAsync(engine);
+            else await ConfirmLongVodOutputAsync(engine, TimeSpan.FromSeconds(35.25), TimeSpan.FromSeconds(60));
             Assert.True(engine.PreservesReplayPositionOnResume);
         }
         finally { NativeWindowTest.DestroyWindow(handle); }

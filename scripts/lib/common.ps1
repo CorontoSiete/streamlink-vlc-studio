@@ -11,6 +11,50 @@ separators so `-LiteralPath` comparisons behave the same on any drive layout.
 
 $script:PathSeparators = [char[]]@('\', '/')
 
+function Resolve-PackageVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [AllowEmptyString()][string]$Version
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('Version')) {
+        $propsPath = Join-Path $RepositoryRoot 'Directory.Build.props'
+        if (-not (Test-Path -LiteralPath $propsPath -PathType Leaf)) {
+            throw "Default package version file is missing: $propsPath"
+        }
+        $readerSettings = [Xml.XmlReaderSettings]::new()
+        $readerSettings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $readerSettings.XmlResolver = $null
+        $reader = $null
+        try {
+            $reader = [Xml.XmlReader]::Create($propsPath, $readerSettings)
+            $document = [Xml.XmlDocument]::new()
+            $document.XmlResolver = $null
+            $document.Load($reader)
+            $prefixes = $document.SelectNodes('/Project/PropertyGroup/VersionPrefix')
+            if ($prefixes.Count -ne 1) {
+                throw 'Expected exactly one VersionPrefix.'
+            }
+            $Version = $prefixes[0].InnerText.Trim()
+        } catch {
+            throw "Could not read the default package version from ${propsPath}: $($_.Exception.Message)"
+        } finally {
+            if ($null -ne $reader) { $reader.Dispose() }
+        }
+    }
+
+    if ($Version -cnotmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+        throw "Version must be a canonical three-part numeric version: $Version"
+    }
+    foreach ($part in $Version.Split('.')) {
+        [uint16]$component = 0
+        if (-not [uint16]::TryParse($part, [ref]$component)) {
+            throw "Version components must be between 0 and 65535: $Version"
+        }
+    }
+    return $Version
+}
+
 function Get-FileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -178,6 +222,8 @@ function Remove-DirectoryTreeSafely {
     #>
     param([Parameter(Mandatory = $true)][string]$Path)
 
+    $Path = Get-FullPathNormalized $Path
+    Assert-NoReparsePointInExistingPath -Path $Path -ExcludeLeaf
     if (-not (Test-Path -LiteralPath $Path)) {
         return
     }
@@ -195,19 +241,24 @@ function Remove-DirectoryTreeSafely {
         return
     }
 
+    if (($item.Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+        [IO.File]::SetAttributes($item.FullName, $item.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly))
+    }
     if (-not $item.PSIsContainer) {
         Remove-Item -LiteralPath $item.FullName -Force
         return
     }
 
-    Get-ChildItem -LiteralPath $item.FullName -Force | ForEach-Object {
-        if ($_.PSIsContainer -or
-            (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
-            Remove-DirectoryTreeSafely $_.FullName
-        } else {
-            Remove-Item -LiteralPath $_.FullName -Force
+    $failure = $null
+    foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop) {
+        try {
+            Remove-DirectoryTreeSafely $child.FullName
+        } catch {
+            # Locked leftovers must not retain every other file in a large package.
+            if ($null -eq $failure) { $failure = $_ }
         }
     }
+    if ($null -ne $failure) { throw $failure }
     [System.IO.Directory]::Delete($item.FullName)
 }
 

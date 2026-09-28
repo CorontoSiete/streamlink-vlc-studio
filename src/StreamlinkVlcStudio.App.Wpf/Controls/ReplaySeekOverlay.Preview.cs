@@ -26,6 +26,13 @@ public partial class ReplaySeekOverlay
     {
         SeekPreviewChrome.Tag = this;
         SeekPreviewHost.PlacementInvalidated += (_, _) => UpdateSeekHoverPlacement();
+        // Image visibility changes are measured by WPF after completion returns.
+        // Resize the native preview when that content is arranged, without relying
+        // on unrelated layout notifications from the underlying video window.
+        SeekPreviewImageFrame.SizeChanged += (_, _) =>
+        {
+            if (SeekPreviewHost.IsOpen) UpdateSeekHoverPlacement();
+        };
         ReplaySeekSlider.MouseEnter += (_, e) => UpdateSeekHover(e.GetPosition(ReplaySeekSlider));
         ReplaySeekSlider.MouseLeave += (_, _) =>
         {

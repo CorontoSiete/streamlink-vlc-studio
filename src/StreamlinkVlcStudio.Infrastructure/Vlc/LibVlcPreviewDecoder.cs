@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using StreamlinkVlcStudio.Core.Models;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
@@ -8,7 +7,6 @@ internal static class LibVlcPreviewDecoder
 {
     internal const int Width = 192;
     internal const int Height = 108;
-    private const int Pitch = Width * 4;
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     internal static async Task<byte[]?> DecodeAsync(byte[] segment, byte[]? initialization,
@@ -44,53 +42,17 @@ internal static class LibVlcPreviewDecoder
             ["--intf=dummy", "--ignore-config", "--no-audio", "--no-spu", "--no-osd",
              "--no-video-title-show", "--no-stats", "--avcodec-hw=none",
              Path.GetExtension(path) == ".mp4" ? "--demux=mp4" : "--demux=ts", "--quiet"], share: false);
-        var memory = Marshal.AllocHGlobal(Pitch * Height + 31);
-        var buffer = new IntPtr((memory.ToInt64() + 31) & ~31L);
         var completion = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var frameGate = new SemaphoreSlim(1, 1);
         var captured = 0;
-        LibVlcNative.PreviewLockCallback lockFrame = (_, planes) =>
-        {
-            frameGate.Wait();
-            Marshal.WriteIntPtr(planes, buffer);
-            return IntPtr.Zero;
-        };
-        LibVlcNative.PreviewUnlockCallback unlockFrame = (_, _, _) =>
-        {
-            try
-            {
-                if (Interlocked.Exchange(ref captured, 1) != 0) return;
-                var pixels = new byte[Pitch * Height];
-                Marshal.Copy(buffer, pixels, 0, pixels.Length);
-                completion.TrySetResult(pixels);
-            }
-            finally { frameGate.Release(); }
-        };
-        var media = IntPtr.Zero;
-        var player = IntPtr.Zero;
+        using var player = new LibVlcPreviewPlayer(runtime.Instance, new Uri(path), Width, Height,
+            () => Interlocked.Exchange(ref captured, 1) == 0, pixels => completion.TrySetResult(pixels), captureOnDecode: true);
+        if (!player.Start()) return null;
         try
         {
-            media = LibVlcNative.libvlc_media_new_location(runtime.Instance, new Uri(path).AbsoluteUri);
-            if (media == IntPtr.Zero) return null;
-            player = LibVlcNative.libvlc_media_player_new_from_media(media);
-            if (player == IntPtr.Zero) return null;
-            LibVlcNative.libvlc_video_set_callbacks(player, lockFrame, unlockFrame, IntPtr.Zero, IntPtr.Zero);
-            LibVlcNative.libvlc_video_set_format(player, "RV32", Width, Height, Pitch);
-            if (LibVlcNative.libvlc_media_player_play(player) != 0) return null;
-            try { return await completion.Task.WaitAsync(TimeSpan.FromSeconds(4), token).ConfigureAwait(false); }
-            catch (TimeoutException) { return null; }
+            await Task.WhenAny(completion.Task, player.CallbackFailure).WaitAsync(TimeSpan.FromSeconds(4), token).ConfigureAwait(false);
+            if (player.CallbackFailure.IsCompleted) await player.CallbackFailure.ConfigureAwait(false);
+            return await completion.Task.ConfigureAwait(false);
         }
-        finally
-        {
-            if (player != IntPtr.Zero)
-            {
-                LibVlcNative.libvlc_media_player_stop(player);
-                LibVlcNative.libvlc_media_player_release(player);
-            }
-            if (media != IntPtr.Zero) LibVlcNative.libvlc_media_release(media);
-            GC.KeepAlive(lockFrame);
-            GC.KeepAlive(unlockFrame);
-            Marshal.FreeHGlobal(memory);
-        }
+        catch (TimeoutException) { return null; }
     }
 }

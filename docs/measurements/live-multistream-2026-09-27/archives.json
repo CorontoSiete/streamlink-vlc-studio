@@ -1,0 +1,18 @@
+{
+  "baseline-production.zip": {
+    "bytes": 42668,
+    "sha256": "29cb2eeaaf8ba070f541ebbe96269d80b28951e5e844bef71f4274bbf2afcef3"
+  },
+  "raw-results.zip": {
+    "bytes": 17990827,
+    "sha256": "b89f59a53fe528c4aa2ff0bb3979b5cdd41abd3d4e814e74d05eafb790173454"
+  },
+  "summary.json": {
+    "bytes": 15604,
+    "sha256": "200768e76eaaffa2ac69d613a8d0e895b6e339739d484c4dae6ab2115e540cdf"
+  },
+  "REPRODUCE.md": {
+    "bytes": 4185,
+    "sha256": "393474a9355dca74158fb1e80ba12e96f8036e6afa4949e03373ece68d492bae"
+  }
+}

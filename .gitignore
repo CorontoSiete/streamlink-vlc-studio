@@ -16,3 +16,5 @@ release/
 /publish*/
 *.user
 *.suo
+__pycache__/
+*.py[cod]

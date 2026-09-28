@@ -7,6 +7,7 @@ internal static partial class ApplicationTestCatalog
     [
         ("picture-in-picture resize border scales all edges and corner arms on negative monitors", PictureInPictureResizeDpiBoundaries),
         ("picture-in-picture resize border rejects exterior and invalid geometry", PictureInPictureResizeInvalidGeometry),
+        ("picture-in-picture resize leaves no bright line at the window edges", PictureInPictureResizeWindowEdges),
         ("picture-in-picture resize native hit tests cover all edges with either chrome setting", PictureInPictureResizeNativeHitTests),
         ("picture-in-picture resize native video cursor matches every edge and corner", PictureInPictureResizeNativeCursors),
         ("picture-in-picture resize native clicks and renderer fallback outrank dragging and fullscreen", PictureInPictureResizeNativeInitiation),
@@ -116,6 +117,10 @@ internal static partial class ApplicationTestCatalog
                     NativeWindowTest.MakeMouseLParam((int)center.X, (int)center.Y)));
                 if (shown)
                 {
+                    var titleBar = (FrameworkElement)window.FindName("TitleBar");
+                    var captionPoint = titleBar.PointToScreen(new Point(40, titleBar.ActualHeight / 2));
+                    Assert.Equal(new IntPtr(2), NativeWindowTest.SendMessage(handle, 0x0084, IntPtr.Zero,
+                        NativeWindowTest.MakeMouseLParam((int)captionPoint.X, (int)captionPoint.Y)));
                     foreach (var name in new[] { "HideTopBarButton", "TopmostButton", "FullscreenButton" })
                     {
                         var button = (Button)window.FindName(name);

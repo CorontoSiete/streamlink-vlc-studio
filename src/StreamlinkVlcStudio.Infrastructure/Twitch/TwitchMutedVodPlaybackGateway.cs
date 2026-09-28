@@ -107,10 +107,13 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             var inspection = TwitchMutedVodPlaylist.Inspect(playlist);
             var preroll = preferFastReplay ? TwitchVodReplayPolicy.GetPreroll(playlist, libVlcVersion) : TimeSpan.Zero;
             var fastReplay = preroll > TimeSpan.Zero;
+            var liveReplay = TwitchVodReplayPolicy.UseLiveReplayDemuxer(playlist, libVlcVersion);
+            if (liveReplay)
+                logger.Write(AppLogLevel.Debug, "Replay", "Using the live replay demuxer for a growing MPEG-TS playlist.");
             if (inspection.MutedSegments == 0 && !fastReplay)
             {
                 LogDirectPlayback(media, player, inspection);
-                return PlaybackMediaSource.Direct(mediaUri);
+                return new PlaybackMediaSource(mediaUri, null, useLiveReplayDemuxer: liveReplay);
             }
 
             // Reject a playlist the proxy could not serve now, while falling back is still possible.
@@ -123,7 +126,8 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
                 $"through the local repair proxy for {player}. These can prevent end-of-media even in VLC 3.0.23.");
             if (fastReplay)
                 logger.Write(AppLogLevel.Info, "VOD resume", "Using VLC's FFmpeg demuxer for a completed MPEG-TS replay through the validated local transport.");
-            return new PlaybackMediaSource(session.PlaylistUri, session, useAvformatDemuxer: fastReplay, replaySeekPreroll: preroll);
+            return new PlaybackMediaSource(session.PlaylistUri, session, useAvformatDemuxer: fastReplay,
+                replaySeekPreroll: preroll, useLiveReplayDemuxer: liveReplay);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

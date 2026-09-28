@@ -138,16 +138,23 @@ internal static partial class ApplicationTestCatalog
                 }
                 return Task.CompletedTask;
             })),
-        ("responsive home and settings keep search navigation and save reachable after resizing", () =>
+        ("responsive home and settings keep search navigation and controls reachable after resizing", () =>
             WithResponsiveWindowAsync(withVideo: false, (window, viewModel) =>
             {
+                AddStudioCardFixtures(viewModel);
                 foreach (var size in ResponsiveWindowSizes)
                 {
                     viewModel.IsSettingsOpen = false;
                     var client = ResizeResponsiveWindow(window, size.Width, size.Height);
                     AssertResponsiveElementInside((FrameworkElement)window.Content, client, "home workspace");
                     var navigation = (ToolBar)window.FindName("HomeNavigation");
-                    foreach (var button in navigation.Items.OfType<Button>())
+                    var rail = (FrameworkElement)window.FindName("LibraryRail");
+                    Assert.True(rail.IsVisible != navigation.IsVisible,
+                        "Exactly one home navigation presentation must be available at each window size.");
+                    var navigationButtons = rail.IsVisible
+                        ? FindVisualDescendants<Button>(rail)
+                        : navigation.Items.OfType<Button>();
+                    foreach (var button in navigationButtons)
                     {
                         AssertResponsiveActionAccessible(window, button, client);
                     }
@@ -169,9 +176,22 @@ internal static partial class ApplicationTestCatalog
                         selector.SelectedItem = SettingsCategory.General;
                         Assert.Equal(SettingsCategory.General, viewModel.SelectedSettingsCategory);
                     }
-                    var save = (Button)window.FindName("SettingsSaveButton");
-                    AssertResponsiveReachable(window, save, settingsViewport, client);
+                    AssertResponsiveReachable(window,
+                        (FrameworkElement)window.FindName("WindowsToastNotificationsCheckBox"), settingsViewport, client);
                     SaveResponsiveWindowImage(window, $"settings-{size.Width}x{size.Height}");
+
+                    var home = FindVisualDescendants<Button>(window)
+                        .Single(button => ReferenceEquals(button.Command, viewModel.SelectHomeCommand));
+                    AssertResponsiveReachable(window, home, (FrameworkElement)window.Content, client);
+                    var peer = new System.Windows.Automation.Peers.ButtonAutomationPeer(home);
+                    var invoke = (System.Windows.Automation.Provider.IInvokeProvider)peer.GetPattern(
+                        System.Windows.Automation.Peers.PatternInterface.Invoke);
+                    invoke.Invoke();
+                    PumpResponsiveLayout(window);
+                    Assert.Equal(false, viewModel.IsSettingsOpen);
+                    Assert.True(viewModel.IsHomeVisible);
+                    Assert.Equal(Visibility.Collapsed, ((FrameworkElement)window.FindName("SettingsPanel")).Visibility);
+                    Assert.True(((FrameworkElement)window.FindName("HomeStreamSearchTextBox")).IsVisible);
                 }
                 return Task.CompletedTask;
             })),
@@ -431,7 +451,7 @@ internal static partial class ApplicationTestCatalog
             "The compact tab selector rendered a view-model type name instead of the stream title.");
     }
 
-    private static void SaveResponsiveWindowImage(MainWindow window, string name)
+    private static void SaveResponsiveWindowImage(Window window, string name)
     {
         var directory = Environment.GetEnvironmentVariable("SVS_RESPONSIVE_SCREENSHOTS");
         if (string.IsNullOrWhiteSpace(directory))

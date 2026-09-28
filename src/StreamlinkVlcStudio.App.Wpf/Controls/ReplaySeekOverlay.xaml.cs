@@ -71,6 +71,11 @@ public partial class ReplaySeekOverlay : UserControl
         {
             if (keyboardSeeking) CancelSeek();
         };
+        PlaybackRateComboBox.DropDownOpened += (_, _) => Reveal(Environment.TickCount64);
+        PlaybackRateComboBox.DropDownClosed += (_, _) =>
+        {
+            if (OverlayHost.IsOpen) lastActivity = Environment.TickCount64;
+        };
         OverlayChrome.PreviewMouseDown += (_, _) => Reveal(Environment.TickCount64);
         OverlayChrome.PreviewMouseUp += (_, e) =>
         {
@@ -80,10 +85,31 @@ public partial class ReplaySeekOverlay : UserControl
             {
                 e.Handled = true;
             }
+            else if (owner is DetachedVideoWindow && DataContext is StreamTabViewModel tab &&
+                     HotkeyGesture.IsBindableMouseButton(e.ChangedButton) &&
+                     ReplaySkipHotkey.TryExecute(tab, tab.PlaybackHotkeys,
+                         HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers), Keyboard.FocusedElement))
+            {
+                e.Handled = true;
+            }
         };
         OverlayChrome.PreviewKeyDown += (_, e) =>
         {
-            if (e.Key == Key.Escape) { HideImmediately(); e.Handled = true; }
+            if (PlaybackRateComboBox.IsDropDownOpen)
+            {
+                Reveal(Environment.TickCount64);
+                return;
+            }
+
+            if (DataContext is StreamTabViewModel tab &&
+                ReplaySkipHotkey.TryExecute(tab, tab.PlaybackHotkeys,
+                    new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers), Keyboard.FocusedElement, e.IsRepeat))
+            {
+                CancelSeek();
+                Reveal(Environment.TickCount64);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape) { HideImmediately(); e.Handled = true; }
             else Reveal(Environment.TickCount64);
         };
     }
@@ -261,7 +287,7 @@ public partial class ReplaySeekOverlay : UserControl
         var pointerParkedOverReplayControls = position.HasValue && overReplayOverlay;
         if (OverlayHost.IsOpen && !fading && nowMilliseconds - lastActivity >= IdleDelay.TotalMilliseconds &&
             !pointerParkedOverReplayControls && !OverlayChrome.IsMouseCaptureWithin &&
-            seekTab is null && !keyboardSeeking)
+            !PlaybackRateComboBox.IsDropDownOpen && seekTab is null && !keyboardSeeking)
             FadeOut();
     }
 

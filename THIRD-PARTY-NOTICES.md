@@ -1,5 +1,40 @@
 # Third-Party Notices
 
+## Bundled VLC condition-wait core
+
+`libvlccore.dll` is built from VLC 3.0.23 with the narrow Windows
+`WaitOnAddress` lookup patch. The patched VLC source is LGPL-2.1-or-later.
+This build also statically links gettext's `libintl`, GNU libiconv, GNU libidn,
+libgcrypt, libgpg-error, GCC's `libgcc` runtime, and MinGW-w64 Winpthreads.
+The library components are used under their LGPL terms; the bundled combined
+core selects LGPL-3.0-or-later because the linked GNU libidn library is selected
+under LGPL-3.0-or-later. The compiler runtime and Winpthreads notices are
+included alongside both LGPL texts in `native/vlc-core`.
+
+The corresponding VLC source patch, build configuration, source/build script,
+package archive hashes, linked-library hashes, compiler/runtime hashes, and
+rebuild instructions are included in `native/vlc-core` and
+`scripts/build-vlc-core.py`. The upstream libraries are
+[gettext](https://www.gnu.org/software/gettext/),
+[libiconv](https://www.gnu.org/software/libiconv/),
+[libidn](https://www.gnu.org/software/libidn/),
+[libgcrypt](https://gnupg.org/software/libgcrypt/), and
+[libgpg-error](https://gnupg.org/related_software/libgpg-error/). The app only
+selects this core when the installed `libvlc.dll` and `libvlccore.dll` match the
+pinned official VLC 3.0.23 pair.
+
+## Live replay HLS module
+
+`libstudio_adaptive_plugin.dll` is a modified VLC 3.0.23 adaptive demuxer,
+Copyright VideoLAN and VLC Authors, licensed under LGPL-2.1-or-later. Its
+corresponding upstream sources and headers, local patch, build configuration,
+provenance and license accompany the app in `native/adaptive-replay`; the build
+script is `scripts/build-adaptive-replay.py`. Upstream is
+[VideoLAN VLC 3.0.23](https://github.com/videolan/vlc/tree/3.0.23).
+The statically linked GCC runtime and standard C++ library use GPLv3 with the
+GCC Runtime Library Exception 3.1; these and MinGW-w64's notices are included
+in that directory.
+
 ## Replay pause continuity module
 
 `libstudio_replay_pause_plugin.dll` is built from the included
@@ -16,6 +51,9 @@ Their recovered source and rebuild instructions are in `native/chat-overlay`.
 The overlay DLL also contains a modified VLC 3.0.23 Windows GDI output,
 licensed under LGPL-2.1-or-later. Its source, upstream attribution, change
 description and license accompany the app under `native/chat-overlay/quality-gdi`.
+That directory also includes the VLC 3.0.23 DXVA2 picture layouts extracted from
+`modules/video_chroma/d3d9_fmt.h` and `modules/codec/avcodec/va_surface.h`, under
+the same LGPL-2.1-or-later license with their original authors attributed.
 The source recovery and display sizing changes are not a security audit of the
 entire native controller. Their exact sizes,
 SHA-256 values, and signature state are pinned in

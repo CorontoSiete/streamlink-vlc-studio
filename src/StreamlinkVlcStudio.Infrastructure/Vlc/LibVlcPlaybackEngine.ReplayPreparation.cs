@@ -52,6 +52,7 @@ public sealed partial class LibVlcPlaybackEngine
             token.ThrowIfCancellationRequested();
             input.Media = LibVlcNative.libvlc_media_new_location(retainedInstance, input.Source!.PlaybackUri.ToString());
             if (input.Media == IntPtr.Zero) throw new InvalidOperationException("Could not prepare replay media.");
+            ConfigureLiveReplayDemuxer(input.Media, input.Source);
             // No video decoder or HWND is created during preparation. Audio establishes
             // the demux timestamp reference silently, then the entire input is paused.
             LibVlcNative.libvlc_media_add_option(input.Media, ":no-video");
@@ -59,7 +60,7 @@ public sealed partial class LibVlcPlaybackEngine
             var eventName = $"Local\\StreamStudio.ReplayPause.{Guid.NewGuid():N}";
             input.PauseReady = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
             LibVlcNative.libvlc_media_add_option(input.Media, $":studio-replay-pause-ready={eventName}");
-            ConfigureReplayDecoder(input.Media, UsesNativeOverlay, Environment.ProcessorCount);
+            ConfigureDecoder(input.Media, replay: true);
             input.Player = LibVlcNative.libvlc_media_player_new_from_media(input.Media);
             if (input.Player == IntPtr.Zero) throw new InvalidOperationException("Could not prepare a replay player.");
             input.VideoHandle = preparedHandle;
@@ -126,7 +127,7 @@ public sealed partial class LibVlcPlaybackEngine
         finally { if (head != IntPtr.Zero) LibVlcNative.libvlc_track_description_list_release(head); }
     }
 
-    private async Task<bool> TryPlayPreparedReplayAsync(Uri uri, TimeSpan position, CancellationToken cancellationToken)
+    private async Task<bool> TryPlayPreparedReplayAsync(Uri uri, TimeSpan position, bool startPaused, CancellationToken cancellationToken)
     {
         long generation = 0;
         var watch = Stopwatch.StartNew();
@@ -161,7 +162,7 @@ public sealed partial class LibVlcPlaybackEngine
                     currentMediaUri = currentMediaSource!.PlaybackUri;
                     originalMediaUri = uri;
                     preserveReplayPause = true;
-                    desiredPaused = false;
+                    desiredPaused = startPaused;
                     replayOutputPending = true;
                     replayOpeningPosition = position;
                     generation = Interlocked.Increment(ref playerGeneration);
@@ -178,13 +179,7 @@ public sealed partial class LibVlcPlaybackEngine
             }, cancellationToken).ConfigureAwait(false);
             if (generation == 0) return false;
             await SeekCoreAsync(position, generation, cancellationToken, openingAtPosition: true, seekAlreadySubmitted: true).ConfigureAwait(false);
-            lock (nativeGate)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (disposed || generation != playerGeneration)
-                    throw new OperationCanceledException("The media changed while activating the prepared replay.");
-                ReleaseReplayOutputCore();
-            }
+            await CompleteReplayOpeningAsync(generation, cancellationToken).ConfigureAwait(false);
             logger.Write(AppLogLevel.Info, "Replay", $"Prepared replay seek confirmed in {watch.ElapsedMilliseconds} ms.");
             return true;
         }

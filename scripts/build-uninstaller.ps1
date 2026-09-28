@@ -2,7 +2,7 @@ param(
     [string]$OutputPath,
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [string]$Version = "1.7.6",
+    [string]$Version,
     [switch]$Quiet
 )
 
@@ -12,13 +12,9 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
 . (Join-Path $scriptRoot "lib\common.ps1")
 
-if ($Version -notmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
-    throw "Version must be a canonical three-part numeric version: $Version"
-}
-$versionParts = @($Version -split '\.' | ForEach-Object { [uint64]$_ })
-if (@($versionParts | Where-Object { $_ -gt 65535 }).Count -gt 0) {
-    throw "Version components must be between 0 and 65535: $Version"
-}
+$versionArguments = @{ RepositoryRoot = $repoRoot }
+if ($PSBoundParameters.ContainsKey('Version')) { $versionArguments.Version = $Version }
+$Version = Resolve-PackageVersion @versionArguments
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repoRoot "release\Uninstall.exe"

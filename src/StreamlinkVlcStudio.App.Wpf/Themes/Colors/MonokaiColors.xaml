@@ -25,8 +25,8 @@
     <!-- Text -->
     <Color x:Key="StudioTextColor">#F8F8F2</Color>
     <Color x:Key="StudioTextSecondaryColor">#CFCFC2</Color>
-    <Color x:Key="StudioTextMutedColor">#75715E</Color>
-    <Color x:Key="StudioTextPlaceholderColor">#6D6D5C</Color>
+    <Color x:Key="StudioTextMutedColor">#959283</Color>
+    <Color x:Key="StudioTextPlaceholderColor">#929285</Color>
     <Color x:Key="StudioTextDimColor">#5C5C4D</Color>
 
     <!-- UI Elements -->
@@ -60,11 +60,6 @@
     <Color x:Key="StudioKickColor">#53FC18</Color>
     <Color x:Key="StudioKickSubtleColor">#122A08</Color>
     <Color x:Key="StudioKickTextColor">#C8FFBA</Color>
-
-    <!-- Category Badge -->
-    <Color x:Key="StudioCategoryBgColor">#2A2818</Color>
-    <Color x:Key="StudioCategoryBorderColor">#8C8540</Color>
-    <Color x:Key="StudioCategoryTextColor">#E6DB74</Color>
 
     <!-- Brushes -->
     <SolidColorBrush x:Key="StudioBaseBrush" Color="{StaticResource StudioBaseColor}" />
@@ -104,7 +99,7 @@
     <SolidColorBrush x:Key="StudioKickBrush" Color="{StaticResource StudioKickColor}" />
     <SolidColorBrush x:Key="StudioKickSubtleBrush" Color="{StaticResource StudioKickSubtleColor}" />
     <SolidColorBrush x:Key="StudioKickTextBrush" Color="{StaticResource StudioKickTextColor}" />
-    <SolidColorBrush x:Key="StudioCategoryBgBrush" Color="{StaticResource StudioCategoryBgColor}" />
-    <SolidColorBrush x:Key="StudioCategoryBorderBrush" Color="{StaticResource StudioCategoryBorderColor}" />
-    <SolidColorBrush x:Key="StudioCategoryTextBrush" Color="{StaticResource StudioCategoryTextColor}" />
+    <!-- Primary actions may use a filled accent independently of selected surfaces. -->
+    <SolidColorBrush x:Key="StudioPrimaryBrush" Color="{StaticResource StudioAccentPressedColor}" />
+    <SolidColorBrush x:Key="StudioPrimaryTextBrush" Color="{StaticResource StudioAccentTextColor}" />
 </ResourceDictionary>

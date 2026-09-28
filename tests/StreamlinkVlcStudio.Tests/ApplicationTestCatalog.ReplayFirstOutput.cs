@@ -1,6 +1,6 @@
 internal static partial class ApplicationTestCatalog
 {
-    private static Task NativeReplayAudioGateAsync(bool muted) => TestSta.RunOffscreenAsync(async () =>
+    private static Task NativeReplayAudioGateAsync(bool muted, bool startPaused = false) => TestSta.RunOffscreenAsync(async () =>
     {
         var path = Path.Combine(Path.GetTempPath(), $"svs-replay-audio-{Guid.NewGuid():N}.wav");
         var handle = NativeWindowTest.CreateHiddenParentWindow();
@@ -11,7 +11,7 @@ internal static partial class ApplicationTestCatalog
             using var engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: false);
             engine.SetVideoHandle(handle);
-            var opening = engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(35), 67, PlaybackAudioState.Audible);
+            var opening = engine.PlayFromAsync(server.Uri, TimeSpan.FromSeconds(35), 67, PlaybackAudioState.Audible, startPaused);
             try
             {
                 await server.Requested.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -25,9 +25,11 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(0, GetReplayNativeVolume(player));
                 Assert.Equal(false, opening.IsCompleted);
                 server.Release.TrySetResult();
+                if (startPaused) await AssertSilentUntilPausedAsync(engine, opening, player);
                 await opening.WaitAsync(TimeSpan.FromSeconds(10));
                 Assert.Equal(muted ? 0 : 43, GetReplayNativeVolume(player));
                 Assert.True(engine.TryGetPlaybackClock(out var clock) && clock.Position >= TimeSpan.FromSeconds(35));
+                if (startPaused) await AssertNativeClockHeldAsync(engine);
             }
             finally
             {
@@ -41,6 +43,25 @@ internal static partial class ApplicationTestCatalog
             File.Delete(path);
         }
     });
+
+    private static async Task AssertSilentUntilPausedAsync(IPlaybackEngine engine, Task opening, IntPtr player)
+    {
+        while (!opening.IsCompleted)
+        {
+            if (GetReplayNativeVolume(player) > 0 && engine.TryGetPlaybackHealth(out var health))
+                Assert.Equal(PlaybackEngineState.Paused, health.State);
+            await Task.Delay(10);
+        }
+    }
+
+    private static async Task AssertNativeClockHeldAsync(IPlaybackEngine engine)
+    {
+        Assert.True(engine.TryGetPlaybackHealth(out var health) && health.State == PlaybackEngineState.Paused);
+        Assert.True(engine.TryGetPlaybackClock(out var before));
+        await Task.Delay(700);
+        Assert.True(engine.TryGetPlaybackClock(out var after));
+        Assert.Equal(before.Position, after.Position);
+    }
 
     [DllImport("libvlc", EntryPoint = "libvlc_audio_get_volume", CallingConvention = CallingConvention.Cdecl)]
     private static extern int GetReplayNativeVolume(IntPtr player);
@@ -187,13 +208,17 @@ internal static partial class ApplicationTestCatalog
         private readonly CancellationTokenSource cancellation = new();
         private readonly Task worker;
         private readonly ConcurrentDictionary<string, byte[]> files;
+        private long bytesServed;
+        internal long BytesServed => Interlocked.Read(ref bytesServed);
         internal Uri Uri { get; }
         internal ConcurrentQueue<string> Requests { get; } = new();
 
         internal ReplayFixtureServer(string directory, string? playlist = null, Func<string, byte[]?>? resolve = null,
-            TimeSpan segmentDelay = default)
+            TimeSpan segmentDelay = default, bool loadFiles = true)
         {
-            files = new(Directory.GetFiles(directory).ToDictionary(path => "/" + Path.GetFileName(path), File.ReadAllBytes));
+            files = loadFiles
+                ? new(Directory.GetFiles(directory).ToDictionary(path => "/" + Path.GetFileName(path), File.ReadAllBytes))
+                : new();
             if (playlist is not null) UpdatePlaylist(playlist);
             listener.Start();
             Uri = new Uri($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/index.m3u8");
@@ -221,6 +246,7 @@ internal static partial class ApplicationTestCatalog
                             var header = Encoding.ASCII.GetBytes($"HTTP/1.1 {(found ? "200 OK" : "404 Not Found")}\r\nContent-Length: {data.Length}\r\nConnection: close\r\n\r\n");
                             await stream.WriteAsync(header, cancellation.Token);
                             await stream.WriteAsync(data, cancellation.Token);
+                            Interlocked.Add(ref bytesServed, header.Length + data.Length);
                         }
                         catch (IOException ex) when (ex.InnerException is System.Net.Sockets.SocketException)
                         {

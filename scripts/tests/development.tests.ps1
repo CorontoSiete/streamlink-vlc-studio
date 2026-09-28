@@ -102,7 +102,7 @@ $global:LASTEXITCODE = if ($args[0] -eq $env:STUDIO_DEV_TEST_FAIL) { 19 } else {
     Assert-Development ($child.Path.StartsWith($expectedRoot + [IO.Path]::PathSeparator)) 'Child PATH did not prefer the selected SDK.'
     Assert-Development ($child.DotNetRoot -ceq $expectedRoot -and $child.DotNetRootX64 -ceq $expectedRoot) 'Child SDK roots differ from the selected host.'
     Assert-Development ($child.HostPath -ceq (Join-Path $expectedRoot 'dotnet.ps1')) 'Child host override differs from the selected SDK.'
-    Assert-Development ($child.Filter -ceq $filter -and $child.SkipInteractive -ceq 'true' -and $child.MaximumSkips -ceq '246') 'Explicit test selection or headless defaults were lost.'
+    Assert-Development ($child.Filter -ceq $filter -and $child.SkipInteractive -ceq 'true' -and $child.MaximumSkips -ceq '255') 'Explicit test selection or headless defaults were lost.'
     Assert-Development ([string]::IsNullOrEmpty($child.IsolatedChild)) 'Stale child marker disabled test isolation.'
     Write-Host 'PASS development: SDK propagation, focused tests, build ordering, and shell restoration'
 
@@ -141,6 +141,42 @@ $global:LASTEXITCODE = if ($args[0] -eq $env:STUDIO_DEV_TEST_FAIL) { 19 } else {
     } 'NativeAOT maintenance publish failed with exit code 19'
     $publish = Get-Content -LiteralPath $env:STUDIO_DEV_TEST_LOG | ConvertFrom-Json
     Assert-Development ($publish.Arguments[0] -ceq 'publish') 'Uninstaller ignored the selected SDK host.'
+    $defaultVersion = Resolve-PackageVersion -RepositoryRoot $repoRoot
+    Assert-Development (($publish.Arguments -contains "-p:Version=$defaultVersion") -or ($publish.Arguments -contains "Version=$defaultVersion")) 'Uninstaller did not use Directory.Build.props by default.'
+    [IO.File]::WriteAllText($env:STUDIO_DEV_TEST_LOG, '')
+    Assert-DevelopmentFailure {
+        & (Join-Path $repoRoot 'scripts\build-uninstaller.ps1') -OutputPath (Join-Path $fixtureRoot 'Uninstall.exe') -Version '9.8.7' -Quiet
+    } 'NativeAOT maintenance publish failed with exit code 19'
+    $publish = Get-Content -LiteralPath $env:STUDIO_DEV_TEST_LOG | ConvertFrom-Json
+    foreach ($property in @('Version', 'VersionPrefix', 'InformationalVersion')) {
+        Assert-Development (($publish.Arguments -contains "-p:${property}=9.8.7") -or ($publish.Arguments -contains "${property}=9.8.7")) "Explicit version was lost for $property."
+    }
+
+    $versionFixture = Join-Path $fixtureRoot 'version fixture'
+    New-Item -ItemType Directory -Path (Join-Path $versionFixture 'scripts\lib') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\lib\common.ps1') -Destination (Join-Path $versionFixture 'scripts\lib\common.ps1')
+    foreach ($name in @('build-uninstaller.ps1', 'package-release.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\$name") -Destination (Join-Path $versionFixture "scripts\$name")
+    }
+    $propsPath = Join-Path $versionFixture 'Directory.Build.props'
+    Assert-DevelopmentFailure { Resolve-PackageVersion -RepositoryRoot $versionFixture } 'version file is missing'
+    Assert-Development ((Resolve-PackageVersion -RepositoryRoot $versionFixture -Version '2.3.4') -ceq '2.3.4') 'Explicit version depends on a default file.'
+    foreach ($props in @('<Project>', '<Project />', '<Project><PropertyGroup><VersionPrefix>$(Unknown)</VersionPrefix></PropertyGroup></Project>',
+            '<Project><PropertyGroup><VersionPrefix>1.02.3</VersionPrefix></PropertyGroup></Project>',
+            '<Project><PropertyGroup><VersionPrefix>1.2.65536</VersionPrefix></PropertyGroup></Project>')) {
+        [IO.File]::WriteAllText($propsPath, $props)
+        [IO.File]::WriteAllText($env:STUDIO_DEV_TEST_LOG, '')
+        foreach ($name in @('build-uninstaller.ps1', 'package-release.ps1')) {
+            Assert-DevelopmentFailure { & (Join-Path $versionFixture "scripts\$name") -Quiet } 'default package version|canonical three-part|between 0 and 65535'
+        }
+        Assert-Development ((Get-Item -LiteralPath $env:STUDIO_DEV_TEST_LOG).Length -eq 0) 'Malformed default version started publishing.'
+        Assert-Development (-not (Test-Path -LiteralPath (Join-Path $versionFixture 'release'))) 'Malformed version created packaging output.'
+    }
+    [IO.File]::WriteAllText($propsPath, '<Project><PropertyGroup><VersionPrefix>4.5.6</VersionPrefix></PropertyGroup></Project>')
+    Assert-Development ((Resolve-PackageVersion -RepositoryRoot $versionFixture) -ceq '4.5.6') 'Valid default version was not read.'
+    Assert-Development ((Resolve-PackageVersion -RepositoryRoot $versionFixture -Version '7.8.9') -ceq '7.8.9') 'Explicit version did not override the default.'
+    Assert-DevelopmentFailure { Resolve-PackageVersion -RepositoryRoot $versionFixture -Version '' } 'canonical three-part'
+    Write-Host 'PASS development: package version defaults, explicit overrides, and failures before publishing'
 
     # Load only the installer resolver, without downloading or running setup.
     $tokens = $null

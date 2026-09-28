@@ -12,9 +12,10 @@ function Get-InstallRelativePath([string]$Root, [string]$Path) {
     $pathFull.Substring($prefix.Length).Replace('\', '/')
 }
 
-function Get-SafeInstallFiles([string]$Directory) {
+function Get-SafeInstallEntries([string]$Directory) {
     $root = [IO.Path]::GetFullPath($Directory)
-    $files = [Collections.Generic.List[IO.FileInfo]]::new()
+    Assert-NoReparsePointInExistingPath $root
+    $entries = [Collections.Generic.List[IO.FileSystemInfo]]::new()
     $pending = [Collections.Generic.Stack[string]]::new()
     $pending.Push($root)
     while ($pending.Count -gt 0) {
@@ -24,13 +25,16 @@ function Get-SafeInstallFiles([string]$Directory) {
             }
             if ($item.PSIsContainer) {
                 $pending.Push($item.FullName)
-            } else {
-                $files.Add($item)
             }
+            $entries.Add($item)
         }
     }
 
-    @($files | Sort-Object FullName)
+    @($entries | Sort-Object FullName)
+}
+
+function Get-SafeInstallFiles([string]$Directory) {
+    @(Get-SafeInstallEntries $Directory | Where-Object { -not $_.PSIsContainer })
 }
 
 function Write-JsonAtomically([string]$Path, $Value) {
@@ -232,17 +236,36 @@ function Copy-UnmanagedInstallFiles {
         [Parameter(Mandatory = $true)]$ExistingState
     )
 
-    foreach ($file in Get-SafeInstallFiles $ExistingDirectory) {
-        $relative = Get-InstallRelativePath $ExistingDirectory $file.FullName
+    Assert-NoReparsePointInExistingPath $StagingDirectory
+    $managedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($managedPath in $ExistingState.Paths) {
+        $parent = [IO.Path]::GetDirectoryName($managedPath.Replace('/', '\'))
+        while (-not [string]::IsNullOrWhiteSpace($parent)) {
+            $managedDirectories.Add($parent.Replace('\', '/')) | Out-Null
+            $parent = [IO.Path]::GetDirectoryName($parent)
+        }
+    }
+
+    foreach ($entry in Get-SafeInstallEntries $ExistingDirectory) {
+        $relative = Get-InstallRelativePath $ExistingDirectory $entry.FullName
         if ($relative -in @($script:InstallOwnerFileName, $script:InstallManifestFileName) -or
-            $ExistingState.Paths.Contains($relative)) {
+            (-not $entry.PSIsContainer -and $ExistingState.Paths.Contains($relative)) -or
+            ($entry.PSIsContainer -and $managedDirectories.Contains($relative))) {
             continue
         }
         $target = Join-Path $StagingDirectory $relative
+        if ($entry.PSIsContainer) {
+            if (Test-Path -LiteralPath $target -PathType Leaf) {
+                throw "Upgrade payload conflicts with user-created directory '$relative'; the existing installation was not changed."
+            }
+            # Preserve empty user directories without reviving obsolete managed parents.
+            [IO.Directory]::CreateDirectory($target) | Out-Null
+            continue
+        }
         if (Test-Path -LiteralPath $target) {
             throw "Upgrade payload conflicts with user-created file '$relative'; the existing installation was not changed."
         }
-        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-        Copy-Item -LiteralPath $file.FullName -Destination $target
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $target)) | Out-Null
+        [IO.File]::Copy($entry.FullName, $target, $false)
     }
 }

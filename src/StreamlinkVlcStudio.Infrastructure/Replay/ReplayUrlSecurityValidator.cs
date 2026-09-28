@@ -9,14 +9,17 @@ namespace StreamlinkVlcStudio.Infrastructure.Replay;
 internal sealed class ReplayUrlSecurityValidator
 {
     private readonly Func<string, CancellationToken, Task<IPAddress[]>> resolveHostAsync;
+    private readonly Func<Uri, PlatformKind, bool> isAllowedUri;
 
     internal static ReplayUrlSecurityValidator Shared { get; } = new(
         static (host, cancellationToken) => Dns.GetHostAddressesAsync(host, cancellationToken));
 
     internal ReplayUrlSecurityValidator(
-        Func<string, CancellationToken, Task<IPAddress[]>> resolveHostAsync)
+        Func<string, CancellationToken, Task<IPAddress[]>> resolveHostAsync,
+        Func<Uri, PlatformKind, bool>? isAllowedUri = null)
     {
         this.resolveHostAsync = resolveHostAsync ?? throw new ArgumentNullException(nameof(resolveHostAsync));
+        this.isAllowedUri = isAllowedUri ?? TryValidateProviderUri;
     }
 
     internal async Task<Uri> ValidateAsync(
@@ -24,7 +27,7 @@ internal sealed class ReplayUrlSecurityValidator
         PlatformKind platform,
         CancellationToken cancellationToken = default)
     {
-        if (!TryValidateProviderUri(uri, platform))
+        if (!isAllowedUri(uri, platform))
         {
             throw new InvalidDataException("Replay URL is not an approved public HTTPS provider endpoint.");
         }

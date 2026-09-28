@@ -9,7 +9,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
 internal static class BrowsePayloadMapper
 {
-    public static IEnumerable<BrowseCategory> ReadTwitchCategories(JsonElement root)
+    public static IEnumerable<BrowseCategory> ReadCategories(JsonElement root, PlatformKind platform)
     {
         if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
@@ -18,19 +18,10 @@ internal static class BrowsePayloadMapper
 
         foreach (var item in data.EnumerateArray())
         {
-            var id = GetOptionalString(item, "id");
-            var name = GetOptionalString(item, "name");
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
+            if (ReadCategory(item, platform) is { } category)
             {
-                continue;
+                yield return category;
             }
-
-            yield return new BrowseCategory(
-                PlatformKind.Twitch,
-                id,
-                name,
-                NormalizeImageUrl(GetOptionalString(item, "box_art_url"), "285", "380"),
-                []);
         }
     }
 
@@ -106,34 +97,6 @@ internal static class BrowsePayloadMapper
         }
 
         return new TwitchStreamViewerCountReadResult(streams, null);
-    }
-
-    public static IEnumerable<BrowseCategory> ReadKickCategories(JsonElement root)
-    {
-        if (!JsonElementReader.TryGetArray(root, "data", out var data))
-        {
-            yield break;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            var id = GetOptionalString(item, "id");
-            var name = GetOptionalString(item, "name");
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
-            {
-                continue;
-            }
-
-            yield return new BrowseCategory(
-                PlatformKind.Kick,
-                id,
-                name,
-                NormalizeImageUrl(GetOptionalString(item, "thumbnail")),
-                ReadTags(item),
-                TryGetInt32(item, "viewer_count") is { } viewerCount
-                    ? Math.Max(0, viewerCount)
-                    : null);
-        }
     }
 
     public static bool TryReadKickCategoryDetail(
@@ -232,23 +195,41 @@ internal static class BrowsePayloadMapper
                 continue;
             }
 
-            var id = GetOptionalString(categoryElement, "id");
-            var name = GetOptionalString(categoryElement, "name");
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
+            if (ReadCategory(categoryElement, PlatformKind.Kick) is { } category)
             {
-                continue;
+                yield return category;
             }
+        }
+    }
 
-            yield return new BrowseCategory(
-                PlatformKind.Kick,
+    private static BrowseCategory? ReadCategory(JsonElement item, PlatformKind platform)
+    {
+        var id = GetOptionalString(item, "id");
+        var name = GetOptionalString(item, "name");
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        return platform switch
+        {
+            PlatformKind.Twitch => new BrowseCategory(
+                platform,
                 id,
                 name,
-                NormalizeImageUrl(GetOptionalString(categoryElement, "thumbnail")),
-                ReadTags(categoryElement),
-                TryGetInt32(categoryElement, "viewer_count") is { } viewerCount
+                NormalizeImageUrl(GetOptionalString(item, "box_art_url"), "285", "380"),
+                []),
+            PlatformKind.Kick => new BrowseCategory(
+                platform,
+                id,
+                name,
+                NormalizeImageUrl(GetOptionalString(item, "thumbnail")),
+                ReadTags(item),
+                TryGetInt32(item, "viewer_count") is { } viewerCount
                     ? Math.Max(0, viewerCount)
-                    : null);
-        }
+                    : null),
+            _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, "Unsupported category platform.")
+        };
     }
 
     private static IReadOnlyList<string> ReadTags(JsonElement element)

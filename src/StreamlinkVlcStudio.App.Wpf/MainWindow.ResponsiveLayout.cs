@@ -32,7 +32,7 @@ public partial class MainWindow
         WindowButtons.Width = Math.Min(138, chromeWidth);
         TitleBrand.Visibility = chromeWidth < 450 ? Visibility.Collapsed : Visibility.Visible;
         PlaybackActionsToolBar.MaxWidth = Math.Max(28, chromeWidth - 54 - Math.Min(160, chromeWidth * 0.35));
-        if (!fullscreen) TopControlsRow.Height = new GridLength(54 * scale);
+        // The auto-sized row follows the transformed top bar so its controls stay in the chrome.
 
         var stackChat = width < 600;
         if (stackChat != isChatStacked)

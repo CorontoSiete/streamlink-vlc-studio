@@ -29,6 +29,11 @@
 #define MYO_EVENT_SHUTDOWN  6 /* orchestrator -> controller: clear overlay and exit */
 #define MYO_EVENT_UI_SCALE 8 /* render scale in source pixels; independent of app window size */
 #define MYO_EVENT_VIDEO_SIZE 7 /* plugin -> controller: value packs source video width:height */
+#define MYO_EVENT_TEXT_SELECT_BEGIN 9 /* plugin -> controller: local x:y starts body-text selection */
+#define MYO_EVENT_TEXT_SELECT_UPDATE 10 /* plugin -> controller: local x:y updates body-text selection */
+#define MYO_EVENT_TEXT_SELECT_END 11 /* plugin -> controller: local x:y ends body-text selection */
+#define MYO_EVENT_TEXT_SELECT_CANCEL 12 /* plugin -> controller: clear body-text selection */
+#define MYO_EVENT_TEXT_CLICK 13 /* plugin -> controller: local x:y text click without a drag */
 
 #define MYO_PACK_SIZE_EVENT(w, h) \
     ((int32_t)(((((uint32_t)(w)) & 0xffffu) << 16) | (((uint32_t)(h)) & 0xffffu)))

@@ -862,11 +862,10 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, tab.CanSeekReplay);
 
         var refreshReplayAvailability = typeof(StreamTabViewModel).GetMethod(
-            "RefreshReplayAvailabilityAsync",
+            "StartReplayAvailabilityRefreshInBackground",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(refreshReplayAvailability);
-        await ((Task)refreshReplayAvailability!.Invoke(tab, [settings, CancellationToken.None, 0L])!)
-            .WaitAsync(TimeSpan.FromSeconds(1));
+        refreshReplayAvailability!.Invoke(tab, [settings, true]);
         await newResolveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal(false, tab.CanSeekReplay);
@@ -1656,9 +1655,8 @@ internal static partial class ApplicationTestCatalog
             Assert.DoesNotContain("14:37", renderedText);
             Assert.Equal("Segoe UI", block.FontFamily.Source);
             Assert.Equal(FontWeights.Bold, block.FontWeight);
-            Assert.Equal(TextWrapping.WrapWithOverflow, block.TextWrapping);
-            Assert.Equal(LineStackingStrategy.BlockLineHeight, block.LineStackingStrategy);
-            Assert.Equal(22d, block.LineHeight);
+            Assert.Equal(LineStackingStrategy.BlockLineHeight, block.Document.LineStackingStrategy);
+            Assert.Equal(22d, block.Document.LineHeight);
             Assert.Equal("#FFFDE68A", ((SolidColorBrush)runs[0].Foreground).Color.ToString());
             Assert.True(runs.Skip(1).All(run =>
                 ((SolidColorBrush)run.Foreground).Color == Colors.White));
@@ -1682,7 +1680,7 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal("system: replay chat unavailable", string.Concat(systemRuns.Select(run => run.Text)));
             Assert.Equal(FontWeights.Normal, systemBlock.FontWeight);
             Assert.Equal(13d, systemBlock.FontSize);
-            Assert.Equal(19d, systemBlock.LineHeight);
+            Assert.Equal(19d, systemBlock.Document.LineHeight);
             Assert.True(systemRuns.All(run =>
                 ((SolidColorBrush)run.Foreground).Color == Color.FromRgb(0x93, 0xC5, 0xFD)));
 
@@ -1816,7 +1814,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(24d, emote.Height);
                 Assert.Equal(96d, emote.Width);
                 Assert.Equal(96d, emote.MaxWidth);
-                Assert.Equal(26d, block.LineHeight);
+                Assert.Equal(26d, block.Document.LineHeight);
                 Assert.Equal(new Thickness(0), badge.Margin);
                 Assert.Equal(new Thickness(0), emote.Margin);
             }
@@ -1873,7 +1871,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(referenceFontSize, (int)block.FontSize);
                 Assert.Equal(
                     presentation.MessageFontCellHeight + presentation.LineGap,
-                    (int)block.LineHeight);
+                    (int)block.Document.LineHeight);
             }
         });
     }),
@@ -1891,7 +1889,7 @@ internal static partial class ApplicationTestCatalog
                     DateTimeOffset.UtcNow),
                 presentation);
             oversizedTokenBlock.Measure(new System.Windows.Size(90, double.PositiveInfinity));
-            Assert.Equal(TextWrapping.WrapWithOverflow, oversizedTokenBlock.TextWrapping);
+            Assert.Equal(90d, oversizedTokenBlock.Document.ColumnWidth);
             Assert.Equal(44d, oversizedTokenBlock.DesiredSize.Height);
 
             var layout = NativeOverlayChatFrameRenderer.ResolveReplayOverlayLayout(
@@ -3272,12 +3270,12 @@ internal static partial class ApplicationTestCatalog
                 tab.SetVideoHandle(new IntPtr(42));
                 await tab.StartAsync(settings);
 
-                typeof(StreamTabViewModel)
+                typeof(NativeChatOverlayController)
                     .GetField("nativeOverlayProcess", BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .SetValue(tab, controller);
-                typeof(StreamTabViewModel)
+                    .SetValue(tab.NativeOverlay, controller);
+                typeof(NativeChatOverlayController)
                     .GetField("nativeOverlayPipeName", BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .SetValue(tab, pipeName);
+                    .SetValue(tab.NativeOverlay, pipeName);
 
                 var seekTask = tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
                 await replayPlayStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -3523,6 +3521,17 @@ internal static partial class ApplicationTestCatalog
                     () => tab.NativeReplayOverlayMessageOffset == 0,
                     TimeSpan.FromSeconds(2));
 
+                // The native client receives the updated scrollbar range with its frame.
+                // Consume that frame before dragging to the maximum of the enlarged list.
+                var updatedRangeTask = ReadNativeOverlayPipeMessagesUntilAsync(
+                    pipeName,
+                    messages => messages.Any(message =>
+                        IsNativeOverlayScrollbarStateFrame(message) &&
+                        ReadNativeOverlayScrollbarMessageOffset(message) == 0 &&
+                        ReadNativeOverlayScrollbarTotalMessageCount(message) == replayMessages.Length + 2),
+                    TimeSpan.FromSeconds(4));
+                invalidateFrame.Invoke(tab, []);
+                await updatedRangeTask;
                 var maximumMessageOffset = tab.NativeReplayOverlayMaximumMessageOffset;
                 await WriteNativeOverlayEventPipeMessageAsync(
                     $"{pipeName}_events",
@@ -4968,7 +4977,7 @@ internal static partial class ApplicationTestCatalog
             invalidateFrame!.Invoke(tab, []);
             AssertNativeOverlayTransparentFrame(await firstFrameTask);
 
-            var writeFailed = typeof(StreamTabViewModel).GetMethod(
+            var writeFailed = typeof(NativeChatOverlayController).GetMethod(
                 "OnNativeReplayOverlayFrameWriteFailed",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(writeFailed);
@@ -4976,7 +4985,7 @@ internal static partial class ApplicationTestCatalog
                 pipeName,
                 IsNativeOverlayTransparentFrame,
                 TimeSpan.FromSeconds(4));
-            writeFailed!.Invoke(tab, [new IOException("simulated blank frame write failure")]);
+            writeFailed!.Invoke(tab.NativeOverlay, [new IOException("simulated blank frame write failure")]);
 
             var blankFrame = await secondFrameTask;
             AssertNativeOverlayTransparentFrame(blankFrame);

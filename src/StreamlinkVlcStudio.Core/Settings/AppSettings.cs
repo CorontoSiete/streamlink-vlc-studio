@@ -15,6 +15,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private VideoRendererMode videoRendererMode = VideoRendererMode.Automatic;
     private bool multiStreamEnabled;
     private bool keepHomeCardRightGap = true;
+    private bool enableStreamHoverPreviews;
     private bool setupCompleted;
     private AppTheme theme = AppTheme.Dark;
     private WindowCloseBehavior closeBehavior = WindowCloseBehavior.Exit;
@@ -85,6 +86,12 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => keepHomeCardRightGap;
         set => SetProperty(ref keepHomeCardRightGap, value);
+    }
+
+    public bool EnableStreamHoverPreviews
+    {
+        get => enableStreamHoverPreviews;
+        set => SetProperty(ref enableStreamHoverPreviews, value);
     }
 
     public bool SetupCompleted

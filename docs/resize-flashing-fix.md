@@ -10,6 +10,9 @@ Three parts of the window/rendering interaction needed attention:
 - `WindowChrome` with `GlassFrameThickness="0"` disables its DWM frame path and
   rebuilds the window clipping region on every size change. A one-DIP frame keeps
   DWM composition active in both the main and picture-in-picture windows.
+  PiP now uses a full native client area without the glass frame or clipping
+  regions; see [PiP resize white edge](pip-resize-white-edge.md) for the subsequent
+  edge-pixel regression and replacement.
 - WPF's `HwndHost` adds `SWP_NOCOPYBITS`. The native video host now retains valid
   client pixels while keeping WPF's assigned coordinates, sizing, and normal
   invalidation of newly exposed areas.

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
+using StreamlinkVlcStudio.App.Wpf.Chat;
 using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
@@ -29,22 +30,16 @@ public enum SettingsCategory
 public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 {
     private static readonly TimeSpan DetachedDisposalWaitTimeout = TimeSpan.FromSeconds(4);
-    private static readonly TimeSpan DefaultRecentThumbnailRefreshInterval = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan DefaultFollowedChannelsRefreshInterval = TimeSpan.FromMinutes(1);
-    private static readonly TimeSpan DefaultStreamSearchDebounceInterval = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan DefaultTwitchVodSearchDebounceInterval = TimeSpan.FromMilliseconds(450);
-    private static readonly TimeSpan DefaultBrowseCategorySearchDebounceInterval = TimeSpan.FromMilliseconds(450);
-    private const int BrowseCategoryPageSize = 10;
-    private const int BrowseCategoryViewerCountBatchSize = 1;
-    private const int BrowseCategoryViewerCountConcurrency = 4;
-    private const int BrowseStreamPageSize = 50;
-    private const int StreamSearchViewerCountConcurrency = 4;
-    private const int RecentMetadataConcurrency = 4;
     private const int VlcPluginMultiViewChatDisableThreshold = 3;
     private const int DenseMultiStreamStartupThreshold = 4;
     private const int MaxConcurrentTabStarts = 2;
-    private static long nextLiveThumbnailCacheVersion;
+    private readonly VodLibraryViewModel vodLibrary;
+    private readonly BrowseViewModel browse;
+    private readonly FollowedChannelsViewModel followed;
+    private readonly RecentStreamsViewModel recent;
+    private readonly StreamSearchViewModel streamSearch;
     private readonly ISettingsService settingsService;
+    private readonly SettingsAutoSaveController settingsAutoSave;
     private readonly IStreamlinkService streamlinkService;
     private readonly IPlaybackEngineFactory playbackFactory;
     private readonly IChatClientFactory chatFactory;
@@ -52,28 +47,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IReplayResolver? replayResolver;
     private readonly IVodChatProvider? vodChatProvider;
     private readonly IVodPlaybackHistory? vodPlaybackHistory;
-    private readonly IFollowedStreamsService? followedStreamsService;
-    private readonly IKickFollowedChannelsImporter? kickFollowedChannelsImporter;
-    private string kickFollowImportStatus = "";
-    private int kickFollowImportBusy;
-    private readonly ILiveNotificationService? liveNotificationService;
-    private FollowedChannelsSettings? observedFollowedChannelsSettings;
-    private HashSet<string>? previousLiveFollowedKeys;
-    private readonly HashSet<PlatformKind> baselinedLivePlatforms = [];
     private readonly IStreamMetadataService? streamMetadataService;
-    private readonly IStreamSearchService? streamSearchService;
-    private readonly ITwitchVodService? twitchVodService;
-    private readonly IKickVodService? kickVodService;
     private readonly ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver;
     private readonly ITwitchClipService? twitchClipService;
     private readonly IKickClipService? kickClipService;
     private readonly IAppUpdateService? appUpdateService;
     private readonly IBrowseService? browseService;
-    private readonly TimeSpan recentThumbnailRefreshInterval;
-    private readonly TimeSpan followedChannelsRefreshInterval;
-    private readonly TimeSpan streamSearchDebounceInterval;
-    private readonly TimeSpan twitchVodSearchDebounceInterval;
-    private readonly TimeSpan browseCategorySearchDebounceInterval;
     private readonly IAppLogger logger;
     private readonly Action<Action> dispatch;
     private readonly Func<Action, bool>? tryDispatch;
@@ -83,30 +62,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly AppLogBuffer appLogBuffer;
     private readonly object disposalGate = new();
     private readonly object detachedDisposalsGate = new();
-    private readonly object recentThumbnailRefreshTimerGate = new();
-    private readonly object followedChannelsRefreshTimerGate = new();
-    private readonly object followedChannelsRefreshTaskGate = new();
-    private readonly object browseCategoryViewerCountGate = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
-    private readonly StreamSearchController streamSearchController = new();
-    private readonly VodBrowseController vodBrowseController = new();
-    private readonly PagedResultTracker vodPages = new();
-    private readonly PagedResultTracker browseCategoryPages = new();
-    private readonly PagedResultTracker browseStreamPages = new();
     private readonly SemaphoreSlim streamOpenGate = new(1, 1);
     private readonly TabStartController tabStartController = new(MaxConcurrentTabStarts);
     private readonly SemaphoreSlim chatSettingsApplyGate = new(1, 1);
     private readonly SemaphoreSlim vlcPluginMultiViewChatPolicyGate = new(1, 1);
-    private readonly SemaphoreSlim recentStreamsGate = new(1, 1);
-    private readonly SemaphoreSlim recentThumbnailRefreshGate = new(1, 1);
-    private readonly SemaphoreSlim followedChannelsRefreshGate = new(1, 1);
-    private readonly CancellationTokenSource recentThumbnailRefreshCancellation = new();
-    private readonly CancellationTokenSource followedChannelsRefreshCancellation = new();
     private readonly List<Task> detachedDisposals = [];
     private readonly BackgroundOperationController backgroundOperationController;
     private readonly TabGroupingController tabGroupingController = new();
-    private readonly RecentStreamController recentStreamController = new();
-    private Dictionary<string, StreamMetadataResult>? pendingRecentMetadata;
     private readonly HashSet<StreamTabViewModel> vlcPluginMultiViewChatPolicyHiddenTabs = [];
     private readonly List<NavigationDestination> navigationHistory = [];
     // Stream opening can hide Home before selecting its tab. Keep the last completed
@@ -120,16 +83,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     // PiP can own audio when there is no selected stream in the main window.
     private StreamTabViewModel? audioActiveTab;
     private TabStripItemViewModel? selectedTabStripItem;
-    private string newStreamText = "";
-    private string streamSearchStatus = "";
     private string selectedQuality;
     private string statusMessage = "Ready";
-    private string followedChannelsStatus = "Live followed channels are not loaded";
-    private string twitchVodSearchText = "";
-    private string twitchVodStatus = "Search a Twitch streamer to browse VODs.";
-    private string browseCategorySearchText = "";
-    private string browseStatus = "Browse Twitch or Kick categories.";
-    private string browseCategoryStatus = "Browse Twitch or Kick categories.";
+    private string settingsSaveStatus = "Changes are saved automatically.";
+    private bool isSavingSettings;
+    private bool hasSettingsSaveError;
     private string appUpdateStatus = "Updates are checked automatically. Automatic downloads are optional; you choose when to restart and install.";
     private Version? canceledAutomaticDownloadVersion;
     private string appUpdateActionText = "Check for updates";
@@ -138,59 +96,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource? updateDownloadCancellation;
     private bool updateDownloadCanceledByUser;
     private int updateActionInProgress;
-    private string browseCategoryNextCursor = "";
-    private string browseStreamNextCursor = "";
-    private string kickFollowedChannelsText;
-    private DateTimeOffset? followedChannelsLastUpdatedAt;
     private bool isHomeSelected = true;
     private bool isRecentHomePageSelected;
     private bool isTwitchVodsHomePageSelected;
     private bool isBrowseHomePageSelected;
-    private bool isBrowseStreamsPageSelected;
     private bool isSettingsOpen;
     private SettingsCategory selectedSettingsCategory = SettingsCategory.General;
-    private bool isStreamSearchRunning;
-    private bool hasStreamSearchCompleted;
-    private Task? activeStreamSearchTask;
-    private int activeStreamSearchGeneration;
-    private string activeStreamSearchQuality = "";
-    private bool isStreamSearchDropdownOpen;
-    private bool isFollowedChannelsRefreshing;
-    private Task? activeFollowedChannelsRefreshTask;
-    private string activeFollowedChannelsRefreshKey = "";
-    private int followedChannelsRefreshGeneration;
-    private bool isTwitchVodSearchRunning;
-    private Task? activeTwitchVodSearchTask;
-    private int activeTwitchVodSearchGeneration;
-    private (PlatformKind Platform, string Query, TwitchVodTypeFilter Type) activeTwitchVodSearch;
-    private bool hasTwitchVodSearchCompleted;
-    private bool isBrowseCategoriesLoading;
-    private Task? activeBrowseCategoryTask;
-    private int activeBrowseCategoryGeneration;
-    private (PlatformKind Platform, string Query) activeBrowseCategorySearch;
-    private bool hasBrowseCategorySearchCompleted;
-    private bool isBrowseStreamsLoading;
-    private Task? activeBrowseStreamTask;
-    private int activeBrowseStreamGeneration;
-    private (PlatformKind Platform, string CategoryId) activeBrowseStreamSearch;
-    private bool hasBrowseStreamSearchCompleted;
     private bool isReplaySeekBarUiVisible = true;
     private bool isStreamOnlyFullscreenActive;
     private bool isVideoFullscreenActive;
     private bool suppressInactiveTabPause;
     private bool applyingSelectedTabSelection;
     private bool disposed;
-    private int followedChannelsAutomaticRefreshActive;
     private int inactivePlaybackPolicyApplyPassCount;
-    private System.Threading.Timer? recentThumbnailRefreshTimer;
-    private System.Threading.Timer? followedChannelsRefreshTimer;
-    private CancellationTokenSource? browseCategoryViewerCountCancellation;
-    private bool browseCategoryViewerCountLoadPending;
-    private TwitchVodTypeFilter selectedTwitchVodType = TwitchVodTypeFilter.Archive;
-    private PlatformKind selectedVodPlatform = PlatformKind.Twitch;
-    private PlatformKind selectedBrowsePlatform = PlatformKind.Twitch;
-    private BrowseCategoryViewModel? selectedBrowseCategory;
-    private string twitchVodNextCursor = "";
     private int videoGridRows = VideoGridLayoutCalculator.BaseGridSize;
     private int videoGridColumns = VideoGridLayoutCalculator.BaseGridSize;
 
@@ -204,28 +122,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var logger = dependencies.Logger;
         var dispatch = dependencies.Dispatch;
         var viewerCountService = dependencies.ViewerCountService;
-        var followedStreamsService = dependencies.FollowedStreamsService;
         var streamMetadataService = dependencies.StreamMetadataService;
         var replayResolver = dependencies.ReplayResolver;
         var vodChatProvider = dependencies.VodChatProvider;
-        var liveNotificationService = dependencies.LiveNotificationService;
-        var streamSearchService = dependencies.StreamSearchService;
-        var twitchVodService = dependencies.TwitchVodService;
-        var kickVodService = dependencies.KickVodService;
         var twitchSubOnlyVodResolver = dependencies.TwitchSubOnlyVodResolver;
         var twitchClipService = dependencies.TwitchClipService;
         var appUpdateService = dependencies.AppUpdateService;
         var browseService = dependencies.BrowseService;
-        var recentThumbnailRefreshInterval = dependencies.RecentThumbnailRefreshInterval;
-        var followedChannelsRefreshInterval = dependencies.FollowedChannelsRefreshInterval;
-        var streamSearchDebounceInterval = dependencies.StreamSearchDebounceInterval;
-        var twitchVodSearchDebounceInterval = dependencies.TwitchVodSearchDebounceInterval;
-        var browseCategorySearchDebounceInterval = dependencies.BrowseCategorySearchDebounceInterval;
         var openBrowser = dependencies.OpenBrowser;
         var requestShutdown = dependencies.RequestShutdown;
         var tryDispatch = dependencies.TryDispatch;
 
         Settings = settings;
+        HoverPreviews = new StreamHoverPreviewController(settings, streamlinkService, logger);
         this.settingsService = settingsService;
         this.streamlinkService = streamlinkService;
         this.playbackFactory = playbackFactory;
@@ -234,13 +143,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.replayResolver = replayResolver;
         this.vodChatProvider = vodChatProvider;
         vodPlaybackHistory = dependencies.VodPlaybackHistory;
-        this.followedStreamsService = followedStreamsService;
-        kickFollowedChannelsImporter = dependencies.KickFollowedChannelsImporter;
-        this.liveNotificationService = liveNotificationService;
         this.streamMetadataService = streamMetadataService;
-        this.streamSearchService = streamSearchService;
-        this.twitchVodService = twitchVodService;
-        this.kickVodService = kickVodService;
         this.twitchSubOnlyVodResolver = twitchSubOnlyVodResolver;
         this.twitchClipService = twitchClipService;
         kickClipService = dependencies.KickClipService;
@@ -250,11 +153,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             appUpdateService.StateChanged += OnAppUpdateStateChanged;
         }
         this.browseService = browseService;
-        this.recentThumbnailRefreshInterval = recentThumbnailRefreshInterval ?? DefaultRecentThumbnailRefreshInterval;
-        this.followedChannelsRefreshInterval = followedChannelsRefreshInterval ?? DefaultFollowedChannelsRefreshInterval;
-        this.streamSearchDebounceInterval = streamSearchDebounceInterval ?? DefaultStreamSearchDebounceInterval;
-        this.twitchVodSearchDebounceInterval = twitchVodSearchDebounceInterval ?? DefaultTwitchVodSearchDebounceInterval;
-        this.browseCategorySearchDebounceInterval = browseCategorySearchDebounceInterval ?? DefaultBrowseCategorySearchDebounceInterval;
         this.logger = logger;
         backgroundOperationController = new BackgroundOperationController(logger);
         this.dispatch = dispatch;
@@ -273,42 +171,23 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 "Failed to apply playback visibility policy.",
                 exception));
         selectedQuality = settings.DefaultQuality;
-        kickFollowedChannelsText = FormatKickFollowedChannelsText(settings.FollowedChannels.KickChannelSlugs);
 
-        AddAndPlayCommand = CreateCommand(AddAndPlayAsync, () => HasNewStreamSearchText);
+        streamSearch = new StreamSearchViewModel(dependencies, value => StatusMessage = value,
+            () => SelectedQuality, () => IsHomeVisible && !IsSettingsOpen, OpenSearchResultAsync);
+        streamSearch.PropertyChanged += HomeFeatureOnPropertyChanged;
         GoBackCommand = new RelayCommand(GoBack, () => CanGoBack);
         SelectHomeCommand = new RelayCommand(SelectHome);
         ShowFollowedHomePageCommand = new RelayCommand(ShowFollowedHomePage);
         ShowTwitchVodsHomePageCommand = new RelayCommand(ShowTwitchVodsHomePage);
         ShowRecentHomePageCommand = new RelayCommand(ShowRecentHomePage);
         ShowBrowseHomePageCommand = new RelayCommand(ShowBrowseHomePage);
-        ReturnToBrowseCategoriesCommand = new RelayCommand(ReturnToBrowseCategoriesPage, () => IsBrowseStreamsPageVisible);
-        RefreshFollowedChannelsCommand = CreateCommand(RefreshFollowedChannelsAsync, () => followedStreamsService is not null);
-        ImportKickFollowsCommand = CreateCommand(ImportKickFollowsAsync,
-            () => kickFollowedChannelsImporter is not null && Volatile.Read(ref kickFollowImportBusy) == 0);
-        ClearImportedKickFollowsCommand = CreateCommand(ClearImportedKickFollowsAsync,
-            () => Volatile.Read(ref kickFollowImportBusy) == 0);
-        SearchTwitchVodsCommand = CreateCommand(
-            () => SearchTwitchVodsAsync(reset: true),
-            () => CanSearchSelectedVodPlatform);
-        LoadMoreTwitchVodsCommand = CreateCommand(
-            () => SearchTwitchVodsAsync(reset: false),
-            () => CanLoadMoreTwitchVods);
-        SelectTwitchVodPlatformCommand = new RelayCommand(() => SelectVodPlatform(PlatformKind.Twitch));
-        SelectKickVodPlatformCommand = new RelayCommand(() => SelectVodPlatform(PlatformKind.Kick));
-        ShowPastBroadcastsVodFilterCommand = new RelayCommand(() => SelectTwitchVodType(TwitchVodTypeFilter.Archive));
-        ShowHighlightsVodFilterCommand = new RelayCommand(() => SelectTwitchVodType(TwitchVodTypeFilter.Highlight));
-        ShowUploadsVodFilterCommand = new RelayCommand(() => SelectTwitchVodType(TwitchVodTypeFilter.Upload));
-        ShowAllVodFilterCommand = new RelayCommand(() => SelectTwitchVodType(TwitchVodTypeFilter.All));
-        SelectTwitchBrowsePlatformCommand = new RelayCommand(() => SelectBrowsePlatform(PlatformKind.Twitch));
-        SelectKickBrowsePlatformCommand = new RelayCommand(() => SelectBrowsePlatform(PlatformKind.Kick));
-        RefreshBrowseCommand = CreateCommand(RefreshBrowseAsync, () => browseService is not null);
-        LoadMoreBrowseCategoriesCommand = CreateCommand(
-            () => LoadBrowseCategoriesAsync(reset: false),
-            () => browseService is not null && CanLoadMoreBrowseCategories);
-        LoadMoreBrowseStreamsCommand = CreateCommand(
-            () => LoadBrowseStreamsAsync(reset: false),
-            () => browseService is not null && CanLoadMoreBrowseStreams);
+        browse = new BrowseViewModel(dependencies, value => StatusMessage = value,
+            OpenLiveStreamCardAsync, RecordNavigation, () => IsBrowseHomePageVisible);
+        browse.PropertyChanged += HomeFeatureOnPropertyChanged;
+        followed = new FollowedChannelsViewModel(dependencies, value => StatusMessage = value, OpenLiveStreamCardAsync);
+        followed.PropertyChanged += HomeFeatureOnPropertyChanged;
+        vodLibrary = new VodLibraryViewModel(dependencies, value => StatusMessage = value, OpenTwitchVodAsync);
+        vodLibrary.PropertyChanged += HomeFeatureOnPropertyChanged;
         PlaySelectedCommand = CreateCommand(() => StartSelectedTabAsync("Starting"), () => SelectedTab is not null);
         ReloadSelectedCommand = CreateCommand(() => StartSelectedTabAsync("Reloading"), () => SelectedTab is not null);
         StopSelectedCommand = CreateCommand(StopSelectedAsync, () => SelectedTab is not null);
@@ -337,30 +216,33 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ToggleChatCommand = CreateCommand(ToggleChatAsync, () => SelectedTab is not null);
         MoveTabLeftCommand = new RelayCommand(MoveTabLeft, () => SelectedTab is not null && Tabs.IndexOf(SelectedTab) > 0);
         MoveTabRightCommand = new RelayCommand(MoveTabRight, () => SelectedTab is not null && Tabs.IndexOf(SelectedTab) < Tabs.Count - 1);
-        RebuildRecentStreams();
+        recent = new RecentStreamsViewModel(dependencies, value => StatusMessage = value,
+            OpenRecentStreamAsync, () => IsHomeVisible && IsRecentHomePageVisible);
+        recent.PropertyChanged += HomeFeatureOnPropertyChanged;
         Tabs.CollectionChanged += TabsOnCollectionChanged;
-        StreamSearchResults.CollectionChanged += StreamSearchResultsOnCollectionChanged;
-        LiveFollowedChannels.CollectionChanged += LiveFollowedChannelsOnCollectionChanged;
-        TwitchVods.CollectionChanged += TwitchVodsOnCollectionChanged;
-        if (vodPlaybackHistory is not null) vodPlaybackHistory.BookmarkChanged += OnVodBookmarkChanged;
-        RecentStreams.CollectionChanged += RecentStreamsOnCollectionChanged;
-        BrowseCategories.CollectionChanged += BrowseCategoriesOnCollectionChanged;
-        BrowseStreams.CollectionChanged += BrowseStreamsOnCollectionChanged;
         Settings.PropertyChanged += SettingsOnPropertyChanged;
         ObserveChatSettings(Settings.Chat);
-        ObserveFollowedChannelsSettings(Settings.FollowedChannels);
+        settingsAutoSave = new SettingsAutoSaveController(Settings, settingsService, dispatch, OnSettingsAutoSaved);
     }
 
     public AppSettings Settings { get; }
+
+    public StreamHoverPreviewController HoverPreviews { get; }
     public ObservableCollection<StreamTabViewModel> Tabs { get; } = [];
     public ObservableCollection<TabStripItemViewModel> TabStripItems { get; } = [];
     public ObservableCollection<StreamTabViewModel> VideoTabs { get; } = [];
-    public ObservableCollection<StreamSearchResultViewModel> StreamSearchResults { get; } = [];
-    public ObservableCollection<LiveStreamCardViewModel> LiveFollowedChannels { get; } = [];
-    public ObservableCollection<VodViewModel> TwitchVods { get; } = [];
-    public ObservableCollection<RecentStreamViewModel> RecentStreams { get; } = [];
-    public ObservableCollection<BrowseCategoryViewModel> BrowseCategories { get; } = [];
-    public ObservableCollection<LiveStreamCardViewModel> BrowseStreams { get; } = [];
+
+    public ObservableCollection<StreamSearchResultViewModel> StreamSearchResults { get => streamSearch.StreamSearchResults; }
+
+    public ObservableCollection<LiveStreamCardViewModel> LiveFollowedChannels { get => followed.LiveFollowedChannels; }
+
+    public ObservableCollection<VodViewModel> TwitchVods { get => vodLibrary.TwitchVods; }
+
+    public ObservableCollection<RecentStreamViewModel> RecentStreams { get => recent.RecentStreams; }
+
+    public ObservableCollection<BrowseCategoryViewModel> BrowseCategories { get => browse.BrowseCategories; }
+
+    public ObservableCollection<LiveStreamCardViewModel> BrowseStreams { get => browse.BrowseStreams; }
     public IReadOnlyList<ChatLayout> ChatLayoutOptions { get; } = Enum.GetValues<ChatLayout>();
     public IReadOnlyList<QualityOption> QualityOptions { get; } = QualityOption.Defaults;
     public IReadOnlyList<VideoRendererModeOption> VideoRendererOptions { get; } = VideoRendererModeOption.All;
@@ -368,30 +250,47 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<AppThemeOption> ThemeOptions { get; } = AppThemeOption.All;
     public ObservableCollection<string> AppLogLines { get; } = [];
 
-    public AsyncRelayCommand AddAndPlayCommand { get; }
+    public AsyncRelayCommand AddAndPlayCommand { get => streamSearch.AddAndPlayCommand; }
     public RelayCommand GoBackCommand { get; }
     public RelayCommand SelectHomeCommand { get; }
     public RelayCommand ShowFollowedHomePageCommand { get; }
     public RelayCommand ShowTwitchVodsHomePageCommand { get; }
     public RelayCommand ShowRecentHomePageCommand { get; }
     public RelayCommand ShowBrowseHomePageCommand { get; }
-    public RelayCommand ReturnToBrowseCategoriesCommand { get; }
-    public AsyncRelayCommand RefreshFollowedChannelsCommand { get; }
-    public AsyncRelayCommand ImportKickFollowsCommand { get; }
-    public AsyncRelayCommand ClearImportedKickFollowsCommand { get; }
-    public AsyncRelayCommand SearchTwitchVodsCommand { get; }
-    public AsyncRelayCommand LoadMoreTwitchVodsCommand { get; }
-    public RelayCommand SelectTwitchVodPlatformCommand { get; }
-    public RelayCommand SelectKickVodPlatformCommand { get; }
-    public RelayCommand ShowPastBroadcastsVodFilterCommand { get; }
-    public RelayCommand ShowHighlightsVodFilterCommand { get; }
-    public RelayCommand ShowUploadsVodFilterCommand { get; }
-    public RelayCommand ShowAllVodFilterCommand { get; }
-    public RelayCommand SelectTwitchBrowsePlatformCommand { get; }
-    public RelayCommand SelectKickBrowsePlatformCommand { get; }
-    public AsyncRelayCommand RefreshBrowseCommand { get; }
-    public AsyncRelayCommand LoadMoreBrowseCategoriesCommand { get; }
-    public AsyncRelayCommand LoadMoreBrowseStreamsCommand { get; }
+
+    public RelayCommand ReturnToBrowseCategoriesCommand { get => browse.ReturnToBrowseCategoriesCommand; }
+
+    public AsyncRelayCommand RefreshFollowedChannelsCommand { get => followed.RefreshFollowedChannelsCommand; }
+
+    public AsyncRelayCommand ImportKickFollowsCommand { get => followed.ImportKickFollowsCommand; }
+
+    public AsyncRelayCommand ClearImportedKickFollowsCommand { get => followed.ClearImportedKickFollowsCommand; }
+
+    public AsyncRelayCommand SearchTwitchVodsCommand { get => vodLibrary.SearchTwitchVodsCommand; }
+
+    public AsyncRelayCommand LoadMoreTwitchVodsCommand { get => vodLibrary.LoadMoreTwitchVodsCommand; }
+
+    public RelayCommand SelectTwitchVodPlatformCommand { get => vodLibrary.SelectTwitchVodPlatformCommand; }
+
+    public RelayCommand SelectKickVodPlatformCommand { get => vodLibrary.SelectKickVodPlatformCommand; }
+
+    public RelayCommand ShowPastBroadcastsVodFilterCommand { get => vodLibrary.ShowPastBroadcastsVodFilterCommand; }
+
+    public RelayCommand ShowHighlightsVodFilterCommand { get => vodLibrary.ShowHighlightsVodFilterCommand; }
+
+    public RelayCommand ShowUploadsVodFilterCommand { get => vodLibrary.ShowUploadsVodFilterCommand; }
+
+    public RelayCommand ShowAllVodFilterCommand { get => vodLibrary.ShowAllVodFilterCommand; }
+
+    public RelayCommand SelectTwitchBrowsePlatformCommand { get => browse.SelectTwitchBrowsePlatformCommand; }
+
+    public RelayCommand SelectKickBrowsePlatformCommand { get => browse.SelectKickBrowsePlatformCommand; }
+
+    public AsyncRelayCommand RefreshBrowseCommand { get => browse.RefreshBrowseCommand; }
+
+    public AsyncRelayCommand LoadMoreBrowseCategoriesCommand { get => browse.LoadMoreBrowseCategoriesCommand; }
+
+    public AsyncRelayCommand LoadMoreBrowseStreamsCommand { get => browse.LoadMoreBrowseStreamsCommand; }
     public AsyncRelayCommand PlaySelectedCommand { get; }
     public AsyncRelayCommand ReloadSelectedCommand { get; }
     public AsyncRelayCommand StopSelectedCommand { get; }
@@ -536,430 +435,125 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public string NewStreamText
-    {
-        get => newStreamText;
-        set
-        {
-            if (SetProperty(ref newStreamText, value ?? ""))
-            {
-                streamSearchController.AdvanceGeneration();
-                CancelStreamSearchDebounce();
-                CancelActiveStreamSearch();
-                IsStreamSearchRunning = false;
-                ClearStreamSearchResults();
-                OnPropertyChanged(nameof(HasNewStreamSearchText));
-                OnPropertyChanged(nameof(IsNewStreamSearchPlaceholderVisible));
-                AddAndPlayCommand.RaiseCanExecuteChanged();
-                ScheduleAutomaticStreamSearch();
-            }
-        }
-    }
-
-    public bool HasNewStreamSearchText => !string.IsNullOrWhiteSpace(NewStreamText);
-
-    public bool IsNewStreamSearchPlaceholderVisible => !HasNewStreamSearchText;
-
-    public string TwitchVodSearchText
-    {
-        get => twitchVodSearchText;
-        set
-        {
-            if (SetProperty(ref twitchVodSearchText, value ?? ""))
-            {
-                vodBrowseController.AdvanceTwitchVodGeneration();
-                CancelTwitchVodSearchDebounce();
-                CancelActiveTwitchVodSearch();
-                IsTwitchVodSearchRunning = false;
-                ClearTwitchVodSearchResults();
-                OnPropertyChanged(nameof(HasTwitchVodSearchText));
-                OnPropertyChanged(nameof(IsTwitchVodSearchPlaceholderVisible));
-                OnPropertyChanged(nameof(CanSearchSelectedVodPlatform));
-                RaiseTwitchVodCommandStates();
-                ScheduleAutomaticTwitchVodSearch();
-            }
-        }
-    }
-
-    public bool HasTwitchVodSearchText => !string.IsNullOrWhiteSpace(TwitchVodSearchText);
-
-    public bool IsTwitchVodSearchPlaceholderVisible => !HasTwitchVodSearchText;
-
-    public TwitchVodTypeFilter SelectedTwitchVodType
-    {
-        get => selectedTwitchVodType;
-        private set
-        {
-            if (selectedTwitchVodType == value)
-            {
-                return;
-            }
-
-            selectedTwitchVodType = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(IsPastBroadcastsVodFilterSelected));
-            OnPropertyChanged(nameof(IsHighlightsVodFilterSelected));
-            OnPropertyChanged(nameof(IsUploadsVodFilterSelected));
-            OnPropertyChanged(nameof(IsAllVodFilterSelected));
-        }
-    }
-
-    public bool IsPastBroadcastsVodFilterSelected => SelectedTwitchVodType == TwitchVodTypeFilter.Archive;
-
-    public bool IsHighlightsVodFilterSelected => SelectedTwitchVodType == TwitchVodTypeFilter.Highlight;
-
-    public bool IsUploadsVodFilterSelected => SelectedTwitchVodType == TwitchVodTypeFilter.Upload;
-
-    public bool IsAllVodFilterSelected => SelectedTwitchVodType == TwitchVodTypeFilter.All;
-
-    public PlatformKind SelectedVodPlatform
-    {
-        get => selectedVodPlatform;
-        private set
-        {
-            if (selectedVodPlatform == value)
-            {
-                return;
-            }
-
-            selectedVodPlatform = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(IsTwitchVodPlatformSelected));
-            OnPropertyChanged(nameof(IsKickVodPlatformSelected));
-            OnPropertyChanged(nameof(VodPlatformText));
-            OnPropertyChanged(nameof(IsTwitchVodFilterVisible));
-            OnPropertyChanged(nameof(TwitchVodResultsTitle));
-            OnPropertyChanged(nameof(CanSearchSelectedVodPlatform));
-            RaiseTwitchVodCommandStates();
-        }
-    }
-
-    public bool IsTwitchVodPlatformSelected => SelectedVodPlatform == PlatformKind.Twitch;
-
-    public bool IsKickVodPlatformSelected => SelectedVodPlatform == PlatformKind.Kick;
-
-    public string VodPlatformText => SelectedVodPlatform.ToString();
-
-    public bool IsTwitchVodFilterVisible => IsTwitchVodPlatformSelected;
-
-    public string TwitchVodStatus
-    {
-        get => twitchVodStatus;
-        private set => SetProperty(ref twitchVodStatus, value);
-    }
-
-    public bool IsTwitchVodSearchRunning
-    {
-        get => isTwitchVodSearchRunning;
-        private set
-        {
-            if (SetProperty(ref isTwitchVodSearchRunning, value))
-            {
-                OnPropertyChanged(nameof(IsTwitchVodEmptyVisible));
-                OnPropertyChanged(nameof(IsTwitchVodLoadMoreVisible));
-                OnPropertyChanged(nameof(CanLoadMoreTwitchVods));
-                RaiseTwitchVodCommandStates();
-            }
-        }
-    }
-
-    public bool HasTwitchVodSearchCompleted
-    {
-        get => hasTwitchVodSearchCompleted;
-        private set
-        {
-            if (SetProperty(ref hasTwitchVodSearchCompleted, value))
-            {
-                OnPropertyChanged(nameof(IsTwitchVodEmptyVisible));
-            }
-        }
-    }
-
-    public bool HasTwitchVods => TwitchVods.Count > 0;
-
-    public bool IsTwitchVodEmptyVisible => HasTwitchVodSearchCompleted &&
-        !IsTwitchVodSearchRunning &&
-        !HasTwitchVods;
-
-    public bool CanSearchSelectedVodPlatform => HasTwitchVodSearchText &&
-        SelectedVodPlatform switch
-        {
-            PlatformKind.Twitch => twitchVodService is not null,
-            PlatformKind.Kick => kickVodService is not null,
-            _ => false
-        };
-
-    public bool CanLoadMoreTwitchVods => !IsTwitchVodSearchRunning &&
-        !string.IsNullOrWhiteSpace(TwitchVodNextCursor);
-
-    public bool IsTwitchVodLoadMoreVisible => HasTwitchVods && CanLoadMoreTwitchVods;
-
-    public string TwitchVodResultsTitle => TwitchVods.Count switch
-    {
-        0 => $"{VodPlatformText} VODs",
-        1 => $"1 {VodPlatformText} VOD",
-        _ => $"{TwitchVods.Count} {VodPlatformText} VODs"
-    };
-
-    public string BrowseCategorySearchText
-    {
-        get => browseCategorySearchText;
-        set
-        {
-            if (SetProperty(ref browseCategorySearchText, value ?? ""))
-            {
-                vodBrowseController.AdvanceBrowseCategoryGeneration();
-                vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
-                vodBrowseController.AdvanceBrowseStreamGeneration();
-                CancelBrowseCategorySearchDebounce();
-                CancelActiveBrowseCategorySearch();
-                CancelActiveBrowseCategoryViewerCountLoad();
-                CancelActiveBrowseStreamSearch();
-                IsBrowseCategoriesLoading = false;
-                IsBrowseStreamsLoading = false;
-                SetBrowseStreamsPageSelected(false);
-                ClearBrowseCategories(clearStatus: false);
-                ClearBrowseStreams(clearSelectedCategory: true);
-                HasBrowseCategorySearchCompleted = false;
-                OnPropertyChanged(nameof(HasBrowseCategorySearchText));
-                OnPropertyChanged(nameof(IsBrowseCategorySearchPlaceholderVisible));
-                RaiseBrowseCommandStates();
-                ScheduleAutomaticBrowseCategorySearch();
-                RecordNavigation();
-            }
-        }
-    }
-
-    public bool HasBrowseCategorySearchText => !string.IsNullOrWhiteSpace(BrowseCategorySearchText);
-
-    public bool IsBrowseCategorySearchPlaceholderVisible => !HasBrowseCategorySearchText;
-
-    public PlatformKind SelectedBrowsePlatform
-    {
-        get => selectedBrowsePlatform;
-        private set
-        {
-            if (selectedBrowsePlatform == value)
-            {
-                return;
-            }
-
-            selectedBrowsePlatform = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(IsTwitchBrowsePlatformSelected));
-            OnPropertyChanged(nameof(IsKickBrowsePlatformSelected));
-            OnPropertyChanged(nameof(BrowsePlatformText));
-            OnPropertyChanged(nameof(BrowseCategoriesTitle));
-        }
-    }
-
-    public bool IsTwitchBrowsePlatformSelected => SelectedBrowsePlatform == PlatformKind.Twitch;
-
-    public bool IsKickBrowsePlatformSelected => SelectedBrowsePlatform == PlatformKind.Kick;
-
-    public string BrowsePlatformText => SelectedBrowsePlatform.ToString();
-
-    public string BrowseStatus
-    {
-        get => browseStatus;
-        private set => SetProperty(ref browseStatus, value ?? "");
-    }
-
-    public BrowseCategoryViewModel? SelectedBrowseCategory
-    {
-        get => selectedBrowseCategory;
-        private set
-        {
-            if (ReferenceEquals(selectedBrowseCategory, value))
-            {
-                return;
-            }
-
-            selectedBrowseCategory = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(HasSelectedBrowseCategory));
-            OnPropertyChanged(nameof(SelectedBrowseCategoryName));
-            OnPropertyChanged(nameof(BrowseStreamsTitle));
-            OnPropertyChanged(nameof(IsBrowseStreamsEmptyVisible));
-            OnPropertyChanged(nameof(CanLoadMoreBrowseStreams));
-            OnPropertyChanged(nameof(IsBrowseStreamLoadMoreVisible));
-            RaiseBrowseCommandStates();
-        }
-    }
-
-    public bool HasSelectedBrowseCategory => SelectedBrowseCategory is not null;
-
-    public string SelectedBrowseCategoryName => SelectedBrowseCategory?.Name ?? "";
-
-    public bool IsBrowseCategoriesLoading
-    {
-        get => isBrowseCategoriesLoading;
-        private set
-        {
-            if (SetProperty(ref isBrowseCategoriesLoading, value))
-            {
-                OnPropertyChanged(nameof(IsBrowseCategoriesEmptyVisible));
-                OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreVisible));
-                OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreIndicatorVisible));
-                OnPropertyChanged(nameof(CanLoadMoreBrowseCategories));
-                RaiseBrowseCommandStates();
-            }
-        }
-    }
-
-    public bool HasBrowseCategorySearchCompleted
-    {
-        get => hasBrowseCategorySearchCompleted;
-        private set
-        {
-            if (SetProperty(ref hasBrowseCategorySearchCompleted, value))
-            {
-                OnPropertyChanged(nameof(IsBrowseCategoriesEmptyVisible));
-            }
-        }
-    }
-
-    public bool IsBrowseStreamsLoading
-    {
-        get => isBrowseStreamsLoading;
-        private set
-        {
-            if (SetProperty(ref isBrowseStreamsLoading, value))
-            {
-                OnPropertyChanged(nameof(IsBrowseStreamsEmptyVisible));
-                OnPropertyChanged(nameof(IsBrowseStreamLoadMoreVisible));
-                OnPropertyChanged(nameof(CanLoadMoreBrowseStreams));
-                RaiseBrowseCommandStates();
-            }
-        }
-    }
-
-    public bool HasBrowseStreamSearchCompleted
-    {
-        get => hasBrowseStreamSearchCompleted;
-        private set
-        {
-            if (SetProperty(ref hasBrowseStreamSearchCompleted, value))
-            {
-                OnPropertyChanged(nameof(IsBrowseStreamsEmptyVisible));
-            }
-        }
-    }
-
-    public bool HasBrowseCategories => BrowseCategories.Count > 0;
-
-    public bool HasBrowseStreams => BrowseStreams.Count > 0;
-
-    public bool IsBrowseCategoriesEmptyVisible => IsBrowseCategoriesPageVisible &&
-        HasBrowseCategorySearchCompleted &&
-        !IsBrowseCategoriesLoading &&
-        !HasBrowseCategories;
-
-    public bool IsBrowseStreamsEmptyVisible => IsBrowseStreamsPageVisible &&
-        HasSelectedBrowseCategory &&
-        HasBrowseStreamSearchCompleted &&
-        !IsBrowseStreamsLoading &&
-        !HasBrowseStreams;
-
-    public bool CanLoadMoreBrowseCategories => IsBrowseCategoriesPageVisible &&
-        !IsBrowseCategoriesLoading &&
-        !string.IsNullOrWhiteSpace(BrowseCategoryNextCursor);
-
-    public bool CanLoadMoreBrowseStreams => IsBrowseStreamsPageVisible &&
-        HasSelectedBrowseCategory &&
-        !IsBrowseStreamsLoading &&
-        !string.IsNullOrWhiteSpace(BrowseStreamNextCursor);
-
-    public bool IsBrowseCategoryLoadMoreVisible => HasBrowseCategories && CanLoadMoreBrowseCategories;
-
-    public bool IsBrowseCategoryLoadMoreIndicatorVisible => HasBrowseCategories &&
-        (IsBrowseCategoriesLoading || CanLoadMoreBrowseCategories);
-
-    public bool IsBrowseStreamLoadMoreVisible => HasBrowseStreams && CanLoadMoreBrowseStreams;
-
-    public string BrowseCategoriesTitle => BrowseCategories.Count switch
-    {
-        0 => $"{BrowsePlatformText} categories",
-        1 => $"1 {BrowsePlatformText} category",
-        _ => $"{BrowseCategories.Count} {BrowsePlatformText} categories"
-    };
-
-    public string BrowseStreamsTitle
-    {
-        get
-        {
-            if (SelectedBrowseCategory is null)
-            {
-                return "Select a category";
-            }
-
-            return BrowseStreams.Count switch
-            {
-                0 => $"Live in {SelectedBrowseCategory.Name}",
-                1 => $"1 stream in {SelectedBrowseCategory.Name}",
-                _ => $"{BrowseStreams.Count} streams in {SelectedBrowseCategory.Name}"
-            };
-        }
-    }
-
-    public bool HasStreamSearchResults => StreamSearchResults.Count > 0;
-
-    public bool IsStreamSearchPanelVisible => isStreamSearchDropdownOpen && (IsStreamSearchRunning ||
-        hasStreamSearchCompleted ||
-        HasStreamSearchResults);
-
-    public bool IsStreamSearchResultsVisible => HasStreamSearchResults;
-
-    public bool IsStreamSearchEmptyVisible => hasStreamSearchCompleted &&
-        !IsStreamSearchRunning &&
-        !HasStreamSearchResults;
-
-    public string StreamSearchResultsTitle => StreamSearchResults.Count switch
-    {
-        0 => "Search results",
-        1 => "1 search result",
-        _ => $"{StreamSearchResults.Count} search results"
-    };
-
-    public string StreamSearchStatus
-    {
-        get => streamSearchStatus;
-        private set
-        {
-            if (SetProperty(ref streamSearchStatus, value ?? ""))
-            {
-                OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
-                OnPropertyChanged(nameof(IsStreamSearchEmptyVisible));
-            }
-        }
-    }
-
-    public bool IsStreamSearchRunning
-    {
-        get => isStreamSearchRunning;
-        private set
-        {
-            if (SetProperty(ref isStreamSearchRunning, value))
-            {
-                OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
-                OnPropertyChanged(nameof(IsStreamSearchEmptyVisible));
-            }
-        }
-    }
-
-    public void ShowStreamSearchDropdown()
-    {
-        if (HasNewStreamSearchText &&
-            (IsStreamSearchRunning || hasStreamSearchCompleted || HasStreamSearchResults))
-        {
-            SetStreamSearchDropdownOpen(true);
-        }
-    }
-
-    public void DismissStreamSearchDropdown()
-    {
-        SetStreamSearchDropdownOpen(false);
-    }
+    public string NewStreamText { get => streamSearch.NewStreamText; set => streamSearch.NewStreamText = value; }
+
+    public bool HasNewStreamSearchText { get => streamSearch.HasNewStreamSearchText; }
+
+    public bool IsNewStreamSearchPlaceholderVisible { get => streamSearch.IsNewStreamSearchPlaceholderVisible; }
+
+    public string TwitchVodSearchText { get => vodLibrary.TwitchVodSearchText; set => vodLibrary.TwitchVodSearchText = value; }
+
+    public bool HasTwitchVodSearchText { get => vodLibrary.HasTwitchVodSearchText; }
+
+    public bool IsTwitchVodSearchPlaceholderVisible { get => vodLibrary.IsTwitchVodSearchPlaceholderVisible; }
+
+    public TwitchVodTypeFilter SelectedTwitchVodType { get => vodLibrary.SelectedTwitchVodType; private set => vodLibrary.SelectedTwitchVodType = value; }
+
+    public bool IsPastBroadcastsVodFilterSelected { get => vodLibrary.IsPastBroadcastsVodFilterSelected; }
+
+    public bool IsHighlightsVodFilterSelected { get => vodLibrary.IsHighlightsVodFilterSelected; }
+
+    public bool IsUploadsVodFilterSelected { get => vodLibrary.IsUploadsVodFilterSelected; }
+
+    public bool IsAllVodFilterSelected { get => vodLibrary.IsAllVodFilterSelected; }
+
+    public PlatformKind SelectedVodPlatform { get => vodLibrary.SelectedVodPlatform; private set => vodLibrary.SelectedVodPlatform = value; }
+
+    public bool IsTwitchVodPlatformSelected { get => vodLibrary.IsTwitchVodPlatformSelected; }
+
+    public bool IsKickVodPlatformSelected { get => vodLibrary.IsKickVodPlatformSelected; }
+
+    public string VodPlatformText { get => vodLibrary.VodPlatformText; }
+
+    public bool IsTwitchVodFilterVisible { get => vodLibrary.IsTwitchVodFilterVisible; }
+
+    public string TwitchVodStatus { get => vodLibrary.TwitchVodStatus; private set => vodLibrary.TwitchVodStatus = value; }
+
+    public bool IsTwitchVodSearchRunning { get => vodLibrary.IsTwitchVodSearchRunning; private set => vodLibrary.IsTwitchVodSearchRunning = value; }
+
+    public bool HasTwitchVodSearchCompleted { get => vodLibrary.HasTwitchVodSearchCompleted; private set => vodLibrary.HasTwitchVodSearchCompleted = value; }
+
+    public bool HasTwitchVods { get => vodLibrary.HasTwitchVods; }
+
+    public bool IsTwitchVodEmptyVisible { get => vodLibrary.IsTwitchVodEmptyVisible; }
+
+    public bool CanSearchSelectedVodPlatform { get => vodLibrary.CanSearchSelectedVodPlatform; }
+
+    public bool CanLoadMoreTwitchVods { get => vodLibrary.CanLoadMoreTwitchVods; }
+
+    public bool IsTwitchVodLoadMoreVisible { get => vodLibrary.IsTwitchVodLoadMoreVisible; }
+
+    public string TwitchVodResultsTitle { get => vodLibrary.TwitchVodResultsTitle; }
+
+    public string BrowseCategorySearchText { get => browse.BrowseCategorySearchText; set => browse.BrowseCategorySearchText = value; }
+
+    public bool HasBrowseCategorySearchText { get => browse.HasBrowseCategorySearchText; }
+
+    public bool IsBrowseCategorySearchPlaceholderVisible { get => browse.IsBrowseCategorySearchPlaceholderVisible; }
+
+    public PlatformKind SelectedBrowsePlatform { get => browse.SelectedBrowsePlatform; private set => browse.SelectedBrowsePlatform = value; }
+
+    public bool IsTwitchBrowsePlatformSelected { get => browse.IsTwitchBrowsePlatformSelected; }
+
+    public bool IsKickBrowsePlatformSelected { get => browse.IsKickBrowsePlatformSelected; }
+
+    public string BrowsePlatformText { get => browse.BrowsePlatformText; }
+
+    public string BrowseStatus { get => browse.BrowseStatus; private set => browse.BrowseStatus = value; }
+
+    public BrowseCategoryViewModel? SelectedBrowseCategory { get => browse.SelectedBrowseCategory; private set => browse.SelectedBrowseCategory = value; }
+
+    public bool HasSelectedBrowseCategory { get => browse.HasSelectedBrowseCategory; }
+
+    public string SelectedBrowseCategoryName { get => browse.SelectedBrowseCategoryName; }
+
+    public bool IsBrowseCategoriesLoading { get => browse.IsBrowseCategoriesLoading; private set => browse.IsBrowseCategoriesLoading = value; }
+
+    public bool HasBrowseCategorySearchCompleted { get => browse.HasBrowseCategorySearchCompleted; private set => browse.HasBrowseCategorySearchCompleted = value; }
+
+    public bool IsBrowseStreamsLoading { get => browse.IsBrowseStreamsLoading; private set => browse.IsBrowseStreamsLoading = value; }
+
+    public bool HasBrowseStreamSearchCompleted { get => browse.HasBrowseStreamSearchCompleted; private set => browse.HasBrowseStreamSearchCompleted = value; }
+
+    public bool HasBrowseCategories { get => browse.HasBrowseCategories; }
+
+    public bool HasBrowseStreams { get => browse.HasBrowseStreams; }
+
+    public bool IsBrowseCategoriesEmptyVisible { get => browse.IsBrowseCategoriesEmptyVisible; }
+
+    public bool IsBrowseStreamsEmptyVisible { get => browse.IsBrowseStreamsEmptyVisible; }
+
+    public bool CanLoadMoreBrowseCategories { get => browse.CanLoadMoreBrowseCategories; }
+
+    public bool CanLoadMoreBrowseStreams { get => browse.CanLoadMoreBrowseStreams; }
+
+    public bool IsBrowseCategoryLoadMoreVisible { get => browse.IsBrowseCategoryLoadMoreVisible; }
+
+    public bool IsBrowseCategoryLoadMoreIndicatorVisible { get => browse.IsBrowseCategoryLoadMoreIndicatorVisible; }
+
+    public bool IsBrowseStreamLoadMoreVisible { get => browse.IsBrowseStreamLoadMoreVisible; }
+
+    public string BrowseCategoriesTitle { get => browse.BrowseCategoriesTitle; }
+
+    public string BrowseStreamsTitle { get => browse.BrowseStreamsTitle; }
+
+    public bool HasStreamSearchResults { get => streamSearch.HasStreamSearchResults; }
+
+    public bool IsStreamSearchPanelVisible { get => streamSearch.IsStreamSearchPanelVisible; }
+
+    public bool IsStreamSearchResultsVisible { get => streamSearch.IsStreamSearchResultsVisible; }
+
+    public bool IsStreamSearchEmptyVisible { get => streamSearch.IsStreamSearchEmptyVisible; }
+
+    public string StreamSearchResultsTitle { get => streamSearch.StreamSearchResultsTitle; }
+
+    public string StreamSearchStatus { get => streamSearch.StreamSearchStatus; private set => streamSearch.StreamSearchStatus = value; }
+
+    public bool IsStreamSearchRunning { get => streamSearch.IsStreamSearchRunning; private set => streamSearch.IsStreamSearchRunning = value; }
+
+    public void ShowStreamSearchDropdown() => streamSearch.ShowStreamSearchDropdown();
+
+    public void DismissStreamSearchDropdown() => streamSearch.DismissStreamSearchDropdown();
 
     public string SelectedQuality
     {
@@ -979,6 +573,24 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         private set => SetProperty(ref statusMessage, value);
     }
 
+    public string SettingsSaveStatus
+    {
+        get => settingsSaveStatus;
+        private set => SetProperty(ref settingsSaveStatus, value);
+    }
+
+    public bool IsSavingSettings
+    {
+        get => isSavingSettings;
+        private set => SetProperty(ref isSavingSettings, value);
+    }
+
+    public bool HasSettingsSaveError
+    {
+        get => hasSettingsSaveError;
+        private set => SetProperty(ref hasSettingsSaveError, value);
+    }
+
     public bool IsHomeSelected
     {
         get => isHomeSelected;
@@ -986,7 +598,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isHomeSelected, value))
             {
+                if (!value) DismissStreamSearchDropdown();
                 OnPropertyChanged(nameof(IsHomeVisible));
+                OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
             }
         }
     }
@@ -1060,114 +674,31 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsBrowseHomePageVisible => IsBrowseHomePageSelected;
 
-    public bool IsBrowseCategoriesPageVisible => IsBrowseHomePageVisible && !isBrowseStreamsPageSelected;
+    public bool IsBrowseCategoriesPageVisible { get => browse.IsBrowseCategoriesPageVisible; }
 
-    public bool IsBrowseStreamsPageVisible => IsBrowseHomePageVisible && isBrowseStreamsPageSelected;
+    public bool IsBrowseStreamsPageVisible { get => browse.IsBrowseStreamsPageVisible; }
 
-    public string FollowedChannelsStatus
-    {
-        get => followedChannelsStatus;
-        private set => SetProperty(ref followedChannelsStatus, value);
-    }
+    public string FollowedChannelsStatus { get => followed.FollowedChannelsStatus; private set => followed.FollowedChannelsStatus = value; }
 
-    public bool IsFollowedChannelsRefreshing
-    {
-        get => isFollowedChannelsRefreshing;
-        private set
-        {
-            if (SetProperty(ref isFollowedChannelsRefreshing, value))
-            {
-                OnPropertyChanged(nameof(IsFollowedChannelsEmptyVisible));
-            }
-        }
-    }
+    public bool IsFollowedChannelsRefreshing { get => followed.IsFollowedChannelsRefreshing; private set => followed.IsFollowedChannelsRefreshing = value; }
 
-    public bool HasLiveFollowedChannels => LiveFollowedChannels.Count > 0;
+    public bool HasLiveFollowedChannels { get => followed.HasLiveFollowedChannels; }
 
-    public bool IsFollowedChannelsEmptyVisible => !IsFollowedChannelsRefreshing && LiveFollowedChannels.Count == 0;
+    public bool IsFollowedChannelsEmptyVisible { get => followed.IsFollowedChannelsEmptyVisible; }
 
-    public bool HasRecentStreams => RecentStreams.Count > 0;
+    public bool HasRecentStreams { get => recent.HasRecentStreams; }
 
-    public bool IsRecentStreamsEmptyVisible => RecentStreams.Count == 0;
+    public bool IsRecentStreamsEmptyVisible { get => recent.IsRecentStreamsEmptyVisible; }
 
-    public string RecentStreamsStatus => RecentStreams.Count switch
-    {
-        0 => "No recent streams yet.",
-        1 => "1 recent stream.",
-        _ => $"{RecentStreams.Count} recent streams."
-    };
+    public string RecentStreamsStatus { get => recent.RecentStreamsStatus; }
 
-    private string TwitchVodNextCursor
-    {
-        get => twitchVodNextCursor;
-        set
-        {
-            if (twitchVodNextCursor == value)
-            {
-                return;
-            }
+    public string FollowedChannelsLastUpdatedText { get => followed.FollowedChannelsLastUpdatedText; }
 
-            twitchVodNextCursor = value;
-            OnPropertyChanged(nameof(CanLoadMoreTwitchVods));
-            OnPropertyChanged(nameof(IsTwitchVodLoadMoreVisible));
-            RaiseTwitchVodCommandStates();
-        }
-    }
+    public string KickFollowedChannelsText { get => followed.KickFollowedChannelsText; set => followed.KickFollowedChannelsText = value; }
 
-    private string BrowseCategoryNextCursor
-    {
-        get => browseCategoryNextCursor;
-        set
-        {
-            if (browseCategoryNextCursor == value)
-            {
-                return;
-            }
+    public string KickFollowImportStatus { get => followed.KickFollowImportStatus; private set => followed.KickFollowImportStatus = value; }
 
-            browseCategoryNextCursor = value;
-            OnPropertyChanged(nameof(CanLoadMoreBrowseCategories));
-            OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreVisible));
-            OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreIndicatorVisible));
-            RaiseBrowseCommandStates();
-        }
-    }
-
-    private string BrowseStreamNextCursor
-    {
-        get => browseStreamNextCursor;
-        set
-        {
-            if (browseStreamNextCursor == value)
-            {
-                return;
-            }
-
-            browseStreamNextCursor = value;
-            OnPropertyChanged(nameof(CanLoadMoreBrowseStreams));
-            OnPropertyChanged(nameof(IsBrowseStreamLoadMoreVisible));
-            RaiseBrowseCommandStates();
-        }
-    }
-
-    public string FollowedChannelsLastUpdatedText => followedChannelsLastUpdatedAt is { } updatedAt
-        ? $"Updated {updatedAt.ToLocalTime():g}"
-        : "";
-
-    public string KickFollowedChannelsText
-    {
-        get => kickFollowedChannelsText;
-        set => SetProperty(ref kickFollowedChannelsText, value ?? "");
-    }
-
-    public string KickFollowImportStatus
-    {
-        get => kickFollowImportStatus;
-        private set => SetProperty(ref kickFollowImportStatus, value);
-    }
-
-    public string KickImportedFollowsSummary => Settings.FollowedChannels.KickFollowsImportedAtUtc is { } importedAt
-        ? $"{Settings.FollowedChannels.KickImportedChannelSlugs.Count} Kick follows imported • {importedAt.ToLocalTime():g}"
-        : "No Kick follows imported yet.";
+    public string KickImportedFollowsSummary { get => followed.KickImportedFollowsSummary; }
 
     public string AppUpdateStatus
     {
@@ -1194,7 +725,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isSettingsOpen, value))
             {
+                if (value) DismissStreamSearchDropdown();
+                else backgroundOperationController.Track(settingsAutoSave.FlushAsync());
                 OnPropertyChanged(nameof(IsPlaybackWorkspaceVisible));
+                OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
                 RecordNavigation();
             }
         }
@@ -1243,10 +777,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isStreamOnlyFullscreenActive, value))
             {
+                if (value) DismissStreamSearchDropdown();
                 ApplyVideoLayout();
                 ApplyInactivePlaybackPolicyInBackground();
                 RaiseChatVisibilityProperties();
                 OnPropertyChanged(nameof(IsHomeVisible));
+                OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
             }
         }
     }
@@ -1258,8 +794,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isVideoFullscreenActive, value))
             {
+                if (value) DismissStreamSearchDropdown();
                 RaiseChatVisibilityProperties();
                 OnPropertyChanged(nameof(IsHomeVisible));
+                OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
             }
         }
     }
@@ -1374,10 +912,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public string ChatTextSizeDescription => Settings.Chat.Layout switch
     {
         ChatLayout.Overlay when SelectedTab is { } tab =>
-            $"Applies to {tab.Target.Platform}: {tab.Target.Channel}. Save changes to remember this stream's overlay size.",
+            $"Applies to {tab.Target.Platform}: {tab.Target.Channel}.",
         ChatLayout.Overlay =>
-            "Default for streams without a saved overlay size. Save changes to keep this default.",
-        ChatLayout.Docked => "Applies to docked chat for all streams. Save changes to keep this size.",
+            "Default for streams without a saved overlay size.",
+        ChatLayout.Docked => "Applies to docked chat for all streams.",
         _ => "Choose Docked or Overlay to change the text size."
     };
 
@@ -1412,6 +950,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             Settings.StreamVlcOverlayFontSizes[tab.Target.StateKey] = normalized;
+            settingsAutoSave.RequestSave();
             OnPropertyChanged();
             RaiseChatTextSizeProperties();
             foreach (var matchingTab in Tabs.Where(candidate =>
@@ -1450,11 +989,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             logger.EntryWritten += loggerEntryWrittenHandler;
         }
 
-        if (followedStreamsService is not null)
-        {
-            EnsureFollowedChannelsRefreshTimerStarted();
-            _ = RefreshFollowedChannelsAsync();
-        }
+        followed.Initialize();
     }
 
     public void RefreshSettingsBindings()
@@ -1501,7 +1036,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         if (IsBrowseHomePageSelected)
         {
-            return isBrowseStreamsPageSelected && SelectedBrowseCategory is { } category
+            return browse.IsStreamsPageSelected && SelectedBrowseCategory is { } category
                 ? new(NavigationPage.BrowseStreams, BrowsePlatform: SelectedBrowsePlatform, BrowseCategory: category)
                 : new(NavigationPage.BrowseCategories, BrowsePlatform: SelectedBrowsePlatform);
         }
@@ -1613,7 +1148,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     IsRecentHomePageSelected = false;
                     IsTwitchVodsHomePageSelected = false;
                     IsBrowseHomePageSelected = true;
-                    if (!isBrowseStreamsPageSelected || SelectedBrowseCategory != category)
+                    if (!browse.IsStreamsPageSelected || SelectedBrowseCategory != category)
                     {
                         backgroundOperationController.Track(SelectBrowseCategoryAsync(category));
                     }
@@ -1641,6 +1176,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             ApplyInactivePlaybackPolicyInBackground();
         }
 
+        // Finish selecting Home before closing Settings so navigation history records
+        // the final destination instead of an intermediate return to the playing tab.
+        IsSettingsOpen = false;
         StatusMessage = "Home";
         RecordNavigation();
     }
@@ -1694,54 +1232,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         RecordNavigation();
     }
 
-    private void ShowBrowseCategoriesPage(bool clearSelection)
-    {
-        SetBrowseStreamsPageSelected(false);
-        if (!clearSelection)
-        {
-            return;
-        }
+    private void ReturnToBrowseCategoriesPage() => browse.ReturnToBrowseCategoriesPage();
 
-        vodBrowseController.AdvanceBrowseStreamGeneration();
-        CancelActiveBrowseStreamSearch();
-        IsBrowseStreamsLoading = false;
-        ClearBrowseStreams(clearSelectedCategory: true);
-    }
+    internal void SetBrowseStreamsPageSelected(bool value) => browse.SetBrowseStreamsPageSelected(value);
 
-    private void ReturnToBrowseCategoriesPage()
-    {
-        ShowBrowseCategoriesPage(clearSelection: true);
-        BrowseStatus = browseCategoryStatus;
-        StatusMessage = BrowseStatus;
-        StartBrowseCategoryViewerCountLoad(SelectedBrowsePlatform, BrowseCategorySearchText.Trim());
-        RecordNavigation();
-    }
-
-    private void SetBrowseStreamsPageSelected(bool value)
-    {
-        if (isBrowseStreamsPageSelected == value)
-        {
-            return;
-        }
-
-        isBrowseStreamsPageSelected = value;
-        RaiseBrowsePageStateChanged();
-    }
-
-    private void RaiseBrowsePageStateChanged()
-    {
-        OnPropertyChanged(nameof(IsBrowseCategoriesPageVisible));
-        OnPropertyChanged(nameof(IsBrowseStreamsPageVisible));
-        OnPropertyChanged(nameof(IsBrowseCategoriesEmptyVisible));
-        OnPropertyChanged(nameof(IsBrowseStreamsEmptyVisible));
-        OnPropertyChanged(nameof(CanLoadMoreBrowseCategories));
-        OnPropertyChanged(nameof(CanLoadMoreBrowseStreams));
-        OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreVisible));
-        OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreIndicatorVisible));
-        OnPropertyChanged(nameof(IsBrowseStreamLoadMoreVisible));
-        ReturnToBrowseCategoriesCommand.RaiseCanExecuteChanged();
-        RaiseBrowseCommandStates();
-    }
+    private void RaiseBrowsePageStateChanged() => browse.RaiseBrowsePageStateChanged();
 
     private void ToggleReplaySeekBar()
     {
@@ -1751,252 +1246,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             : "Replay seekbar hidden";
     }
 
-    private Task RefreshFollowedChannelsAsync()
-    {
-        lock (followedChannelsRefreshTaskGate)
-        {
-            if (disposed) return Task.CompletedTask;
-
-            var chat = Settings.Chat;
-            var key = OAuthTokenHelpers.CreateCredentialFingerprint(
-                KickFollowedChannelsText, string.Join('\n', Settings.FollowedChannels.KickImportedChannelSlugs),
-                Settings.FollowedChannels.KickFollowsImportedAtUtc?.ToString("O", CultureInfo.InvariantCulture),
-                chat.TwitchOAuthToken, chat.TwitchClientId,
-                chat.KickOAuthToken, chat.KickRefreshToken, chat.KickClientId, chat.KickClientSecret,
-                chat.KickTokenExpiresAtUtc?.ToString("O", CultureInfo.InvariantCulture));
-            if (activeFollowedChannelsRefreshTask is { IsCompleted: false } active &&
-                activeFollowedChannelsRefreshKey == key)
-            {
-                return active;
-            }
-
-            var generation = Interlocked.Increment(ref followedChannelsRefreshGeneration);
-            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            // Publish before starting: synchronous providers and property-change callbacks
-            // can reenter refresh while the operation is being started.
-            activeFollowedChannelsRefreshTask = completion.Task;
-            activeFollowedChannelsRefreshKey = key;
-            backgroundOperationController.Track(completion.Task);
-            _ = CompleteFollowedChannelsRefreshAsync(completion, generation, followedChannelsRefreshCancellation.Token);
-            return completion.Task;
-        }
-    }
-
-    private async Task CompleteFollowedChannelsRefreshAsync(
-        TaskCompletionSource completion, int generation, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await RefreshFollowedChannelsCoreAsync(generation, cancellationToken);
-            completion.TrySetResult();
-        }
-        catch (Exception ex)
-        {
-            completion.TrySetException(ex);
-        }
-    }
-
-    private bool IsCurrentFollowedRefresh(int generation) =>
-        !disposed && generation == Volatile.Read(ref followedChannelsRefreshGeneration);
-
-    private async Task RefreshFollowedChannelsCoreAsync(int generation, CancellationToken cancellationToken)
-    {
-        if (followedStreamsService is null)
-        {
-            FollowedChannelsStatus = "Live followed channels are not available.";
-            return;
-        }
-
-        var enteredRefreshGate = false;
-        try
-        {
-            await followedChannelsRefreshGate.WaitAsync(cancellationToken);
-            enteredRefreshGate = true;
-
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!IsCurrentFollowedRefresh(generation)) return;
-            Settings.FollowedChannels.KickChannelSlugs = ParseKickFollowedChannelSlugs(
-                KickFollowedChannelsText,
-                skipInvalidEntries: true,
-                out var invalidKickFollowedEntries);
-            IsFollowedChannelsRefreshing = true;
-            FollowedChannelsStatus = "Refreshing live followed channels";
-
-            var result = await followedStreamsService.GetLiveFollowedStreamsAsync(Settings, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!IsCurrentFollowedRefresh(generation))
-            {
-                return;
-            }
-
-            var thumbnailCacheVersion = Interlocked.Increment(ref nextLiveThumbnailCacheVersion);
-            UpdateLiveStreamCards(LiveFollowedChannels,
-                result.Streams.Select(LiveStreamCardData.FromFollowedStream), thumbnailCacheVersion);
-
-            ProcessFollowedChannelLiveNotifications(result);
-
-            followedChannelsLastUpdatedAt = DateTimeOffset.Now;
-            OnPropertyChanged(nameof(FollowedChannelsLastUpdatedText));
-
-            var statusPrefix = LiveFollowedChannels.Count switch
-            {
-                0 => "No followed channels are live.",
-                1 => "1 followed channel is live.",
-                _ => $"{LiveFollowedChannels.Count} followed channels are live."
-            };
-            var messages = result.Messages.ToList();
-            if (invalidKickFollowedEntries.Count > 0)
-            {
-                var invalidMessage = FormatInvalidKickFollowedChannelsMessage(invalidKickFollowedEntries.Count);
-                messages.Add(invalidMessage);
-                logger.Write(
-                    AppLogLevel.Warning,
-                    "Followed",
-                    $"{invalidMessage} Entries: {string.Join(", ", invalidKickFollowedEntries)}");
-            }
-
-            FollowedChannelsStatus = messages.Count == 0
-                ? statusPrefix
-                : $"{statusPrefix} {string.Join(' ', messages)}";
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || disposed)
-        {
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (IsCurrentFollowedRefresh(generation)) FollowedChannelsStatus = ex.Message;
-            logger.Write(AppLogLevel.Warning, "Followed", "Failed to refresh live followed channels.", ex);
-        }
-        finally
-        {
-            if (enteredRefreshGate && IsCurrentFollowedRefresh(generation) && !cancellationToken.IsCancellationRequested)
-            {
-                IsFollowedChannelsRefreshing = false;
-            }
-
-            if (enteredRefreshGate)
-            {
-                followedChannelsRefreshGate.Release();
-            }
-        }
-    }
-
-    private void UpdateLiveStreamCards(ObservableCollection<LiveStreamCardViewModel> cards,
-        IEnumerable<LiveStreamCardData> streams, long thumbnailCacheVersion)
-    {
-        PagedResultTracker.ApplyItems(cards, streams,
-            card => card.Target.StateKey, data => data.Target.StateKey,
-            data => new LiveStreamCardViewModel(data, OpenLiveStreamCardAsync, thumbnailCacheVersion),
-            (card, data) => card.Update(data, thumbnailCacheVersion), reset: true);
-    }
-
-    private void ProcessFollowedChannelLiveNotifications(FollowedLiveStreamsResult result)
-    {
-        var currentKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var stream in result.Streams)
-        {
-            currentKeys.Add(stream.Target.StateKey);
-        }
-
-        var previousKeys = previousLiveFollowedKeys ?? [];
-
-        if (liveNotificationService is not null && Settings.FollowedChannels.NotifyWhenLive)
-        {
-            foreach (var stream in result.Streams)
-            {
-                // Only platforms that already completed a refresh may toast: each platform's
-                // first successful round seeds its baseline silently, so neither app startup nor
-                // a platform that was failing when the app started announces channels that were
-                // already live before we could observe them.
-                if (baselinedLivePlatforms.Contains(stream.Platform) &&
-                    !previousKeys.Contains(stream.Target.StateKey))
-                {
-                    NotifyChannelLive(stream);
-                }
-            }
-        }
-
-        if (result.SucceededPlatforms is null)
-        {
-            // Services that do not report platform health (e.g. test stubs) baseline everything.
-            baselinedLivePlatforms.UnionWith(Enum.GetValues<PlatformKind>());
-        }
-        else
-        {
-            baselinedLivePlatforms.UnionWith(result.SucceededPlatforms);
-        }
-
-        previousLiveFollowedKeys = BuildNextLiveFollowedKeys(previousKeys, currentKeys, result.SucceededPlatforms);
-    }
-
-    private static HashSet<string> BuildNextLiveFollowedKeys(
-        HashSet<string> previousKeys,
-        HashSet<string> currentKeys,
-        IReadOnlyList<PlatformKind>? succeededPlatforms)
-    {
-        var nextKeys = new HashSet<string>(currentKeys, StringComparer.OrdinalIgnoreCase);
-
-        // When the service does not report platform health (e.g. in tests), trust every
-        // platform so genuinely-offline channels are pruned normally.
-        if (succeededPlatforms is null)
-        {
-            return nextKeys;
-        }
-
-        var healthyPlatforms = new HashSet<PlatformKind>(succeededPlatforms);
-
-        // Carry over channels that belong to a platform that failed this round. A transient
-        // API error must not drop a still-live channel, otherwise it would be re-announced
-        // as "live" the moment the platform recovers.
-        foreach (var key in previousKeys)
-        {
-            if (!IsKeyForHealthyPlatform(key, healthyPlatforms))
-            {
-                nextKeys.Add(key);
-            }
-        }
-
-        return nextKeys;
-    }
-
-    private static bool IsKeyForHealthyPlatform(string stateKey, HashSet<PlatformKind> healthyPlatforms)
-    {
-        var separatorIndex = stateKey.IndexOf(':');
-        if (separatorIndex > 0 &&
-            Enum.TryParse<PlatformKind>(stateKey[..separatorIndex], ignoreCase: true, out var platform))
-        {
-            return healthyPlatforms.Contains(platform);
-        }
-
-        // Unknown key shape: treat as healthy so the carry-over set cannot grow without bound.
-        return true;
-    }
-
-    private void NotifyChannelLive(FollowedLiveStream stream)
-    {
-        if (liveNotificationService is null)
-        {
-            return;
-        }
-
-        try
-        {
-            var displayName = string.IsNullOrWhiteSpace(stream.DisplayName) ? stream.Channel : stream.DisplayName;
-            liveNotificationService.NotifyChannelLive(new LiveChannelNotification(
-                stream.Platform,
-                stream.Channel,
-                displayName,
-                stream.Title,
-                stream.CategoryName,
-                stream.ViewerCount,
-                stream.ThumbnailUrl));
-            logger.Write(AppLogLevel.Info, "Followed", $"Live notification sent for {displayName} ({stream.Platform}).");
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Followed", $"Failed to notify that {stream.Channel} is live.", ex);
-        }
-    }
+    private Task RefreshFollowedChannelsAsync() => followed.RefreshFollowedChannelsAsync();
 
     public void OpenChannelFromNotification(PlatformKind platform, string channel)
     {
@@ -2022,221 +1272,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void SelectVodPlatform(PlatformKind platform)
-    {
-        if (SelectedVodPlatform == platform)
-        {
-            return;
-        }
+    private void SelectVodPlatform(PlatformKind platform) => vodLibrary.SelectVodPlatform(platform);
 
-        SelectedVodPlatform = platform;
-        vodBrowseController.AdvanceTwitchVodGeneration();
-        CancelTwitchVodSearchDebounce();
-        CancelActiveTwitchVodSearch();
-        IsTwitchVodSearchRunning = false;
-        ClearTwitchVodSearchResults();
-        if (!HasTwitchVodSearchText)
-        {
-            TwitchVodStatus = $"Search a {VodPlatformText} streamer to browse VODs.";
-        }
-
-        if (HasTwitchVodSearchText)
-        {
-            _ = SearchTwitchVodsAsync(reset: true);
-        }
-    }
-
-    private void SelectTwitchVodType(TwitchVodTypeFilter type)
-    {
-        if (SelectedTwitchVodType == type)
-        {
-            return;
-        }
-
-        SelectedTwitchVodType = type;
-        CancelTwitchVodSearchDebounce();
-        TwitchVodNextCursor = "";
-        TwitchVods.Clear();
-        HasTwitchVodSearchCompleted = false;
-        if (SelectedVodPlatform == PlatformKind.Twitch && HasTwitchVodSearchText)
-        {
-            _ = SearchTwitchVodsAsync(reset: true);
-        }
-    }
-
-    private Task SearchTwitchVodsAsync(bool reset)
-    {
-        if (disposed) return Task.CompletedTask;
-        if (reset) CancelTwitchVodSearchDebounce();
-        var query = TwitchVodSearchText.Trim();
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            TwitchVodStatus = $"Enter a {VodPlatformText} streamer.";
-            return Task.CompletedTask;
-        }
-
-        if (SelectedVodPlatform == PlatformKind.Twitch && twitchVodService is null)
-        {
-            TwitchVodStatus = "Twitch VOD search is not available.";
-            return Task.CompletedTask;
-        }
-
-        if (SelectedVodPlatform == PlatformKind.Kick && kickVodService is null)
-        {
-            TwitchVodStatus = "Kick VOD search is not available.";
-            return Task.CompletedTask;
-        }
-
-        var platform = SelectedVodPlatform;
-        var type = SelectedTwitchVodType;
-        var cursor = reset ? "" : TwitchVodNextCursor;
-        if (!reset && string.IsNullOrWhiteSpace(cursor))
-        {
-            return Task.CompletedTask;
-        }
-
-        // Only share a first-page load. Refresh during pagination must replace
-        // that page, and a completed search must remain explicitly refreshable.
-        if (reset && activeTwitchVodSearchTask is { IsCompleted: false } &&
-            activeTwitchVodSearchGeneration == vodBrowseController.CurrentTwitchVodGeneration &&
-            activeTwitchVodSearch == (platform, query, type))
-        {
-            return activeTwitchVodSearchTask;
-        }
-
-        var searchGeneration = reset
-            ? vodBrowseController.AdvanceTwitchVodGeneration()
-            : vodBrowseController.CurrentTwitchVodGeneration;
-        activeTwitchVodSearchGeneration = searchGeneration;
-        activeTwitchVodSearch = (platform, query, type);
-        var task = RunTwitchVodSearchAsync(reset, platform,
-            new TwitchVodSearchRequest(query, type, cursor, 100), searchGeneration);
-        activeTwitchVodSearchTask = reset ? task : null;
-        return task;
-    }
-
-    private async Task RunTwitchVodSearchAsync(bool reset, PlatformKind platform,
-        TwitchVodSearchRequest request, int searchGeneration)
-    {
-        var query = request.Streamer;
-        var type = request.Type;
-        var cursor = request.Cursor;
-        var searchCancellation = ReplaceTwitchVodSearchCancellation();
-        if (reset)
-        {
-            // Query/platform/filter changes clear at their navigation boundary. Refresh
-            // keeps the last successful page usable until its replacement is available.
-            HasTwitchVodSearchCompleted = false;
-        }
-
-        IsTwitchVodSearchRunning = true;
-        TwitchVodStatus = reset
-            ? $"Searching {platform} VODs for {query}"
-            : $"Loading more {platform} VODs for {query}";
-        StatusMessage = TwitchVodStatus;
-
-        try
-        {
-            string message;
-            if (platform == PlatformKind.Twitch)
-            {
-                var result = await twitchVodService!.SearchAsync(
-                    request,
-                    Settings,
-                    searchCancellation.Token);
-                if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform)) return;
-                if (result.IsAvailable)
-                {
-                    TwitchVodNextCursor = vodPages.ApplyPage(
-                        TwitchVods, result.Videos, card => card.Identity, VodViewModel.GetIdentity,
-                        vod => new VodViewModel(vod, OpenTwitchVodAsync), (card, vod) => card.Update(vod),
-                        cursor, result.NextCursor);
-                }
-                message = result.Message;
-            }
-            else
-            {
-                var result = await kickVodService!.SearchAsync(
-                    new KickVodSearchRequest(query, cursor, 100),
-                    Settings,
-                    searchCancellation.Token);
-                if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform)) return;
-                if (result.IsAvailable)
-                {
-                    TwitchVodNextCursor = vodPages.ApplyPage(
-                        TwitchVods, result.Videos, card => card.Identity, VodViewModel.GetIdentity,
-                        vod => new VodViewModel(vod, OpenTwitchVodAsync), (card, vod) => card.Update(vod),
-                        cursor, result.NextCursor);
-                }
-                message = result.Message;
-            }
-
-            await LoadVodWatchProgressAsync(searchCancellation.Token);
-            if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform)) return;
-
-            HasTwitchVodSearchCompleted = true;
-            TwitchVodStatus = message;
-            StatusMessage = message;
-        }
-        catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!IsCurrentTwitchVodSearch(searchGeneration, query, type, platform))
-            {
-                return;
-            }
-
-            HasTwitchVodSearchCompleted = true;
-            TwitchVodStatus = ex.Message;
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "VODs", $"{platform} VOD search failed.", ex);
-        }
-        finally
-        {
-            if (IsCurrentTwitchVodSearch(searchGeneration, query, type, platform))
-            {
-                IsTwitchVodSearchRunning = false;
-            }
-
-            DisposeTwitchVodSearchCancellation(searchCancellation);
-        }
-    }
-
-    private async Task LoadVodWatchProgressAsync(CancellationToken cancellationToken)
-    {
-        if (vodPlaybackHistory is null) return;
-        try
-        {
-            foreach (var card in TwitchVods.ToArray())
-            {
-                var bookmark = await vodPlaybackHistory.GetAsync(card.Target, cancellationToken);
-                if (disposed || cancellationToken.IsCancellationRequested) return;
-                card.UpdateWatchProgress(bookmark);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "VODs", "Could not load VOD watch progress.", ex);
-        }
-    }
-
-    private void OnVodBookmarkChanged(StreamTarget target, VodPlaybackBookmark bookmark)
-    {
-        if (disposed) return;
-        dispatch(() =>
-        {
-            if (disposed) return;
-            foreach (var card in TwitchVods)
-            {
-                if (card.Platform == target.Platform &&
-                    string.Equals(card.Id.Trim(), target.MediaId.Trim(), StringComparison.OrdinalIgnoreCase))
-                    card.UpdateWatchProgress(bookmark);
-            }
-        });
-    }
+    private Task SearchTwitchVodsAsync(bool reset) => vodLibrary.SearchTwitchVodsAsync(reset);
 
     private async Task OpenTwitchVodAsync(VodViewModel vod, bool stayOnHome)
     {
@@ -2259,677 +1297,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private bool IsCurrentTwitchVodSearch(int searchGeneration, string query, TwitchVodTypeFilter type)
-    {
-        return IsCurrentTwitchVodSearch(searchGeneration, query, type, SelectedVodPlatform);
-    }
+    private void CancelTwitchVodSearchDebounce() => vodLibrary.CancelTwitchVodSearchDebounce();
 
-    private bool IsCurrentTwitchVodSearch(int searchGeneration, string query, TwitchVodTypeFilter type, PlatformKind platform)
-    {
-        return !disposed &&
-            vodBrowseController.IsCurrentTwitchVodGeneration(searchGeneration) &&
-            SelectedVodPlatform == platform &&
-            SelectedTwitchVodType == type &&
-            string.Equals(TwitchVodSearchText.Trim(), query, StringComparison.Ordinal);
-    }
+    private void SelectBrowsePlatform(PlatformKind platform) => browse.SelectBrowsePlatform(platform);
 
-    private void ClearTwitchVodSearchResults()
-    {
-        TwitchVods.Clear();
-        TwitchVodNextCursor = "";
-        HasTwitchVodSearchCompleted = false;
-        if (!HasTwitchVodSearchText)
-        {
-            TwitchVodStatus = $"Search a {VodPlatformText} streamer to browse VODs.";
-        }
-    }
+    private Task LoadBrowseCategoriesAsync(bool reset) => browse.LoadBrowseCategoriesAsync(reset);
 
-    private void ScheduleAutomaticTwitchVodSearch()
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        var query = TwitchVodSearchText.Trim();
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return;
-        }
-
-        var searchGeneration = vodBrowseController.CurrentTwitchVodGeneration;
-        var type = SelectedTwitchVodType;
-        if (twitchVodSearchDebounceInterval <= TimeSpan.Zero)
-        {
-            dispatch(() => _ = RunAutomaticTwitchVodSearchAsync(query, type, searchGeneration));
-            return;
-        }
-
-        vodBrowseController.ScheduleTwitchVod(
-            twitchVodSearchDebounceInterval,
-            () => dispatch(() => _ = RunAutomaticTwitchVodSearchAsync(query, type, searchGeneration)),
-            ReportDebouncedCallbackFailure);
-    }
-
-    private async Task RunAutomaticTwitchVodSearchAsync(
-        string query,
-        TwitchVodTypeFilter type,
-        int searchGeneration)
-    {
-        if (disposed || !IsCurrentTwitchVodSearch(searchGeneration, query, type))
-        {
-            return;
-        }
-
-        await SearchTwitchVodsAsync(reset: true);
-    }
-
-    private void CancelTwitchVodSearchDebounce()
-    {
-        vodBrowseController.CancelScheduledTwitchVod();
-    }
-
-    private CancellationTokenSource ReplaceTwitchVodSearchCancellation()
-    {
-        return vodBrowseController.BeginTwitchVodOperation(lifetimeCancellation.Token);
-    }
-
-    private void CancelActiveTwitchVodSearch()
-    {
-        vodBrowseController.CancelTwitchVodOperation();
-    }
-
-    private void DisposeTwitchVodSearchCancellation(CancellationTokenSource cancellation)
-    {
-        vodBrowseController.CompleteTwitchVodOperation(cancellation);
-    }
-
-    private void RaiseTwitchVodCommandStates()
-    {
-        SearchTwitchVodsCommand.RaiseCanExecuteChanged();
-        LoadMoreTwitchVodsCommand.RaiseCanExecuteChanged();
-    }
-
-    private void SelectBrowsePlatform(PlatformKind platform)
-    {
-        if (SelectedBrowsePlatform == platform)
-        {
-            if (IsBrowseStreamsPageVisible)
-            {
-                ReturnToBrowseCategoriesPage();
-            }
-
-            if (!HasBrowseCategories && !IsBrowseCategoriesLoading)
-            {
-                _ = LoadBrowseCategoriesAsync(reset: true);
-            }
-
-            return;
-        }
-
-        vodBrowseController.AdvanceBrowseCategoryGeneration();
-        vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
-        vodBrowseController.AdvanceBrowseStreamGeneration();
-        CancelBrowseCategorySearchDebounce();
-        CancelActiveBrowseCategorySearch();
-        CancelActiveBrowseCategoryViewerCountLoad();
-        CancelActiveBrowseStreamSearch();
-        SelectedBrowsePlatform = platform;
-        SetBrowseStreamsPageSelected(false);
-        ClearBrowseCategories(clearStatus: false);
-        ClearBrowseStreams(clearSelectedCategory: true);
-        HasBrowseCategorySearchCompleted = false;
-        browseCategoryStatus = $"Loading {platform} categories";
-        BrowseStatus = $"Loading {platform} categories";
-        StatusMessage = BrowseStatus;
-        RecordNavigation();
-        _ = LoadBrowseCategoriesAsync(reset: true);
-    }
-
-    private async Task RefreshBrowseAsync()
-    {
-        if (disposed) return;
-        if (IsBrowseStreamsPageVisible && SelectedBrowseCategory is not null)
-        {
-            await LoadBrowseStreamsAsync(reset: true);
-            return;
-        }
-
-        await LoadBrowseCategoriesAsync(reset: true);
-    }
-
-    private Task LoadBrowseCategoriesAsync(bool reset)
-    {
-        if (disposed) return Task.CompletedTask;
-        if (reset) CancelBrowseCategorySearchDebounce();
-        if (browseService is null)
-        {
-            BrowseStatus = "Browse is not available.";
-            return Task.CompletedTask;
-        }
-
-        var platform = SelectedBrowsePlatform;
-        var query = BrowseCategorySearchText.Trim();
-        var cursor = reset ? "" : BrowseCategoryNextCursor;
-        if (!reset && string.IsNullOrWhiteSpace(cursor))
-        {
-            return Task.CompletedTask;
-        }
-
-        if (reset && activeBrowseCategoryTask is { IsCompleted: false } &&
-            activeBrowseCategoryGeneration == vodBrowseController.CurrentBrowseCategoryGeneration &&
-            activeBrowseCategorySearch == (platform, query))
-        {
-            return activeBrowseCategoryTask;
-        }
-
-        var searchGeneration = reset
-            ? vodBrowseController.AdvanceBrowseCategoryGeneration()
-            : vodBrowseController.CurrentBrowseCategoryGeneration;
-        activeBrowseCategoryGeneration = searchGeneration;
-        activeBrowseCategorySearch = (platform, query);
-        var task = RunBrowseCategoriesAsync(reset,
-            new BrowseCategoryRequest(platform, query, cursor, BrowseCategoryPageSize), searchGeneration);
-        activeBrowseCategoryTask = reset ? task : null;
-        return task;
-    }
-
-    private async Task RunBrowseCategoriesAsync(bool reset, BrowseCategoryRequest request, int searchGeneration)
-    {
-        var platform = request.Platform;
-        var query = request.Query;
-        var cursor = request.Cursor;
-        var searchCancellation = ReplaceBrowseCategorySearchCancellation();
-        if (reset)
-        {
-            vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
-            CancelActiveBrowseCategoryViewerCountLoad();
-            SetBrowseStreamsPageSelected(false);
-            // Preserve cards and pagination during refresh; navigation clears old results.
-            ClearBrowseStreams(clearSelectedCategory: true);
-            HasBrowseCategorySearchCompleted = false;
-        }
-
-        IsBrowseCategoriesLoading = true;
-        BrowseStatus = string.IsNullOrWhiteSpace(query)
-            ? $"Loading {platform} categories"
-            : $"Searching {platform} categories for {query}";
-        browseCategoryStatus = BrowseStatus;
-        StatusMessage = BrowseStatus;
-
-        try
-        {
-            var result = await browseService!.GetCategoriesAsync(
-                request,
-                Settings,
-                searchCancellation.Token);
-            if (!IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
-            {
-                return;
-            }
-
-            if (result.IsAvailable)
-            {
-                IEnumerable<BrowseCategory> categories = platform == PlatformKind.Kick && reset
-                    ? OrderBrowseCategories(
-                        result.Items.DistinctBy(category => $"{category.Platform}:{category.Id}", StringComparer.OrdinalIgnoreCase),
-                        category => category.ViewerCount,
-                        category => string.IsNullOrWhiteSpace(category.Name) ? "Untitled category" : category.Name)
-                    : result.Items;
-                BrowseCategoryNextCursor = browseCategoryPages.ApplyPage(
-                    BrowseCategories, categories,
-                    card => $"{card.Platform}:{card.Id}", category => $"{category.Platform}:{category.Id}",
-                    category => new BrowseCategoryViewModel(category, SelectBrowseCategoryAsync),
-                    (card, category) => card.Update(category), cursor, result.NextCursor);
-                if (platform == PlatformKind.Kick && !reset)
-                {
-                    SortBrowseCategoriesByViewerCount();
-                }
-            }
-
-            HasBrowseCategorySearchCompleted = true;
-            BrowseStatus = result.Message;
-            browseCategoryStatus = result.Message;
-            StatusMessage = result.Message;
-            if (result.IsAvailable) StartBrowseCategoryViewerCountLoad(platform, query);
-        }
-        catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
-            {
-                return;
-            }
-
-            HasBrowseCategorySearchCompleted = true;
-            BrowseStatus = ex.Message;
-            browseCategoryStatus = ex.Message;
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "Browse", $"{platform} category browse failed.", ex);
-        }
-        finally
-        {
-            if (IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
-            {
-                IsBrowseCategoriesLoading = false;
-            }
-
-            DisposeBrowseCategorySearchCancellation(searchCancellation);
-        }
-    }
-
-    private void SortBrowseCategoriesByViewerCount()
-    {
-        var sortedCategories = OrderBrowseCategories(BrowseCategories,
-                category => category.Category.ViewerCount, category => category.Name)
-            .ToArray();
-
-        for (var index = 0; index < sortedCategories.Length; index++)
-        {
-            var category = sortedCategories[index];
-            var currentIndex = BrowseCategories.IndexOf(category);
-            if (currentIndex >= 0 && currentIndex != index)
-            {
-                BrowseCategories.Move(currentIndex, index);
-            }
-        }
-    }
-
-    private static IOrderedEnumerable<T> OrderBrowseCategories<T>(IEnumerable<T> categories,
-        Func<T, int?> viewerCount, Func<T, string> name) => categories
-        .OrderBy(category => viewerCount(category) is null ? 1 : 0)
-        .ThenByDescending(category => viewerCount(category) ?? 0)
-        .ThenBy(name, StringComparer.OrdinalIgnoreCase);
-
-    private void StartBrowseCategoryViewerCountLoad(PlatformKind platform, string query)
-    {
-        if (browseService is null || platform != PlatformKind.Twitch)
-        {
-            return;
-        }
-
-        var categoryIds = BrowseCategories
-            .Where(category => category.Platform == platform && category.Category.ViewerCount is null)
-            .Select(category => category.Id)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        if (categoryIds.Length == 0)
-        {
-            return;
-        }
-
-        int viewerCountGeneration;
-        CancellationTokenSource cancellation;
-        lock (browseCategoryViewerCountGate)
-        {
-            if (browseCategoryViewerCountCancellation is not null)
-            {
-                browseCategoryViewerCountLoadPending = true;
-                return;
-            }
-
-            viewerCountGeneration = vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
-            cancellation = new CancellationTokenSource();
-            browseCategoryViewerCountCancellation = cancellation;
-        }
-
-        _ = LoadBrowseCategoryViewerCountsAsync(
-            platform,
-            query,
-            viewerCountGeneration,
-            categoryIds,
-            cancellation);
-    }
-
-    private async Task LoadBrowseCategoryViewerCountsAsync(
-        PlatformKind platform,
-        string query,
-        int viewerCountGeneration,
-        IReadOnlyList<string> categoryIds,
-        CancellationTokenSource cancellation)
-    {
-        var failureReported = 0;
-        using var throttle = new SemaphoreSlim(BrowseCategoryViewerCountConcurrency);
-
-        try
-        {
-            var batches = new List<IReadOnlyList<string>>();
-            var remainingCategoryIds = categoryIds;
-            if (ShouldPrioritizeFirstBrowseCategoryViewerCount(platform, query) &&
-                remainingCategoryIds.Count > 1)
-            {
-                batches.Add([remainingCategoryIds[0]]);
-                remainingCategoryIds = remainingCategoryIds.Skip(1).ToArray();
-            }
-
-            batches.AddRange(remainingCategoryIds
-                .Chunk(BrowseCategoryViewerCountBatchSize)
-                .Select(batch => (IReadOnlyList<string>)batch.ToArray()));
-
-            var tasks = batches
-                .Select(categoryIdBatch => LoadBrowseCategoryViewerCountBatchAsync(
-                    platform,
-                    query,
-                    viewerCountGeneration,
-                    categoryIdBatch,
-                    throttle,
-                    cancellation,
-                    () => Interlocked.CompareExchange(ref failureReported, 1, 0) == 0))
-                .ToArray();
-            await Task.WhenAll(tasks);
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query))
-            {
-                return;
-            }
-
-            var message = $"{platform} category viewer counts unavailable. {ex.Message}";
-            SetBrowseCategoryStatus(message);
-            logger.Write(AppLogLevel.Error, "Browse", $"{platform} category viewer counts failed.", ex);
-        }
-        finally
-        {
-            // Dispose first and unconditionally: short-circuiting on the cancellation checks
-            // leaked one CancellationTokenSource per cancelled load (one per keystroke while a
-            // viewer-count load was in flight).
-            var hasPendingLoad = DisposeBrowseCategoryViewerCountCancellation(cancellation);
-            if (hasPendingLoad &&
-                !cancellation.IsCancellationRequested &&
-                IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query))
-            {
-                dispatch(() => StartBrowseCategoryViewerCountLoad(platform, query));
-            }
-        }
-    }
-
-    private static bool ShouldPrioritizeFirstBrowseCategoryViewerCount(PlatformKind platform, string query)
-    {
-        return platform == PlatformKind.Twitch && string.IsNullOrWhiteSpace(query);
-    }
-
-    private async Task LoadBrowseCategoryViewerCountBatchAsync(
-        PlatformKind platform,
-        string query,
-        int viewerCountGeneration,
-        IReadOnlyList<string> categoryIds,
-        SemaphoreSlim throttle,
-        CancellationTokenSource cancellation,
-        Func<bool> tryReportFailure)
-    {
-        await throttle.WaitAsync(cancellation.Token);
-        try
-        {
-            if (cancellation.IsCancellationRequested)
-            {
-                return;
-            }
-
-            var result = await browseService!.GetCategoryViewerCountsAsync(
-                new BrowseCategoryViewerCountRequest(platform, categoryIds),
-                Settings,
-                cancellation.Token);
-            if (!IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query))
-            {
-                return;
-            }
-
-            if (!result.IsAvailable)
-            {
-                ReportBrowseCategoryViewerCountFailure(
-                    platform,
-                    query,
-                    viewerCountGeneration,
-                    result.Message,
-                    cancellation,
-                    tryReportFailure,
-                    result.Status is BrowseResultStatus.NotConfigured or BrowseResultStatus.Unauthorized);
-                return;
-            }
-
-            var requestedCategoryIds = categoryIds.ToHashSet(StringComparer.Ordinal);
-            var viewerCounts = result.Items
-                .Where(count => requestedCategoryIds.Contains(count.CategoryId))
-                .ToArray();
-            if (viewerCounts.Length > 0)
-            {
-                dispatch(() =>
-                {
-                    if (IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query))
-                    {
-                        foreach (var viewerCount in viewerCounts)
-                        {
-                            ApplyBrowseCategoryViewerCount(platform, viewerCount.CategoryId, viewerCount.ViewerCount);
-                        }
-                    }
-                });
-            }
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            ReportBrowseCategoryViewerCountFailure(
-                platform,
-                query,
-                viewerCountGeneration,
-                $"{platform} category viewer counts unavailable. {ex.Message}",
-                cancellation,
-                tryReportFailure,
-                cancelRemaining: false);
-            logger.Write(AppLogLevel.Error, "Browse", $"{platform} category viewer count failed for {string.Join(", ", categoryIds)}.", ex);
-        }
-        finally
-        {
-            throttle.Release();
-        }
-    }
-
-    private void ReportBrowseCategoryViewerCountFailure(
-        PlatformKind platform,
-        string query,
-        int viewerCountGeneration,
-        string message,
-        CancellationTokenSource cancellation,
-        Func<bool> tryReportFailure,
-        bool cancelRemaining)
-    {
-        if (!tryReportFailure())
-        {
-            return;
-        }
-
-        if (cancelRemaining)
-        {
-            cancellation.Cancel();
-        }
-
-        dispatch(() =>
-        {
-            if (!IsCurrentBrowseCategoryViewerCountLoad(viewerCountGeneration, platform, query))
-            {
-                return;
-            }
-
-            SetBrowseCategoryStatus(message);
-        });
-    }
-
-    private void ApplyBrowseCategoryViewerCount(
-        PlatformKind platform,
-        string categoryId,
-        int viewerCount)
-    {
-        foreach (var category in BrowseCategories)
-        {
-            if (category.Platform == platform &&
-                string.Equals(category.Id, categoryId, StringComparison.Ordinal))
-            {
-                category.SetViewerCount(viewerCount);
-                return;
-            }
-        }
-    }
-
-    private void SetBrowseCategoryStatus(string message)
-    {
-        browseCategoryStatus = message;
-        if (!IsBrowseCategoriesPageVisible)
-        {
-            return;
-        }
-
-        BrowseStatus = message;
-        StatusMessage = message;
-    }
-
-    private async Task SelectBrowseCategoryAsync(BrowseCategoryViewModel category)
-    {
-        if (disposed || category.Platform != SelectedBrowsePlatform)
-        {
-            return;
-        }
-
-        vodBrowseController.AdvanceBrowseCategoryGeneration();
-        CancelBrowseCategorySearchDebounce();
-        CancelActiveBrowseCategorySearch();
-        // The canceled generation no longer owns this flag and cannot clear it in
-        // its finally block. Returning to categories must be able to load again.
-        IsBrowseCategoriesLoading = false;
-        CancelActiveBrowseCategoryViewerCountLoad();
-        vodBrowseController.AdvanceBrowseStreamGeneration();
-        CancelActiveBrowseStreamSearch();
-        SelectedBrowseCategory = category;
-        SetBrowseStreamsPageSelected(true);
-        ClearBrowseStreams(clearSelectedCategory: false);
-        HasBrowseStreamSearchCompleted = false;
-        BrowseStatus = $"Loading live streams in {category.Name}";
-        StatusMessage = BrowseStatus;
-        RecordNavigation();
-        await LoadBrowseStreamsAsync(reset: true);
-    }
-
-    private Task LoadBrowseStreamsAsync(bool reset)
-    {
-        if (disposed) return Task.CompletedTask;
-        if (browseService is null)
-        {
-            BrowseStatus = "Browse is not available.";
-            return Task.CompletedTask;
-        }
-
-        var category = SelectedBrowseCategory;
-        if (category is null)
-        {
-            BrowseStatus = "Select a category first.";
-            return Task.CompletedTask;
-        }
-
-        var platform = SelectedBrowsePlatform;
-        var categoryId = category.Id;
-        var categoryName = category.Name;
-        var cursor = reset ? "" : BrowseStreamNextCursor;
-        if (!reset && string.IsNullOrWhiteSpace(cursor))
-        {
-            return Task.CompletedTask;
-        }
-
-        if (reset && activeBrowseStreamTask is { IsCompleted: false } &&
-            activeBrowseStreamGeneration == vodBrowseController.CurrentBrowseStreamGeneration &&
-            activeBrowseStreamSearch == (platform, categoryId))
-        {
-            return activeBrowseStreamTask;
-        }
-
-        var searchGeneration = reset
-            ? vodBrowseController.AdvanceBrowseStreamGeneration()
-            : vodBrowseController.CurrentBrowseStreamGeneration;
-        activeBrowseStreamGeneration = searchGeneration;
-        activeBrowseStreamSearch = (platform, categoryId);
-        var task = RunBrowseStreamsAsync(reset,
-            new BrowseStreamRequest(platform, categoryId, categoryName, cursor, BrowseStreamPageSize), searchGeneration);
-        // A refresh during Load More must restart the first page, not share pagination.
-        activeBrowseStreamTask = reset ? task : null;
-        return task;
-    }
-
-    private async Task RunBrowseStreamsAsync(bool reset, BrowseStreamRequest request, int searchGeneration)
-    {
-        var platform = request.Platform;
-        var categoryId = request.CategoryId;
-        var categoryName = request.CategoryName;
-        var searchCancellation = ReplaceBrowseStreamSearchCancellation();
-        if (reset)
-        {
-            // Keep usable cards and the last successful cursor until the refresh succeeds.
-            // Selecting a different category already clears them at the navigation boundary.
-            HasBrowseStreamSearchCompleted = false;
-        }
-
-        IsBrowseStreamsLoading = true;
-        BrowseStatus = reset
-            ? $"Loading live streams in {categoryName}"
-            : $"Loading more live streams in {categoryName}";
-        StatusMessage = BrowseStatus;
-
-        try
-        {
-            var result = await browseService!.GetStreamsAsync(
-                request,
-                Settings,
-                searchCancellation.Token);
-            if (!IsCurrentBrowseStreamSearch(searchGeneration, platform, categoryId))
-            {
-                return;
-            }
-
-            if (result.IsAvailable)
-            {
-                var thumbnailCacheVersion = Interlocked.Increment(ref nextLiveThumbnailCacheVersion);
-                BrowseStreamNextCursor = browseStreamPages.ApplyPage(
-                    BrowseStreams, result.Items.Select(LiveStreamCardData.FromBrowseStream),
-                    card => card.Target.StateKey, data => data.Target.StateKey,
-                    data => new LiveStreamCardViewModel(data, OpenLiveStreamCardAsync, thumbnailCacheVersion),
-                    (card, data) => card.Update(data, thumbnailCacheVersion),
-                    request.Cursor, result.NextCursor);
-            }
-            HasBrowseStreamSearchCompleted = true;
-            BrowseStatus = result.Message;
-            StatusMessage = result.Message;
-        }
-        catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!IsCurrentBrowseStreamSearch(searchGeneration, platform, categoryId))
-            {
-                return;
-            }
-
-            HasBrowseStreamSearchCompleted = true;
-            BrowseStatus = ex.Message;
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "Browse", $"{platform} category stream browse failed.", ex);
-        }
-        finally
-        {
-            if (IsCurrentBrowseStreamSearch(searchGeneration, platform, categoryId))
-            {
-                IsBrowseStreamsLoading = false;
-            }
-
-            DisposeBrowseStreamSearchCancellation(searchCancellation);
-        }
-    }
+    private Task SelectBrowseCategoryAsync(BrowseCategoryViewModel category) => browse.SelectBrowseCategoryAsync(category);
 
     private async Task OpenLiveStreamCardAsync(LiveStreamCardViewModel stream, bool stayOnHome)
     {
@@ -2958,111 +1332,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private bool IsCurrentBrowseCategorySearch(int searchGeneration, PlatformKind platform, string query)
-    {
-        return !disposed &&
-            vodBrowseController.IsCurrentBrowseCategoryGeneration(searchGeneration) &&
-            SelectedBrowsePlatform == platform &&
-            string.Equals(BrowseCategorySearchText.Trim(), query, StringComparison.Ordinal);
-    }
-
-    private bool IsCurrentBrowseCategoryViewerCountLoad(
-        int viewerCountGeneration,
-        PlatformKind platform,
-        string query)
-    {
-        return !disposed &&
-            vodBrowseController.IsCurrentBrowseCategoryViewerCountGeneration(viewerCountGeneration) &&
-            SelectedBrowsePlatform == platform &&
-            string.Equals(BrowseCategorySearchText.Trim(), query, StringComparison.Ordinal);
-    }
-
-    private bool IsCurrentBrowseStreamSearch(int searchGeneration, PlatformKind platform, string categoryId)
-    {
-        return !disposed &&
-            vodBrowseController.IsCurrentBrowseStreamGeneration(searchGeneration) &&
-            SelectedBrowsePlatform == platform &&
-            SelectedBrowseCategory is { } selectedCategory &&
-            string.Equals(selectedCategory.Id, categoryId, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void ClearBrowseCategories(bool clearStatus)
-    {
-        BrowseCategories.Clear();
-        BrowseCategoryNextCursor = "";
-        if (clearStatus)
-        {
-            BrowseStatus = "Browse Twitch or Kick categories.";
-            browseCategoryStatus = BrowseStatus;
-        }
-    }
-
-    private void ClearBrowseStreams(bool clearSelectedCategory)
-    {
-        BrowseStreams.Clear();
-        BrowseStreamNextCursor = "";
-        HasBrowseStreamSearchCompleted = false;
-        if (clearSelectedCategory)
-        {
-            SelectedBrowseCategory = null;
-        }
-    }
-
-    private void ScheduleAutomaticBrowseCategorySearch()
-    {
-        if (disposed || browseService is null)
-        {
-            return;
-        }
-
-        var query = BrowseCategorySearchText.Trim();
-        var platform = SelectedBrowsePlatform;
-        var searchGeneration = vodBrowseController.CurrentBrowseCategoryGeneration;
-        if (browseCategorySearchDebounceInterval <= TimeSpan.Zero)
-        {
-            dispatch(() => _ = RunAutomaticBrowseCategorySearchAsync(query, platform, searchGeneration));
-            return;
-        }
-
-        vodBrowseController.ScheduleBrowseCategory(
-            browseCategorySearchDebounceInterval,
-            () => dispatch(() => _ = RunAutomaticBrowseCategorySearchAsync(query, platform, searchGeneration)),
-            ReportDebouncedCallbackFailure);
-    }
-
-    private async Task RunAutomaticBrowseCategorySearchAsync(
-        string query,
-        PlatformKind platform,
-        int searchGeneration)
-    {
-        if (disposed || !IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
-        {
-            return;
-        }
-
-        await LoadBrowseCategoriesAsync(reset: true);
-    }
-
-    private void CancelBrowseCategorySearchDebounce()
-    {
-        vodBrowseController.CancelScheduledBrowseCategory();
-    }
-
-    private CancellationTokenSource ReplaceBrowseCategorySearchCancellation()
-    {
-        return vodBrowseController.BeginBrowseCategoryOperation(lifetimeCancellation.Token);
-    }
-
-    private CancellationTokenSource ReplaceBrowseStreamSearchCancellation()
-    {
-        return vodBrowseController.BeginBrowseStreamOperation(lifetimeCancellation.Token);
-    }
-
-    private void CancelActiveBrowseCategorySearch()
-    {
-        vodBrowseController.CancelBrowseCategoryOperation();
-    }
-
     /// <summary>
     /// Builds an async command whose unhandled failures are surfaced and logged. Without an
     /// error handler <see cref="AsyncRelayCommand"/>'s async-void entry point swallows them,
@@ -3082,56 +1351,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         logger.Write(AppLogLevel.Error, "Command", "An application command failed.", exception);
     }
 
-    private void CancelActiveBrowseCategoryViewerCountLoad()
-    {
-        vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
-        lock (browseCategoryViewerCountGate)
-        {
-            browseCategoryViewerCountCancellation?.Cancel();
-            browseCategoryViewerCountCancellation = null;
-            browseCategoryViewerCountLoadPending = false;
-        }
-    }
-
-    private void CancelActiveBrowseStreamSearch()
-    {
-        vodBrowseController.CancelBrowseStreamOperation();
-    }
-
-    private void DisposeBrowseCategorySearchCancellation(CancellationTokenSource cancellation)
-    {
-        vodBrowseController.CompleteBrowseCategoryOperation(cancellation);
-    }
-
-    private bool DisposeBrowseCategoryViewerCountCancellation(CancellationTokenSource cancellation)
-    {
-        var shouldStartPendingLoad = false;
-        lock (browseCategoryViewerCountGate)
-        {
-            if (ReferenceEquals(browseCategoryViewerCountCancellation, cancellation))
-            {
-                browseCategoryViewerCountCancellation = null;
-                shouldStartPendingLoad = browseCategoryViewerCountLoadPending;
-                browseCategoryViewerCountLoadPending = false;
-            }
-        }
-
-        cancellation.Dispose();
-        return shouldStartPendingLoad;
-    }
-
-    private void DisposeBrowseStreamSearchCancellation(CancellationTokenSource cancellation)
-    {
-        vodBrowseController.CompleteBrowseStreamOperation(cancellation);
-    }
-
-    private void RaiseBrowseCommandStates()
-    {
-        ReturnToBrowseCategoriesCommand.RaiseCanExecuteChanged();
-        RefreshBrowseCommand.RaiseCanExecuteChanged();
-        LoadMoreBrowseCategoriesCommand.RaiseCanExecuteChanged();
-        LoadMoreBrowseStreamsCommand.RaiseCanExecuteChanged();
-    }
+    private void CancelActiveBrowseCategoryViewerCountLoad() => browse.CancelActiveBrowseCategoryViewerCountLoad();
 
     private async Task OpenRecentStreamAsync(RecentStreamViewModel stream, bool stayOnHome)
     {
@@ -3151,50 +1371,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             RecordNavigation();
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Error, "Recent", $"Failed to open {stream.Target.DisplayName} from recent streams.", ex);
-        }
-    }
-
-    private async Task DeleteRecentStreamAsync(RecentStreamViewModel stream)
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        var target = stream.Target;
-        try
-        {
-            await recentStreamsGate.WaitAsync(lifetimeCancellation.Token);
-            try
-            {
-                if (!Settings.RecentStreams.Any(recentStream => IsSameRecentStream(recentStream, target)))
-                {
-                    return;
-                }
-
-                Settings.RecentStreams = Settings.RecentStreams
-                    .Where(recentStream => !IsSameRecentStream(recentStream, target))
-                    .ToList();
-                recentStreamController.RemoveLiveStatus(target.StateKey);
-                recentStreamController.TakeHint(target.StateKey);
-                pendingRecentMetadata?.Remove(target.StateKey);
-
-                RebuildRecentStreams();
-                StatusMessage = $"{target.DisplayName} removed from recent streams";
-                await SaveRecentStreamRemovalAsync(target);
-            }
-            finally
-            {
-                recentStreamsGate.Release();
-            }
-        }
-        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Warning, "Recent", $"Failed to remove {target.DisplayName} from recent streams.", ex);
         }
     }
 
@@ -3609,7 +1785,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (disposed) return;
 
         // Capture the initiating search before playback can yield to new input.
-        int? searchGenerationToClear = clearInputOnSuccess ? streamSearchController.CurrentGeneration : null;
+        int? searchGenerationToClear = clearInputOnSuccess ? streamSearch.CurrentGeneration : null;
         if (TryOpenExistingTab(target, selectOpenedTab, searchGenerationToClear))
         {
             return;
@@ -3647,7 +1823,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 // live view model or a disposal-in-progress state.
                 foreach (var tab in Tabs) tab.CaptureVodResumePosition(closing: true);
                 disposed = true;
-                if (vodPlaybackHistory is not null) vodPlaybackHistory.BookmarkChanged -= OnVodBookmarkChanged;
                 disposalTask = DisposeCoreAsync();
             }
 
@@ -3657,6 +1832,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
+        var previewCleanup = HoverPreviews.DisposeAsync().AsTask();
+        var vodLibraryCleanup = vodLibrary.DisposeAsync().AsTask();
+        var browseCleanup = browse.DisposeAsync().AsTask();
+        var followedCleanup = followed.DisposeAsync().AsTask();
+        var recentCleanup = recent.DisposeAsync().AsTask();
+        var searchCleanup = streamSearch.DisposeAsync().AsTask();
+        streamSearch.PropertyChanged -= HomeFeatureOnPropertyChanged;
+        vodLibrary.PropertyChanged -= HomeFeatureOnPropertyChanged;
+        browse.PropertyChanged -= HomeFeatureOnPropertyChanged;
+        followed.PropertyChanged -= HomeFeatureOnPropertyChanged;
+        recent.PropertyChanged -= HomeFeatureOnPropertyChanged;
+        await settingsAutoSave.DisposeAsync();
         // Window shutdown has a deadline. Save before update/search/player cleanup can use it up,
         // including snapshots from tabs whose detached cleanup is still queued.
         if (vodPlaybackHistory is not null)
@@ -3672,11 +1859,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         tabStartController.Clear();
 
         inactivePlaybackPolicyController.Dispose();
-        streamSearchController.Dispose();
-        vodBrowseController.Dispose();
-        CancelActiveBrowseCategoryViewerCountLoad();
-        followedChannelsRefreshCancellation.Cancel();
-        recentThumbnailRefreshCancellation.Cancel();
 
         if (loggerEntryWrittenHandler is not null)
         {
@@ -3684,36 +1866,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             loggerEntryWrittenHandler = null;
         }
 
-        lock (followedChannelsRefreshTimerGate)
-        {
-            followedChannelsRefreshTimer?.Dispose();
-            followedChannelsRefreshTimer = null;
-        }
-
-        lock (recentThumbnailRefreshTimerGate)
-        {
-            recentThumbnailRefreshTimer?.Dispose();
-            recentThumbnailRefreshTimer = null;
-        }
-
         Tabs.CollectionChanged -= TabsOnCollectionChanged;
-        StreamSearchResults.CollectionChanged -= StreamSearchResultsOnCollectionChanged;
-        LiveFollowedChannels.CollectionChanged -= LiveFollowedChannelsOnCollectionChanged;
-        TwitchVods.CollectionChanged -= TwitchVodsOnCollectionChanged;
-        RecentStreams.CollectionChanged -= RecentStreamsOnCollectionChanged;
-        BrowseCategories.CollectionChanged -= BrowseCategoriesOnCollectionChanged;
-        BrowseStreams.CollectionChanged -= BrowseStreamsOnCollectionChanged;
         Settings.PropertyChanged -= SettingsOnPropertyChanged;
         if (observedChatSettings is not null)
         {
             observedChatSettings.PropertyChanged -= ChatSettingsOnPropertyChanged;
             observedChatSettings = null;
-        }
-
-        if (observedFollowedChannelsSettings is not null)
-        {
-            observedFollowedChannelsSettings.PropertyChanged -= FollowedChannelsSettingsOnPropertyChanged;
-            observedFollowedChannelsSettings = null;
         }
 
         if (selectedTab is not null)
@@ -3737,16 +1895,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             if (automaticUpdateTask is not null) await automaticUpdateTask;
-            await DrainSearchOperationsAsync();
+            await Task.WhenAll(searchCleanup, vodLibraryCleanup, browseCleanup, followedCleanup, recentCleanup);
 
             var tabDisposals = Tabs
                 .ToArray()
                 .Select(tab => tab.DisposeAsync().AsTask())
                 .ToArray();
-            if (tabDisposals.Length > 0)
-            {
-                await Task.WhenAll(tabDisposals);
-            }
+            await Task.WhenAll(tabDisposals.Append(previewCleanup));
 
             await backgroundOperationController.DrainAsync(DetachedDisposalWaitTimeout);
 
@@ -3775,335 +1930,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         finally
         {
             lifetimeCancellation.Dispose();
-            recentThumbnailRefreshCancellation.Dispose();
-            followedChannelsRefreshCancellation.Dispose();
             streamOpenGate.Dispose();
             tabStartController.Dispose();
             chatSettingsApplyGate.Dispose();
             vlcPluginMultiViewChatPolicyGate.Dispose();
-            recentStreamsGate.Dispose();
-            recentThumbnailRefreshGate.Dispose();
-            followedChannelsRefreshGate.Dispose();
             if (appUpdateService is not null)
             {
                 appUpdateService.StateChanged -= OnAppUpdateStateChanged;
                 (appUpdateService as IDisposable)?.Dispose();
             }
-        }
-    }
-
-    private async Task DrainSearchOperationsAsync()
-    {
-        try
-        {
-            await Task.WhenAll(
-                streamSearchController.DrainAsync(DetachedDisposalWaitTimeout),
-                vodBrowseController.DrainAsync(DetachedDisposalWaitTimeout));
-        }
-        catch (TimeoutException)
-        {
-            logger.Write(AppLogLevel.Warning, "UI", "Timed out waiting for search operations during shutdown.");
-        }
-    }
-
-    private Task AddAndPlayAsync()
-    {
-        var query = NewStreamText.Trim();
-        CancelStreamSearchDebounce();
-        if (activeStreamSearchTask is { IsCompleted: false } &&
-            activeStreamSearchGeneration == streamSearchController.CurrentGeneration &&
-            string.Equals(activeStreamSearchQuality, SelectedQuality, StringComparison.Ordinal))
-        {
-            SetStreamSearchDropdownOpen(true);
-            return activeStreamSearchTask;
-        }
-
-        return StartStreamSearchAsync(query, streamSearchController.AdvanceGeneration());
-    }
-
-    private Task StartStreamSearchAsync(string query, int searchGeneration)
-    {
-        activeStreamSearchGeneration = searchGeneration;
-        activeStreamSearchQuality = SelectedQuality;
-        activeStreamSearchTask = RunStreamSearchAsync(query, searchGeneration);
-        return activeStreamSearchTask;
-    }
-
-    private async Task RunStreamSearchAsync(string query, int searchGeneration)
-    {
-        if (string.IsNullOrWhiteSpace(query) || !IsCurrentStreamSearch(searchGeneration, query))
-        {
-            return;
-        }
-
-        var searchCancellation = ReplaceStreamSearchCancellation();
-        StreamSearchResults.Clear();
-        StreamSearchStatus = "";
-        SetStreamSearchCompleted(false);
-        SetStreamSearchDropdownOpen(true);
-        IsStreamSearchRunning = true;
-
-        try
-        {
-            var probes = await SearchStreamCandidatesAsync(query, searchCancellation.Token);
-            if (!IsCurrentStreamSearch(searchGeneration, query))
-            {
-                return;
-            }
-
-            var enrichedProbes = await LoadStreamSearchResultMetadataAsync(
-                probes,
-                searchCancellation.Token);
-            if (!IsCurrentStreamSearch(searchGeneration, query))
-            {
-                return;
-            }
-
-            var displayProbes = OrderStreamSearchProbesForDisplay(enrichedProbes);
-            ReplaceStreamSearchResults(displayProbes);
-            SetStreamSearchCompleted(true);
-            StreamSearchStatus = FormatStreamSearchResult(query, displayProbes);
-            StatusMessage = StreamSearchStatus;
-            IsStreamSearchRunning = false;
-
-            var viewerCountProbes = await LoadStreamSearchResultViewerCountsAsync(
-                enrichedProbes,
-                searchCancellation.Token);
-            if (!IsCurrentStreamSearch(searchGeneration, query))
-            {
-                return;
-            }
-
-            if (!viewerCountProbes.SequenceEqual(enrichedProbes))
-            {
-                displayProbes = OrderStreamSearchProbesForDisplay(viewerCountProbes);
-                UpdateStreamSearchViewerCounts(displayProbes);
-                StreamSearchStatus = FormatStreamSearchResult(query, displayProbes);
-                StatusMessage = StreamSearchStatus;
-            }
-        }
-        catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!IsCurrentStreamSearch(searchGeneration, query))
-            {
-                return;
-            }
-
-            SetStreamSearchCompleted(true);
-            StreamSearchStatus = ex.Message;
-            StatusMessage = ex.Message;
-            logger.Write(AppLogLevel.Error, "UI", "Stream search failed.", ex);
-        }
-        finally
-        {
-            if (IsCurrentStreamSearch(searchGeneration, query))
-            {
-                IsStreamSearchRunning = false;
-            }
-
-            DisposeStreamSearchCancellation(searchCancellation);
-        }
-    }
-
-    private async Task<IReadOnlyList<StreamCandidateProbe>> SearchStreamCandidatesAsync(
-        string query,
-        CancellationToken cancellationToken)
-    {
-        if (StreamInputParser.TryParseTwitchVodUrl(query, out var vodTarget) && vodTarget is not null)
-        {
-            return [new StreamCandidateProbe(vodTarget, new StreamlinkProbeResult(true, "Twitch VOD"))];
-        }
-
-        if (streamSearchService is not null)
-        {
-            var serviceMessage = $"Searching Twitch and Kick for {query}";
-            StatusMessage = serviceMessage;
-            StreamSearchStatus = serviceMessage;
-            var result = await streamSearchService.SearchAsync(
-                new StreamSearchRequest(query, SelectedQuality, 10),
-                Settings,
-                cancellationToken);
-            return result.Channels
-                .Select(channel => new StreamCandidateProbe(
-                    channel.Target,
-                    new StreamlinkProbeResult(channel.CanPlay, channel.StatusMessage),
-                    Channel: channel,
-                    ViewerCount: channel.ViewerCount))
-                .ToArray();
-        }
-
-        var candidates = StreamInputParser.ParseCandidates(query);
-        if (candidates.Count == 0)
-        {
-            return [];
-        }
-
-        if (string.IsNullOrWhiteSpace(Settings.StreamlinkPath))
-        {
-            throw new InvalidOperationException("Configure the Streamlink executable path in Settings.");
-        }
-
-        var message = candidates.Count == 1
-            ? $"Searching {candidates[0].DisplayName}"
-            : $"Searching Twitch and Kick for {candidates[0].Channel}";
-        StatusMessage = message;
-        StreamSearchStatus = message;
-        var customArguments = CommandLineTokenizer.Tokenize(Settings.CustomStreamlinkArguments);
-        return await ProbeCandidatesAsync(
-            candidates,
-            customArguments,
-            cancellationToken);
-    }
-
-    private async Task<IReadOnlyList<StreamCandidateProbe>> LoadStreamSearchResultMetadataAsync(
-        IReadOnlyList<StreamCandidateProbe> probes,
-        CancellationToken cancellationToken)
-    {
-        if (streamMetadataService is null || probes.Count == 0)
-        {
-            return probes;
-        }
-
-        return await Task.WhenAll(probes.Select(probe => LoadStreamSearchResultMetadataAsync(
-            probe,
-            cancellationToken)));
-    }
-
-    private async Task<StreamCandidateProbe> LoadStreamSearchResultMetadataAsync(
-        StreamCandidateProbe probe,
-        CancellationToken cancellationToken)
-    {
-        if (probe.Channel is not null || probe.Target.Kind != StreamTargetKind.Live)
-        {
-            return probe;
-        }
-
-        var metadataService = streamMetadataService;
-        if (metadataService is null)
-        {
-            return probe;
-        }
-
-        try
-        {
-            var metadata = await metadataService.GetLiveStreamMetadataAsync(
-                probe.Target,
-                Settings,
-                cancellationToken);
-            return metadata.State == StreamMetadataState.Available
-                ? probe with { Metadata = metadata }
-                : probe;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Search", $"Failed to load metadata for {probe.Target.DisplayName}.", ex);
-            return probe;
-        }
-    }
-
-    private async Task<IReadOnlyList<StreamCandidateProbe>> LoadStreamSearchResultViewerCountsAsync(
-        IReadOnlyList<StreamCandidateProbe> probes,
-        CancellationToken cancellationToken)
-    {
-        if (viewerCountService is null ||
-            !probes.Any(probe => IsLiveStreamSearchProbe(probe) && probe.Target.Kind == StreamTargetKind.Live && probe.ViewerCount is null))
-        {
-            return probes;
-        }
-
-        using var throttle = new SemaphoreSlim(StreamSearchViewerCountConcurrency);
-        var tasks = probes.Select(async probe =>
-        {
-            if (!IsLiveStreamSearchProbe(probe) || probe.Target.Kind != StreamTargetKind.Live || probe.ViewerCount is not null)
-            {
-                return probe;
-            }
-
-            await throttle.WaitAsync(cancellationToken);
-            try
-            {
-                return await LoadStreamSearchResultViewerCountAsync(probe, cancellationToken);
-            }
-            finally
-            {
-                throttle.Release();
-            }
-        });
-
-        return await Task.WhenAll(tasks);
-    }
-
-    private void ReplaceStreamSearchResults(IReadOnlyList<StreamCandidateProbe> probes)
-    {
-        StreamSearchResults.Clear();
-        foreach (var probe in probes)
-        {
-            StreamSearchResults.Add(probe.Channel is { } channel
-                ? new StreamSearchResultViewModel(channel, OpenSearchResultAsync, probe.ViewerCount)
-                : new StreamSearchResultViewModel(
-                    probe.Target,
-                    probe.Result,
-                    probe.Metadata,
-                    OpenSearchResultAsync,
-                    probe.ViewerCount));
-        }
-    }
-
-    private void UpdateStreamSearchViewerCounts(IReadOnlyList<StreamCandidateProbe> probes)
-    {
-        // Enrichment only changes counts and ordering. Keep the existing rows so
-        // WPF retains their controls, focus, and any in-flight Open command.
-        for (var index = 0; index < probes.Count; index++)
-        {
-            var probe = probes[index];
-            var identity = probe.Target.TabIdentityKey;
-            for (var currentIndex = index; currentIndex < StreamSearchResults.Count; currentIndex++)
-            {
-                var result = StreamSearchResults[currentIndex];
-                if (!string.Equals(result.Target.TabIdentityKey, identity, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                result.UpdateViewerCount(probe.ViewerCount);
-                if (currentIndex != index)
-                {
-                    StreamSearchResults.Move(currentIndex, index);
-                }
-                break;
-            }
-        }
-    }
-
-    private async Task<StreamCandidateProbe> LoadStreamSearchResultViewerCountAsync(
-        StreamCandidateProbe probe,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var result = await viewerCountService!.GetViewerCountAsync(
-                probe.Target,
-                Settings,
-                cancellationToken);
-            return result.State == ViewerCountState.Available && result.ViewerCount is { } viewerCount
-                ? probe with { ViewerCount = Math.Max(0, viewerCount) }
-                : probe;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Search", $"Failed to load viewer count for {probe.Target.DisplayName}.", ex);
-            return probe;
         }
     }
 
@@ -4152,138 +1987,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         await SearchTwitchVodsAsync(reset: true);
     }
 
-    private bool IsCurrentStreamSearch(int searchGeneration, string query)
-    {
-        return !disposed &&
-            streamSearchController.IsCurrent(
-                searchGeneration,
-                query,
-                () => NewStreamText,
-                () => disposed);
-    }
+    private void HomeFeatureOnPropertyChanged(object? sender, PropertyChangedEventArgs e) => OnPropertyChanged(e.PropertyName);
 
-    private void ClearStreamSearchResults()
-    {
-        StreamSearchResults.Clear();
-        StreamSearchStatus = "";
-        SetStreamSearchCompleted(false);
-        if (!HasNewStreamSearchText)
-        {
-            SetStreamSearchDropdownOpen(false);
-        }
-    }
-
-    private void ScheduleAutomaticStreamSearch()
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        var query = NewStreamText.Trim();
-        var searchGeneration = streamSearchController.CurrentGeneration;
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            SetStreamSearchDropdownOpen(false);
-            return;
-        }
-
-        if (streamSearchDebounceInterval <= TimeSpan.Zero)
-        {
-            dispatch(() => _ = RunAutomaticStreamSearchAsync(query, searchGeneration));
-            return;
-        }
-
-        streamSearchController.Schedule(
-            streamSearchDebounceInterval,
-            () => dispatch(() => _ = RunAutomaticStreamSearchAsync(query, searchGeneration)),
-            ReportDebouncedCallbackFailure);
-    }
-
-    private void ReportDebouncedCallbackFailure(Exception exception)
-    {
-        logger.Write(AppLogLevel.Warning, "UI", "A debounced UI operation could not be dispatched.", exception);
-    }
-
-    private async Task RunAutomaticStreamSearchAsync(string query, int searchGeneration)
-    {
-        if (disposed || !IsCurrentStreamSearch(searchGeneration, query))
-        {
-            return;
-        }
-
-        await StartStreamSearchAsync(query, searchGeneration);
-    }
-
-    private void CancelStreamSearchDebounce()
-    {
-        streamSearchController.CancelScheduled();
-    }
-
-    private CancellationTokenSource ReplaceStreamSearchCancellation()
-    {
-        return streamSearchController.BeginOperation(lifetimeCancellation.Token);
-    }
-
-    private void CancelActiveStreamSearch()
-    {
-        streamSearchController.CancelActive();
-    }
-
-    private void DisposeStreamSearchCancellation(CancellationTokenSource cancellation)
-    {
-        streamSearchController.Complete(cancellation);
-    }
-
-    private void SetStreamSearchDropdownOpen(bool value)
-    {
-        SetProperty(ref isStreamSearchDropdownOpen, value, nameof(IsStreamSearchPanelVisible));
-    }
-
-    private void SetStreamSearchCompleted(bool value)
-    {
-        if (hasStreamSearchCompleted == value)
-        {
-            return;
-        }
-
-        hasStreamSearchCompleted = value;
-        OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
-        OnPropertyChanged(nameof(IsStreamSearchEmptyVisible));
-    }
-
-    private static string FormatStreamSearchResult(string query, IReadOnlyList<StreamCandidateProbe> probes)
-    {
-        if (probes.Count == 0)
-        {
-            return $"No Twitch or Kick channels found for {query}.";
-        }
-
-        var live = probes.Count(IsLiveStreamSearchProbe);
-        var offline = probes.Count(probe =>
-            !IsLiveStreamSearchProbe(probe) &&
-            probe.Channel?.State == StreamSearchChannelState.Offline);
-        var unavailable = probes.Count - live - offline;
-        return StreamSearchSummary.Format(query, live, offline, unavailable);
-    }
-
-    private static IReadOnlyList<StreamCandidateProbe> OrderStreamSearchProbesForDisplay(
-        IReadOnlyList<StreamCandidateProbe> probes)
-    {
-        return probes
-            .Select((probe, index) => new { Probe = probe, Index = index })
-            .OrderBy(item => IsLiveStreamSearchProbe(item.Probe) ? 0 : 1)
-            .ThenBy(item => item.Probe.ViewerCount is null ? 1 : 0)
-            .ThenByDescending(item => item.Probe.ViewerCount ?? 0)
-            .ThenBy(item => item.Index)
-            .Select(item => item.Probe)
-            .ToArray();
-    }
-
-    private static bool IsLiveStreamSearchProbe(StreamCandidateProbe probe)
-    {
-        return probe.Channel?.IsLive ?? probe.Result.HasPlayableStream;
-    }
+    private void SetStreamSearchDropdownOpen(bool value) => streamSearch.SetStreamSearchDropdownOpen(value);
 
     private async Task OpenCandidatesAsync(
         IReadOnlyList<StreamTarget> parsedCandidates,
@@ -4381,7 +2087,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ClearStreamSearchAfterOpen(int? searchGenerationToClear)
     {
-        if (searchGenerationToClear == streamSearchController.CurrentGeneration)
+        if (searchGenerationToClear == streamSearch.CurrentGeneration)
         {
             NewStreamText = "";
         }
@@ -4405,6 +2111,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             ChatFactory = chatFactory,
             Logger = logger,
             Dispatch = dispatch,
+            OpenChatLink = OpenChatLink,
             InitialVolume = GetSavedStreamVolume(target),
             ViewerCountService = viewerCountService,
             ReplayResolver = replayResolver,
@@ -4449,596 +2156,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             : Settings.Chat.VlcOverlayFontSize;
     }
 
-    private void SetRecentStreamHint(
-        StreamTarget target,
-        string thumbnailUrl,
-        string displayName,
-        string categoryName)
-    {
-        if (string.IsNullOrWhiteSpace(thumbnailUrl) &&
-            string.IsNullOrWhiteSpace(displayName) &&
-            string.IsNullOrWhiteSpace(categoryName))
-        {
-            return;
-        }
+    private void SetRecentStreamHint(StreamTarget target, string thumbnailUrl, string displayName, string categoryName) => recent.SetRecentStreamHint(target, thumbnailUrl, displayName, categoryName);
 
-        recentStreamController.SetHint(
-            target.StateKey,
-            new RecentStreamHint(
-                thumbnailUrl?.Trim() ?? "",
-                displayName?.Trim() ?? "",
-                categoryName?.Trim() ?? ""));
-    }
+    private void EnsureRecentThumbnailRefreshTimerStarted() => recent.EnsureRecentThumbnailRefreshTimerStarted();
 
-    private RecentStreamHint? TakeRecentStreamHint(StreamTarget target)
-    {
-        return recentStreamController.TakeHint(target.StateKey);
-    }
+    private void RefreshRecentThumbnailsInBackground() => recent.RefreshRecentThumbnailsInBackground();
 
-    private void EnsureFollowedChannelsRefreshTimerStarted()
-    {
-        if (followedStreamsService is null ||
-            followedChannelsRefreshInterval <= TimeSpan.Zero ||
-            disposed)
-        {
-            return;
-        }
-
-        lock (followedChannelsRefreshTimerGate)
-        {
-            if (followedChannelsRefreshTimer is not null || disposed)
-            {
-                return;
-            }
-
-            followedChannelsRefreshTimer = new System.Threading.Timer(
-                _ => RefreshFollowedChannelsOnUi(),
-                null,
-                followedChannelsRefreshInterval,
-                followedChannelsRefreshInterval);
-        }
-    }
-
-    private void RefreshFollowedChannelsOnUi()
-    {
-        if (disposed || followedStreamsService is null || followedChannelsRefreshCancellation.IsCancellationRequested)
-        {
-            return;
-        }
-
-        if (Interlocked.CompareExchange(ref followedChannelsAutomaticRefreshActive, 1, 0) != 0)
-        {
-            return;
-        }
-
-        try
-        {
-            dispatch(() =>
-            {
-                if (disposed ||
-                    followedStreamsService is null ||
-                    followedChannelsRefreshCancellation.IsCancellationRequested)
-                {
-                    Interlocked.Exchange(ref followedChannelsAutomaticRefreshActive, 0);
-                    return;
-                }
-
-                var refreshTask = RefreshFollowedChannelsAsync();
-                backgroundOperationController.Track(ReleaseFollowedChannelsAutomaticRefreshAfterAsync(refreshTask));
-            });
-        }
-        catch (Exception ex)
-        {
-            Interlocked.Exchange(ref followedChannelsAutomaticRefreshActive, 0);
-            logger.Write(AppLogLevel.Warning, "Followed", "Failed to schedule live followed channels refresh.", ex);
-        }
-    }
-
-    private async Task ReleaseFollowedChannelsAutomaticRefreshAfterAsync(Task refreshTask)
-    {
-        try
-        {
-            await refreshTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (followedChannelsRefreshCancellation.IsCancellationRequested || disposed)
-        {
-        }
-        finally
-        {
-            Interlocked.Exchange(ref followedChannelsAutomaticRefreshActive, 0);
-        }
-    }
-
-    private void EnsureRecentThumbnailRefreshTimerStarted()
-    {
-        if (streamMetadataService is null ||
-            recentThumbnailRefreshInterval <= TimeSpan.Zero ||
-            disposed)
-        {
-            return;
-        }
-
-        lock (recentThumbnailRefreshTimerGate)
-        {
-            if (recentThumbnailRefreshTimer is not null || disposed)
-            {
-                return;
-            }
-
-            recentThumbnailRefreshTimer = new System.Threading.Timer(
-                _ => RefreshRecentThumbnailsOnUiIfVisible(),
-                null,
-                recentThumbnailRefreshInterval,
-                recentThumbnailRefreshInterval);
-        }
-    }
-
-    private void RefreshRecentThumbnailsOnUiIfVisible()
-    {
-        if (disposed || streamMetadataService is null)
-        {
-            return;
-        }
-
-        dispatch(() =>
-        {
-            if (disposed || !IsHomeVisible || !IsRecentHomePageVisible)
-            {
-                return;
-            }
-
-            // Navigation can reuse fresh results; periodic polling retains its cadence.
-            backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token, force: true));
-        });
-    }
-
-    private void RefreshRecentThumbnailsInBackground()
-    {
-        if (disposed || streamMetadataService is null)
-        {
-            return;
-        }
-
-        backgroundOperationController.Track(RefreshRecentThumbnailsAsync(recentThumbnailRefreshCancellation.Token));
-    }
-
-    private async Task RefreshRecentThumbnailsAsync(CancellationToken cancellationToken, bool force = false)
-    {
-        if (streamMetadataService is null || Settings.RecentStreams.Count == 0)
-        {
-            return;
-        }
-
-        try
-        {
-            if (!await recentThumbnailRefreshGate.WaitAsync(0, cancellationToken))
-            {
-                return;
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return;
-        }
-
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            var snapshot = Settings.RecentStreams
-                .Select(stream => new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName))
-                .DistinctBy(target => target.StateKey, StringComparer.OrdinalIgnoreCase)
-                .Where(target => force || !recentStreamController.IsMetadataFresh(target.StateKey, now, recentThumbnailRefreshInterval))
-                .ToArray();
-            if (snapshot.Length == 0)
-            {
-                return;
-            }
-
-            var metadataByStream = new Dictionary<string, StreamMetadataResult>(StringComparer.OrdinalIgnoreCase);
-            pendingRecentMetadata = metadataByStream;
-            await MarkRecentStreamsCheckingAsync(snapshot, cancellationToken);
-
-            // A fixed worker count bounds both provider requests and queued tasks
-            // even when the user's Recent history has grown large.
-            var nextIndex = -1;
-            await Task.WhenAll(Enumerable.Range(0, Math.Min(RecentMetadataConcurrency, snapshot.Length)).Select(async _ =>
-            {
-                while (true)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var index = Interlocked.Increment(ref nextIndex);
-                    if (index >= snapshot.Length)
-                    {
-                        return;
-                    }
-
-                    var metadata = await GetRecentStreamMetadataAsync(snapshot[index], cancellationToken);
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (metadata is not null)
-                    {
-                        await ApplyRecentStreamMetadataAsync(snapshot[index], metadata, cancellationToken);
-                    }
-                }
-            }));
-            cancellationToken.ThrowIfCancellationRequested();
-            if (disposed || metadataByStream.Count == 0)
-            {
-                return;
-            }
-
-            await recentStreamsGate.WaitAsync(cancellationToken);
-            try
-            {
-                if (disposed) return;
-                var settingsChanged = false;
-                var updated = new List<RecentStreamSettings>(Settings.RecentStreams.Count);
-                foreach (var stream in Settings.RecentStreams)
-                {
-                    var key = new StreamTarget(stream.Platform, stream.Channel, stream.Url).StateKey;
-                    var next = metadataByStream.TryGetValue(key, out var metadata)
-                        ? MergeRecentStreamMetadata(stream, metadata) : stream;
-                    updated.Add(next);
-                    settingsChanged |= !ReferenceEquals(stream, next);
-                }
-                // Publish a new settings list once, keeping a concurrent save's snapshot
-                // stable while individual results are already visible in the cards.
-                if (settingsChanged)
-                {
-                    Settings.RecentStreams = updated;
-                    RebuildRecentStreams();
-                    await SaveRecentThumbnailSettingsAsync(cancellationToken);
-                }
-            }
-            finally
-            {
-                recentStreamsGate.Release();
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Recent", "Failed to refresh recent stream thumbnails.", ex);
-        }
-        finally
-        {
-            pendingRecentMetadata = null;
-            recentThumbnailRefreshGate.Release();
-        }
-    }
-
-    private async Task MarkRecentStreamsCheckingAsync(
-        IReadOnlyList<StreamTarget> targets,
-        CancellationToken cancellationToken)
-    {
-        await recentStreamsGate.WaitAsync(cancellationToken);
-        try
-        {
-            var changed = false;
-            var status = new RecentStreamLiveStatus(
-                RecentStreamLiveState.Checking,
-                null,
-                "Checking live status from the platform.");
-
-            foreach (var target in targets)
-            {
-                if (!recentStreamController.TryGetLiveStatus(target.StateKey, out var current) ||
-                    current.State != RecentStreamLiveState.Checking)
-                {
-                    changed |= recentStreamController.SetLiveStatus(target.StateKey, status);
-                }
-            }
-
-            if (changed)
-            {
-                RebuildRecentStreams();
-            }
-        }
-        finally
-        {
-            recentStreamsGate.Release();
-        }
-    }
-
-    private async Task ApplyRecentStreamMetadataAsync(
-        StreamTarget target,
-        StreamMetadataResult metadata,
-        CancellationToken cancellationToken)
-    {
-        await recentStreamsGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (disposed)
-            {
-                return;
-            }
-
-            // A request can finish after its row was deleted. It must not restore either
-            // the row or its transient freshness/status entry.
-            var current = FindRecentStream(target);
-            if (current is null) return;
-            pendingRecentMetadata![target.StateKey] = metadata;
-            var checkedAtUtc = DateTimeOffset.UtcNow;
-            var status = CreateRecentStreamLiveStatus(metadata, checkedAtUtc);
-            recentStreamController.SetLiveStatus(target.StateKey, status);
-            recentStreamController.RecordMetadataRefresh(target.StateKey, checkedAtUtc,
-                metadata.State is StreamMetadataState.Available or StreamMetadataState.Offline);
-            foreach (var card in RecentStreams)
-            {
-                if (card.Platform == target.Platform &&
-                    string.Equals(card.Channel, target.Channel, StringComparison.OrdinalIgnoreCase))
-                    card.Update(MergeRecentStreamMetadata(current, metadata), status);
-            }
-        }
-        finally { recentStreamsGate.Release(); }
-    }
-
-    private static RecentStreamSettings MergeRecentStreamMetadata(RecentStreamSettings stream, StreamMetadataResult metadata)
-    {
-        if (metadata.State != StreamMetadataState.Available) return stream;
-        var displayName = FirstNonEmpty(metadata.DisplayName, stream.DisplayName, stream.Channel);
-        var thumbnailUrl = NormalizeImageUrl(FirstNonEmpty(metadata.ThumbnailUrl, stream.ThumbnailUrl));
-        var categoryName = FirstNonEmpty(metadata.CategoryName, stream.CategoryName);
-        if (displayName == stream.DisplayName && thumbnailUrl == stream.ThumbnailUrl && categoryName == stream.CategoryName)
-            return stream;
-
-        // Merge into the latest settings, preserving watch order, quality and timestamps
-        // that playback or a user action may have changed while the request was running.
-        return new RecentStreamSettings
-        {
-            Platform = stream.Platform,
-            Channel = stream.Channel,
-            Url = stream.Url,
-            DisplayName = displayName,
-            CategoryName = categoryName,
-            ThumbnailUrl = thumbnailUrl,
-            LastQuality = stream.LastQuality,
-            LastWatchedAtUtc = stream.LastWatchedAtUtc
-        };
-    }
-
-    private static RecentStreamLiveStatus CreateRecentStreamLiveStatus(
-        StreamMetadataResult metadata,
-        DateTimeOffset checkedAtUtc)
-    {
-        return metadata.State switch
-        {
-            StreamMetadataState.Available => new RecentStreamLiveStatus(
-                RecentStreamLiveState.Live,
-                checkedAtUtc,
-                FirstNonEmpty(metadata.Message, "The platform reports this stream is live.")),
-            StreamMetadataState.Offline => new RecentStreamLiveStatus(
-                RecentStreamLiveState.Offline,
-                checkedAtUtc,
-                FirstNonEmpty(metadata.Message, "The platform reports this stream is offline.")),
-            _ => new RecentStreamLiveStatus(
-                RecentStreamLiveState.Unknown,
-                checkedAtUtc,
-                FirstNonEmpty(metadata.Message, "The platform did not return a usable live status."))
-        };
-    }
-
-    private async Task RememberRecentStreamAsync(
-        StreamTabViewModel tab,
-        Task<StreamMetadataResult?>? openingMetadata = null)
-    {
-        if (disposed)
-        {
-            return;
-        }
-
-        var target = tab.Target;
-        try
-        {
-            var hint = TakeRecentStreamHint(target);
-            var watchedAtUtc = DateTimeOffset.UtcNow;
-            var needsMetadata = false;
-
-            await recentStreamsGate.WaitAsync(lifetimeCancellation.Token);
-            try
-            {
-                var existing = FindRecentStream(target);
-                var recentStream = CreateRecentStreamSettings(
-                    target,
-                    tab.Quality,
-                    watchedAtUtc,
-                    hint,
-                    existing,
-                    metadata: null);
-
-                Settings.RecentStreams = Settings.RecentStreams
-                    .Where(stream => !IsSameRecentStream(stream, target))
-                    .Prepend(recentStream)
-                    .ToList();
-                recentStreamController.SetLiveStatus(target.StateKey, new RecentStreamLiveStatus(
-                    RecentStreamLiveState.Live,
-                    watchedAtUtc,
-                    "Playback started successfully."));
-                RebuildRecentStreams();
-                await SaveRecentStreamSettingsAsync(target);
-                needsMetadata = openingMetadata is not null ||
-                    (streamMetadataService is not null && string.IsNullOrWhiteSpace(recentStream.ThumbnailUrl));
-            }
-            finally
-            {
-                recentStreamsGate.Release();
-            }
-
-            if (!needsMetadata)
-            {
-                return;
-            }
-
-            // Reuse the opening lookup; playback and the initial Recent card never wait for it.
-            var metadata = openingMetadata is not null
-                ? await openingMetadata
-                : await TryGetRecentStreamMetadataAsync(target, lifetimeCancellation.Token);
-            if (disposed || metadata?.State != StreamMetadataState.Available ||
-                (string.IsNullOrWhiteSpace(metadata.ThumbnailUrl) &&
-                    string.IsNullOrWhiteSpace(metadata.DisplayName) &&
-                    string.IsNullOrWhiteSpace(metadata.CategoryName)))
-            {
-                return;
-            }
-
-            await recentStreamsGate.WaitAsync(lifetimeCancellation.Token);
-            try
-            {
-                var existing = FindRecentStream(target);
-                if (existing is null)
-                {
-                    return;
-                }
-
-                var recentStream = CreateRecentStreamSettings(
-                    target,
-                    existing.LastQuality,
-                    existing.LastWatchedAtUtc,
-                    hint: null,
-                    existing,
-                    metadata);
-
-                Settings.RecentStreams = Settings.RecentStreams
-                    .Select(stream => IsSameRecentStream(stream, target) ? recentStream : stream)
-                    .ToList();
-                var checkedAtUtc = DateTimeOffset.UtcNow;
-                recentStreamController.SetLiveStatus(target.StateKey, CreateRecentStreamLiveStatus(metadata, checkedAtUtc));
-                recentStreamController.RecordMetadataRefresh(target.StateKey, checkedAtUtc, succeeded: true);
-                RebuildRecentStreams();
-                await SaveRecentStreamSettingsAsync(target);
-            }
-            finally
-            {
-                recentStreamsGate.Release();
-            }
-        }
-        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Recent", $"Failed to update recent stream {target.DisplayName}.", ex);
-        }
-    }
-
-    private RecentStreamSettings? FindRecentStream(StreamTarget target)
-    {
-        return Settings.RecentStreams.FirstOrDefault(stream => IsSameRecentStream(stream, target));
-    }
-
-    private static RecentStreamSettings CreateRecentStreamSettings(
-        StreamTarget target,
-        string quality,
-        DateTimeOffset lastWatchedAtUtc,
-        RecentStreamHint? hint,
-        RecentStreamSettings? existing,
-        StreamMetadataResult? metadata)
-    {
-        return new RecentStreamSettings
-        {
-            Platform = target.Platform,
-            Channel = target.Channel,
-            Url = target.Url,
-            DisplayName = FirstNonEmpty(
-                hint?.DisplayName,
-                metadata?.DisplayName,
-                existing?.DisplayName,
-                target.Channel),
-            ThumbnailUrl = FirstNonEmpty(
-                hint?.ThumbnailUrl,
-                metadata?.ThumbnailUrl,
-                existing?.ThumbnailUrl),
-            CategoryName = FirstNonEmpty(
-                target.CategoryName,
-                hint?.CategoryName,
-                metadata?.CategoryName,
-                existing?.CategoryName),
-            LastQuality = quality,
-            LastWatchedAtUtc = lastWatchedAtUtc
-        };
-    }
-
-    private async Task<StreamMetadataResult?> TryGetRecentStreamMetadataAsync(
-        StreamTarget target,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await GetRecentStreamMetadataAsync(target, cancellationToken);
-        return result?.State == StreamMetadataState.Available ? result : null;
-    }
-
-    private async Task<StreamMetadataResult?> GetRecentStreamMetadataAsync(
-        StreamTarget target,
-        CancellationToken cancellationToken = default)
-    {
-        if (streamMetadataService is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            return await streamMetadataService.GetLiveStreamMetadataAsync(target, Settings, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return null;
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Recent", $"Failed to load metadata for {target.DisplayName}.", ex);
-            return new StreamMetadataResult(
-                StreamMetadataState.Unavailable,
-                "",
-                "",
-                "The platform metadata request failed.");
-        }
-    }
-
-    private async Task SaveRecentThumbnailSettingsAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            await settingsService.SaveAsync(Settings, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Recent", "Failed to save refreshed recent stream thumbnails.", ex);
-        }
-    }
-
-    private async Task SaveRecentStreamRemovalAsync(StreamTarget target)
-    {
-        try
-        {
-            await settingsService.SaveAsync(Settings);
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Recent", $"Failed to save recent stream removal for {target.DisplayName}.", ex);
-        }
-    }
-
-    private async Task SaveRecentStreamSettingsAsync(StreamTarget target)
-    {
-        try
-        {
-            await settingsService.SaveAsync(Settings);
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Recent", $"Failed to save recent stream {target.DisplayName}.", ex);
-        }
-    }
-
-    private static bool IsSameRecentStream(RecentStreamSettings stream, StreamTarget target)
-    {
-        return stream.Platform == target.Platform &&
-            string.Equals(stream.Channel, target.Channel, StringComparison.OrdinalIgnoreCase);
-    }
+    private Task RememberRecentStreamAsync(StreamTabViewModel tab, Task<StreamMetadataResult?>? openingMetadata = null) => recent.RememberRecentStreamAsync(tab, openingMetadata);
 
     private bool IsTabOpenOrStarting(StreamTabViewModel tab)
     {
@@ -5049,32 +2173,26 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private bool IsTabStartActive(StreamTabViewModel tab)
         => tabStartController.IsActive(tab.Id);
 
-    private bool TryBeginTabStart(StreamTabViewModel tab)
-        => !disposed && tabStartController.TryBegin(tab.Id);
-
-    private void EndTabStart(StreamTabViewModel tab)
-        => tabStartController.End(tab.Id);
-
     private void StartTabInBackground(
         StreamTabViewModel tab,
         int? searchGenerationToClear = null,
         Task<StreamMetadataResult?>? openingMetadata = null)
     {
-        if (disposed || !TryBeginTabStart(tab))
+        if (disposed || tabStartController.TryBegin(tab.Id) is not { } registration)
         {
             return;
         }
 
         ApplyVideoLayout();
         var start = () => backgroundOperationController.Track(
-            StartTabAndUpdateStatusAsync(tab, searchGenerationToClear, openingMetadata));
+            StartTabAndUpdateStatusAsync(tab, registration, searchGenerationToClear, openingMetadata));
         try
         {
             if (tryDispatch is not null)
             {
                 if (!tryDispatch(start))
                 {
-                    EndTabStart(tab);
+                    tabStartController.End(registration);
                 }
             }
             else
@@ -5084,19 +2202,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
         catch
         {
-            EndTabStart(tab);
+            tabStartController.End(registration);
             throw;
         }
     }
 
     private async Task StartTabAndUpdateStatusAsync(
         StreamTabViewModel tab,
+        TabStartController.StartRegistration registration,
         int? searchGenerationToClear,
         Task<StreamMetadataResult?>? openingMetadata)
     {
         if (disposed)
         {
-            EndTabStart(tab);
+            tabStartController.End(registration);
             return;
         }
 
@@ -5104,7 +2223,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             await tabStartController.RunBegunAsync(
-                tab.Id,
+                registration,
                 async cancellationToken =>
                 {
                     var startResult = await tab.StartWithResultAsync(
@@ -5112,7 +2231,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                         ShouldUseStableMultiStreamStartupProfile(tab),
                         ShouldUseMultiStreamResourceProfile(tab),
                         cancellationToken);
-                    if (disposed)
+                    if (disposed || cancellationToken.IsCancellationRequested || !Tabs.Contains(tab))
                     {
                         return;
                     }
@@ -5134,7 +2253,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 },
                 lifetimeCancellation.Token);
         }
-        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (disposed || lifetimeCancellation.IsCancellationRequested || registration.Token.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -5212,43 +2331,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         throw new InvalidOperationException($"No playable Twitch or Kick stream found for {candidates[0].Channel}. {failures}");
     }
 
-    private async Task<IReadOnlyList<StreamCandidateProbe>> ProbeCandidatesAsync(
-        IReadOnlyList<StreamTarget> candidates,
-        IReadOnlyList<string> customArguments,
-        CancellationToken cancellationToken)
-    {
-        return await Task.WhenAll(candidates.Select(target => ProbeCandidateAsync(
-            target,
-            customArguments,
-            cancellationToken)));
-    }
-
-    private async Task<StreamCandidateProbe> ProbeCandidateAsync(
-        StreamTarget target,
-        IReadOnlyList<string> customArguments,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var request = new StreamTransportRequest(
-                target,
-                SelectedQuality,
-                Settings.StreamlinkPath!,
-                Settings.LowLatency,
-                customArguments);
-            var result = await streamlinkService.ProbeStreamsAsync(request, cancellationToken);
-            return new StreamCandidateProbe(target, result);
-        }
-        catch (OperationCanceledException)
-        {
-            return new StreamCandidateProbe(target, new StreamlinkProbeResult(false, "Canceled."));
-        }
-        catch (Exception ex)
-        {
-            logger.Write(AppLogLevel.Warning, "Search", $"Streamlink probe failed for {target.DisplayName}.", ex);
-            return new StreamCandidateProbe(target, new StreamlinkProbeResult(false, ex.Message));
-        }
-    }
+    private Task<IReadOnlyList<StreamCandidateProbe>> ProbeCandidatesAsync(IReadOnlyList<StreamTarget> candidates, IReadOnlyList<string> customArguments, CancellationToken cancellationToken) => streamSearch.ProbeCandidatesAsync(candidates, customArguments, cancellationToken);
 
     private Task StartSelectedTabAsync(string action)
     {
@@ -5337,6 +2420,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         if (SelectedTab is { } tab)
         {
+            tabStartController.Cancel(tab.Id);
             await tab.StopAsync();
             if (!disposed && ReferenceEquals(SelectedTab, tab))
                 StatusMessage = $"{tab.Target.DisplayName} stopped";
@@ -5753,6 +2837,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void DisposeDetachedTab(StreamTabViewModel tab)
     {
+        tabStartController.Cancel(tab.Id);
         tab.CaptureVodResumePosition(closing: true);
         var disposalTask = Task.Run(() => DisposeDetachedTabAsync(tab));
 
@@ -5819,20 +2904,57 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SaveSettingsAsync()
     {
+        IsSavingSettings = true;
+        HasSettingsSaveError = false;
+        SettingsSaveStatus = "Saving changes…";
+        var saved = false;
         try
         {
-            Settings.DefaultQuality = SelectedQuality;
             Settings.FollowedChannels.KickChannelSlugs = ParseKickFollowedChannelSlugs(KickFollowedChannelsText);
             await settingsService.SaveAsync(Settings);
+            saved = true;
             await ApplyChatSettingsAsync(reconfigurePlayback: true);
             StatusMessage = "Settings saved";
+            SettingsSaveStatus = $"Settings saved at {DateTime.Now:t}.";
             _ = RefreshFollowedChannelsAsync();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            SettingsSaveStatus = saved
+                ? "Settings saved. Applying playback changes was canceled."
+                : "Saving was canceled. Try again to keep your changes.";
+            throw;
+        }
+        catch (Exception ex)
         {
             StatusMessage = ex.Message;
+            HasSettingsSaveError = true;
+            SettingsSaveStatus = saved
+                ? $"Settings saved, but playback could not be updated. {ex.Message}"
+                : $"Could not save settings. {ex.Message}";
             logger.Write(AppLogLevel.Warning, "Settings", "Failed to save settings.", ex);
         }
+        finally
+        {
+            IsSavingSettings = false;
+        }
+    }
+
+    private void OnSettingsAutoSaved(Exception? error)
+    {
+        if (error is not null)
+        {
+            logger.Write(AppLogLevel.Warning, "Settings", "Could not automatically save settings.", error);
+        }
+
+        dispatch(() =>
+        {
+            if (disposed) return;
+            HasSettingsSaveError = error is not null;
+            SettingsSaveStatus = error is null
+                ? "Changes are saved automatically."
+                : $"Could not save settings. {error.Message}";
+        });
     }
 
     private bool CanRunUpdateAction() => !disposed && Volatile.Read(ref updateActionInProgress) == 0 &&
@@ -6115,78 +3237,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task ImportKickFollowsAsync()
-    {
-        if (kickFollowedChannelsImporter is null) return;
-        if (Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) != 0) return;
-        var token = lifetimeCancellation.Token;
-        try
-        {
-            ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
-            KickFollowImportStatus = "Sign in to Kick and import your follows in the opened window.";
-            var channels = await kickFollowedChannelsImporter.ImportAsync(token);
-            token.ThrowIfCancellationRequested();
-            if (channels is null)
-            {
-                KickFollowImportStatus = "Detection canceled. Your saved follows were kept.";
-                return;
-            }
-            await SaveImportedKickFollowsAsync(channels, DateTimeOffset.UtcNow, token);
-            token.ThrowIfCancellationRequested();
-            KickFollowImportStatus = $"Imported {channels.Count} Kick follows. Detect again after following or unfollowing channels.";
-            await RefreshFollowedChannelsAsync();
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception ex) when (!disposed)
-        {
-            KickFollowImportStatus = $"Kick follows could not be imported: {ex.Message}";
-        }
-        finally
-        {
-            Volatile.Write(ref kickFollowImportBusy, 0);
-            ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
-        }
-    }
-
-    private async Task ClearImportedKickFollowsAsync()
-    {
-        if (Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) != 0) return;
-        var token = lifetimeCancellation.Token;
-        try
-        {
-            ImportKickFollowsCommand.RaiseCanExecuteChanged();
-            await SaveImportedKickFollowsAsync([], null, token);
-            token.ThrowIfCancellationRequested();
-            KickFollowImportStatus = "Imported Kick follows cleared.";
-            await RefreshFollowedChannelsAsync();
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception ex) when (!disposed) { KickFollowImportStatus = ex.Message; }
-        finally
-        {
-            Volatile.Write(ref kickFollowImportBusy, 0);
-            ImportKickFollowsCommand.RaiseCanExecuteChanged();
-        }
-    }
-
-    private async Task SaveImportedKickFollowsAsync(
-        IReadOnlyList<string> channels, DateTimeOffset? importedAt, CancellationToken token)
-    {
-        var settings = Settings.FollowedChannels;
-        var previousChannels = settings.KickImportedChannelSlugs;
-        var previousTime = settings.KickFollowsImportedAtUtc;
-        settings.KickImportedChannelSlugs = channels.ToList();
-        settings.KickFollowsImportedAtUtc = importedAt;
-        try { await settingsService.SaveAsync(Settings, token); }
-        catch
-        {
-            settings.KickImportedChannelSlugs = previousChannels;
-            settings.KickFollowsImportedAtUtc = previousTime;
-            throw;
-        }
-        OnPropertyChanged(nameof(KickImportedFollowsSummary));
-    }
-
     private async Task ClearKickTokenAsync()
     {
         try
@@ -6254,6 +3304,23 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         MoveTabRightCommand.RaiseCanExecuteChanged();
     }
 
+    internal void OpenChatLink(Uri uri)
+    {
+        if (!ChatLinkParser.IsSupportedWebUri(uri))
+        {
+            return;
+        }
+
+        try
+        {
+            openBrowser(uri);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            logger.Write(AppLogLevel.Warning, "Chat", "Could not open a link from chat.", ex);
+        }
+    }
+
     private static void OpenExternalBrowser(Uri uri)
     {
         Process.Start(new ProcessStartInfo
@@ -6275,6 +3342,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             ObserveChatSettings(Settings.Chat, applyImmediately: true);
         }
 
+        if (e.PropertyName == nameof(AppSettings.DefaultQuality))
+        {
+            SelectedQuality = Settings.DefaultQuality;
+        }
+
         if (e.PropertyName == nameof(AppSettings.StreamVlcOverlayFontSizes))
         {
             OnPropertyChanged(nameof(SelectedVlcOverlayFontSize));
@@ -6283,11 +3355,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             {
                 tab.RefreshChatOverlay(Settings.Chat);
             }
-        }
-
-        if (e.PropertyName == nameof(AppSettings.FollowedChannels))
-        {
-            ObserveFollowedChannelsSettings(Settings.FollowedChannels);
         }
 
         if (e.PropertyName == nameof(AppSettings.MultiStreamEnabled))
@@ -6341,38 +3408,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         RaiseChatVisibilityProperties();
         ClearTwitchTokenCommand.RaiseCanExecuteChanged();
         ClearKickTokenCommand.RaiseCanExecuteChanged();
-    }
-
-    private void ObserveFollowedChannelsSettings(FollowedChannelsSettings settings)
-    {
-        if (!ReferenceEquals(observedFollowedChannelsSettings, settings))
-        {
-            if (observedFollowedChannelsSettings is not null)
-            {
-                observedFollowedChannelsSettings.PropertyChanged -= FollowedChannelsSettingsOnPropertyChanged;
-            }
-
-            observedFollowedChannelsSettings = settings;
-            observedFollowedChannelsSettings.PropertyChanged += FollowedChannelsSettingsOnPropertyChanged;
-        }
-
-        ApplyLiveNotificationSetting();
-    }
-
-    private void FollowedChannelsSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(FollowedChannelsSettings.NotifyWhenLive))
-        {
-            ApplyLiveNotificationSetting();
-        }
-    }
-
-    private void ApplyLiveNotificationSetting()
-    {
-        if (liveNotificationService is not null)
-        {
-            liveNotificationService.IsEnabled = Settings.FollowedChannels.NotifyWhenLive;
-        }
     }
 
     private void ChatSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -6602,96 +3637,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         return string.IsNullOrWhiteSpace(tab.ErrorMessage) ? tab.StatusText : tab.ErrorMessage;
     }
 
-    private static string FormatKickFollowedChannelsText(IEnumerable<string> slugs)
-    {
-        return string.Join(Environment.NewLine, slugs);
-    }
-
-    private static List<string> ParseKickFollowedChannelSlugs(string text)
-    {
-        return ParseKickFollowedChannelSlugs(text, skipInvalidEntries: false, out _);
-    }
-
-    private static List<string> ParseKickFollowedChannelSlugs(
-        string text,
-        bool skipInvalidEntries,
-        out IReadOnlyList<string> invalidEntries)
-    {
-        var slugs = new List<string>();
-        var invalid = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var entries = (text ?? "").Split(
-            ['\r', '\n', ',', ';'],
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        foreach (var entry in entries)
-        {
-            var normalized = entry.Trim();
-            if (string.IsNullOrWhiteSpace(normalized))
-            {
-                continue;
-            }
-
-            if (!TryParseKickFollowedChannelEntry(normalized, out var target, out var errorMessage))
-            {
-                if (skipInvalidEntries)
-                {
-                    invalid.Add(normalized);
-                    continue;
-                }
-
-                throw new FormatException(errorMessage);
-            }
-
-            if (seen.Add(target!.Channel))
-            {
-                slugs.Add(target.Channel);
-            }
-        }
-
-        invalidEntries = invalid;
-        return slugs;
-    }
-
-    private static bool TryParseKickFollowedChannelEntry(
-        string value,
-        out StreamTarget? target,
-        out string errorMessage)
-    {
-        if (StreamInputParser.TryParsePlatformUrl(value, out var parsedTarget) && parsedTarget is not null)
-        {
-            if (parsedTarget.Platform != PlatformKind.Kick)
-            {
-                target = null;
-                errorMessage = $"Kick followed channels only accept Kick channel URLs or slugs: {value}";
-                return false;
-            }
-
-            target = parsedTarget;
-            errorMessage = "";
-            return true;
-        }
-
-        try
-        {
-            target = StreamInputParser.FromChannel(PlatformKind.Kick, value);
-            errorMessage = "";
-            return true;
-        }
-        catch (ArgumentException ex)
-        {
-            target = null;
-            errorMessage = ex.Message;
-            return false;
-        }
-    }
-
-    private static string FormatInvalidKickFollowedChannelsMessage(int count)
-    {
-        return count == 1
-            ? "1 invalid Kick followed channel entry was skipped."
-            : $"{count} invalid Kick followed channel entries were skipped.";
-    }
+    private static List<string> ParseKickFollowedChannelSlugs(string text) => FollowedChannelsViewModel.ParseKickFollowedChannelSlugs(text);
 
     private bool HasKickToken()
     {
@@ -6778,86 +3724,13 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ApplyInactivePlaybackPolicyInBackground();
     }
 
-    private void LiveFollowedChannelsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasLiveFollowedChannels));
-        OnPropertyChanged(nameof(IsFollowedChannelsEmptyVisible));
-    }
+    private void StreamSearchResultsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => streamSearch.StreamSearchResultsOnCollectionChanged(sender, e);
 
-    private void StreamSearchResultsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasStreamSearchResults));
-        OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
-        OnPropertyChanged(nameof(IsStreamSearchResultsVisible));
-        OnPropertyChanged(nameof(IsStreamSearchEmptyVisible));
-        OnPropertyChanged(nameof(StreamSearchResultsTitle));
-    }
+    private void TwitchVodsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => vodLibrary.TwitchVodsOnCollectionChanged(sender, e);
 
-    private void TwitchVodsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasTwitchVods));
-        OnPropertyChanged(nameof(IsTwitchVodEmptyVisible));
-        OnPropertyChanged(nameof(IsTwitchVodLoadMoreVisible));
-        OnPropertyChanged(nameof(TwitchVodResultsTitle));
-    }
+    private void BrowseCategoriesOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => browse.BrowseCategoriesOnCollectionChanged(sender, e);
 
-    private void RecentStreamsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasRecentStreams));
-        OnPropertyChanged(nameof(IsRecentStreamsEmptyVisible));
-        OnPropertyChanged(nameof(RecentStreamsStatus));
-    }
-
-    private void BrowseCategoriesOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasBrowseCategories));
-        OnPropertyChanged(nameof(IsBrowseCategoriesEmptyVisible));
-        OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreVisible));
-        OnPropertyChanged(nameof(IsBrowseCategoryLoadMoreIndicatorVisible));
-        OnPropertyChanged(nameof(BrowseCategoriesTitle));
-        RaiseBrowseCommandStates();
-    }
-
-    private void BrowseStreamsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasBrowseStreams));
-        OnPropertyChanged(nameof(IsBrowseStreamsEmptyVisible));
-        OnPropertyChanged(nameof(IsBrowseStreamLoadMoreVisible));
-        OnPropertyChanged(nameof(BrowseStreamsTitle));
-        RaiseBrowseCommandStates();
-    }
-
-    private void RebuildRecentStreams()
-    {
-        var existing = RecentStreams.ToDictionary(card => card.Target.StateKey, StringComparer.OrdinalIgnoreCase);
-        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var desired = new List<RecentStreamViewModel>(Settings.RecentStreams.Count);
-        foreach (var stream in Settings.RecentStreams)
-        {
-            var target = new StreamTarget(stream.Platform, stream.Channel, stream.Url, CategoryName: stream.CategoryName);
-            if (!keys.Add(target.StateKey)) continue;
-            var liveStatus = recentStreamController.TryGetLiveStatus(target.StateKey, out var status)
-                ? status
-                : RecentStreamLiveStatus.Unknown;
-            var displayed = pendingRecentMetadata is not null && pendingRecentMetadata.TryGetValue(target.StateKey, out var metadata)
-                ? MergeRecentStreamMetadata(stream, metadata) : stream;
-            if (existing.TryGetValue(target.StateKey, out var card)) card.Update(displayed, liveStatus);
-            else card = new RecentStreamViewModel(displayed, OpenRecentStreamAsync, DeleteRecentStreamAsync, liveStatus);
-            desired.Add(card);
-        }
-        for (var index = RecentStreams.Count - 1; index >= 0; index--)
-        {
-            if (!keys.Contains(RecentStreams[index].Target.StateKey)) RecentStreams.RemoveAt(index);
-        }
-        for (var index = 0; index < desired.Count; index++)
-        {
-            var card = desired[index];
-            if (index < RecentStreams.Count && ReferenceEquals(RecentStreams[index], card)) continue;
-            var currentIndex = RecentStreams.IndexOf(card);
-            if (currentIndex < 0) RecentStreams.Insert(index, card);
-            else RecentStreams.Move(currentIndex, index);
-        }
-    }
+    private void BrowseStreamsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => browse.BrowseStreamsOnCollectionChanged(sender, e);
 
     private void TabOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -7544,13 +4417,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             selected.ReapplyAudio();
         }
     }
-
-    private sealed record StreamCandidateProbe(
-        StreamTarget Target,
-        StreamlinkProbeResult Result,
-        StreamMetadataResult? Metadata = null,
-        StreamSearchChannel? Channel = null,
-        int? ViewerCount = null);
 
     private static string GetTabDetachedStatusMessage(IReadOnlyList<StreamTabViewModel> tabs, bool detached)
     {

@@ -13,9 +13,21 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Vlc\BundledReplayPause\libstudio_replay_pause_plugin.dll" />
+    <EmbeddedResource Include="Vlc\BundledAdaptiveReplay\libstudio_adaptive_plugin.dll" />
+    <EmbeddedResource Include="Vlc\BundledVlcCore\libvlccore.dll">
+      <LogicalName>StreamlinkVlcStudio.Infrastructure.Vlc.BundledVlcCore.libvlccore.dll</LogicalName>
+    </EmbeddedResource>
+    <Content Include="..\..\native\adaptive-replay\*" Link="native\adaptive-replay\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\scripts\build-adaptive-replay.py" Link="scripts\build-adaptive-replay.py"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\native\replay-pause\*" Link="native\replay-pause\%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\scripts\build-replay-pause.ps1" Link="scripts\build-replay-pause.ps1"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\native\vlc-core\*" Link="native\vlc-core\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\scripts\build-vlc-core.py" Link="scripts\build-vlc-core.py"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\native\chat-overlay\**\*" Link="native\chat-overlay\%(RecursiveDir)%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />

@@ -20,10 +20,11 @@ p.add_argument('--overlay-directory', required=True, help='Directory containing 
 p.add_argument('--hw', choices=['none', 'any', 'dxva2'], required=True)
 p.add_argument('--count', type=int, default=4, choices=range(1, 17))
 p.add_argument('--seconds', type=float, default=12)
-p.add_argument('--chat-hz', type=float, default=0, help='0 = static; otherwise animate at this rate (up to 60)')
+p.add_argument('--warmup', type=float, default=10)
+p.add_argument('--chat-hz', type=float, default=0, help='0 = identical frames every 80 ms; otherwise animate at this rate (up to 60)')
 a = p.parse_args()
-if not 1 <= a.seconds <= 300 or not 0 <= a.chat_hz <= 60:
-    p.error('seconds must be 1..300 and chat-hz must be 0..60')
+if not 1 <= a.seconds <= 300 or not 0 <= a.chat_hz <= 60 or not 0 <= a.warmup <= 300:
+    p.error('seconds must be 1..300, warmup 0..300, and chat-hz 0..60')
 media_path = Path(a.media).resolve(strict=True)
 vlcdir = Path(a.vlc_directory).resolve(strict=True)
 pluginroot = Path(a.overlay_directory).resolve(strict=True)
@@ -109,11 +110,12 @@ def pump(seconds, animate=False):
         while peek(c.byref(msg), None, 0, 0, 1):
             translate(c.byref(msg))
             dispatch(c.byref(msg))
-        if animate and a.chat_hz and time.perf_counter() >= next_frame:
-            phase = 1 - phase
+        if animate and time.perf_counter() >= next_frame:
+            if a.chat_hz:
+                phase = 1 - phase
             for pipe in pipes:
                 assert os.write(pipe, frames[phase]) == len(frames[phase])
-            next_frame += 1 / a.chat_hz
+            next_frame += 1 / a.chat_hz if a.chat_hz else .080
         time.sleep(.002)
 
 columns = 2 if a.count <= 4 else 4
@@ -148,7 +150,7 @@ try:
         pipe = os.open(r'\\.\pipe\svs_cpu_' + str(os.getpid()) + '_' + str(i), os.O_WRONLY | os.O_BINARY)
         pipes.append(pipe)
         assert os.write(pipe, frames[0]) == len(frames[0])
-    pump(2, animate=True)
+    pump(a.warmup, animate=True)
     sizes = []
     for _, _, player in engines:
         width, height = c.c_uint(), c.c_uint()
@@ -162,7 +164,8 @@ try:
     after = [stats(m) for _, m, _ in engines]
     counts = [{key: end[key] - begin[key] for key in begin} for begin, end in zip(before, after)]
     continuing_video = all(f['displayed_pictures'] > a.seconds * 10 for f in counts)
-    result = dict(vlc=version, hardware=a.hw, count=a.count, chat_hz=a.chat_hz, sizes=sizes,
+    result = dict(vlc=version, hardware=a.hw, count=a.count, chat_hz=a.chat_hz,
+                  heartbeat_hz=a.chat_hz or 12.5, warmup=a.warmup, sizes=sizes,
                   memory_before=memory_before, memory_after=memory(),
                   continuing_video=continuing_video,
                   elapsed=elapsed, cpu_seconds=used, cpu_cores=used/elapsed, logical_cpus=os.cpu_count(), frames=counts)

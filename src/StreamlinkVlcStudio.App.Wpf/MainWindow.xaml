@@ -8,13 +8,16 @@
         xmlns:vm="clr-namespace:StreamlinkVlcStudio.App.Wpf.ViewModels"
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="Twitch &amp; Kick player"
+        Title="Stream Studio"
         Icon="/StreamStudio;component/Assets/Twitch.ico"
         Width="1320"
         Height="820"
         Background="{DynamicResource StudioBaseBrush}"
         Foreground="{DynamicResource StudioTextBrush}"
-        FontFamily="Segoe UI"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
+        FontSize="13"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
         WindowStyle="None"
         WindowStartupLocation="CenterScreen">
     <shell:WindowChrome.WindowChrome>
@@ -31,6 +34,7 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/StudioTheme.xaml" />
+                <ResourceDictionary Source="Themes/StudioShell.xaml" />
                 <ResourceDictionary Source="Themes/ResponsiveToolBar.xaml" />
             </ResourceDictionary.MergedDictionaries>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -153,18 +157,16 @@
             </Border>
         </DataTemplate>
 
-        <SolidColorBrush x:Key="PanelBrush" Color="{DynamicResource StudioSurface1Color}" />
         <SolidColorBrush x:Key="LineBrush" Color="{DynamicResource StudioBorderColor}" />
         <SolidColorBrush x:Key="VideoBlackBrush" Color="#000000" />
         <SolidColorBrush x:Key="AccentBrush" Color="{DynamicResource StudioAccentColor}" />
         <SolidColorBrush x:Key="TopControlSelectedBackgroundBrush" Color="{DynamicResource StudioAccentPressedColor}" />
-        <SolidColorBrush x:Key="TopControlSelectedForegroundBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="TopControlSelectedForegroundBrush" Color="{DynamicResource StudioTextColor}" />
         <SolidColorBrush x:Key="TopControlUnavailableBackgroundBrush" Color="{DynamicResource StudioDisabledColor}" />
         <SolidColorBrush x:Key="TopControlUnavailableBorderBrush" Color="{DynamicResource StudioDisabledBorderColor}" />
         <SolidColorBrush x:Key="SelectedTabBrush" Color="{DynamicResource StudioAccentPressedColor}" />
         <SolidColorBrush x:Key="SelectedTabBorderBrush" Color="{DynamicResource StudioFocusColor}" />
         <SolidColorBrush x:Key="SelectedTabMutedTextBrush" Color="{DynamicResource StudioTextMutedColor}" />
-        <SolidColorBrush x:Key="StreamInactiveBrush" Color="{DynamicResource StudioDangerColor}" />
         <SolidColorBrush x:Key="TextMutedBrush" Color="{DynamicResource StudioTextMutedColor}" />
         <Geometry x:Key="TwitchPlatformIconGeometry">M4 5v11a1 1 0 0 0 1 1h2v4l4 -4h5.584c.266 0 .52 -.105 .707 -.293l2.415 -2.414c.187 -.188 .293 -.442 .293 -.708v-8.585a1 1 0 0 0 -1 -1h-14a1 1 0 0 0 -1 1l.001 0 M16 8l0 4 M12 8l0 4</Geometry>
         <Geometry x:Key="KickPlatformIconGeometry">M4 4h5v4h3v-2h2v-2h6v4h-2v2h-2v4h2v2h2v4h-6v-2h-2v-2h-3v4h-5l0 -16</Geometry>
@@ -319,7 +321,7 @@
                                 <Setter TargetName="ThumbPill" Property="Margin" Value="0,2" />
                             </DataTrigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ThumbPill" Property="Background" Value="#6E7D90" />
+                                <Setter TargetName="ThumbPill" Property="Background" Value="{DynamicResource StudioTextMutedBrush}" />
                             </Trigger>
                             <Trigger Property="IsDragging" Value="True">
                                 <Setter TargetName="ThumbPill" Property="Background" Value="{DynamicResource StudioAccentBrush}" />
@@ -375,7 +377,7 @@
                                 <Setter TargetName="IncreasePageButton" Property="Command" Value="{x:Static ScrollBar.PageRightCommand}" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="TrackBackground" Property="Background" Value="#15202B" />
+                                <Setter TargetName="TrackBackground" Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
                                 <Setter TargetName="TrackBackground" Property="Opacity" Value="1" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
@@ -389,11 +391,60 @@
 
         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource StudioButtonStyle}" />
 
-        <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-            <Setter Property="FontSize" Value="14" />
-            <Setter Property="Width" Value="38" />
+        <Style x:Key="TabCloseButton" TargetType="Button">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="MinHeight" Value="0" />
             <Setter Property="Padding" Value="0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="AutomationProperties.Name" Value="Close tab" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Background="{TemplateBinding Background}">
+                            <Border x:Name="HoverSurface"
+                                    CornerRadius="6"
+                                    Background="{DynamicResource StudioTextBrush}"
+                                    Opacity="0" />
+                            <Border x:Name="FocusRing"
+                                    CornerRadius="6"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource StudioFocusBrush}"
+                                    Opacity="0" />
+                            <Canvas Width="12" Height="12"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    IsHitTestVisible="False">
+                                <Path Data="M 2,2 L 10,10 M 10,2 L 2,10"
+                                      Stroke="{TemplateBinding Foreground}"
+                                      StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round" />
+                            </Canvas>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                                <Setter TargetName="HoverSurface" Property="Opacity" Value="0.08" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                                <Setter TargetName="FocusRing" Property="Opacity" Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="HoverSurface" Property="Opacity" Value="0.16" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="TopHomeButton" TargetType="Button">
@@ -426,7 +477,7 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
                                 <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
@@ -443,7 +494,7 @@
                 <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -463,12 +514,13 @@
             <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-            <Setter Property="FontSize" Value="11" />
-            <Setter Property="Width" Value="24" />
-            <Setter Property="Height" Value="24" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Width" Value="36" />
+            <Setter Property="Height" Value="36" />
             <Setter Property="MinHeight" Value="0" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -485,7 +537,7 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Background" Value="{DynamicResource StudioSurface3Brush}" />
                                 <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
@@ -503,9 +555,9 @@
             <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="MinWidth" Value="104" />
-            <Setter Property="Height" Value="30" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="MinWidth" Value="80" />
+            <Setter Property="Height" Value="34" />
             <Setter Property="MinHeight" Value="0" />
             <Setter Property="Padding" Value="12,0" />
             <Setter Property="Margin" Value="0,0,8,0" />
@@ -528,7 +580,7 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
                                 <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
@@ -544,7 +596,7 @@
                 <DataTrigger Binding="{Binding IsFollowedHomePageSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -554,7 +606,7 @@
                 <DataTrigger Binding="{Binding IsTwitchVodsHomePageSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -564,7 +616,7 @@
                 <DataTrigger Binding="{Binding IsRecentHomePageSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -574,7 +626,7 @@
                 <DataTrigger Binding="{Binding IsBrowseHomePageSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -590,7 +642,7 @@
                 <DataTrigger Binding="{Binding IsPastBroadcastsVodFilterSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -600,7 +652,7 @@
                 <DataTrigger Binding="{Binding IsHighlightsVodFilterSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -610,7 +662,7 @@
                 <DataTrigger Binding="{Binding IsUploadsVodFilterSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -620,7 +672,7 @@
                 <DataTrigger Binding="{Binding IsAllVodFilterSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                     <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -634,7 +686,7 @@
                 <DataTrigger Binding="{Binding IsTwitchVodPlatformSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioTwitchSubtleBrush}" />
                     <Setter Property="BorderBrush" Value="{DynamicResource StudioTwitchBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -644,7 +696,7 @@
                 <DataTrigger Binding="{Binding IsKickVodPlatformSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioKickSubtleBrush}" />
                     <Setter Property="BorderBrush" Value="{DynamicResource StudioKickBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -654,7 +706,7 @@
                 <DataTrigger Binding="{Binding IsTwitchBrowsePlatformSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioTwitchSubtleBrush}" />
                     <Setter Property="BorderBrush" Value="{DynamicResource StudioTwitchBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -664,15 +716,15 @@
                 <DataTrigger Binding="{Binding IsKickBrowsePlatformSelected}" Value="True">
                     <Setter Property="Background" Value="{DynamicResource StudioKickSubtleBrush}" />
                     <Setter Property="BorderBrush" Value="{DynamicResource StudioKickBrush}" />
-                    <Setter Property="Foreground" Value="#FFFFFF" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="HomeCardButton" TargetType="Button">
-            <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
+            <Setter Property="Background" Value="{DynamicResource StudioSurfaceCardBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StudioSurface2Brush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Margin" Value="0" />
@@ -686,27 +738,23 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="12"
-                                SnapsToDevicePixels="True">
-                            <Border.Effect>
-                                <DropShadowEffect BlurRadius="18"
-                                                  Color="#000000"
-                                                  Opacity="0.22"
-                                                  ShadowDepth="4" />
-                            </Border.Effect>
-                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        <Border x:Name="CardChrome" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="14">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
-                                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                                <Setter TargetName="CardChrome" Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                                <Setter TargetName="CardChrome" Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                                <Setter TargetName="CardChrome" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="CardChrome" Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -714,136 +762,89 @@
             </Setter>
         </Style>
 
+        <Style x:Key="StreamHoverPreviewStyle" TargetType="controls:StreamHoverPreview">
+            <Setter Property="Controller" Value="{Binding DataContext.HoverPreviews, RelativeSource={RelativeSource AncestorType=Window}}" />
+            <Setter Property="IsPreviewEnabled" Value="{Binding DataContext.Settings.EnableStreamHoverPreviews, RelativeSource={RelativeSource AncestorType=Window}}" />
+        </Style>
+
         <DataTemplate x:Key="LiveStreamCardTemplate" DataType="{x:Type vm:LiveStreamCardViewModel}">
-            <Button Style="{StaticResource HomeCardButton}"
-                    Command="{Binding OpenCommand}">
+            <Button Style="{StaticResource HomeCardButton}" Command="{Binding OpenCommand}"
+                    AutomationProperties.Name="{Binding DisplayName}">
                 <Grid>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="174" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-
-                    <controls:RoundedClipBorder Grid.Row="0"
-                                                Background="{DynamicResource StudioBaseBrush}"
-                                                CornerRadius="11.5,11.5,0,0">
+                    <controls:AspectRatioDecorator>
+                    <controls:RoundedClipBorder CornerRadius="13,13,0,0" Background="{DynamicResource StudioSurface2Brush}">
                         <Grid>
-                            <TextBlock Text="&#xE7F4;"
-                                       FontFamily="Segoe MDL2 Assets"
-                                       FontSize="30"
-                                       Foreground="{DynamicResource StudioTextDimBrush}"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center" />
-                            <controls:AnimatedEmoteImage ImageRequest="{Binding ThumbnailImageRequest}"
-                                                         MaxImageBytes="8388608"
-                                                         Stretch="UniformToFill" />
-                            <Border VerticalAlignment="Bottom"
-                                    Height="72">
-                                <Border.Background>
-                                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                        <GradientStop Color="#00141416" Offset="0" />
-                                        <GradientStop Color="#D00A0A0B" Offset="1" />
-                                    </LinearGradientBrush>
-                                </Border.Background>
+                            <TextBlock x:Name="LiveCardPlaceholder" Text="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="30"
+                                       Foreground="{DynamicResource StudioTextDimBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <controls:AnimatedEmoteImage ImageRequest="{Binding ThumbnailImageRequest}" MaxImageBytes="8388608" Stretch="UniformToFill" />
+                            <controls:StreamHoverPreview Style="{StaticResource StreamHoverPreviewStyle}" />
+                            <Border x:Name="LiveCardPlayAffordance" Style="{StaticResource StudioCardPlayAffordance}">
+                                <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="White"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" Margin="3,0,0,0" />
                             </Border>
-                            <Border HorizontalAlignment="Left"
-                                    VerticalAlignment="Top"
-                                    Margin="11"
-                                    Style="{StaticResource HomePlatformBadgeStyle}">
-                                <Viewbox Width="16"
-                                         Height="16"
-                                         VerticalAlignment="Center"
-                                         HorizontalAlignment="Center">
-                                    <Path Style="{StaticResource HomePlatformIconStyle}" />
-                                </Viewbox>
+                            <Border Background="#E8101211" CornerRadius="4" Padding="7,4" Margin="12" HorizontalAlignment="Left" VerticalAlignment="Top">
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Fill="#FF7C90" Width="5" Height="5" Margin="0,0,5,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="LIVE" Foreground="#FFFFFF" FontSize="10" FontWeight="Bold" />
+                                </StackPanel>
                             </Border>
-                            <Border HorizontalAlignment="Right"
-                                    VerticalAlignment="Top"
-                                    Margin="11"
-                                    Padding="8,4"
-                                    CornerRadius="6"
-                                    Background="#D4101012"
-                                    BorderBrush="{DynamicResource StudioSuccessBrush}"
-                                    BorderThickness="1">
-                                <DockPanel LastChildFill="False">
-                                    <Ellipse Width="6"
-                                             Height="6"
-                                             Fill="{DynamicResource StudioSuccessBrush}"
-                                             Margin="0,0,6,0"
-                                             VerticalAlignment="Center" />
-                                    <TextBlock Text="{Binding ViewerCountText}"
-                                               FontSize="11"
-                                               FontWeight="SemiBold" />
-                                </DockPanel>
+                            <Border Background="#E8101211" CornerRadius="4" Padding="7,4" Margin="12" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE890;" FontFamily="Segoe MDL2 Assets" Foreground="#F2F5F3" FontSize="11" Margin="0,0,5,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding ViewerCountText}" Foreground="#FFFFFF" FontSize="11" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource HomePlatformBadgeStyle}" Width="26" Height="26" Padding="6" BorderThickness="0"
+                                    Margin="12" HorizontalAlignment="Right" VerticalAlignment="Top" ToolTip="{Binding PlatformText}">
+                                <Viewbox><Path Style="{StaticResource HomePlatformIconStyle}" /></Viewbox>
                             </Border>
                         </Grid>
                     </controls:RoundedClipBorder>
-
-                    <Grid Grid.Row="1"
-                          Margin="14,12,14,14">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <DockPanel Grid.Row="0" LastChildFill="True">
-                            <controls:RoundedClipBorder DockPanel.Dock="Left"
-                                                        Style="{StaticResource HomeProfileAvatarStyle}"
-                                                        DataContext="{Binding ProfileImageUrl}"
-                                                        VerticalAlignment="Center">
-                                <Grid>
-                                    <TextBlock Text="&#xE77B;"
-                                               FontFamily="Segoe MDL2 Assets"
-                                               FontSize="15"
-                                               Foreground="{DynamicResource StudioTextDimBrush}"
-                                               HorizontalAlignment="Center"
-                                               VerticalAlignment="Center" />
-                                    <controls:AnimatedEmoteImage ImageUrl="{Binding}"
-                                                                 MaxImageBytes="8388608"
-                                                                 Stretch="UniformToFill" />
-                                </Grid>
-                            </controls:RoundedClipBorder>
-                            <TextBlock Text="{Binding DisplayName}"
-                                       FontSize="15"
-                                       FontWeight="SemiBold"
-                                       TextTrimming="CharacterEllipsis"
-                                       Margin="10,0,0,0"
-                                       VerticalAlignment="Center" />
-                        </DockPanel>
-                        <TextBlock Grid.Row="1"
-                                   Text="{Binding Title}"
-                                   FontSize="12"
-                                   Foreground="{DynamicResource StudioTextSecondaryBrush}"
-                                   TextWrapping="Wrap"
-                                   MaxHeight="38"
-                                   Margin="0,6,0,0" />
-                        <DockPanel Grid.Row="2"
-                                   LastChildFill="True"
-                                   Margin="0,10,0,0">
-                            <TextBlock DockPanel.Dock="Right"
-                                       Text="&#xE768;"
-                                       FontFamily="Segoe MDL2 Assets"
-                                       Foreground="{StaticResource AccentBrush}"
-                                       FontSize="12"
-                                       Margin="10,0,0,0"
-                                       VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding MetadataText}"
-                                       FontSize="11"
-                                       Foreground="{StaticResource TextMutedBrush}"
-                                       TextTrimming="CharacterEllipsis" />
-                        </DockPanel>
+                    </controls:AspectRatioDecorator>
+                    <Grid Grid.Row="1" Margin="14,14,14,16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="44" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <controls:RoundedClipBorder Width="36" Height="36" CornerRadius="18" VerticalAlignment="Top" HorizontalAlignment="Left"
+                                                    Background="{DynamicResource StudioSurface3Brush}">
+                            <Grid>
+                                <TextBlock Text="&#xE77B;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="{DynamicResource StudioTextMutedBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                <controls:AnimatedEmoteImage ImageUrl="{Binding ProfileImageUrl}" MaxImageBytes="8388608" Stretch="UniformToFill" />
+                            </Grid>
+                        </controls:RoundedClipBorder>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Title}" FontSize="13" Foreground="{DynamicResource StudioTextSecondaryBrush}"
+                                       TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="36" LineHeight="18"
+                                       Margin="0,5,0,0" />
+                            <TextBlock Text="{Binding MetadataText}" FontSize="12" Foreground="{DynamicResource StudioTextMutedBrush}"
+                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding MetadataText}" Margin="0,8,0,0" />
+                        </StackPanel>
                     </Grid>
                 </Grid>
             </Button>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Opacity, ElementName=LiveCardPlayAffordance}" Value="1">
+                    <Setter TargetName="LiveCardPlaceholder" Property="Opacity" Value="0" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
         </DataTemplate>
 
         <ItemsPanelTemplate x:Key="HomeCardItemsPanel">
-            <controls:HomeCardWrapPanel ItemWidth="316"
+            <controls:HomeCardWrapPanel ItemWidth="288"
                                         HorizontalGap="16"
-                                        VerticalGap="16"
+                                        VerticalGap="20"
                                         KeepRightGap="{Binding DataContext.Settings.KeepHomeCardRightGap, RelativeSource={RelativeSource AncestorType=Window}}" />
         </ItemsPanelTemplate>
 
         <Style x:Key="RecentStreamButton" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
             <Setter Property="Background" Value="{DynamicResource StudioSurfaceCardBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
@@ -867,11 +868,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#141E29" />
-                                <Setter Property="BorderBrush" Value="#58D6C4" />
+                                <Setter Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" Value="#102820" />
+                                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -880,6 +881,7 @@
         </Style>
 
         <Style x:Key="RecentStreamDeleteButton" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
             <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
@@ -907,12 +909,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#2B1B22" />
+                                <Setter Property="Background" Value="{DynamicResource StudioDangerSubtleBrush}" />
                                 <Setter Property="BorderBrush" Value="{DynamicResource StudioDangerBrush}" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" Value="#551D29" />
+                                <Setter Property="Background" Value="{DynamicResource StudioDangerSubtleBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -924,9 +926,9 @@
         </Style>
 
         <Style x:Key="TopControlButtonBase" TargetType="{x:Type primitives:ButtonBase}">
-            <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
+            <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="14" />
@@ -1070,92 +1072,7 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="SettingsCategoryButtonStyle" TargetType="Button">
-            <Setter Property="Height" Value="52" />
-            <Setter Property="MinHeight" Value="52" />
-            <Setter Property="Margin" Value="0,0,0,6" />
-            <Setter Property="Padding" Value="0" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderBrush" Value="Transparent" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
-            <Setter Property="FontFamily" Value="Segoe UI" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="FontWeight" Value="Medium" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="12"
-                                SnapsToDevicePixels="True">
-                            <Grid Margin="8,0,12,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="3" />
-                                    <ColumnDefinition Width="38" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="18" />
-                                </Grid.ColumnDefinitions>
-                                <Border Grid.Column="0"
-                                        Width="3"
-                                        Height="24"
-                                        Background="{TemplateBinding BorderBrush}"
-                                        CornerRadius="2"
-                                        VerticalAlignment="Center" />
-                                <Border Grid.Column="1"
-                                        Width="30"
-                                        Height="30"
-                                        Margin="5,0,0,0"
-                                        HorizontalAlignment="Left"
-                                        VerticalAlignment="Center"
-                                        Background="{DynamicResource StudioSurface2Brush}"
-                                        CornerRadius="9">
-                                    <TextBlock Text="{TemplateBinding Tag}"
-                                               FontFamily="Segoe MDL2 Assets"
-                                               FontSize="14"
-                                               Foreground="{TemplateBinding Foreground}"
-                                               HorizontalAlignment="Center"
-                                               VerticalAlignment="Center" />
-                                </Border>
-                                <ContentPresenter Grid.Column="2"
-                                                  Margin="10,0,0,0"
-                                                  HorizontalAlignment="Left"
-                                                  VerticalAlignment="Center"
-                                                  RecognizesAccessKey="True" />
-                                <TextBlock Grid.Column="3"
-                                           Text="&#xE76C;"
-                                           FontFamily="Segoe MDL2 Assets"
-                                           FontSize="10"
-                                           Foreground="{TemplateBinding Foreground}"
-                                           HorizontalAlignment="Right"
-                                           VerticalAlignment="Center"
-                                           Opacity="0.7" />
-                            </Grid>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Opacity" Value="0.45" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
-                    <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
-                    <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
-                </Trigger>
-                <Trigger Property="IsPressed" Value="True">
-                    <Setter Property="Background" Value="{DynamicResource StudioSurface3Brush}" />
-                </Trigger>
-            </Style.Triggers>
-        </Style>
+        <Style x:Key="SettingsCategoryButtonStyle" TargetType="Button" BasedOn="{StaticResource StudioSettingsNavigation}" />
 
         <Style x:Key="GeneralSettingsCategoryButton" TargetType="Button" BasedOn="{StaticResource SettingsCategoryButtonStyle}">
             <Setter Property="Tag" Value="&#xE713;" />
@@ -1226,23 +1143,23 @@
 
         <Style x:Key="SettingsSectionCard" TargetType="Border" BasedOn="{StaticResource StudioCardStyle}">
             <Setter Property="Margin" Value="0,0,0,18" />
-            <Setter Property="Padding" Value="22" />
+            <Setter Property="Padding" Value="24" />
             <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
-            <Setter Property="CornerRadius" Value="16" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StudioSurface3Brush}" />
+            <Setter Property="CornerRadius" Value="{StaticResource StudioCornerMedium}" />
         </Style>
 
         <Style x:Key="SettingsCardHeaderStyle" TargetType="TextBlock">
-            <Setter Property="FontFamily" Value="Segoe UI" />
-            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
+            <Setter Property="FontSize" Value="17" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
             <Setter Property="Margin" Value="0,0,0,18" />
         </Style>
 
         <Style x:Key="SettingsPageDescriptionStyle" TargetType="TextBlock">
-            <Setter Property="FontFamily" Value="Segoe UI" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
@@ -1259,10 +1176,41 @@
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
 
+        <Style x:Key="SkipAmountContextMenuStyle" TargetType="ContextMenu">
+            <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
+            <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1" CornerRadius="10" Padding="18">
+                            <ItemsPresenter />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="MenuItem">
+                        <Setter Property="StaysOpenOnClick" Value="True" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="MenuItem">
+                                    <ContentPresenter ContentSource="Header" />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="SettingsToggleStyle" TargetType="CheckBox">
             <Setter Property="MinHeight" Value="34" />
             <Setter Property="Padding" Value="0,5" />
-            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
             <Setter Property="FontSize" Value="13" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
             <Setter Property="Cursor" Value="Hand" />
@@ -1353,7 +1301,7 @@
                                 <Setter Property="Background" Value="{DynamicResource StudioDisabledBorderBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" Value="#17202B" />
+                                <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1364,8 +1312,8 @@
         <Style TargetType="{x:Type TextBox}" BasedOn="{StaticResource StudioTextBoxStyle}" />
 
         <Style x:Key="HomeSearchTextBoxStyle" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
-            <Setter Property="Height" Value="36" />
-            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="Height" Value="44" />
+            <Setter Property="MinHeight" Value="44" />
             <Setter Property="Padding" Value="30,0,12,0" />
             <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
             <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
@@ -1381,7 +1329,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8"
+                                CornerRadius="{StaticResource StudioCornerSmall}"
                                 SnapsToDevicePixels="True">
                             <ScrollViewer x:Name="PART_ContentHost"
                                           Margin="0"
@@ -1467,7 +1415,7 @@
 
         <Grid.RowDefinitions>
             <RowDefinition x:Name="TitleRow" Height="Auto" />
-            <RowDefinition x:Name="TopControlsRow" Height="54" />
+            <RowDefinition x:Name="TopControlsRow" Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -1475,9 +1423,9 @@
                 Grid.Row="0"
                 Grid.ColumnSpan="2"
                 Height="40"
-                Background="{StaticResource PanelBrush}"
+                Background="{DynamicResource StudioSurface0Brush}"
                 BorderBrush="{StaticResource LineBrush}"
-                BorderThickness="0,0,0,1">
+                BorderThickness="0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -1489,7 +1437,7 @@
                     <Border Width="24"
                             Height="24"
                             Margin="0,0,10,0"
-                            Background="#262DD4BF"
+                            Background="{DynamicResource StudioAccentPressedBrush}"
                             BorderBrush="{DynamicResource StudioAccentBrush}"
                             BorderThickness="1"
                             CornerRadius="7">
@@ -1500,9 +1448,9 @@
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center" />
                     </Border>
-                    <TextBlock Text="STREAM STUDIO"
-                               FontSize="11"
-                               FontWeight="Bold"
+                    <TextBlock Text="Stream Studio"
+                               FontSize="12"
+                               FontWeight="SemiBold"
                                Foreground="{DynamicResource StudioTextBrush}"
                                VerticalAlignment="Center" />
                     <Border Width="1"
@@ -1514,7 +1462,7 @@
                              Margin="0,0,8,0">
                         <Ellipse.Style>
                             <Style TargetType="Ellipse">
-                                <Setter Property="Fill" Value="{StaticResource StreamInactiveBrush}" />
+                                <Setter Property="Fill" Value="{DynamicResource StudioTextDimBrush}" />
                                 <Setter Property="ToolTip" Value="No stream playing" />
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding IsAnyStreamPlaying}" Value="True">
@@ -1525,7 +1473,7 @@
                             </Style>
                         </Ellipse.Style>
                     </Ellipse>
-                    <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=Title}"
+                    <TextBlock Text="Twitch + Kick"
                                FontSize="11"
                                Foreground="{DynamicResource StudioTextMutedBrush}"
                                VerticalAlignment="Center" />
@@ -1616,9 +1564,9 @@
                       Height="{Binding ViewportHeight, ElementName=DockedChatViewport}"
                       MinWidth="180" MinHeight="138">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="46" />
+                        <RowDefinition Height="58" />
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="46" />
+                        <RowDefinition Height="58" />
                     </Grid.RowDefinitions>
                     <Thumb x:Name="DockedChatResizeThumb"
                            Grid.RowSpan="3"
@@ -1650,17 +1598,17 @@
                         </Thumb.Template>
                     </Thumb>
                     <Border Grid.Row="0"
-                            Margin="8,7,8,5"
+                            Margin="12,10,12,6"
                             Padding="10,0"
                             Background="{DynamicResource StudioSurface1Brush}"
                             BorderBrush="{DynamicResource StudioBorderBrush}"
                             BorderThickness="1"
                             CornerRadius="9">
-                        <StackPanel>
+                        <StackPanel VerticalAlignment="Center">
                             <DockPanel LastChildFill="True">
                                 <Border DockPanel.Dock="Left"
                                         VerticalAlignment="Center"
-                                        Background="#2634D399"
+                                        Background="{DynamicResource StudioSuccessSubtleBrush}"
                                         BorderBrush="{DynamicResource StudioSuccessBrush}"
                                         BorderThickness="1"
                                         CornerRadius="4"
@@ -1689,7 +1637,6 @@
                     </Border>
                     <ListBox x:Name="DockedChatListBox"
                              Grid.Row="1"
-                             ItemsSource="{Binding SelectedTab.DockedChatFeedItems}"
                              Tag="{Binding IsMouseOver, ElementName=DockedChatPanel}"
                              PreviewMouseWheel="ChatListBox_PreviewMouseWheel"
                              ScrollViewer.CanContentScroll="True"
@@ -1699,7 +1646,18 @@
                              VirtualizingPanel.VirtualizationMode="Recycling"
                              VirtualizingPanel.ScrollUnit="Pixel"
                              HorizontalContentAlignment="Stretch"
-                             Padding="8">
+                             Padding="14,8">
+                        <ListBox.Style>
+                            <Style TargetType="ListBox" BasedOn="{StaticResource {x:Type ListBox}}">
+                                <Style.Triggers>
+                                    <!-- Keep history in the tab, but create WPF rows and decode their
+                                         emotes only while this panel is actually on screen. -->
+                                    <Trigger Property="IsVisible" Value="True">
+                                        <Setter Property="ItemsSource" Value="{Binding SelectedTab.DockedChatFeedItems}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ListBox.Style>
                         <ListBox.Resources>
                             <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource DockedChatScrollBarStyle}" />
                         </ListBox.Resources>
@@ -1709,9 +1667,9 @@
                             </Style>
                         </ListBox.ItemContainerStyle>
                     </ListBox>
-                    <DockPanel Grid.Row="2" Margin="8,0,8,8" LastChildFill="True">
+                    <DockPanel Grid.Row="2" Margin="12,6,12,12" LastChildFill="True">
                         <Button DockPanel.Dock="Right"
-                                Content="Send"
+                                Content="Send" Style="{StaticResource StudioPrimaryButtonStyle}"
                                 Command="{Binding SelectedTab.SendChatMessageCommand}"
                                 Padding="12,6"
                                 MinWidth="62"
@@ -1840,121 +1798,116 @@
                               HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Auto"
                               Visibility="{Binding IsHomeVisible, Converter={StaticResource BoolToVisibility}}">
-                <Grid Background="{DynamicResource StudioBaseBrush}"
+                <controls:ResponsiveGrid x:Name="HomeShell" CompactWidth="1020" CompactHeight="440" Background="{DynamicResource StudioBaseBrush}"
                       Width="{Binding ViewportWidth, ElementName=HomeViewport}"
                       Height="{Binding ViewportHeight, ElementName=HomeViewport}"
                       MinWidth="180"
                       MinHeight="120">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Border Grid.Row="0"
-                            Background="{DynamicResource StudioSurface0Brush}"
-                            BorderBrush="{DynamicResource StudioSurface3Brush}"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Margin="16,10,16,0"
-                            Padding="10,7">
-                        <controls:ResponsiveGrid x:Name="HomeHeaderLayout" CompactWidth="800">
+                    <Border x:Name="LibraryRail" Grid.RowSpan="2" Width="216" Padding="16,26,16,20"
+                            Background="{DynamicResource StudioSurface0Brush}" BorderBrush="{DynamicResource StudioBorderBrush}" BorderThickness="0,0,1,0">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompact, ElementName=HomeShell}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <DockPanel LastChildFill="True">
+                            <StackPanel DockPanel.Dock="Bottom">
+                                <Border Height="1" Background="{DynamicResource StudioBorderBrush}" Margin="8,0,8,16" />
+                                <Button Style="{StaticResource StudioRailButton}" Content="Settings" Tag="&#xE713;"
+                                        Command="{Binding ToggleSettingsCommand}" AutomationProperties.Name="Open settings" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Text="YOUR LIBRARY" Style="{StaticResource StudioEyebrow}" FontSize="11" Margin="14,4,0,18" />
+                                <Button Content="Following" Style="{StaticResource StudioRailLive}" Command="{Binding ShowFollowedHomePageCommand}" />
+                                <Button Content="Discover" Style="{StaticResource StudioRailBrowse}" Command="{Binding ShowBrowseHomePageCommand}" />
+                                <Button Content="Past broadcasts" Style="{StaticResource StudioRailVods}" Command="{Binding ShowTwitchVodsHomePageCommand}" />
+                                <Button Content="Recently watched" Style="{StaticResource StudioRailRecent}" Command="{Binding ShowRecentHomePageCommand}" />
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+
+                    <Border x:Name="HomeHeader" Grid.Column="1" Grid.Row="0"
+                            Background="Transparent"
+                            BorderBrush="{DynamicResource StudioBorderBrush}"
+                            BorderThickness="0"
+                            CornerRadius="0"
+                            Padding="0,0,0,4">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Margin" Value="24,24,24,0" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompact, ElementName=HomeShell}" Value="True">
+                                        <Setter Property="Margin" Value="12,16,12,0" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <controls:ResponsiveGrid x:Name="HomeHeaderLayout" CompactWidth="700">
+                            <controls:ResponsiveGrid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </controls:ResponsiveGrid.RowDefinitions>
                             <controls:ResponsiveGrid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="0" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </controls:ResponsiveGrid.ColumnDefinitions>
 
-                            <Grid Grid.Column="0"
-                                  Width="268"
-                                  MinWidth="0"
-                                  Margin="0,0,18,0"
-                                  VerticalAlignment="Center">
-                                <Grid.Style>
-                                    <Style TargetType="Grid">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsCompact, ElementName=HomeHeaderLayout}" Value="True">
-                                                <Setter Property="Visibility" Value="Collapsed" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </Grid.Style>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                <Grid Grid.Row="0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0"
-                                               Text="Twitch &amp; Kick player"
-                                               FontSize="15"
-                                               FontWeight="SemiBold"
-                                               VerticalAlignment="Center"
-                                               Margin="0,0,9,0" />
-                                    <Border Grid.Column="1"
-                                            Background="{DynamicResource StudioCategoryBgBrush}"
-                                            BorderBrush="{DynamicResource StudioCategoryBorderBrush}"
-                                            BorderThickness="1"
-                                            CornerRadius="5"
-                                            Padding="6,2"
-                                            VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding StatusMessage}"
-                                                   FontSize="10"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource StudioCategoryTextBrush}"
-                                                   TextTrimming="CharacterEllipsis" />
-                                    </Border>
-                                </Grid>
-                                <TextBlock Grid.Row="1"
-                                           Text="Search Twitch or Kick to open a stream"
-                                           Foreground="{StaticResource TextMutedBrush}"
-                                           FontSize="10"
-                                           TextWrapping="NoWrap"
-                                           TextTrimming="CharacterEllipsis"
-                                           Margin="0,3,0,0" />
-                            </Grid>
-
                             <Grid x:Name="HomeSearchAnchor"
-                                  Grid.Column="1"
-                                  MaxWidth="560"
+                                  Grid.Row="1" Grid.Column="1"
                                   MinWidth="0"
-                                  Height="36"
+                                  Height="48"
                                   Margin="0"
                                   HorizontalAlignment="Stretch"
                                   VerticalAlignment="Center"
                                   PreviewMouseDown="HomeSearchAnchor_PreviewMouseDown">
                                 <TextBox x:Name="HomeStreamSearchTextBox"
                                          Style="{StaticResource HomeSearchTextBoxStyle}"
+                                         Height="48" MinHeight="48" Padding="40,0,44,0" FontSize="14"
                                          Text="{Binding NewStreamText, UpdateSourceTrigger=PropertyChanged}"
                                          KeyDown="StreamSearchTextBox_KeyDown"
                                          GotKeyboardFocus="HomeStreamSearchTextBox_GotKeyboardFocus"
                                          AutomationProperties.Name="Streamer search"
+                                         AutomationProperties.HelpText="Search a channel or URL. Use the arrow keys to choose a result."
                                          ToolTip="Twitch or Kick channel name or URL" />
                                 <TextBlock Text="&#xE721;"
                                            FontFamily="Segoe MDL2 Assets"
-                                           FontSize="12"
+                                           FontSize="15"
                                            Foreground="{StaticResource TextMutedBrush}"
                                            IsHitTestVisible="False"
-                                           Margin="13,0,0,0"
+                                           Margin="16,0,0,0"
                                            VerticalAlignment="Center"
                                            HorizontalAlignment="Left" />
-                                <TextBlock Text="Search Twitch or Kick streamer"
+                                <TextBlock Text="Search channels or paste a stream link"
                                            Foreground="{DynamicResource StudioTextPlaceholderBrush}"
                                            IsHitTestVisible="False"
-                                           Margin="30,0,12,0"
+                                           Margin="40,0,44,0" FontSize="13"
                                            VerticalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"
                                            Visibility="{Binding IsNewStreamSearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
+                                <Button x:Name="ClearHomeSearchButton" Content="&#xE711;"
+                                        Style="{StaticResource StudioQuietIconButton}"
+                                        Click="ClearHomeSearch_Click" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                        Margin="0,0,10,0" ToolTip="Clear search" AutomationProperties.Name="Clear search"
+                                        Visibility="{Binding HasNewStreamSearchText, Converter={StaticResource BoolToVisibility}}" />
                             </Grid>
 
-                            <Border Grid.Column="2"
-                                    Background="{DynamicResource StudioSurface0Brush}"
-                                    BorderBrush="{DynamicResource StudioDisabledBorderBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="6"
-                                    Padding="7,3"
+                            <Border Grid.Row="1" Grid.Column="2"
+                                    Background="Transparent"
+                                    Padding="0"
                                     Margin="18,0,0,0"
                                     Visibility="{Binding IsFollowedHomePageSelected, Converter={StaticResource BoolToVisibility}}"
                                     VerticalAlignment="Center">
@@ -1979,6 +1932,7 @@
                                     <Button Style="{StaticResource HomeRefreshButton}"
                                             Content="&#xE72C;"
                                             Command="{Binding RefreshFollowedChannelsCommand}"
+                                            AutomationProperties.Name="Refresh followed channels"
                                             ToolTip="Refresh followed channels" />
                                 </DockPanel>
                             </Border>
@@ -1990,55 +1944,36 @@
                                        AllowsTransparency="True"
                                        PopupAnimation="Fade"
                                        StaysOpen="True"
+                                       PreviewKeyDown="HomeSearchPopup_PreviewKeyDown"
                                        DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                        IsOpen="{Binding IsStreamSearchPanelVisible, Mode=OneWay}">
                                     <Border Width="{Binding ActualWidth, ElementName=HomeSearchAnchor}"
                                             MinWidth="240"
                                             MaxWidth="560"
                                             MaxHeight="360"
-                                            Background="#F2101012"
+                                            Background="{DynamicResource StudioSurface1Brush}"
                                             BorderBrush="{DynamicResource StudioBorderStrongBrush}"
                                             BorderThickness="1"
-                                            CornerRadius="8"
+                                            CornerRadius="12"
                                             Padding="8"
                                             SnapsToDevicePixels="True">
                                         <Border.Effect>
-                                            <DropShadowEffect BlurRadius="24"
-                                                              ShadowDepth="8"
-                                                              Opacity="0.42"
+                                            <DropShadowEffect BlurRadius="20"
+                                                              ShadowDepth="4"
+                                                              Opacity="0.25"
                                                               Color="#000000" />
                                         </Border.Effect>
-                                        <Grid>
+                                        <Grid x:Name="HomeSearchPopupContent">
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="*" />
+                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
                                             <DockPanel Grid.Row="0"
                                                        LastChildFill="True"
                                                        Margin="4,2,4,8">
-                                                <Border DockPanel.Dock="Right"
-                                                        Background="#122018"
-                                                        BorderBrush="#2D8D65"
-                                                        BorderThickness="1"
-                                                        CornerRadius="6"
-                                                        Padding="8,3"
-                                                        Margin="10,0,0,0"
-                                                        VerticalAlignment="Center"
-                                                        Visibility="{Binding IsStreamSearchResultsVisible, Converter={StaticResource BoolToVisibility}}">
-                                                    <DockPanel LastChildFill="False">
-                                                        <Ellipse Width="6"
-                                                                 Height="6"
-                                                                 Fill="{DynamicResource StudioSuccessBrush}"
-                                                                 Margin="0,0,6,0"
-                                                                 VerticalAlignment="Center" />
-                                                        <TextBlock Text="Results"
-                                                                   FontSize="11"
-                                                                   FontWeight="SemiBold"
-                                                                   Foreground="{DynamicResource StudioSuccessTextBrush}" />
-                                                    </DockPanel>
-                                                </Border>
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding StreamSearchResultsTitle}"
                                                                FontSize="13"
@@ -2103,10 +2038,11 @@
                                                 <ScrollViewer.Resources>
                                                     <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource HomeScrollBarStyle}" />
                                                 </ScrollViewer.Resources>
-                                                <ItemsControl ItemsSource="{Binding StreamSearchResults}">
+                                                <ItemsControl x:Name="HomeSearchResults" ItemsSource="{Binding StreamSearchResults}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
                                                             <Button Command="{Binding OpenCommand}"
+                                                                    AutomationProperties.Name="{Binding DisplayName}"
                                                                     PreviewMouseDown="HomeStreamItemButton_PreviewMouseDown"
                                                                     Margin="0,0,0,6"
                                                                     Padding="0"
@@ -2125,32 +2061,35 @@
                                                                             <ContentPresenter />
                                                                         </Border>
                                                                         <ControlTemplate.Triggers>
-                                                                            <DataTrigger Binding="{Binding IsLive}" Value="True">
-                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="#10271A" />
-                                                                                <Setter TargetName="ResultChrome" Property="BorderBrush" Value="{DynamicResource StudioSuccessBorderBrush}" />
-                                                                            </DataTrigger>
                                                                             <Trigger Property="IsMouseOver" Value="True">
                                                                                 <Setter TargetName="ResultChrome" Property="Background" Value="{DynamicResource StudioSurface3Brush}" />
                                                                                 <Setter TargetName="ResultChrome" Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
                                                                             </Trigger>
                                                                             <Trigger Property="IsPressed" Value="True">
-                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="#0E5F57" />
+                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                                                                             </Trigger>
                                                                             <MultiDataTrigger>
                                                                                 <MultiDataTrigger.Conditions>
                                                                                     <Condition Binding="{Binding IsLive}" Value="True" />
                                                                                     <Condition Binding="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=IsMouseOver}" Value="True" />
                                                                                 </MultiDataTrigger.Conditions>
-                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="#173D28" />
-                                                                                <Setter TargetName="ResultChrome" Property="BorderBrush" Value="#57DD8C" />
+                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
+                                                                                <Setter TargetName="ResultChrome" Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
                                                                             </MultiDataTrigger>
                                                                             <MultiDataTrigger>
                                                                                 <MultiDataTrigger.Conditions>
                                                                                     <Condition Binding="{Binding IsLive}" Value="True" />
                                                                                     <Condition Binding="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=IsPressed}" Value="True" />
                                                                                 </MultiDataTrigger.Conditions>
-                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="#12552C" />
+                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                                                                             </MultiDataTrigger>
+                                                                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                                                <Setter TargetName="ResultChrome" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                                                                                <Setter TargetName="ResultChrome" Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
+                                                                            </Trigger>
+                                                                            <Trigger Property="IsEnabled" Value="False">
+                                                                                <Setter Property="Opacity" Value="0.55" />
+                                                                            </Trigger>
                                                                         </ControlTemplate.Triggers>
                                                                     </ControlTemplate>
                                                                 </Button.Template>
@@ -2193,6 +2132,7 @@
                                                                             <controls:AnimatedEmoteImage ImageUrl="{Binding ThumbnailUrl}"
                                                                                                          MaxImageBytes="8388608"
                                                                                                          Stretch="UniformToFill" />
+                                                                            <controls:StreamHoverPreview Style="{StaticResource StreamHoverPreviewStyle}" />
                                                                         </Grid>
                                                                     </Border>
 
@@ -2242,7 +2182,7 @@
                                                                                    Margin="0,2,0,0" />
                                                                         <TextBlock Text="{Binding StatusText}"
                                                                                    FontSize="11"
-                                                                                   Foreground="#C9D5DE"
+                                                                                   Foreground="{DynamicResource StudioTextSecondaryBrush}"
                                                                                    TextTrimming="CharacterEllipsis"
                                                                                    Margin="0,2,0,0" />
                                                                     </StackPanel>
@@ -2271,8 +2211,8 @@
                                                                                     <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
                                                                                     <Style.Triggers>
                                                                                         <DataTrigger Binding="{Binding IsLive}" Value="True">
-                                                                                            <Setter Property="Background" Value="#16482B" />
-                                                                                            <Setter Property="BorderBrush" Value="#4FD981" />
+                                                                                            <Setter Property="Background" Value="{DynamicResource StudioSuccessSubtleBrush}" />
+                                                                                            <Setter Property="BorderBrush" Value="{DynamicResource StudioSuccessBorderBrush}" />
                                                                                         </DataTrigger>
                                                                                     </Style.Triggers>
                                                                                 </Style>
@@ -2285,15 +2225,15 @@
                                                                                         <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
                                                                                         <Style.Triggers>
                                                                                             <DataTrigger Binding="{Binding IsLive}" Value="True">
-                                                                                                <Setter Property="Foreground" Value="#D9FFE7" />
+                                                                                                <Setter Property="Foreground" Value="{DynamicResource StudioSuccessTextBrush}" />
                                                                                             </DataTrigger>
                                                                                         </Style.Triggers>
                                                                                     </Style>
                                                                                 </TextBlock.Style>
                                                                             </TextBlock>
                                                                         </Border>
-                                                                        <Border Background="#102D1E"
-                                                                                BorderBrush="#2F9D62"
+                                                                        <Border Background="{DynamicResource StudioSuccessSubtleBrush}"
+                                                                                BorderBrush="{DynamicResource StudioSuccessBorderBrush}"
                                                                                 BorderThickness="1"
                                                                                 CornerRadius="6"
                                                                                 Padding="8,4"
@@ -2302,7 +2242,7 @@
                                                                             <TextBlock Text="{Binding ViewerCountText}"
                                                                                        FontSize="11"
                                                                                        FontWeight="SemiBold"
-                                                                                       Foreground="#A9F5C6" />
+                                                                                       Foreground="{DynamicResource StudioSuccessTextBrush}" />
                                                                         </Border>
                                                                         <TextBlock Text="&#xE768;"
                                                                                    FontFamily="Segoe MDL2 Assets"
@@ -2316,6 +2256,12 @@
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
                                             </ScrollViewer>
+                                            <Border Grid.Row="3" BorderBrush="{DynamicResource StudioBorderBrush}" BorderThickness="0,1,0,0"
+                                                    Padding="4,8,4,2" Margin="0,4,0,0"
+                                                    Visibility="{Binding IsStreamSearchResultsVisible, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="&#x2191; &#x2193; Choose   Enter Open   Esc Close" FontSize="11"
+                                                           Foreground="{DynamicResource StudioTextMutedBrush}" TextWrapping="Wrap" />
+                                            </Border>
                                         </Grid>
                                     </Border>
                                 </Popup>
@@ -2323,7 +2269,7 @@
                     </Border>
 
                     <ScrollViewer x:Name="HomeContentScrollViewer"
-                                  Grid.Row="1"
+                                  Grid.Column="1" Grid.Row="1"
                                   VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Auto"
                                   Padding="{Binding Settings.KeepHomeCardRightGap, Converter={StaticResource HomeContentPadding}}"
@@ -2340,20 +2286,8 @@
                                 <StackPanel>
                             <controls:ResponsiveDockPanel LastChildFill="True"
                                        Margin="0,0,0,14">
-                                <Border DockPanel.Dock="Right"
-                                        Background="{DynamicResource StudioSurface1Brush}"
-                                        BorderBrush="{DynamicResource StudioBorderBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="7"
-                                        Padding="9,5"
-                                        Margin="16,0,0,0"
-                                        VerticalAlignment="Top">
+                                <Border DockPanel.Dock="Right" Style="{StaticResource StudioStatusPill}" ToolTip="{Binding FollowedChannelsStatus}">
                                     <DockPanel LastChildFill="False">
-                                        <Ellipse Width="7"
-                                                 Height="7"
-                                                 Fill="{DynamicResource StudioSuccessBrush}"
-                                                 Margin="0,0,7,0"
-                                                 VerticalAlignment="Center" />
                                         <TextBlock Text="{Binding FollowedChannelsStatus}"
                                                    MaxWidth="520"
                                                    FontSize="12"
@@ -2362,12 +2296,9 @@
                                     </DockPanel>
                                 </Border>
                                 <StackPanel>
-                                    <TextBlock Text="Live followed channels"
-                                               FontSize="20"
-                                               FontWeight="SemiBold" />
-                                    <TextBlock Text="Twitch and Kick"
-                                               Foreground="{StaticResource TextMutedBrush}"
-                                               Margin="0,4,0,0" />
+                                    <TextBlock Text="Live now" Style="{StaticResource StudioLibraryTitle}" />
+                                    <TextBlock Text="The channels you follow, together in one place."
+                                               Style="{StaticResource StudioPageSubtitle}" />
                                 </StackPanel>
                             </controls:ResponsiveDockPanel>
 
@@ -2378,32 +2309,28 @@
 
                             <StackPanel HorizontalAlignment="Center"
                                         MaxWidth="560"
-                                        Margin="0,74,0,0"
+                                        Margin="12,48,12,24"
                                         Visibility="{Binding IsFollowedChannelsEmptyVisible, Converter={StaticResource BoolToVisibility}}">
-                                <Border Width="58"
-                                        Height="58"
-                                        Background="{DynamicResource StudioSurface1Brush}"
-                                        BorderBrush="{DynamicResource StudioBorderBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="8"
-                                        HorizontalAlignment="Center"
-                                        Margin="0,0,0,16">
+                                <Border Style="{StaticResource StudioEmptyStateGlyph}">
                                     <TextBlock Text="&#xE7F4;"
                                                FontFamily="Segoe MDL2 Assets"
                                                FontSize="22"
-                                               Foreground="{StaticResource TextMutedBrush}"
                                                HorizontalAlignment="Center"
                                                VerticalAlignment="Center" />
                                 </Border>
-                                <TextBlock Text="No live followed channels"
+                                <TextBlock Text="Your next stream is waiting"
                                            FontSize="22"
                                            FontWeight="SemiBold"
-                                           HorizontalAlignment="Center" />
+                                           HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" />
                                 <TextBlock Text="{Binding FollowedChannelsStatus}"
                                            Foreground="{StaticResource TextMutedBrush}"
                                            TextWrapping="Wrap"
                                            TextAlignment="Center"
                                            Margin="0,10,0,0" />
+                                <WrapPanel HorizontalAlignment="Center" Margin="0,24,0,0">
+                                    <Button Content="Discover channels" Command="{Binding ShowBrowseHomePageCommand}" Style="{StaticResource StudioPrimaryButtonStyle}" Margin="0,0,10,8" />
+                                    <Button Content="Connect accounts" Click="OpenAccountsSettings_Click" Margin="0,0,0,8" />
+                                </WrapPanel>
                             </StackPanel>
 
                             <ItemsControl ItemsSource="{Binding LiveFollowedChannels}"
@@ -2418,14 +2345,7 @@
                                 <StackPanel>
                                     <controls:ResponsiveDockPanel LastChildFill="True"
                                                Margin="0,0,0,14">
-                                        <Border DockPanel.Dock="Right"
-                                                Background="{DynamicResource StudioSurface1Brush}"
-                                                BorderBrush="{DynamicResource StudioBorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="7"
-                                                Padding="9,5"
-                                                Margin="16,0,0,0"
-                                                VerticalAlignment="Top">
+                                        <Border DockPanel.Dock="Right" Style="{StaticResource StudioStatusPill}" ToolTip="{Binding TwitchVodStatus}">
                                             <TextBlock Text="{Binding TwitchVodStatus}"
                                                        MaxWidth="520"
                                                        FontSize="12"
@@ -2433,12 +2353,9 @@
                                                        TextTrimming="CharacterEllipsis" />
                                         </Border>
                                         <StackPanel>
-                                            <TextBlock Text="VODs"
-                                                       FontSize="20"
-                                                       FontWeight="SemiBold" />
+                                            <TextBlock Text="Past broadcasts" Style="{StaticResource StudioLibraryTitle}" />
                                             <TextBlock Text="{Binding TwitchVodResultsTitle}"
-                                                       Foreground="{StaticResource TextMutedBrush}"
-                                                       Margin="0,4,0,0" />
+                                                       Style="{StaticResource StudioPageSubtitle}" />
                                         </StackPanel>
                                     </controls:ResponsiveDockPanel>
 
@@ -2455,8 +2372,7 @@
                                                     Content="Kick"
                                                     Command="{Binding SelectKickVodPlatformCommand}" />
                                         </StackPanel>
-                                        <Grid MaxWidth="460"
-                                              HorizontalAlignment="Left">
+                                        <Grid>
                                             <TextBox Text="{Binding TwitchVodSearchText, UpdateSourceTrigger=PropertyChanged}"
                                                      Style="{StaticResource HomeSearchTextBoxStyle}"
                                                      AutomationProperties.Name="VOD streamer search"
@@ -2503,27 +2419,42 @@
 
                                     <StackPanel HorizontalAlignment="Center"
                                                 MaxWidth="560"
-                                                Margin="0,74,0,0"
-                                                Visibility="{Binding IsTwitchVodEmptyVisible, Converter={StaticResource BoolToVisibility}}">
-                                        <Border Width="58"
-                                                Height="58"
-                                                Background="{DynamicResource StudioSurface1Brush}"
-                                                BorderBrush="{DynamicResource StudioBorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="8"
-                                                HorizontalAlignment="Center"
-                                                Margin="0,0,0,16">
+                                                Margin="12,48,12,24">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding HasTwitchVods}" Value="False" />
+                                                            <Condition Binding="{Binding IsTwitchVodSearchRunning}" Value="False" />
+                                                        </MultiDataTrigger.Conditions>
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </MultiDataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <Border Style="{StaticResource StudioEmptyStateGlyph}">
                                             <TextBlock Text="&#xE8B2;"
                                                        FontFamily="Segoe MDL2 Assets"
                                                        FontSize="22"
-                                                       Foreground="{StaticResource TextMutedBrush}"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center" />
                                         </Border>
-                                        <TextBlock Text="No VODs found"
-                                                   FontSize="22"
+                                        <TextBlock FontSize="22"
                                                    FontWeight="SemiBold"
-                                                   HorizontalAlignment="Center" />
+                                                   HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="Find a past broadcast" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasTwitchVodSearchCompleted}" Value="True">
+                                                            <Setter Property="Text" Value="No broadcasts found" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                         <TextBlock Text="{Binding TwitchVodStatus}"
                                                    Foreground="{StaticResource TextMutedBrush}"
                                                    TextWrapping="Wrap"
@@ -2541,13 +2472,14 @@
                                                         Command="{Binding OpenCommand}">
                                                     <Grid>
                                                         <Grid.RowDefinitions>
-                                                            <RowDefinition Height="174" />
+                                                            <RowDefinition Height="Auto" />
                                                             <RowDefinition Height="*" />
                                                         </Grid.RowDefinitions>
 
+                                                        <controls:AspectRatioDecorator>
                                                         <controls:RoundedClipBorder Grid.Row="0"
                                                                                     Background="{DynamicResource StudioBaseBrush}"
-                                                                                    CornerRadius="11.5,11.5,0,0">
+                                                                                    CornerRadius="13,13,0,0">
                                                             <Grid>
                                                                 <TextBlock Text="&#xE8B2;"
                                                                            FontFamily="Segoe MDL2 Assets"
@@ -2668,6 +2600,7 @@
                                                                 </ProgressBar>
                                                             </Grid>
                                                         </controls:RoundedClipBorder>
+                                                        </controls:AspectRatioDecorator>
 
                                                         <Grid Grid.Row="1"
                                                               Margin="14,12,14,14">
@@ -2745,14 +2678,7 @@
                                         <StackPanel>
                                             <controls:ResponsiveDockPanel LastChildFill="True"
                                                        Margin="0,0,0,14">
-                                                <Border DockPanel.Dock="Right"
-                                                        Background="{DynamicResource StudioSurface1Brush}"
-                                                        BorderBrush="{DynamicResource StudioBorderBrush}"
-                                                        BorderThickness="1"
-                                                        CornerRadius="7"
-                                                        Padding="9,5"
-                                                        Margin="16,0,0,0"
-                                                        VerticalAlignment="Top">
+                                                <Border DockPanel.Dock="Right" Style="{StaticResource StudioStatusPill}" ToolTip="{Binding BrowseStatus}">
                                                     <TextBlock Text="{Binding BrowseStatus}"
                                                                MaxWidth="520"
                                                                FontSize="12"
@@ -2760,12 +2686,9 @@
                                                                TextTrimming="CharacterEllipsis" />
                                                 </Border>
                                                 <StackPanel>
-                                                    <TextBlock Text="Browse"
-                                                               FontSize="20"
-                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="Discover" Style="{StaticResource StudioLibraryTitle}" />
                                                     <TextBlock Text="{Binding BrowseCategoriesTitle}"
-                                                               Foreground="{StaticResource TextMutedBrush}"
-                                                               Margin="0,4,0,0" />
+                                                               Style="{StaticResource StudioPageSubtitle}" />
                                                 </StackPanel>
                                             </controls:ResponsiveDockPanel>
 
@@ -2786,8 +2709,7 @@
                                                         Command="{Binding RefreshBrowseCommand}"
                                                         MinWidth="104"
                                                         Margin="12,0,0,0" />
-                                                <Grid MaxWidth="460"
-                                                      HorizontalAlignment="Left">
+                                                <Grid>
                                                     <TextBox Text="{Binding BrowseCategorySearchText, UpdateSourceTrigger=PropertyChanged}"
                                                              Style="{StaticResource HomeSearchTextBoxStyle}"
                                                              AutomationProperties.Name="Browse category search"
@@ -2860,7 +2782,7 @@
 
                                                                 <Border Grid.Row="0"
                                                                         Background="{DynamicResource StudioBaseBrush}"
-                                                                        CornerRadius="8,8,0,0"
+                                                                        CornerRadius="13,13,0,0"
                                                                         ClipToBounds="True">
                                                                     <Grid>
                                                                         <TextBlock Text="&#xE8B2;"
@@ -2993,8 +2915,8 @@
                                                                TextTrimming="CharacterEllipsis" />
                                                 </Border>
                                                 <StackPanel>
-                                                    <TextBlock Text="Browse"
-                                                               FontSize="20"
+                                                    <TextBlock Text="Discover"
+                                                               FontSize="28"
                                                                FontWeight="SemiBold" />
                                                     <TextBlock Text="{Binding BrowseStreamsTitle}"
                                                                Foreground="{StaticResource TextMutedBrush}"
@@ -3103,14 +3025,7 @@
                                 <StackPanel>
                                     <controls:ResponsiveDockPanel LastChildFill="True"
                                                Margin="0,0,0,14">
-                                        <Border DockPanel.Dock="Right"
-                                                Background="{DynamicResource StudioSurface1Brush}"
-                                                BorderBrush="{DynamicResource StudioBorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="7"
-                                                Padding="9,5"
-                                                Margin="16,0,0,0"
-                                                VerticalAlignment="Top">
+                                        <Border DockPanel.Dock="Right" Style="{StaticResource StudioStatusPill}" ToolTip="{Binding RecentStreamsStatus}">
                                             <TextBlock Text="{Binding RecentStreamsStatus}"
                                                        MaxWidth="260"
                                                        FontSize="12"
@@ -3118,43 +3033,34 @@
                                                        TextTrimming="CharacterEllipsis" />
                                         </Border>
                                         <StackPanel>
-                                            <TextBlock Text="Recent streams"
-                                                       FontSize="20"
-                                                       FontWeight="SemiBold" />
-                                            <TextBlock Text="Watched through Twitch &amp; Kick player"
-                                                       Foreground="{StaticResource TextMutedBrush}"
-                                                       Margin="0,4,0,0" />
+                                            <TextBlock Text="Recently watched" Style="{StaticResource StudioLibraryTitle}" />
+                                            <TextBlock Text="Your recent channels, ready when you are."
+                                                       Style="{StaticResource StudioPageSubtitle}" />
                                         </StackPanel>
                                     </controls:ResponsiveDockPanel>
 
                                     <StackPanel HorizontalAlignment="Center"
                                                 MaxWidth="560"
-                                                Margin="0,74,0,0"
+                                                Margin="12,48,12,24"
                                                 Visibility="{Binding IsRecentStreamsEmptyVisible, Converter={StaticResource BoolToVisibility}}">
-                                        <Border Width="58"
-                                                Height="58"
-                                                Background="{DynamicResource StudioSurface1Brush}"
-                                                BorderBrush="{DynamicResource StudioBorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="8"
-                                                HorizontalAlignment="Center"
-                                                Margin="0,0,0,16">
+                                        <Border Style="{StaticResource StudioEmptyStateGlyph}">
                                             <TextBlock Text="&#xE823;"
                                                        FontFamily="Segoe MDL2 Assets"
                                                        FontSize="22"
-                                                       Foreground="{StaticResource TextMutedBrush}"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center" />
                                         </Border>
                                         <TextBlock Text="No recent streams"
                                                    FontSize="22"
                                                    FontWeight="SemiBold"
-                                                   HorizontalAlignment="Center" />
-                                        <TextBlock Text="No successful playback history in this settings file."
+                                                   HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" />
+                                        <TextBlock Text="Channels you watch will appear here. Discover a stream to get started."
                                                    Foreground="{StaticResource TextMutedBrush}"
                                                    TextWrapping="Wrap"
                                                    TextAlignment="Center"
                                                    Margin="0,10,0,0" />
+                                        <Button Content="Explore channels" Command="{Binding ShowBrowseHomePageCommand}"
+                                                Style="{StaticResource StudioPrimaryButtonStyle}" HorizontalAlignment="Center" Margin="0,24,0,0" />
                                     </StackPanel>
 
                                     <ItemsControl ItemsSource="{Binding RecentStreams}"
@@ -3203,13 +3109,14 @@
                                                             <Grid>
                                                                 <TextBlock Text="&#xE7F4;"
                                                                            FontFamily="Segoe MDL2 Assets"
-                                                                           FontSize="20"
+                                                                           FontSize="23"
                                                                            Foreground="{DynamicResource StudioTextDimBrush}"
                                                                            HorizontalAlignment="Center"
                                                                            VerticalAlignment="Center" />
                                                                 <controls:AnimatedEmoteImage ImageUrl="{Binding ThumbnailUrl}"
                                                                                              MaxImageBytes="8388608"
                                                                                              Stretch="UniformToFill" />
+                                                                <controls:StreamHoverPreview Style="{StaticResource StreamHoverPreviewStyle}" />
                                                                 <Border HorizontalAlignment="Left"
                                                                         VerticalAlignment="Top"
                                                                         Margin="6"
@@ -3348,7 +3255,7 @@
                             </Grid>
                         </StackPanel>
                     </ScrollViewer>
-                </Grid>
+                </controls:ResponsiveGrid>
                 </ScrollViewer>
 
                 <Grid Visibility="{Binding IsSelectedTabDetached, Converter={StaticResource BoolToVisibility}}">
@@ -3372,13 +3279,17 @@
         <Border x:Name="TopControlsBar"
                 shell:WindowChrome.IsHitTestVisibleInChrome="True"
                 Grid.Row="1"
-                Background="{StaticResource PanelBrush}"
+                Background="{DynamicResource StudioSurface0Brush}"
                 BorderBrush="{StaticResource LineBrush}"
                 BorderThickness="0,0,0,1">
             <controls:ResponsiveGrid x:Name="TopControlLayout" CompactWidth="700">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="53" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="3*" />
+                    <ColumnDefinition Width="2*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
@@ -3390,11 +3301,62 @@
                             AutomationProperties.Name="Home" />
                 </StackPanel>
 
-                <ToolBar x:Name="HomeNavigation" Style="{StaticResource ResponsiveToolBar}"
-                            Grid.Column="1"
+                <TextBlock FontSize="12" Foreground="{DynamicResource StudioTextMutedBrush}" VerticalAlignment="Center" Margin="12,0">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Grid.Column" Value="2" />
+                            <Setter Property="Grid.ColumnSpan" Value="1" />
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSettingsOpen}" Value="True">
+                                    <Setter Property="Text" Value="{Binding SelectedSettingsCategory, StringFormat=Settings  /  {0}}" />
+                                </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsHomeSelected}" Value="True" />
+                                        <Condition Binding="{Binding IsCompact, ElementName=HomeShell}" Value="False" />
+                                        <Condition Binding="{Binding IsSettingsOpen}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </MultiDataTrigger>
+                                <DataTrigger Binding="{Binding TabStripItems.Count}" Value="0">
+                                    <Setter Property="Grid.Column" Value="1" />
+                                    <Setter Property="Grid.ColumnSpan" Value="2" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsSettingsOpen}" Value="True">
+                                    <Setter Property="Grid.Column" Value="1" />
+                                    <Setter Property="Grid.ColumnSpan" Value="2" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <ToolBar x:Name="HomeNavigation"
                             VerticalAlignment="Center"
-                            Margin="10,0"
-                            Visibility="{Binding IsHomeSelected, Converter={StaticResource BoolToVisibility}}">
+                            Margin="10,0">
+                    <ToolBar.Style>
+                        <Style TargetType="ToolBar" BasedOn="{StaticResource ResponsiveToolBar}">
+                            <Setter Property="Grid.Column" Value="2" />
+                            <Setter Property="Grid.ColumnSpan" Value="1" />
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsHomeSelected}" Value="True" />
+                                        <Condition Binding="{Binding IsCompact, ElementName=HomeShell}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </MultiDataTrigger>
+                                <DataTrigger Binding="{Binding IsSettingsOpen}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding TabStripItems.Count}" Value="0">
+                                    <Setter Property="Grid.Column" Value="1" />
+                                    <Setter Property="Grid.ColumnSpan" Value="2" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ToolBar.Style>
                     <Button Style="{StaticResource FollowedHomeSegmentButton}"
                             Content="Live"
                             Command="{Binding ShowFollowedHomePageCommand}" />
@@ -3409,22 +3371,34 @@
                             Command="{Binding ShowRecentHomePageCommand}" />
                 </ToolBar>
 
-                <DockPanel Grid.Column="1" Margin="8,0" VerticalAlignment="Center">
+                <DockPanel Margin="8,0" VerticalAlignment="Center">
                     <DockPanel.Style>
                         <Style TargetType="DockPanel">
+                            <Setter Property="Grid.Column" Value="1" />
+                            <Setter Property="Grid.ColumnSpan" Value="2" />
                             <Setter Property="Visibility" Value="Collapsed" />
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsCompact, ElementName=TopControlLayout}" Value="True">
                                     <Setter Property="Visibility" Value="Visible" />
                                 </DataTrigger>
-                                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                                <DataTrigger Binding="{Binding TabStripItems.Count}" Value="0">
                                     <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsHomeSelected}" Value="True" />
+                                        <Condition Binding="{Binding IsSettingsOpen}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </MultiDataTrigger>
+                                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
+                                    <Setter Property="Grid.ColumnSpan" Value="1" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </DockPanel.Style>
-                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}"
-                            Content="&#xE711;" Width="20" MinHeight="20" Padding="0"
+                    <Button DockPanel.Dock="Right" Style="{StaticResource TabCloseButton}"
+                            Margin="4,0,0,0"
                             Tag="{Binding SelectedTabStripItem}" Click="CloseTabButton_Click"
                             ToolTip="Close selected tab" AutomationProperties.Name="Close selected tab" />
                     <ComboBox x:Name="CompactTabSelector" MinWidth="0" MinHeight="0" Height="34" Padding="4,0"
@@ -3440,7 +3414,7 @@
                                 </DockPanel>
                                 <DataTemplate.Triggers>
                                     <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ComboBoxItem}}}" Value="True">
-                                        <Setter TargetName="TabNeverMuteIcon" Property="Foreground" Value="#FFFFFF" />
+                                        <Setter TargetName="TabNeverMuteIcon" Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                                     </DataTrigger>
                                 </DataTemplate.Triggers>
                             </DataTemplate>
@@ -3449,7 +3423,6 @@
                 </DockPanel>
 
                 <ListBox x:Name="TabListBox"
-                         Grid.Column="1"
                          ItemsSource="{Binding TabStripItems}"
                          SelectedItem="{Binding SelectedTabStripItem}"
                          PreviewMouseWheel="TabListBox_PreviewMouseWheel"
@@ -3461,13 +3434,33 @@
                     <ListBox.Style>
                         <Style TargetType="{x:Type ListBox}" BasedOn="{StaticResource {x:Type ListBox}}">
                             <Setter Property="Visibility" Value="Visible" />
+                            <Setter Property="Grid.Column" Value="1" />
+                            <Setter Property="Grid.ColumnSpan" Value="2" />
                             <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsHomeSelected}" Value="True">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsHomeSelected}" Value="True" />
+                                        <Condition Binding="{Binding IsCompact, ElementName=HomeShell}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Grid.ColumnSpan" Value="1" />
+                                </MultiDataTrigger>
                                 <DataTrigger Binding="{Binding IsCompact, ElementName=TopControlLayout}" Value="True">
                                     <Setter Property="Visibility" Value="Collapsed" />
                                 </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsHomeSelected}" Value="True" />
+                                        <Condition Binding="{Binding IsSettingsOpen}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </MultiDataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsHomeSelected}" Value="True" />
+                                        <Condition Binding="{Binding TabStripItems.Count}" Value="0" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </MultiDataTrigger>
                             </Style.Triggers>
                         </Style>
                     </ListBox.Style>
@@ -3518,12 +3511,9 @@
                                     ToolTip="{Binding ToolTip}"
                                     PreviewMouseLeftButtonDown="TabContent_PreviewMouseLeftButtonDown">
                                 <DockPanel LastChildFill="True">
-                                    <Button DockPanel.Dock="Right"
-                                            Style="{StaticResource IconButton}"
-                                            Content="&#xE711;"
-                                            Width="20"
-                                            MinHeight="20"
-                                            FontSize="12"
+                                    <Button x:Name="TabCloseControl"
+                                            DockPanel.Dock="Right"
+                                            Style="{StaticResource TabCloseButton}"
                                             Margin="5,0,0,0"
                                             Tag="{Binding}"
                                             Click="CloseTabButton_Click"
@@ -3626,20 +3616,21 @@
                                 <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" Value="True">
                                     <Setter TargetName="TabChrome" Property="Background" Value="{StaticResource SelectedTabBrush}" />
                                     <Setter TargetName="TabChrome" Property="BorderBrush" Value="{StaticResource SelectedTabBorderBrush}" />
-                                    <Setter TargetName="TabTitleTextBox" Property="Foreground" Value="#FFFFFF" />
-                                    <Setter TargetName="TabNeverMuteIcon" Property="Foreground" Value="#FFFFFF" />
+                                    <Setter TargetName="TabTitleTextBox" Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                                    <Setter TargetName="TabCloseControl" Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                                    <Setter TargetName="TabNeverMuteIcon" Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                                     <Setter TargetName="TabStatusTextBlock" Property="Foreground" Value="{StaticResource SelectedTabMutedTextBrush}" />
-                                    <Setter TargetName="TabViewerCountBox" Property="Background" Value="#0D3B23" />
+                                    <Setter TargetName="TabViewerCountBox" Property="Background" Value="{DynamicResource StudioSuccessSubtleBrush}" />
                                     <Setter TargetName="TabViewerCountBox" Property="BorderBrush" Value="{StaticResource SelectedTabBorderBrush}" />
-                                    <Setter TargetName="TabViewerCountIcon" Property="Foreground" Value="#FFFFFF" />
-                                    <Setter TargetName="TabViewerCountTextBlock" Property="Foreground" Value="#FFFFFF" />
+                                    <Setter TargetName="TabViewerCountIcon" Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                                    <Setter TargetName="TabViewerCountTextBlock" Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
                                 </DataTrigger>
                             </DataTemplate.Triggers>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
 
-                <ToolBar x:Name="PlaybackActionsToolBar" Grid.Column="2"
+                <ToolBar x:Name="PlaybackActionsToolBar" Grid.Column="3"
                          Style="{StaticResource ResponsiveToolBar}" Margin="4,0,6,0">
                         <Button x:Name="TopPlayPauseButton"
                                 Style="{StaticResource PlaybackPauseResumeIconButton}"
@@ -3830,48 +3821,16 @@
                     <Grid MinHeight="{Binding ViewportHeight, ElementName=SettingsSidebarScrollViewer}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <Grid Margin="2,0,2,25">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="44" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Border Width="40"
-                                    Height="40"
-                                    HorizontalAlignment="Left"
-                                    Background="{DynamicResource StudioAccentPressedBrush}"
-                                    BorderBrush="{DynamicResource StudioAccentBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="12">
-                                <TextBlock Text="&#xE713;"
-                                           FontFamily="Segoe MDL2 Assets"
-                                           FontSize="17"
-                                           Foreground="{DynamicResource StudioAccentHoverBrush}"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center" />
-                            </Border>
-                            <StackPanel Grid.Column="1"
-                                        Margin="10,0,0,0"
-                                        VerticalAlignment="Center">
-                                <TextBlock Text="Stream Studio"
-                                           FontSize="15"
-                                           FontWeight="SemiBold" />
-                                <TextBlock Text="Workspace preferences"
-                                           Margin="0,3,0,0"
-                                           FontSize="10"
-                                           Foreground="{DynamicResource StudioTextMutedBrush}" />
-                            </StackPanel>
-                        </Grid>
-                        <TextBlock Grid.Row="1"
-                                   Text="PREFERENCES"
+                        <TextBlock Grid.Row="0"
+                                   Text="CUSTOMIZE"
                                    Margin="12,0,0,10"
                                    FontSize="10"
                                    FontWeight="SemiBold"
                                    Foreground="{DynamicResource StudioTextMutedBrush}" />
-                        <StackPanel Grid.Row="2">
+                        <StackPanel Grid.Row="1">
                             <Button Style="{StaticResource GeneralSettingsCategoryButton}"
                                     Content="General"
                                     Command="{Binding ShowGeneralSettingsCommand}"
@@ -3897,7 +3856,7 @@
                                     Command="{Binding ShowAdvancedSettingsCommand}"
                                     AutomationProperties.Name="Advanced settings" />
                         </StackPanel>
-                        <Button Grid.Row="3"
+                        <Button Grid.Row="2"
                                 Style="{StaticResource SettingsBackButtonStyle}"
                                 Command="{Binding ToggleSettingsCommand}"
                                 ToolTip="Close settings"
@@ -3951,23 +3910,26 @@
 
                 <Grid Grid.Column="1" Grid.Row="1">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
-                        <RowDefinition>
-                            <RowDefinition.Style>
-                                <Style TargetType="RowDefinition">
-                                    <Setter Property="Height" Value="76" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
-                                            <Setter Property="Height" Value="Auto" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </RowDefinition.Style>
-                        </RowDefinition>
                     </Grid.RowDefinitions>
 
+                    <Border x:Name="SettingsSaveError"
+                            Margin="16,10,16,0" Padding="12"
+                            BorderBrush="{DynamicResource StudioDangerBrush}"
+                            BorderThickness="1" CornerRadius="8"
+                            Visibility="{Binding HasSettingsSaveError, Converter={StaticResource BoolToVisibility}}">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="Retry" Margin="12,0,0,0"
+                                    Command="{Binding SaveSettingsCommand}" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding SettingsSaveStatus}" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource StudioDangerBrush}"
+                                       VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                        </DockPanel>
+                    </Border>
+
                     <ScrollViewer x:Name="SettingsContentScrollViewer"
-                                  Grid.Row="0"
+                                  Grid.Row="1"
                                   HorizontalScrollBarVisibility="Auto"
                                   HorizontalContentAlignment="Left">
                         <ScrollViewer.Style>
@@ -4002,7 +3964,7 @@
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
                                         <StackPanel>
-                                            <TextBlock Text="Application behavior" Style="{StaticResource SettingsCardHeaderStyle}" />
+                                            <TextBlock Text="Appearance &amp; behavior" Style="{StaticResource SettingsCardHeaderStyle}" />
                                             <TextBlock Text="When closing the window" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <ComboBox ItemsSource="{Binding CloseBehaviorOptions}"
                                                       DisplayMemberPath="DisplayName"
@@ -4020,8 +3982,15 @@
                                             <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.KeepHomeCardRightGap}"
-                                                      ToolTip="Leave unused space at the right edge of Live, VOD, and Browse card rows."
-                                                      Content="Keep home card right-side gap"
+                                                      ToolTip="Keep cards at their standard width. Turn off to stretch cards across each row."
+                                                      Content="Keep cards at a fixed width"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                            <CheckBox x:Name="StreamHoverPreviewsCheckBox"
+                                                      Style="{StaticResource SettingsToggleStyle}"
+                                                      IsChecked="{Binding Settings.EnableStreamHoverPreviews, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      Margin="0,16,0,0"
+                                                      ToolTip="Play a muted live preview while hovering over a live stream in Followed, Browse, search results, or Recent. Move away to stop."
+                                                      Content="Live stream previews on hover"
                                                       ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                         </StackPanel>
                                     </Border>
@@ -4073,7 +4042,7 @@
                                             <ComboBox ItemsSource="{Binding QualityOptions}"
                                                       DisplayMemberPath="DisplayName"
                                                       SelectedValuePath="Id"
-                                                      SelectedValue="{Binding SelectedQuality}"
+                                                      SelectedValue="{Binding Settings.DefaultQuality}"
                                                       Margin="0,0,0,16" />
                                             <TextBlock Text="Video renderer" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <ComboBox ItemsSource="{Binding VideoRendererOptions}"
@@ -4155,15 +4124,15 @@
                                                            VerticalAlignment="Center" />
                                             </DockPanel>
                                             <TextBlock Text="Username" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.TwitchUsername, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
+                                            <TextBox Text="{Binding Settings.Chat.TwitchUsername, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
                                             <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
-                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=LostFocus}"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Twitch client ID"
                                                          Margin="0,0,0,12" ToolTip="Redirect URL: http://localhost:39178" />
                                             <TextBlock Text="OAuth token" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
-                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchOAuthToken, UpdateSourceTrigger=LostFocus}"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchOAuthToken, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Twitch OAuth token"
                                                          Margin="0,0,0,16" ToolTip="The oauth: or Bearer prefix is optional." />
                                             <WrapPanel Orientation="Horizontal">
@@ -4252,20 +4221,20 @@
                                                            VerticalAlignment="Center" />
                                             </DockPanel>
                                             <TextBlock Text="Username" Style="{StaticResource StudioFieldLabelStyle}" />
-                                            <TextBox Text="{Binding Settings.Chat.KickUsername, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
+                                            <TextBox Text="{Binding Settings.Chat.KickUsername, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
                                             <TextBlock Text="User access token" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
-                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickOAuthToken, UpdateSourceTrigger=LostFocus}"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickOAuthToken, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Kick user access token"
                                                          Margin="0,0,0,12" />
                                             <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
-                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=LostFocus}"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Kick client ID"
                                                          Margin="0,0,0,12" />
                                             <TextBlock Text="Client secret" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <PasswordBox controls:PasswordBoxBinding.IsEnabled="True"
-                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientSecret, UpdateSourceTrigger=LostFocus}"
+                                                         controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientSecret, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Kick client secret"
                                                          Margin="0,0,0,16" ToolTip="Saved in settings; treat it as account-sensitive." />
                                             <WrapPanel Orientation="Horizontal" Margin="0,0,0,14">
@@ -4382,7 +4351,7 @@
                                                        Style="{StaticResource SettingsCardHeaderStyle}"
                                                        TextWrapping="Wrap"
                                                        Margin="0,0,0,8" />
-                                            <TextBlock Text="Click a binding, then press a key combination, Mouse4, or Mouse5. If a shortcut is already assigned, the two bindings swap. Typing and editing keys pause while a text field is active, and Windows-reserved combinations may be unavailable."
+                                            <TextBlock Text="Click a binding, then press a key combination, Mouse4, or Mouse5. Right-click a skip binding to change its seconds. If a shortcut is already assigned, the two bindings swap. Typing and editing keys pause while a text field is active, and Windows-reserved combinations may be unavailable."
                                                        Style="{StaticResource SettingsPageDescriptionStyle}" />
                                         </StackPanel>
                                     </DockPanel>
@@ -4459,7 +4428,91 @@
                                             Style="{StaticResource SettingsSectionCard}"
                                             VerticalAlignment="Top">
                                         <StackPanel>
-                                            <TextBlock Text="Workspace" Style="{StaticResource SettingsCardHeaderStyle}" />
+                                            <TextBlock Text="Playback and workspace" Style="{StaticResource SettingsCardHeaderStyle}" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Skip backward" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding Settings.Hotkeys.SkipBackwardSeconds, StringFormat='Go back {0} seconds. Right-click the binding to adjust.'}"
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}" Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="SkipBackwardHotkeyRecorder"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.SkipBackward, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultSkipBackward}"
+                                                                               Tag="SkipBackward"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Skip backward hotkey">
+                                                    <controls:HotkeyRecorderButton.ContextMenu>
+                                                        <ContextMenu Style="{StaticResource SkipAmountContextMenuStyle}"
+                                                                     DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                                                     AutomationProperties.Name="Skip backward amount">
+                                                            <MenuItem StaysOpenOnClick="True">
+                                                                <MenuItem.Header>
+                                                                    <StackPanel Width="244">
+                                                                        <TextBlock Text="Skip backward" FontWeight="SemiBold" FontSize="15" />
+                                                                        <TextBlock Text="{Binding Settings.Hotkeys.SkipBackwardSeconds, StringFormat='{}{0} seconds'}"
+                                                                                   FontSize="22" Margin="0,10,0,8" />
+                                                                        <Slider x:Name="SkipBackwardSecondsSlider"
+                                                                                Minimum="{Binding Source={x:Static settings:HotkeySettings.MinimumSkipSeconds}}"
+                                                                                Maximum="{Binding Source={x:Static settings:HotkeySettings.MaximumSkipSeconds}}"
+                                                                                Value="{Binding Settings.Hotkeys.SkipBackwardSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                                TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="10"
+                                                                                AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="0"
+                                                                                AutomationProperties.Name="Skip backward seconds" />
+                                                                        <DockPanel Margin="0,6,0,12">
+                                                                            <TextBlock Text="1 second" Foreground="{DynamicResource StudioTextMutedBrush}" />
+                                                                            <TextBlock Text="300 seconds" HorizontalAlignment="Right" Foreground="{DynamicResource StudioTextMutedBrush}" />
+                                                                        </DockPanel>
+                                                                    </StackPanel>
+                                                                </MenuItem.Header>
+                                                            </MenuItem>
+                                                        </ContextMenu>
+                                                    </controls:HotkeyRecorderButton.ContextMenu>
+                                                </controls:HotkeyRecorderButton>
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1" Background="{DynamicResource StudioBorderBrush}" Margin="0,0,0,18" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Skip forward" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding Settings.Hotkeys.SkipForwardSeconds, StringFormat='Go forward {0} seconds. Right-click the binding to adjust.'}"
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}" Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="SkipForwardHotkeyRecorder"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.SkipForward, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultSkipForward}"
+                                                                               Tag="SkipForward"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Skip forward hotkey">
+                                                    <controls:HotkeyRecorderButton.ContextMenu>
+                                                        <ContextMenu Style="{StaticResource SkipAmountContextMenuStyle}"
+                                                                     DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                                                     AutomationProperties.Name="Skip forward amount">
+                                                            <MenuItem StaysOpenOnClick="True">
+                                                                <MenuItem.Header>
+                                                                    <StackPanel Width="244">
+                                                                        <TextBlock Text="Skip forward" FontWeight="SemiBold" FontSize="15" />
+                                                                        <TextBlock Text="{Binding Settings.Hotkeys.SkipForwardSeconds, StringFormat='{}{0} seconds'}"
+                                                                                   FontSize="22" Margin="0,10,0,8" />
+                                                                        <Slider x:Name="SkipForwardSecondsSlider"
+                                                                                Minimum="{Binding Source={x:Static settings:HotkeySettings.MinimumSkipSeconds}}"
+                                                                                Maximum="{Binding Source={x:Static settings:HotkeySettings.MaximumSkipSeconds}}"
+                                                                                Value="{Binding Settings.Hotkeys.SkipForwardSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                                TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="10"
+                                                                                AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="0"
+                                                                                AutomationProperties.Name="Skip forward seconds" />
+                                                                        <DockPanel Margin="0,6,0,12">
+                                                                            <TextBlock Text="1 second" Foreground="{DynamicResource StudioTextMutedBrush}" />
+                                                                            <TextBlock Text="300 seconds" HorizontalAlignment="Right" Foreground="{DynamicResource StudioTextMutedBrush}" />
+                                                                        </DockPanel>
+                                                                    </StackPanel>
+                                                                </MenuItem.Header>
+                                                            </MenuItem>
+                                                        </ContextMenu>
+                                                    </controls:HotkeyRecorderButton.ContextMenu>
+                                                </controls:HotkeyRecorderButton>
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1" Background="{DynamicResource StudioBorderBrush}" Margin="0,0,0,18" />
                                             <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
                                                 <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                                     <TextBlock Text="Toggle multi-stream grid" FontWeight="SemiBold" TextWrapping="Wrap" />
@@ -4652,9 +4705,9 @@
                                             <StackPanel>
                                                 <TextBlock Text="Selected Kick stream" Style="{StaticResource SettingsCardHeaderStyle}" />
                                                 <TextBlock Text="Chatroom ID" Style="{StaticResource StudioFieldLabelStyle}" />
-                                                <TextBox Text="{Binding SelectedKickChatroomId, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12" />
+                                                <TextBox Text="{Binding SelectedKickChatroomId, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
                                                 <TextBlock Text="Broadcaster user ID" Style="{StaticResource StudioFieldLabelStyle}" />
-                                                <TextBox Text="{Binding SelectedKickBroadcasterUserId, UpdateSourceTrigger=LostFocus}" />
+                                                <TextBox Text="{Binding SelectedKickBroadcasterUserId, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>
@@ -4664,69 +4717,6 @@
                         </Grid>
                     </ScrollViewer>
 
-                    <Border x:Name="SettingsStickyFooter"
-                            Grid.Row="1"
-                            Background="{DynamicResource StudioSurface0Brush}"
-                            BorderBrush="{DynamicResource StudioBorderBrush}"
-                            BorderThickness="0,1,0,0">
-                        <DockPanel>
-                            <DockPanel.Style>
-                                <Style TargetType="DockPanel">
-                                    <Setter Property="Margin" Value="28,0" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
-                                            <Setter Property="Margin" Value="12,10" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </DockPanel.Style>
-                            <Button x:Name="SettingsSaveButton"
-                                    DockPanel.Dock="Right"
-                                    Style="{StaticResource StudioPrimaryButtonStyle}"
-                                    Command="{Binding SaveSettingsCommand}"
-                                    MinWidth="0"
-                                    VerticalAlignment="Center"
-                                    AutomationProperties.Name="Save settings">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="&#xE74E;"
-                                               FontFamily="Segoe MDL2 Assets"
-                                               FontSize="13"
-                                               Margin="0,0,9,0"
-                                               VerticalAlignment="Center" />
-                                    <TextBlock Text="Save changes" VerticalAlignment="Center" />
-                                </StackPanel>
-                            </Button>
-                            <Grid VerticalAlignment="Center">
-                                <Grid.Style>
-                                    <Style TargetType="Grid">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsCompact, ElementName=SettingsLayout}" Value="True">
-                                                <Setter Property="Visibility" Value="Collapsed" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </Grid.Style>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="10" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Ellipse Width="6"
-                                         Height="6"
-                                         Fill="{DynamicResource StudioSuccessBrush}"
-                                         HorizontalAlignment="Left"
-                                         VerticalAlignment="Center" />
-                                <StackPanel Grid.Column="1" Margin="8,0,0,0">
-                                    <TextBlock Text="Stored locally on this device"
-                                               FontWeight="SemiBold"
-                                               FontSize="12" />
-                                    <TextBlock Text="Playback continues while you fine-tune your workspace."
-                                               Foreground="{DynamicResource StudioTextMutedBrush}"
-                                               FontSize="10"
-                                               Margin="0,2,0,0" />
-                                </StackPanel>
-                            </Grid>
-                        </DockPanel>
-                    </Border>
                 </Grid>
             </Grid>
             </ScrollViewer>

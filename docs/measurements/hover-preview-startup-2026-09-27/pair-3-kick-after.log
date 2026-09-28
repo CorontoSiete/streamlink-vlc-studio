@@ -1,0 +1,5 @@
+Live card 590 ms: Direct preview source ready in 478 ms (Kick).
+Live card first visible frame: 847 ms.
+Live Kick card first visible frame 847 ms after hover; rendered changing video; settings toggle cleared the image and stopped playback.
+PASS stream hover preview: real live video renders in the production card on hover
+All 1 tests passed; 0 skipped.

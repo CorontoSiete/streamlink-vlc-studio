@@ -2,13 +2,15 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Stream Studio setup"
-        Width="760"
-        Height="660"
-        MinWidth="700"
+        Width="980"
+        Height="720"
+        MinWidth="900"
         MinHeight="600"
         Background="{DynamicResource StudioBaseBrush}"
         Foreground="{DynamicResource StudioTextBrush}"
-        FontFamily="Segoe UI"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
@@ -21,20 +23,93 @@
                 <ResourceDictionary Source="Themes/StudioTheme.xaml" />
             </ResourceDictionary.MergedDictionaries>
             <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
-            <Style TargetType="{x:Type PasswordBox}">
-                <Setter Property="FontFamily" Value="Segoe UI" />
-                <Setter Property="FontSize" Value="13" />
-                <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
-                <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-                <Setter Property="BorderThickness" Value="1.5" />
-                <Setter Property="Padding" Value="12,9" />
-                <Setter Property="MinHeight" Value="38" />
-            </Style>
         </ResourceDictionary>
     </Window.Resources>
 
-    <Grid Margin="30">
+    <Grid Background="{DynamicResource StudioBaseBrush}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="216" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Border Background="{DynamicResource StudioSurface0Brush}" BorderBrush="{DynamicResource StudioBorderBrush}" BorderThickness="0,0,1,0" Padding="20,32,20,24">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Bottom" Text="Public streams work without an account. You can connect later in Settings."
+                           Foreground="{DynamicResource StudioTextMutedBrush}" TextWrapping="Wrap" FontSize="12" Margin="8,24,8,0" />
+                <StackPanel>
+                    <TextBlock Text="Stream Studio" FontSize="19" FontWeight="SemiBold" Margin="8,0,0,7" />
+                    <TextBlock Text="LET'S GET YOU SET UP" Foreground="{DynamicResource StudioTextMutedBrush}" FontSize="9" FontWeight="SemiBold" Margin="8,0,0,32" />
+                    <Border Padding="12,15" Margin="0,0,0,8" CornerRadius="8">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsWelcomeVisible}" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                                        <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="01" FontSize="11" Margin="0,0,14,0" VerticalAlignment="Center" />
+                            <TextBlock Text="Welcome" FontSize="12" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
+                    <Border Padding="12,15" Margin="0,0,0,8" CornerRadius="8">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsTwitchVisible}" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                                        <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="02" FontSize="11" Margin="0,0,14,0" VerticalAlignment="Center" />
+                            <TextBlock Text="Connect Twitch" FontSize="12" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
+                    <Border Padding="12,15" Margin="0,0,0,8" CornerRadius="8">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsKickVisible}" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                                        <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="03" FontSize="11" Margin="0,0,14,0" VerticalAlignment="Center" />
+                            <TextBlock Text="Connect Kick" FontSize="12" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
+                    <Border Padding="12,15" Margin="0,0,0,8" CornerRadius="8">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompleteVisible}" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                                        <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="04" FontSize="11" Margin="0,0,14,0" VerticalAlignment="Center" />
+                            <TextBlock Text="Ready to watch" FontSize="12" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <Grid Grid.Column="1" Margin="30">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -47,10 +122,10 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="Welcome to Stream Studio"
+                <TextBlock Text="Make yourself at home."
                            Style="{StaticResource StudioSectionTitleStyle}"
-                           FontSize="25" />
-                <TextBlock Text="Finish the account connection now so you can start watching immediately."
+                           FontSize="30" />
+                <TextBlock Text="Connect your platforms. Bring your favorite streams together."
                            Foreground="{DynamicResource StudioTextMutedBrush}"
                            TextWrapping="Wrap" />
             </StackPanel>
@@ -60,7 +135,7 @@
                     Background="{DynamicResource StudioSurface1Brush}"
                     BorderBrush="{DynamicResource StudioBorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="10"
+                    CornerRadius="12"
                     VerticalAlignment="Top">
                 <TextBlock Text="{Binding ProgressText}"
                            Foreground="{DynamicResource StudioAccentTextBrush}"
@@ -75,7 +150,7 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <Grid>
                     <StackPanel Visibility="{Binding IsWelcomeVisible, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="One setup, then you are ready"
+                        <TextBlock Text="Your studio starts here"
                                    Style="{StaticResource StudioSectionTitleStyle}" />
                         <TextBlock Text="The full installer installs the app, Streamlink, and VLC. This last screen connects the accounts you want to use in the app. Public stream playback does not require an account, and either platform can be skipped."
                                    TextWrapping="Wrap"
@@ -111,7 +186,7 @@
                         <Border Background="{DynamicResource StudioTwitchSubtleBrush}"
                                 BorderBrush="{DynamicResource StudioTwitchBrush}"
                                 BorderThickness="1"
-                                CornerRadius="10"
+                                CornerRadius="12"
                                 Padding="14"
                                 Margin="0,0,0,18">
                             <StackPanel>
@@ -172,7 +247,7 @@
                         <Border Background="{DynamicResource StudioKickSubtleBrush}"
                                 BorderBrush="{DynamicResource StudioKickBrush}"
                                 BorderThickness="1"
-                                CornerRadius="10"
+                                CornerRadius="12"
                                 Padding="14"
                                 Margin="0,0,0,18">
                             <StackPanel>
@@ -252,12 +327,17 @@
         </Border>
 
         <Grid Grid.Row="2" Margin="0,18,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
             <TextBlock Text="{Binding StatusMessage}"
                        TextWrapping="Wrap"
+                       HorizontalAlignment="Left"
                        VerticalAlignment="Center"
                        Foreground="{DynamicResource StudioTextMutedBrush}"
                        MaxWidth="470" />
-            <StackPanel Orientation="Horizontal"
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,14,0,0"
                         HorizontalAlignment="Right">
                 <Button Content="Back"
                         Click="BackButtonClick"
@@ -290,6 +370,7 @@
                         Style="{StaticResource StudioPrimaryButtonStyle}"
                         MinWidth="132" />
             </StackPanel>
+        </Grid>
         </Grid>
     </Grid>
 </Window>

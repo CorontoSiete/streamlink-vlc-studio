@@ -21,6 +21,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private readonly Action<int>? replayScrolled;
     private readonly Action<int>? replayScrollPositionChanged;
     private readonly Action<int>? uiScaleChanged;
+    private readonly Action<uint, int>? textSelectionEvent;
     private readonly Action<string, long>? resizeTempWritten;
     private readonly TimeSpan resizeDebounceDelay;
     private readonly object gate = new();
@@ -48,7 +49,8 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         Action<int>? replayScrolled = null,
         Action<int>? replayScrollPositionChanged = null,
         Action<string, long>? resizeTempWritten = null,
-        Action<int>? uiScaleChanged = null)
+        Action<int>? uiScaleChanged = null,
+        Action<uint, int>? textSelectionEvent = null)
     {
         this.logger = logger;
         this.dispatch = dispatch;
@@ -58,6 +60,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         this.replayScrollPositionChanged = replayScrollPositionChanged;
         this.resizeTempWritten = resizeTempWritten;
         this.uiScaleChanged = uiScaleChanged;
+        this.textSelectionEvent = textSelectionEvent;
         this.resizeDebounceDelay = resizeDebounceDelay ?? DefaultResizeDebounceDelay;
         if (this.resizeDebounceDelay < TimeSpan.Zero)
         {
@@ -145,7 +148,10 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     {
         lock (gate)
         {
-            if (listeningTask is null ||
+            // Every presented frame acknowledges the active source. Repeated
+            // acknowledgments must not invalidate a resize queued by that source.
+            if (!resizePersistenceSuspended ||
+                listeningTask is null ||
                 stopRequested ||
                 string.IsNullOrWhiteSpace(positionStatePath))
             {
@@ -344,6 +350,22 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     {
         if (!NativeOverlayProtocolCodec.TryReadEvent(message, out var eventType, out var value))
         {
+            return;
+        }
+
+        if (eventType is NativeOverlayProtocolCodec.TextSelectionBeginEventType or
+            NativeOverlayProtocolCodec.TextSelectionUpdateEventType or
+            NativeOverlayProtocolCodec.TextSelectionEndEventType or
+            NativeOverlayProtocolCodec.TextSelectionCancelEventType or
+            NativeOverlayProtocolCodec.TextClickEventType)
+        {
+            dispatch(() =>
+            {
+                if (IsResizeSessionActive(activePositionStatePath, activeResizeSessionId))
+                {
+                    textSelectionEvent?.Invoke(eventType, value);
+                }
+            });
             return;
         }
 

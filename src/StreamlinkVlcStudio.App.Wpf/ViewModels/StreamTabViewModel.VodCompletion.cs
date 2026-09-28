@@ -14,7 +14,7 @@ public sealed partial class StreamTabViewModel
         }
 
         var seekVersion = Volatile.Read(ref replaySeekOperationVersion);
-        var stateVersion = Volatile.Read(ref replayClockPlaybackStateVersion);
+        var stateVersion = replayClock.PlaybackStateVersion;
         if (!engine.TryGetPlaybackHealth(out var health) || health.State != PlaybackEngineState.Ended)
         {
             return;

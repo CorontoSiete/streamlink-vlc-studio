@@ -1,0 +1,49 @@
+Using .NET SDK 10.0.302 at C:\Users\ComputerGuy\.dotnet\dotnet.exe
+dotnet build StreamlinkVlcStudio.sln --configuration Release --no-restore -warnaserror
+  StreamlinkVlcStudio.Bootstrapper -> C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Bootstrapper\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamStudio.Bootstrapper.dll
+  StreamlinkVlcStudio.Maintenance -> C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Maintenance\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamStudio.Maintenance.dll
+  StreamlinkVlcStudio.Core -> C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Core\bin\Release\net10.0\StreamlinkVlcStudio.Core.dll
+  Verified 2 pinned native overlay inputs from C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay.
+  StreamlinkVlcStudio.Infrastructure -> C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Infrastructure\bin\Release\net10.0\StreamlinkVlcStudio.Infrastructure.dll
+  StreamlinkVlcStudio.App.Wpf -> C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.App.Wpf\bin\Release\net10.0-windows10.0.19041.0\StreamStudio.dll
+  StreamlinkVlcStudio.Tests -> C:\Users\ComputerGuy\Documents\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\bin\Release\net10.0-windows10.0.19041.0\StreamlinkVlcStudio.Tests.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:28.78
+Running filter 'stream hover preview:' (interactive desktop; maximum skips: 0).
+dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore 
+--no-build
+  PASS stream hover preview: disabled and VOD targets start no work
+  PASS stream hover preview: setting persists both values and upgrades default off
+  PASS stream hover preview: leaving during the hover delay starts no work
+  PASS stream hover preview: request preserves platform and custom transport settings
+  PASS stream hover preview: replacing rapid hovers waits for cleanup and rejects stale frames
+  PASS stream hover preview: disabling cancels startup and clears buffered video
+  PASS stream hover preview: failures preserve fallback and allow another hover
+  PASS stream hover preview: shutdown awaits cleanup and refuses future work
+  PASS stream hover preview: only live cards are eligible
+  PASS stream hover preview: frame mailbox stays bounded
+  PASS stream hover preview: missing VLC releases the opened transport
+  PASS stream hover preview: canceled transport arrival is disposed before decoding
+  Native hover preview: 74 frames, red-to-green transition, transport disposed.
+  PASS stream hover preview: native VLC presents changing video and releases transport
+  PASS stream hover preview: direct Twitch authorizes and requests only the selected quality
+  PASS stream hover preview: direct Kick authorizes and requests only the selected quality
+  PASS stream hover preview: preview quality fallbacks preserve their order
+  PASS stream hover preview: custom arguments configs and plugins retain Streamlink
+  PASS stream hover preview: unsafe redirects DNS and oversized responses never open native playback
+  PASS stream hover preview: ad encrypted and unsupported playlists require Streamlink
+  PASS stream hover preview: local playlist rejects unrelated requests and refreshes after handoff
+  PASS stream hover preview: cancellation interrupts a pending playlist refresh and closes its listener
+  PASS stream hover preview: late direct resolution is disposed without starting fallback
+  PASS stream hover preview: failed direct startup preserves the exact fallback request
+  PASS stream hover preview: first-frame deadline stops direct playback before fallback
+  PASS stream hover preview: successful direct video outlives its startup deadline
+  PASS stream hover preview: a later ad stops direct video before Streamlink replacement
+  PASS stream hover preview: settings toggle and live card template bind to the shared controller
+  PASS stream hover preview: physical hover click leave hide and disable control the player
+  All 28 tests passed; 0 skipped.
+Test completed successfully.

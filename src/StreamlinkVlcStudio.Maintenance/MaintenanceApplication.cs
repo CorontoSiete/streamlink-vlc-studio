@@ -99,36 +99,7 @@ internal static class MaintenanceApplication
             WaitForOriginalProcess(options.ParentProcessId, log);
 
             var ownership = InstallOwnership.Load(options.InstallDirectory!);
-            var appPath = Path.Combine(ownership.Root, "StreamStudio.exe");
-            var shutdownRequested = RunAppMaintenanceMode(
-                appPath,
-                "--maintenance-request-shutdown",
-                TimeSpan.FromSeconds(20),
-                log);
-            if (!shutdownRequested)
-            {
-                log.Write("Graceful shutdown did not report success; bounded file deletion retries will determine the retained result.");
-            }
-
-            var notificationsUnregistered = RunAppMaintenanceMode(
-                appPath,
-                "--maintenance-unregister-notifications",
-                TimeSpan.FromSeconds(15),
-                log);
-            var outcome = ManagedInstallationCleaner.Clean(ownership, log);
-            if (!outcome.ApplicationRemoved && notificationsUnregistered && File.Exists(appPath))
-            {
-                _ = RunAppMaintenanceMode(
-                    appPath,
-                    "--maintenance-register-notifications",
-                    TimeSpan.FromSeconds(15),
-                    log);
-            }
-
-            var personalDataRetained = options.PurgeUserData
-                ? UserDataCleaner.PurgeCurrentUserData(log)
-                : Array.Empty<string>();
-            return ReportResult(options, outcome, notificationsUnregistered, personalDataRetained, log);
+            return RemoveInstallation(options, ownership, log, RunAppMaintenanceMode, UserDataCleaner.PurgeCurrentUserData);
         }
         catch (Exception exception) when (IsRecoverableMaintenanceFailure(exception))
         {
@@ -145,6 +116,39 @@ internal static class MaintenanceApplication
         {
             if (validatedStage) StageLauncher.ScheduleCurrentStageForCleanup(log);
         }
+    }
+
+    internal static int RemoveInstallation(
+        CommandLineOptions options,
+        InstallOwnership ownership,
+        MaintenanceLog log,
+        Func<string, string, TimeSpan, MaintenanceLog, bool> runMaintenance,
+        Func<MaintenanceLog, IReadOnlyList<string>> purgeUserData)
+    {
+        var appPath = Path.Combine(ownership.Root, "StreamStudio.exe");
+        var shutdownRequested = runMaintenance(
+            appPath, "--maintenance-request-shutdown", TimeSpan.FromSeconds(20), log);
+        if (!shutdownRequested)
+        {
+            log.Write("Graceful shutdown did not report success; bounded file deletion retries will determine the retained result.");
+        }
+
+        var notificationsUnregistered = runMaintenance(
+            appPath, "--maintenance-unregister-notifications", TimeSpan.FromSeconds(15), log);
+        var outcome = ManagedInstallationCleaner.Clean(ownership, log);
+        if (!outcome.ApplicationRemoved && notificationsUnregistered && File.Exists(appPath))
+        {
+            _ = runMaintenance(appPath, "--maintenance-register-notifications", TimeSpan.FromSeconds(15), log);
+        }
+
+        if (!outcome.ApplicationRemoved && options.PurgeUserData)
+        {
+            log.Write("Personal data was preserved because application removal is incomplete. Retry uninstall to finish removal and cleanup.");
+        }
+        var personalDataRetained = options.PurgeUserData && outcome.ApplicationRemoved
+            ? purgeUserData(log)
+            : Array.Empty<string>();
+        return ReportResult(options, outcome, notificationsUnregistered, personalDataRetained, log);
     }
 
     private static int RunDataOnly(CommandLineOptions options, MaintenanceLog log)
@@ -208,7 +212,7 @@ internal static class MaintenanceApplication
             if (!options.Quiet)
             {
                 NativeDialog.ShowError(
-                    $"Some managed application files could not be removed. You can retry uninstall from Windows Settings.\n\n" +
+                    $"Some managed application files could not be removed. Your personal data was preserved. You can retry uninstall from Windows Settings.\n\n" +
                     $"Retained-path report: {report}\nLog: {log.Path}");
             }
 

@@ -1,0 +1,24 @@
+--- a/src/win32/thread.c
++++ b/src/win32/thread.c
+@@ -1054,8 +1054,18 @@ BOOL WINAPI DllMain (HINSTANCE hinstDll, DWORD fdwReason, LPVOID lpvReserved)
+             if (unlikely(h == NULL))
+                 return FALSE;
+
+-            if (!LOOKUP(WaitOnAddress)
+-             || !LOOKUP(WakeByAddressAll) || !LOOKUP(WakeByAddressSingle))
++            BOOL haveNativeAddressWaits =
++                LOOKUP(WaitOnAddress)
++             && LOOKUP(WakeByAddressAll) && LOOKUP(WakeByAddressSingle);
++            if (!haveNativeAddressWaits)
++            {
++                /* Windows forwards these APIs through KernelBase on supported builds. */
++                h = GetModuleHandle(TEXT("kernelbase.dll"));
++                if (h != NULL)
++                    haveNativeAddressWaits = LOOKUP(WaitOnAddress)
++                        && LOOKUP(WakeByAddressAll) && LOOKUP(WakeByAddressSingle);
++            }
++
++            if (!haveNativeAddressWaits)
+             {
+ # if (_WIN32_WINNT < _WIN32_WINNT_VISTA)
+                 if (!LOOKUP(InitializeConditionVariable)

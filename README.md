@@ -11,16 +11,21 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - Embedded libVLC playback in a WPF HWND surface.
 - GPU decoding with the bundled native chat compositor, plus reuse of unchanged chat images and controls, reduces overhead when watching multiple streams. GDI presentation uses DXVA2 to avoid VLC 3's green frames after HLS decoder resets; replay preparation remains black until the requested position is ready. Unchanged native overlays no longer allocate pixel buffers on every video frame. Stream quality, frame rate and chat filtering are preserved. Older/custom overlays retain software decoding. See [playback resource measurements](docs/stream-playback-resources-2026-09-26.md) and the [replay fix diagnosis](docs/replay-green-screen-2026-09-26.md).
 - Quality presets: `best`, `source`, `1080p60`, `1080p`, `720p60`, `720p`, `480p`, `audio_only`, `worst`.
+- Native Twitch/Kick chat uses indexed emote lookups, reuses unchanged frames, and keeps pixel buffers near the panel size. Cached text measurements release their references. Controlled tests measured about 70% less native chat rendering CPU for busy and animated chat, with identical output pixels. See [multistream chat resource measurements](docs/multistream-chat-resources-2026-09-27.md) for scope and validation.
+- Hidden docked chat releases its visual rows, and unchanged video layouts avoid repeated native-window scans. See the [live Twitch/Kick resource measurements](docs/live-multistream-resources-2026-09-27.md) for the before/after comparison and playback checks.
 - Low-latency Streamlink defaults for Twitch/HLS.
 - Platform replay seekbar for Twitch and best-effort Kick replays. Live playback keeps the existing Streamlink HTTP path; seeking behind live switches to platform VOD HLS playback in libVLC.
 - Twitch and Kick VODs automatically resume at the last confirmed playback position when reopened, including after restarting the app. Progress is saved every five seconds and on pause, seek, stop, or close; backward seeks are remembered too. Replay chat follows the restored position. The latest 1,000 videos are remembered in `vod-history.json` beside settings. A VOD that reaches its end starts over next time. VOD thumbnails show a bottom progress bar for partially watched videos and a Watched badge for completed videos; the badge stays visible when rewatching, while the new resume position is still saved.
 - Subscriber-only Twitch VOD playback: if Streamlink cannot resolve a Twitch VOD, the app falls back to a direct CloudFront playlist derived from the VOD's public storyboard metadata (TwitchNoSub technique). Pasting a `https://www.twitch.tv/videos/{id}` URL into the search box opens it directly. Very recent uploads cannot be resolved this way, and `audio_only` maps to the lowest video variant.
 - Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. By default, the selected main stream keeps its audio when a picture-in-picture window is focused; inactive visible streams stay muted. Clicking a picture-in-picture window leaves the main tab and layout in place. When no stream is selected in the main window, audio follows the activated picture-in-picture stream. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted. Enable **Never mute** beside the mute button to keep that tab unmuted and playing when switching tabs or opening Home. It clears manual mute and disables the mute button until turned off; volume, manual pause, and stop still work. A speaker icon beside the tab title marks tabs with Never mute enabled, including in the compact tab selector; for grouped tabs, its tooltip names the protected streams. The toggle is separate for each open tab, survives playback reloads, and resets when the tab is closed. Turning it off restores the normal inactive-tab mute and pause behavior.
-- Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL.
+- Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL. Use Up/Down to choose a result, Enter to open it, and Escape to close results while keeping your query. Arrow keys can reopen retained results and skip unavailable channels.
 - Home page showing live followed Twitch streams, imported Kick follows and additional Kick channels that are currently live, Twitch/Kick VOD browsing, and recently watched streams.
+- Each library page remembers its own scroll position. New broadcast or category searches start at the top; returning from a category restores your place in Discover.
+- Optional **Live stream previews on hover** in **Settings > General > Appearance & behavior** plays muted live video inside Followed and Browse cards, live search results, and Recent rows confirmed live. It is off by default; changes are saved automatically across restarts. A brief hover starts one preview at a time, using a lower video quality when available. Moving away, opening the stream, hiding the page, or disabling the setting stops the preview and releases its transport. Unavailable streams keep their thumbnail with a preview-unavailable label.
 - Per-tab state: target, quality, status, mute, never mute, chat visibility, logs, chat messages.
-- Per-stream state: volume, VLC plugin chat overlay position, and VLC plugin chat text size are remembered by platform/channel. In **Settings > Chat**, the text-size slider follows the selected layout. With **Overlay** selected, it adjusts the selected stream, or the default for streams without a saved size when opened from Home. Click **Save changes** to keep the size across restarts.
-- Configurable shortcuts in **Settings > Hotkeys**: **Mouse4** (the first side button) goes back to the previous page, including the same open stream after visiting Settings; **M** toggles the multi-stream grid; and **Up/Down** change the selected stream's volume by 5%. The toolbar's **M** button highlights when the grid is enabled. Mouse-wheel volume controls are unchanged. Change **Back to previous page** in Hotkeys to choose a keyboard shortcut or mouse side button, then click **Save changes** to keep it across restarts.
+- Per-stream state: volume, VLC plugin chat overlay position, and VLC plugin chat text size are remembered by platform/channel. In **Settings > Chat**, the text-size slider follows the selected layout. With **Overlay** selected, it adjusts the selected stream, or the default for streams without a saved size when opened from Home. Text-size changes are saved automatically across restarts.
+- Configurable shortcuts in **Settings > Hotkeys**: **Mouse4** (the first side button) goes back to the previous page, including the same open stream after visiting Settings; **M** toggles the multi-stream grid; and **Up/Down** change the selected stream's volume by 5%. The toolbar's **M** button highlights when the grid is enabled. Mouse-wheel volume controls are unchanged. Change **Back to previous page** in Hotkeys to choose a keyboard shortcut or mouse side button, and the change is saved automatically across restarts.
+- **Numpad 4 (Left)** and **Numpad 6 (Right)** skip backward and forward by 30 seconds in seekable playback, with Num Lock on or off. Reassign them in **Settings > Hotkeys**, or right-click either skip binding to set its own amount from 1 to 300 seconds. Both shortcuts and amounts are saved automatically across restarts. The regular Left/Right arrows continue to switch tabs.
 - Twitch chat via anonymous read-only IRC, or authenticated IRC sending with a Twitch OAuth token.
 - Automatic Twitch channel-point bonus claims for open live streams, using a separate in-app Twitch website sign-in (Settings > Accounts > Channel-point bonuses).
 - Kick chat via isolated public Pusher-style adapter, with OAuth chat sending through Kick's public API.
@@ -68,7 +73,13 @@ If a download receives no data for 60 seconds, it stops with a retry message and
 
 At startup, the updater removes cached installers for versions already installed, unfinished downloads older than 24 hours, and update logs older than 30 days, even when automatic checks are disabled or the computer is offline. Older cached installers are also removed once a replacement download is verified. Locked leftovers are retried later. Upgrades remove obsolete managed app files while preserving settings and unrelated files.
 
+The seven-day download limit also applies while the app stays open. Expired downloads return to **Download update**, including after a failed refresh, and are rejected before installation. The update helper retries locked result files and reopens the app after Setup even if saving the result fails; updates requiring a Windows restart still leave it closed.
+
 Cache cleanup removes read-only files and continues removing other files when one is locked. Startup expiration uses the package's original verification time, so refreshed folder timestamps cannot extend the seven-day retention period. Cleanup failures are logged without blocking independent cache cleanup or routine update checks. See the [cleanup validation notes](docs/cleanup-hardening-2026-09-25.md).
+
+Update results remain visible when a result file is locked or temporary package cleanup fails. An update that requires a Windows restart leaves the app closed until you restart Windows. ZIP upgrades preserve empty folders you created and copy user files after the app closes. ZIP uninstall preserves personal data if application removal is incomplete, so you can retry without losing settings. Installer cleanup retries temporary locks and removes other files while a locked file remains. See the [installer and cleanup changes](docs/installer-update-cleanup-2026-09-26.md).
+
+Locks on the ZIP uninstaller or its ownership files now preserve the complete set of files needed to retry removal. The PowerShell installer also registers the app before dependency setup, so a failed Streamlink or VLC installation remains removable. See [installer and updater retry safety](docs/installer-updater-retry-safety-2026-09-26.md) for details and validation.
 
 Setup offers **Try again** after a failed or canceled operation, rechecks installed components, and returns to the appropriate install or maintenance choices. Canceling during preparation prevents the installation plan or elevation from starting, and rollback is allowed to finish. When setup requires a Windows restart, it does not offer to launch the app prematurely.
 
@@ -135,7 +146,7 @@ caller's environment and working directory on success or failure.
 .\scripts\dev.ps1 Test -Interactive
 ```
 
-`Test` and `Check` use the current CI headless skip ceiling of 246; interactive
+`Test` and `Check` use the current CI headless skip ceiling of 255; interactive
 runs allow zero skips by default. `-ExpectedMaxSkips` provides an explicit override.
 `Check` always builds and runs the full suite, rejecting `-Filter` and `-NoBuild`.
 The test phase never rebuilds WPF output. `-NoRestore` keeps the build but skips
@@ -198,6 +209,12 @@ category and profile details load in the background. You can keep browsing, open
 another stream, or close the tab without a late lookup switching you back.
 Recent records successful playback immediately and fills in metadata without
 changing watch order. See [stream opening checks](docs/stream-open-responsiveness-2026-09-26.md).
+
+Stop cancels a stream even while it is queued, resolving, or waiting for video.
+Optional replay discovery runs after playback starts, so it does not hold up chat
+or switching tabs. Hidden, suspended live tabs stop their playback-health timer;
+returning to the tab restores monitoring and playback. See
+[start and watch resource checks](docs/start-watch-workflow-and-resources.md).
 
 Opening a stream or VOD that already has a tab returns to that tab without a
 metadata lookup or playback restart. Manual pause and the playback position are

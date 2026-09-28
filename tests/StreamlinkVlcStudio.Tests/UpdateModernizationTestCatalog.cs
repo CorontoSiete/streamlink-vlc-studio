@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using StreamlinkVlcStudio.Core;
 
 internal static class UpdateModernizationTestCatalog
 {
@@ -61,7 +62,14 @@ internal static class UpdateModernizationTestCatalog
         ("updater cleanup removes read-only cache files", ReadOnlyCacheCleanupAsync),
         ("updater cleanup removes unlocked siblings and retries locked leftovers", LockedCacheCleanupAsync),
         ("updater cleanup expires verified packages even when directory timestamps are refreshed", VerifiedCacheExpirationAsync),
-        ("updater cleanup isolates unsafe cache areas and preserves junction targets", CacheCleanupFailureIsolationAsync)
+        ("updater expires prepared packages during a long-running session and recovers offline", ActivePreparedCacheExpirationAsync),
+        ("updater rejects expired and future-dated prepared packages before launch", RejectsExpiredPreparedPackageAsync),
+        ("updater cleanup isolates unsafe cache areas and preserves junction targets", CacheCleanupFailureIsolationAsync),
+        ("updater reports completion when its result is locked against deletion", LockedCompletionIsReportedAsync),
+        ("updater reports successful installation despite unsafe operation cleanup", CompletionCleanupFailureIsIsolatedAsync),
+        ("update helper defers relaunch for reboot and recovers after canceled setup", UpdateRelaunchRespectsReboot),
+        ("update helper reopens the app when completion persistence stays locked", CompletionWriteFailureStillRelaunchesAsync),
+        ("update helper retries a transient completion write lock before relaunch", CompletionWriteRetriesAsync)
     ];
 
     private static async Task RetryRejectsInvalidReplacementAsync()
@@ -970,6 +978,60 @@ internal static class UpdateModernizationTestCatalog
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    private static async Task ActivePreparedCacheExpirationAsync()
+    {
+        using var rsa = RSA.Create(3072);
+        var fixture = SignedReleaseFixture.Create(rsa, 1);
+        using var client = new HttpClient(fixture.Handler);
+        var root = NewTemporaryDirectory();
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var service = ManagedService(client, root, rsa, () => now);
+            var release = (await service.CheckAsync(UpdateCheckReason.Manual)).Release!;
+            var prepared = await service.DownloadAsync(release);
+            now = prepared.VerifiedAt.AddDays(7);
+            Directory.SetLastWriteTimeUtc(prepared.OperationDirectory, now.UtcDateTime);
+            fixture.Handler.FailApi = true;
+            await Assert.ThrowsAsync<HttpRequestException>(() => service.CheckAsync(UpdateCheckReason.Manual));
+            Assert.Equal(false, Directory.Exists(prepared.OperationDirectory));
+            Assert.Equal(AppUpdatePhase.Available, service.State.Phase);
+            Assert.True(service.State.PreparedUpdate is null);
+
+            fixture.Handler.FailApi = false;
+            var replacement = await service.DownloadAsync(release);
+            Assert.True(replacement.OperationId != prepared.OperationId);
+            Assert.Equal(AppUpdatePhase.Ready, service.State.Phase);
+            Assert.Equal(2, fixture.Handler.SetupRequests);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task RejectsExpiredPreparedPackageAsync()
+    {
+        using var rsa = RSA.Create(3072);
+        var fixture = SignedReleaseFixture.Create(rsa, 1);
+        using var client = new HttpClient(fixture.Handler);
+        var root = NewTemporaryDirectory();
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var service = ManagedService(client, root, rsa, () => now);
+            var prepared = await service.DownloadAsync((await service.CheckAsync(UpdateCheckReason.Manual)).Release!);
+            // Exercise production validation directly without ever launching the staged process.
+            var validate = typeof(StagedAppUpdateService).GetMethod("AssertPrepared", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            foreach (var offset in new[] { TimeSpan.FromDays(7), TimeSpan.FromMinutes(-1) })
+            {
+                now = prepared.VerifiedAt + offset;
+                var rejected = false;
+                try { validate.Invoke(service, [prepared, true]); }
+                catch (TargetInvocationException exception) when (exception.InnerException is InvalidDataException) { rejected = true; }
+                Assert.True(rejected, "A prepared update outside its retention window was accepted for launch.");
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static async Task CacheCleanupFailureIsolationAsync()
     {
         using var rsa = RSA.Create(3072);
@@ -1019,6 +1081,149 @@ internal static class UpdateModernizationTestCatalog
                 if (Directory.Exists(link)) Directory.Delete(link);
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    private static Task UpdateRelaunchRespectsReboot()
+    {
+        var root = NewTemporaryDirectory();
+        try
+        {
+            var executable = Path.Combine(root, AppIdentity.ManagedExecutableName);
+            File.WriteAllText(executable, "fixture; never executed");
+            foreach (var exitCode in new[] { 0, 3010, 1641, 1223, 1602, 1603, unchecked((int)0x80070BC2) })
+            {
+                var launches = new List<ProcessStartInfo>();
+                UpdateHelperRunner.RelaunchAfterUpdate(UpdateHelperRunner.MapExitCode(exitCode), root, launches.Add);
+                var requiresReboot = exitCode is 3010 or 1641 or unchecked((int)0x80070BC2);
+                Assert.Equal(requiresReboot ? 0 : 1, launches.Count);
+                if (launches.Count == 1)
+                {
+                    Assert.Equal(executable, launches[0].FileName);
+                    Assert.Equal(root, launches[0].WorkingDirectory);
+                    Assert.True(launches[0].UseShellExecute);
+                }
+            }
+            UpdateHelperRunner.RelaunchAfterUpdate(AppUpdateCompletionOutcome.Succeeded, root,
+                _ => throw new System.ComponentModel.Win32Exception(5));
+            File.Delete(executable);
+            UpdateHelperRunner.RelaunchAfterUpdate(AppUpdateCompletionOutcome.Failed, root,
+                _ => throw new InvalidOperationException("A missing application must not be launched."));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+        return Task.CompletedTask;
+    }
+
+    private static async Task CompletionWriteFailureStillRelaunchesAsync()
+    {
+        var root = NewTemporaryDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, AppIdentity.ManagedExecutableName), "fixture; never executed");
+            foreach (var outcome in Enum.GetValues<AppUpdateCompletionOutcome>())
+            {
+                var path = Path.Combine(root, Guid.NewGuid().ToString("N") + ".json");
+                File.WriteAllText(path, "previous result");
+                var completion = new AppUpdateCompletion(Guid.NewGuid(), outcome, 0, null, "Setup completed.", DateTimeOffset.UtcNow);
+                var launches = new List<ProcessStartInfo>();
+                using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    await Assert.ThrowsAsync<IOException>(() => UpdateHelperRunner.CompleteAndRelaunchAsync(path, completion, root, launches.Add));
+                Assert.Equal(outcome == AppUpdateCompletionOutcome.SucceededRebootRequired ? 0 : 1, launches.Count);
+                Assert.Equal("previous result", File.ReadAllText(path));
+                Assert.Equal(0, Directory.GetFiles(root, "*.tmp").Length);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task CompletionWriteRetriesAsync()
+    {
+        var root = NewTemporaryDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, AppIdentity.ManagedExecutableName), "fixture; never executed");
+            var path = Path.Combine(root, Guid.NewGuid().ToString("N") + ".json");
+            File.WriteAllText(path, "previous result");
+            var completion = new AppUpdateCompletion(Guid.NewGuid(), AppUpdateCompletionOutcome.Succeeded, 0, null,
+                "The update was installed successfully.", DateTimeOffset.UtcNow);
+            var launches = new List<ProcessStartInfo>();
+            using var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var finish = UpdateHelperRunner.CompleteAndRelaunchAsync(path, completion, root, launches.Add);
+            try { await Task.Delay(150); }
+            finally { locked.Dispose(); }
+            await finish;
+            Assert.Equal(completion, JsonSerializer.Deserialize<AppUpdateCompletion>(File.ReadAllText(path)));
+            Assert.Equal(1, launches.Count);
+            Assert.Equal(0, Directory.GetFiles(root, "*.tmp").Length);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task LockedCompletionIsReportedAsync()
+    {
+        var root = NewTemporaryDirectory();
+        try
+        {
+            var updates = Path.Combine(root, "updates");
+            var results = Path.Combine(updates, "results");
+            Directory.CreateDirectory(results);
+            var id = Guid.NewGuid();
+            var path = Path.Combine(results, id.ToString("N") + ".json");
+            var completion = new AppUpdateCompletion(id, AppUpdateCompletionOutcome.Succeeded, 0, null,
+                "The update was installed successfully.", DateTimeOffset.UtcNow);
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(completion));
+            using var client = new HttpClient();
+            using var service = new StagedAppUpdateService(new MemoryLogger(), client, root, updates);
+            using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Assert.Equal(completion, await service.ConsumeCompletionAsync());
+                Assert.Equal(AppUpdatePhase.Completed, service.State.Phase);
+                Assert.True(File.Exists(path));
+                Assert.Equal<AppUpdateCompletion?>(null, await service.ConsumeCompletionAsync());
+            }
+            Assert.Equal<AppUpdateCompletion?>(null, await service.ConsumeCompletionAsync());
+            Assert.Equal(false, File.Exists(path));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task CompletionCleanupFailureIsIsolatedAsync()
+    {
+        var root = NewTemporaryDirectory();
+        var link = Path.Combine(root, "updates", "operations");
+        try
+        {
+            var results = Path.Combine(root, "updates", "results");
+            var target = Path.Combine(root, "unrelated");
+            Directory.CreateDirectory(results);
+            Directory.CreateDirectory(target);
+            var id = Guid.NewGuid();
+            var unrelated = Path.Combine(target, id.ToString("N"));
+            Directory.CreateDirectory(unrelated);
+            File.WriteAllText(Path.Combine(unrelated, "keep.txt"), "unrelated files");
+            var info = BoundedProcessRunner.CreateRedirectedStartInfo(
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    "WindowsPowerShell", "v1.0", "powershell.exe"),
+                ["-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction -Path $env:SVS_TEST_JUNCTION_PATH -Target $env:SVS_TEST_JUNCTION_TARGET | Out-Null"]);
+            info.Environment["SVS_TEST_JUNCTION_PATH"] = link;
+            info.Environment["SVS_TEST_JUNCTION_TARGET"] = target;
+            var junction = await new BoundedProcessRunner().RunAsync(info, TimeSpan.FromSeconds(10));
+            Assert.True(!junction.TimedOut && junction.ExitCode == 0, junction.StandardError);
+            var completion = new AppUpdateCompletion(id, AppUpdateCompletionOutcome.Succeeded, 0, null,
+                "The update was installed successfully.", DateTimeOffset.UtcNow);
+            await File.WriteAllTextAsync(Path.Combine(results, id.ToString("N") + ".json"), JsonSerializer.Serialize(completion));
+            using var client = new HttpClient();
+            using var service = new StagedAppUpdateService(new MemoryLogger(), client, root, Path.Combine(root, "updates"));
+            Assert.Equal(completion, await service.ConsumeCompletionAsync());
+            Assert.Equal(AppUpdatePhase.Completed, service.State.Phase);
+            Assert.Equal("unrelated files", File.ReadAllText(Path.Combine(unrelated, "keep.txt")));
+            Assert.True(Directory.Exists(link));
+        }
+        finally
+        {
+            if (Directory.Exists(link)) Directory.Delete(link);
+            Directory.Delete(root, recursive: true);
         }
     }
 

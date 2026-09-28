@@ -16,6 +16,7 @@ typedef struct {
     HDC dc;
     HBITMAP bitmap;
     HGDIOBJ previous;
+    void *pixels;
     int width, height;
     studio_gdi_layer_t *layers;
 } studio_gdi_compositor_t;
@@ -65,6 +66,7 @@ static bool EnsureCanvas(studio_gdi_compositor_t *compositor, HDC dc, int width,
     }
     compositor->width = width;
     compositor->height = height;
+    compositor->pixels = pixels;
     return true;
 failed:
     CleanCompositor(compositor);

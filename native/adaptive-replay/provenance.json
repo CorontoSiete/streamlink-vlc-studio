@@ -1,0 +1,13 @@
+{
+  "upstream": "https://codeload.github.com/videolan/vlc/tar.gz/refs/tags/3.0.23",
+  "upstreamSha256": "847f1c4d7b848b3f6a3c04b7d0c05ab9fbc5f174c9f8adcd6203057e8908285e",
+  "sourceBundle": "vlc-3.0.23-adaptive-source.tar.gz",
+  "sourceBundleSha256": "2fe1b768578bc50c992b4627e856d7e62c68a16466ef3671281bf3e543fefe4c",
+  "sourceFiles": 321,
+  "patch": "live-edge.patch",
+  "license": "LGPL-2.1-or-later",
+  "compiler": "WinLibs GCC 16.1.0 x86_64-msvcrt-posix-seh (Brecht Sanders r2)",
+  "libvlccoreImportLibrarySha256": "3f828f77d8ee8588b88a806c49a9b3ec8ab0268c32bbe85b5d6b336e26ca4b35",
+  "binary": "libstudio_adaptive_plugin.dll",
+  "binarySha256": "1a7f6b52d07b8f3ab71ba0a1779e96fa16c615a11d83988d93b405995c1fa0dd"
+}

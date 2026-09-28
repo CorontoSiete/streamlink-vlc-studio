@@ -25,12 +25,19 @@ Automatic checks continue while the app is open and retry network failures.
 Download progress and Cancel download are available in the update banner and
 Settings. Completed downloads are retained for up to seven days and reverified
 after an app restart. Installation still starts with Restart and install.
+The seven-day limit also applies while the app stays open. Expired packages
+are cleaned up and must be downloaded again before installation.
 
 Startup cleanup removes installers for versions already installed, partial
 downloads older than 24 hours, and update logs older than 30 days. It also runs
 offline or with automatic checks disabled. Once a replacement is verified,
 superseded downloads are removed. Read-only cache files are removed, and locked
 files do not prevent cleanup of other files. Locked leftovers are retried later.
+Update results are still reported if temporary-file cleanup fails or a result
+file is locked. If Windows must restart to finish an update, the app stays closed
+until you restart Windows and launch it again.
+The update helper retries temporary result-file locks. If saving its result
+still fails, it reopens the app unless Windows needs to restart.
 
 The normal setup is registered through WiX/Windows Installer, not the separate
 per-user Uninstall.exe. Removing Stream Studio through Apps & features /
@@ -43,6 +50,17 @@ product temp folders. Clear the setup UI's data-removal checkbox, or run the
 bundle with PurgeUserData=0, only when you intentionally want to keep that data.
 
 Advanced PowerShell install is also available from the release zip:
+
+ZIP upgrades preserve user-created files and empty directories. The installer
+waits for the app to close before copying those files, and aborts if the new
+payload conflicts with them. Cleanup retries temporary locks, clears read-only
+attributes, and continues removing unlocked files. If ZIP uninstall cannot
+remove all managed application files, it preserves personal data and uninstall
+registration for a retry. Use --preserve-user-data to keep personal data even
+after successful removal.
+Deletion locks on the app, uninstaller, or ownership records preserve the whole
+set for retry. Once the app is copied, the PowerShell installer registers its
+uninstaller before dependency setup, so a failed dependency remains removable.
 
 1. Download StreamlinkVlcStudio-release.zip and SHA256SUMS.txt from the same
    release, verify the zip, and extract it to a normal folder.

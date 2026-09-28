@@ -61,6 +61,7 @@ public sealed partial class VideoSurface : HwndHost
     private int lastNativeWidth = -1;
     private int lastNativeHeight = -1;
     private bool lastNativeVisible;
+    private Rect? lastWindowPosition;
     private long lastDirectChildResizeAt = long.MinValue;
     private bool directChildBoundsSyncQueued;
     private bool notifyingNativeBoundsChanged;
@@ -173,6 +174,12 @@ public sealed partial class VideoSurface : HwndHost
     protected override void OnWindowPositionChanged(Rect rcBoundingBox)
     {
         base.OnWindowPositionChanged(rcBoundingBox);
+        // HwndHost calls this on unrelated WPF layout updates too (for example,
+        // incoming chat). Child discovery and overlay notifications are only needed
+        // when the host moves or resizes. WM_PARENTNOTIFY and the repair timer still
+        // synchronize late/recreated VLC children at unchanged host coordinates.
+        if (lastWindowPosition == rcBoundingBox) return;
+        lastWindowPosition = rcBoundingBox;
         // WPF owns the final device-pixel bounds of the HwndHost. Use its actual client
         // rectangle so fractional DPI/layout rounding cannot leave VLC one pixel smaller.
         ResizeRendererWindowsToClient();
@@ -537,6 +544,7 @@ public sealed partial class VideoSurface : HwndHost
 
     private void ResetNativeBoundsCache()
     {
+        lastWindowPosition = null;
         lastNativeWidth = -1;
         lastNativeHeight = -1;
         lastNativeVisible = false;

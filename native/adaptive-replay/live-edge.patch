@@ -1,0 +1,75 @@
+--- a/modules/demux/adaptive/SegmentTracker.cpp
++++ b/modules/demux/adaptive/SegmentTracker.cpp
+@@ -450,8 +450,13 @@
+     if(!pos.rep)
+         return false;
+ 
+-    /* Stream might not have been loaded at all (HLS) or expired */
+-    if(pos.rep->needsUpdate(pos.number))
++    /* Stream Studio, 2026-09-26: A seek into appended media on a paused input must
++     * reload the playlist before selecting its segment, regardless of the timer. */
++    vlc_tick_t rangeStart = 0, rangeEnd = 0, rangeLength = 0;
++    const bool seekPastKnownLiveEdge = pos.rep->getPlaylist()->isLive() &&
++        pos.rep->getMediaPlaybackRange(&rangeStart, &rangeEnd, &rangeLength) &&
++        time >= rangeEnd;
++    if(seekPastKnownLiveEdge || pos.rep->needsUpdate(pos.number))
+     {
+         if(!pos.rep->runLocalUpdates(resources))
+         {
+--- a/modules/demux/adaptive/Streams.cpp
++++ b/modules/demux/adaptive/Streams.cpp
+@@ -428,8 +428,10 @@
+ 
+     segmentTracker->setStartPosition();
+ 
+-    /* Reached end of live playlist */
+-    if(!segmentTracker->bufferingAvailable())
++    /* Stream Studio, 2026-09-26: getMinAheadTime counts only later segments. Without a
++     * later segment, the current chunk/source can still contain undecoded media.
++     * Suspending it here delays near-edge seeks until the next playlist update. */
++    if(!currentChunk && !demuxersource->HasBufferedData() && !segmentTracker->bufferingAvailable())
+     {
+         vlc_mutex_unlock(&lock);
+         return BufferingStatus::Suspended;
+--- a/modules/demux/adaptive/adaptive.cpp
++++ b/modules/demux/adaptive/adaptive.cpp
+@@ -124,9 +124,10 @@
+                                             N_("Disable") };
+ 
+ vlc_module_begin ()
+-        set_shortname( N_("Adaptive"))
+-        set_description( N_("Unified adaptive streaming for DASH/HLS") )
+-        set_capability( "demux", 12 )
++        set_shortname( N_("Stream Studio live replay"))
++        set_description( N_("Stream Studio live replay (VLC 3.0.23)") )
++        /* Stream Studio, 2026-09-26: explicit selection only; leave installed modules alone. */
++        set_capability( "demux", 0 )
+         set_category( CAT_INPUT )
+         set_subcategory( SUBCAT_INPUT_DEMUX )
+         add_string( "adaptive-logic",  "", ADAPT_LOGIC_TEXT, nullptr, false )
+--- a/modules/demux/adaptive/plumbing/SourceStream.hpp
++++ b/modules/demux/adaptive/plumbing/SourceStream.hpp
+@@ -36,6 +36,7 @@
+             virtual stream_t *makeStream() = 0;
+             virtual void Reset() = 0;
+             virtual size_t Peek(const uint8_t **, size_t) = 0;
++            virtual bool HasBufferedData() const = 0; // Stream Studio, 2026-09-26: unread source data.
+     };
+ 
+     class AbstractChunksSourceStream : public AbstractSourceStream
+@@ -66,6 +67,7 @@
+             ChunksSourceStream(vlc_object_t *, AbstractSource *);
+             virtual ~ChunksSourceStream();
+             virtual void Reset() override;
++            virtual bool HasBufferedData() const override { return p_block && p_block->i_buffer; }
+ 
+         protected:
+             virtual ssize_t Read(uint8_t *, size_t) override;
+@@ -82,6 +84,7 @@
+             BufferedChunksSourceStream(vlc_object_t *, AbstractSource *);
+             virtual ~BufferedChunksSourceStream();
+             virtual void Reset() override;
++            virtual bool HasBufferedData() const override { return block_BytestreamRemaining(&bs) > i_bytestream_offset; }
+ 
+         protected:
+             virtual ssize_t Read(uint8_t *, size_t) override;

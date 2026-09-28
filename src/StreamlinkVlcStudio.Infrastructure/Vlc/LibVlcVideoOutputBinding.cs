@@ -22,6 +22,17 @@ internal static class LibVlcVideoOutputBinding
         // Restore the variable using the same checked setter as VLC's var_SetString.
         SetString(player, "vout", LibVlcRendererSelection.GetVoutOption(renderer, usesNativeOverlay, hardwareOverlayComposition));
         SetString(player, "avcodec-hw", LibVlcRendererSelection.GetHardwareDecodingOption(renderer, usesNativeOverlay, hardwareOverlayComposition));
+        if (hardwareOverlayComposition)
+        {
+            const string name = "studio-gdi-gpu-scaling";
+            const int vlcVarBool = 0x0020;
+            if (CreateVariable(player, name, vlcVarBool) != 0 ||
+                SetChecked(player, name, vlcVarBool, new VlcValue
+                {
+                    Boolean = LibVlcRendererSelection.SupportsGpuScaling(version, hardwareOverlayComposition) ? (byte)1 : (byte)0
+                }) != 0)
+                throw new InvalidOperationException("VLC could not configure hardware video scaling.");
+        }
     }
 
     private static void SetString(IntPtr player, string name, string text)

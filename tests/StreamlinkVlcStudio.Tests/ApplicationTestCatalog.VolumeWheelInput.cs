@@ -458,7 +458,7 @@ internal static partial class ApplicationTestCatalog
 
     private static IDictionary<StreamTabViewModel, DetachedVideoWindow> VolumeWheelDetachedWindows(MainWindow main) =>
         (IDictionary<StreamTabViewModel, DetachedVideoWindow>)typeof(MainWindow)
-            .GetField("detachedWindows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+            .GetProperty("detachedWindows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
 
     private static (int X, int Y) VolumeWheelPoint(VideoSurface surface)
     {

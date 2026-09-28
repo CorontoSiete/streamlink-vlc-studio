@@ -26,20 +26,20 @@ internal static class DeleteRetry
     {
         for (var attempt = 1; attempt <= Attempts; attempt++)
         {
-            if (!PathSafety.TryGetAttributes(path, out _))
-            {
-                return true;
-            }
-
-            if (!prepare())
-            {
-                return false;
-            }
-
             try
             {
+                if (!PathSafety.TryGetCleanupAttributes(path, out _))
+                {
+                    return true;
+                }
+
+                if (!prepare())
+                {
+                    return false;
+                }
+
                 delete();
-                if (!PathSafety.TryGetAttributes(path, out _))
+                if (!PathSafety.TryGetCleanupAttributes(path, out _))
                 {
                     log.Write($"{removedMessage}: {path}");
                     return true;
@@ -54,10 +54,11 @@ internal static class DeleteRetry
                 }
             }
 
-            Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
+            if (attempt < Attempts) Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
         }
 
-        return !PathSafety.TryGetAttributes(path, out _);
+        log.Write($"{exhaustedMessage} after {Attempts} attempts: {path}");
+        return false;
     }
 }
 
@@ -122,9 +123,9 @@ internal static class ManagedInstallationCleaner
         if (applicationRemoved)
         {
             RemoveEmptyManagedDirectories(ownership, log);
-            RemoveKnownShortcut(log);
+            RemoveKnownShortcut(ownership.Root, log);
             registrationRemoved = RemoveRegistrationIfMatching(UninstallRegistryPath, ownership.Root, log);
-            _ = RemoveRegistrationIfMatching(LegacyUninstallRegistryPath, ownership.Root, log);
+            registrationRemoved &= RemoveRegistrationIfMatching(LegacyUninstallRegistryPath, ownership.Root, log);
         }
 
         return new CleanupOutcome(
@@ -138,45 +139,59 @@ internal static class ManagedInstallationCleaner
         string root,
         MaintenanceLog log)
     {
-        try
+        for (var attempt = 1; attempt <= 5; attempt++)
         {
-            foreach (var path in paths)
+            var files = new List<PendingFileDeletion>();
+            var committed = false;
+            try
             {
-                if (!PathSafety.TryGetAttributes(path, out var attributes))
+                foreach (var path in paths)
                 {
-                    continue;
+                    if (!PathSafety.TryGetCleanupAttributes(path, out var attributes)) continue;
+
+                    if (!PathSafety.IsPlainFile(attributes) || HasReparseBetweenRootAndTarget(root, path))
+                    {
+                        log.Write($"Refusing final control path because it is not a plain file: {path}");
+                        return false;
+                    }
+
+                    ClearReadOnly(path, attributes);
+                    // Read access cannot detect a handle that permits reading but denies
+                    // deletion. Reserve DELETE access for the entire set before changing it.
+                    files.Add(PendingFileDeletion.Open(path));
                 }
 
-                if (!PathSafety.IsPlainFile(attributes) ||
-                    HasReparseBetweenRootAndTarget(root, path))
+                foreach (var file in files) file.MarkForDeletion();
+                committed = true;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                log.Write($"Final control-file removal attempt {attempt}/5 failed; preserving retry files. {exception.Message}");
+            }
+            finally
+            {
+                // Keep every handle open while canceling a failed batch, so a late
+                // failure cannot delete the executable or its ownership records first.
+                if (!committed)
                 {
-                    log.Write($"Refusing final control path because it is not a plain file: {path}");
-                    return false;
+                    foreach (var file in files)
+                    {
+                        try { file.CancelDeletion(); }
+                        catch (IOException exception) { log.Write($"Could not restore an uninstall control file: {exception.Message}"); }
+                    }
                 }
-
-                ClearReadOnly(path, attributes);
-                using var handle = new FileStream(
-                    path,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
+                foreach (var file in files) file.Dispose();
             }
 
-            foreach (var path in paths)
+            if (committed)
             {
-                if (FileOrDirectoryExists(path) && !DeletePlainFileWithRetries(path, root, log))
-                {
-                    return false;
-                }
+                foreach (var file in files) log.Write($"Removed uninstall control file: {file.Path}");
+                return true;
             }
+            if (attempt < 5) Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
+        }
 
-            return true;
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            log.Write($"Final control-file preflight failed; retry ownership was preserved. {exception.Message}");
-            return false;
-        }
+        return false;
     }
 
     internal static bool DeletePlainFileWithRetries(string path, string root, MaintenanceLog log)
@@ -185,7 +200,7 @@ internal static class ManagedInstallationCleaner
             path,
             () =>
             {
-                if (!PathSafety.TryGetAttributes(path, out var attributes))
+                if (!PathSafety.TryGetCleanupAttributes(path, out var attributes))
                 {
                     return true;
                 }
@@ -207,7 +222,7 @@ internal static class ManagedInstallationCleaner
 
     private static bool HasReparseBetweenRootAndTarget(string root, string target)
     {
-        if (!PathSafety.IsSameOrUnder(target, root))
+        if (!PathSafety.IsSameOrUnder(target, root) || PathSafety.ContainsReparsePoint(root))
         {
             return true;
         }
@@ -219,7 +234,7 @@ internal static class ManagedInstallationCleaner
                      StringSplitOptions.RemoveEmptyEntries))
         {
             current = Path.Combine(current, segment);
-            if (PathSafety.TryGetAttributes(current, out var attributes) &&
+            if (PathSafety.TryGetCleanupAttributes(current, out var attributes) &&
                 (attributes & FileAttributes.ReparsePoint) != 0)
             {
                 return true;
@@ -252,6 +267,7 @@ internal static class ManagedInstallationCleaner
                 if (PathSafety.TryGetAttributes(directory, out var attributes) &&
                     PathSafety.IsPlainDirectory(attributes) && !PathSafety.ContainsReparsePoint(directory))
                 {
+                    ClearReadOnly(directory, attributes);
                     Directory.Delete(directory, recursive: false);
                     log.Write($"Removed empty managed directory: {directory}");
                 }
@@ -265,6 +281,7 @@ internal static class ManagedInstallationCleaner
         try
         {
             if (PathSafety.ContainsReparsePoint(ownership.Root)) return;
+            if (PathSafety.TryGetAttributes(ownership.Root, out var attributes)) ClearReadOnly(ownership.Root, attributes);
             Directory.Delete(ownership.Root, recursive: false);
             log.Write($"Removed empty installation directory: {ownership.Root}");
         }
@@ -274,8 +291,12 @@ internal static class ManagedInstallationCleaner
         }
     }
 
-    private static void RemoveKnownShortcut(MaintenanceLog log)
+    private static void RemoveKnownShortcut(string installRoot, MaintenanceLog log)
     {
+        // A portable copy or an old installation must not remove the shortcut
+        // belonging to a different registered installation of the same product.
+        if (!RegistrationMatches(UninstallRegistryPath, installRoot, log) &&
+            !RegistrationMatches(LegacyUninstallRegistryPath, installRoot, log)) return;
         var startMenu = Environment.GetFolderPath(Environment.SpecialFolder.StartMenu);
         if (string.IsNullOrWhiteSpace(startMenu))
         {
@@ -289,7 +310,7 @@ internal static class ManagedInstallationCleaner
                  })
         {
             if (PathSafety.TryGetAttributes(shortcut, out var attributes) &&
-                PathSafety.IsPlainFile(attributes))
+                PathSafety.IsPlainFile(attributes) && !PathSafety.ContainsReparsePoint(shortcut))
             {
                 try
                 {
@@ -305,6 +326,21 @@ internal static class ManagedInstallationCleaner
         }
     }
 
+    private static bool RegistrationMatches(string registryPath, string installRoot, MaintenanceLog log)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(registryPath, writable: false);
+            return key?.GetValue("InstallLocation") is string location &&
+                   !string.IsNullOrWhiteSpace(location) && PathSafety.PathsEqual(location, installRoot);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            log.Write($"Could not validate shortcut ownership: {exception.Message}");
+            return false;
+        }
+    }
+
     private static bool RemoveRegistrationIfMatching(string registryPath, string installRoot, MaintenanceLog log)
     {
         try
@@ -316,11 +352,15 @@ internal static class ManagedInstallationCleaner
             }
 
             var registeredLocation = key.GetValue("InstallLocation") as string;
-            if (string.IsNullOrWhiteSpace(registeredLocation) ||
-                !PathSafety.PathsEqual(registeredLocation, installRoot))
+            if (string.IsNullOrWhiteSpace(registeredLocation))
+            {
+                log.Write("Uninstall registration has no installation location and was preserved.");
+                return false;
+            }
+            if (!PathSafety.PathsEqual(registeredLocation, installRoot))
             {
                 log.Write("Uninstall registration points to a different location and was preserved.");
-                return false;
+                return true;
             }
 
             Registry.CurrentUser.DeleteSubKeyTree(registryPath, throwOnMissingSubKey: false);
@@ -349,7 +389,7 @@ internal static class ManagedInstallationCleaner
 
     private static bool FileOrDirectoryExists(string path)
     {
-        return PathSafety.TryGetAttributes(path, out _);
+        return PathSafety.TryGetCleanupAttributes(path, out _);
     }
 }
 
@@ -391,7 +431,15 @@ internal static class UserDataCleaner
                 continue;
             }
 
-            DeleteTreeWithoutFollowingReparsePoints(root, retained, log, preserved);
+            try
+            {
+                DeleteTreeWithoutFollowingReparsePoints(root, retained, log, preserved);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                retained.Add(root);
+                log.Write($"Personal-data cleanup could not inspect this root; continuing with other roots: {root}. {exception.Message}");
+            }
         }
 
         return retained.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -403,7 +451,7 @@ internal static class UserDataCleaner
         MaintenanceLog log,
         IReadOnlySet<string> preservedPaths)
     {
-        if (!PathSafety.TryGetAttributes(root, out var rootAttributes))
+        if (!PathSafety.TryGetCleanupAttributes(root, out var rootAttributes))
         {
             return;
         }
@@ -465,9 +513,19 @@ internal static class UserDataCleaner
                     continue;
                 }
 
-                if (!PathSafety.IsSameOrUnder(child, root) ||
-                    !PathSafety.TryGetAttributes(child, out var attributes))
+                if (!PathSafety.IsSameOrUnder(child, root))
                 {
+                    continue;
+                }
+                FileAttributes attributes;
+                try
+                {
+                    if (!PathSafety.TryGetCleanupAttributes(child, out attributes)) continue;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    retained.Add(child);
+                    log.Write($"Could not inspect personal-data path: {child}. {exception.Message}");
                     continue;
                 }
 
@@ -496,7 +554,7 @@ internal static class UserDataCleaner
             path,
             () =>
             {
-                if (!PathSafety.TryGetAttributes(path, out var attributes))
+                if (!PathSafety.TryGetCleanupAttributes(path, out var attributes))
                 {
                     return true;
                 }
@@ -526,7 +584,7 @@ internal static class UserDataCleaner
             path,
             () =>
             {
-                if (!PathSafety.TryGetAttributes(path, out var attributes))
+                if (!PathSafety.TryGetCleanupAttributes(path, out var attributes))
                 {
                     return true;
                 }
@@ -535,6 +593,11 @@ internal static class UserDataCleaner
                 {
                     log.Write($"Personal-data directory changed type and was preserved: {path}");
                     return false;
+                }
+
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
                 }
 
                 return true;
@@ -551,7 +614,7 @@ internal static class UserDataCleaner
             path,
             () =>
             {
-                if (!PathSafety.TryGetAttributes(path, out var currentAttributes))
+                if (!PathSafety.TryGetCleanupAttributes(path, out var currentAttributes))
                 {
                     return true;
                 }

@@ -10,6 +10,11 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
     public const string DefaultVolumeUp = "Up";
     public const string DefaultVolumeDown = "Down";
     public const string DefaultGoBack = "Mouse4";
+    public const string DefaultSkipBackward = "NumPad4";
+    public const string DefaultSkipForward = "NumPad6";
+    public const int DefaultSkipSeconds = 30;
+    public const int MinimumSkipSeconds = 1;
+    public const int MaximumSkipSeconds = 300;
 
     private string dismissFullscreenOrAutoScroll = DefaultDismissFullscreenOrAutoScroll;
     private string toggleReplaySeekBar = DefaultToggleReplaySeekBar;
@@ -19,6 +24,10 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
     private string volumeUp = DefaultVolumeUp;
     private string volumeDown = DefaultVolumeDown;
     private string goBack = DefaultGoBack;
+    private string skipBackward = DefaultSkipBackward;
+    private string skipForward = DefaultSkipForward;
+    private int skipBackwardSeconds = DefaultSkipSeconds;
+    private int skipForwardSeconds = DefaultSkipSeconds;
 
     public string DismissFullscreenOrAutoScroll
     {
@@ -70,6 +79,30 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
         set => SetProperty(ref goBack, Normalize(value, DefaultGoBack));
     }
 
+    public string SkipBackward
+    {
+        get => skipBackward;
+        set => SetProperty(ref skipBackward, Normalize(value, DefaultSkipBackward));
+    }
+
+    public string SkipForward
+    {
+        get => skipForward;
+        set => SetProperty(ref skipForward, Normalize(value, DefaultSkipForward));
+    }
+
+    public int SkipBackwardSeconds
+    {
+        get => skipBackwardSeconds;
+        set => SetProperty(ref skipBackwardSeconds, Math.Clamp(value, MinimumSkipSeconds, MaximumSkipSeconds));
+    }
+
+    public int SkipForwardSeconds
+    {
+        get => skipForwardSeconds;
+        set => SetProperty(ref skipForwardSeconds, Math.Clamp(value, MinimumSkipSeconds, MaximumSkipSeconds));
+    }
+
     public void ResetToDefaults()
     {
         DismissFullscreenOrAutoScroll = DefaultDismissFullscreenOrAutoScroll;
@@ -80,6 +113,10 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
         VolumeUp = DefaultVolumeUp;
         VolumeDown = DefaultVolumeDown;
         GoBack = DefaultGoBack;
+        SkipBackward = DefaultSkipBackward;
+        SkipForward = DefaultSkipForward;
+        SkipBackwardSeconds = DefaultSkipSeconds;
+        SkipForwardSeconds = DefaultSkipSeconds;
     }
 
     private static string Normalize(string? value, string fallback)

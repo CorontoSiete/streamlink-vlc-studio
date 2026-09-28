@@ -171,8 +171,8 @@ internal static partial class ApplicationTestCatalog
             if (enabled && main.SelectedTabStripItem?.Contains(tab) == true)
             {
                 // Selected rows have an accent background in both layouts.
-                WpfVisualTest.AssertSolidBrushColor("#FFFFFFFF", WideIcon(tab).Foreground);
-                WpfVisualTest.AssertSolidBrushColor("#FFFFFFFF", DropDownIcon(tab).Foreground);
+                WpfVisualTest.AssertSolidBrushColor(WpfVisualTest.PaletteColor(owner, "StudioTextColor"), WideIcon(tab).Foreground);
+                WpfVisualTest.AssertSolidBrushColor(WpfVisualTest.PaletteColor(owner, "StudioTextColor"), DropDownIcon(tab).Foreground);
             }
         }
 

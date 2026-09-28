@@ -39,6 +39,7 @@
 
 #include "common.h"
 #include "compositor.h"
+#include "hardware.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -65,6 +66,7 @@ struct vout_display_sys_t
 
     /* Video and chat are composed at window resolution into one GDI bitmap. */
     studio_gdi_compositor_t compositor;
+    studio_hardware_t hardware;
 
     struct
     {
@@ -105,6 +107,9 @@ int StudioGdiOpen(vlc_object_t *object)
     if (Init(vd, &fmt, fmt.i_width, fmt.i_height))
         goto error;
 
+    const bool hardware = sys->i_depth == 32 && HardwareOpen(vd, &sys->hardware, sys->sys.hvideownd);
+    if (hardware) fmt = vd->source;
+
     /* The player owns this per-input gate. It is installed before any vout can
      * exist (including prepared replay adoption), and signalled only after seek
      * confirmation. Missing/invalid named events must not expose preroll. */
@@ -118,7 +123,7 @@ int StudioGdiOpen(vlc_object_t *object)
     vout_display_info_t info = vd->info;
     info.is_slow              = false;
     info.has_double_click     = true;
-    info.has_pictures_invalid = true;
+    info.has_pictures_invalid = !hardware;
     static const vlc_fourcc_t chromas[] = { VLC_CODEC_RGBA, 0 };
     info.subpicture_chromas = chromas;
 
@@ -145,6 +150,7 @@ void StudioGdiClose(vlc_object_t *object)
 
     if (vd->sys->replay_output_ready) CloseHandle(vd->sys->replay_output_ready);
 
+    HardwareClose(&vd->sys->hardware);
     Clean(vd);
 
     CommonClean(vd);
@@ -155,7 +161,7 @@ void StudioGdiClose(vlc_object_t *object)
 /* */
 static picture_pool_t *Pool(vout_display_t *vd, unsigned count)
 {
-    VLC_UNUSED(count);
+    if (vd->sys->hardware.device) return HardwarePool(&vd->sys->hardware, &vd->fmt, count);
     return vd->sys->sys.pool;
 }
 
@@ -185,13 +191,22 @@ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
 
     const int width = rect_dst.right - rect_dst.left;
     const int height = rect_dst.bottom - rect_dst.top;
+    if (width <= 0 || height <= 0) goto displayed;
     const bool buffered = EnsureCanvas(&sys->compositor, hdc, width, height);
     HDC target = buffered ? sys->compositor.dc : hdc;
     const int x = buffered ? 0 : rect_dst.left;
     const int y = buffered ? 0 : rect_dst.top;
     const int source_width = rect_src_clipped.right - rect_src_clipped.left;
     const int source_height = rect_src_clipped.bottom - rect_src_clipped.top;
-    if (width != source_width || height != source_height) {
+    if (source_width <= 0 || source_height <= 0) goto displayed;
+    const bool hardware_drawn = sys->hardware.device && buffered &&
+        HardwareDraw(vd, &sys->hardware, picture, &rect_src_clipped, &sys->compositor);
+    if (sys->hardware.device && !hardware_drawn &&
+        !HardwareDownload(vd, &sys->hardware, picture, sys->sys.pool))
+        goto displayed; /* Retain the last good frame if even the converter failed. */
+    if (hardware_drawn) {
+        /* The display-sized RGB canvas is already filled. */
+    } else if (width != source_width || height != source_height) {
         /* Video retains VLC's fast original scaling. Chat is filtered separately. */
         SetStretchBltMode(target, COLORONCOLOR);
         StretchBlt(target, x, y, width, height, sys->off_dc,
@@ -254,6 +269,7 @@ static int Init(vout_display_t *vd,
 
     /* */
     HDC window_dc = GetDC(sys->sys.hvideownd);
+    if (!window_dc) return VLC_EGENERIC;
 
     /* */
     sys->i_depth = GetDeviceCaps(window_dc, PLANES) *
@@ -291,6 +307,7 @@ static int Init(vout_display_t *vd,
         break;
     default:
         msg_Err(vd, "screen depth %i not supported", sys->i_depth);
+        ReleaseDC(sys->sys.hvideownd, window_dc);
         return VLC_EGENERIC;
     }
     fmt->i_width  = width;
@@ -329,6 +346,11 @@ static int Init(vout_display_t *vd,
 
     sys->off_dc = CreateCompatibleDC(window_dc);
 
+    if (!sys->off_bitmap || !sys->off_dc) {
+        ReleaseDC(sys->sys.hvideownd, window_dc);
+        return VLC_ENOMEM;
+    }
+
     SelectObject(sys->off_dc, sys->off_bitmap);
     ReleaseDC(sys->sys.hvideownd, window_dc);
 
@@ -342,10 +364,11 @@ static int Init(vout_display_t *vd,
     rsc.p[0].i_pitch  = i_pic_pitch;;
 
     picture_t *picture = picture_NewFromResource(fmt, &rsc);
-    if (picture != NULL)
+    if (picture != NULL) {
         sys->sys.pool = picture_pool_New(1, &picture);
-    else
-        sys->sys.pool = NULL;
+        if (!sys->sys.pool) picture_Release(picture);
+    }
+    if (!sys->sys.pool) return VLC_ENOMEM;
 
     UpdateRects(vd, NULL, true);
 

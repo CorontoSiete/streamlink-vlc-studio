@@ -104,6 +104,7 @@ public sealed class InstallOwnership
             }
 
             if (!element.TryGetProperty("length", out var lengthElement) ||
+                lengthElement.ValueKind != JsonValueKind.Number ||
                 !lengthElement.TryGetInt64(out var length) ||
                 length < 0)
             {
@@ -129,6 +130,7 @@ public sealed class InstallOwnership
     {
         if (element.ValueKind != JsonValueKind.Object ||
             !element.TryGetProperty("schemaVersion", out var schema) ||
+            schema.ValueKind != JsonValueKind.Number ||
             !schema.TryGetInt32(out var schemaVersion) ||
             schemaVersion != 1 ||
             !string.Equals(RequiredString(element, "product"), ProductId, StringComparison.Ordinal))
@@ -139,7 +141,8 @@ public sealed class InstallOwnership
 
     private static string RequiredString(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var property) ||
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty(propertyName, out var property) ||
             property.ValueKind != JsonValueKind.String ||
             string.IsNullOrWhiteSpace(property.GetString()))
         {

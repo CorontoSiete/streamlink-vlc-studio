@@ -822,6 +822,27 @@ internal static class NativeWindowTest
         }
     }
 
+    public static void SendScanCode(ushort scanCode, bool extended = false)
+    {
+        var inputs = new[] { false, true }.Select(keyUp => new NativeInput
+        {
+            Type = 1,
+            Union = new NativeInputUnion
+            {
+                Keyboard = new NativeKeyboardInput
+                {
+                    ScanCode = scanCode,
+                    Flags = 0x0008u | (extended ? 0x0001u : 0) | (keyUp ? 0x0002u : 0)
+                }
+            }
+        }).ToArray();
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeInput>());
+        if (sent != inputs.Length)
+        {
+            throw new InvalidOperationException($"Failed to send scan-code keyboard input ({sent}/{inputs.Length}).");
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeInput
     {
@@ -2277,6 +2298,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public int Volume { get; private set; }
     public bool Muted { get; private set; }
     public bool Paused { get; private set; }
+    public float PlaybackRate { get; private set; } = 1f;
     public PlaybackAudioState AudioState { get; private set; } = PlaybackAudioState.Audible;
     public TimeSpan Position { get; private set; }
     public TimeSpan Duration { get; set; } = TimeSpan.FromHours(2);
@@ -2370,11 +2392,15 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
         return true;
     }
 
-    public async Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default)
+    public Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default)
+        => PlayFromAsync(mediaUri, position, volume, audioState, startPaused: false, cancellationToken);
+
+    public async Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, bool startPaused, CancellationToken cancellationToken = default)
     {
         LastStartPosition = position;
         await PlayAsync(mediaUri, volume, audioState, cancellationToken);
         await SeekAsync(position, cancellationToken);
+        if (startPaused) await PauseAsync(cancellationToken);
     }
 
     public Task SeekAsync(TimeSpan position, CancellationToken cancellationToken = default)
@@ -2435,6 +2461,13 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public void SetAudioState(int volume, PlaybackAudioState audioState)
     {
         ApplyAudioState(volume, audioState);
+    }
+
+    public Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        PlaybackRate = rate;
+        return Task.FromResult(true);
     }
 
     public void SimulateAudioStateReapplied()

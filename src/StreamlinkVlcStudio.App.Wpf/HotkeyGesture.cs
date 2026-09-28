@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows.Input;
+using System.Windows.Interop;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
@@ -11,7 +12,33 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers, M
     public static Key GetEventKey(KeyEventArgs e)
     {
         ArgumentNullException.ThrowIfNull(e);
-        return NormalizeEventKey(e.Key, e.SystemKey, e.ImeProcessedKey, e.DeadCharProcessedKey);
+        var key = NormalizeEventKey(e.Key, e.SystemKey, e.ImeProcessedKey, e.DeadCharProcessedKey);
+        var message = ComponentDispatcher.CurrentKeyboardMessage;
+        // WPF can report the previous message's timestamp while synchronously
+        // processing a new native key. Match the source HWND rather than the time.
+        if (e.InputSource is not HwndSource source || message.hwnd != source.Handle ||
+            message.message is not (0x0100 or 0x0101 or 0x0104 or 0x0105))
+        {
+            return key;
+        }
+
+        return NormalizeNumpadArrow(key, message.wParam.ToInt32(), message.lParam.ToInt64());
+    }
+
+    internal static Key NormalizeNumpadArrow(Key key, int virtualKey, long keyData)
+    {
+        // With Num Lock off, keypad 4/6 share VK_LEFT/VK_RIGHT with the arrow cluster.
+        // Windows marks the separate arrow cluster as extended (bit 24); the keypad
+        // keeps its non-extended 0x4B/0x4D scan code. Use WPF's current native message
+        // for both key-down and key-up so recording and playback agree in either mode.
+        if ((keyData & 0x01000000) != 0) return key;
+        var scanCode = (keyData >> 16) & 0xFF;
+        return (key, virtualKey, scanCode) switch
+        {
+            (Key.Left, 0x25, 0x4B) => Key.NumPad4,
+            (Key.Right, 0x27, 0x4D) => Key.NumPad6,
+            _ => key
+        };
     }
 
     internal static Key NormalizeEventKey(
@@ -183,6 +210,9 @@ internal readonly record struct HotkeyGesture(Key Key, ModifierKeys Modifiers, M
 
     private static string GetKeyDisplayName(Key key)
     {
+        if (key == Key.NumPad4) return "Num 4 (Left)";
+        if (key == Key.NumPad6) return "Num 6 (Right)";
+
         if (key is >= Key.D0 and <= Key.D9)
         {
             return ((int)key - (int)Key.D0).ToString(CultureInfo.InvariantCulture);

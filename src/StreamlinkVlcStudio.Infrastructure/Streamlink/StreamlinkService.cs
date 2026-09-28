@@ -4,6 +4,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Limits;
+using StreamlinkVlcStudio.Infrastructure.Processes;
 using StreamlinkVlcStudio.Infrastructure.Text;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
@@ -143,10 +144,12 @@ public sealed partial class StreamlinkService : IStreamlinkService
 
         var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildArguments(request));
 
-        var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        var session = new StreamlinkExternalHttpSession(process, logger);
+        logger.Write(AppLogLevel.Info, "Streamlink", $"Starting Streamlink for {request.Target.Url} ({request.Quality})");
+        var owner = RedirectedProcessOwner.Start(psi);
+        var process = owner.Process;
+        var session = new StreamlinkExternalHttpSession(owner, logger);
         var uriCompletion = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var exitCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exitCompletion = process.WaitForExitAsync();
 
         void HandleLine(string? data)
         {
@@ -165,29 +168,13 @@ public sealed partial class StreamlinkService : IStreamlinkService
             }
         }
 
-        process.Exited += (_, _) => exitCompletion.TrySetResult();
-
-        logger.Write(AppLogLevel.Info, "Streamlink", $"Starting Streamlink for {request.Target.Url} ({request.Quality})");
-        try
-        {
-            if (!process.Start())
-            {
-                throw new InvalidOperationException("Streamlink process could not be started.");
-            }
-        }
-        catch
-        {
-            await session.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-
         var outputPump = PumpOutputAsync(
-            process.StandardOutput.BaseStream,
-            process.StandardOutput.CurrentEncoding,
+            owner.StandardOutput.BaseStream,
+            owner.StandardOutput.CurrentEncoding,
             HandleLine);
         var errorPump = PumpOutputAsync(
-            process.StandardError.BaseStream,
-            process.StandardError.CurrentEncoding,
+            owner.StandardError.BaseStream,
+            owner.StandardError.CurrentEncoding,
             HandleLine);
         session.AttachOutputPumps(outputPump, errorPump);
 
@@ -198,11 +185,11 @@ public sealed partial class StreamlinkService : IStreamlinkService
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
 
             var delayTask = Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
-            var completed = await Task.WhenAny(uriCompletion.Task, exitCompletion.Task, delayTask).ConfigureAwait(false);
+            var completed = await Task.WhenAny(uriCompletion.Task, exitCompletion, delayTask).ConfigureAwait(false);
             // The timeout task is only a race sentinel. Cancel it as soon as one of the real
             // completion paths wins so a successful session does not leave a pending task behind.
             linked.Cancel();
-            var exitedBeforeReady = completed == exitCompletion.Task || exitCompletion.Task.IsCompleted || process.HasExited;
+            var exitedBeforeReady = completed == exitCompletion || exitCompletion.IsCompleted || process.HasExited;
             if (completed == uriCompletion.Task && !exitedBeforeReady)
             {
                 cancellationToken.ThrowIfCancellationRequested();

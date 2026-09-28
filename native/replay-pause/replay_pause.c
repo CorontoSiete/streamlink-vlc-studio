@@ -47,7 +47,7 @@ static int Open(vlc_object_t *object)
     if (!demux->p_next->p_module) return VLC_EGENERIC;
     const char *module = module_get_object(demux->p_next->p_module);
     int64_t preroll = var_InheritInteger(demux, "studio-replay-seek-preroll");
-    if (strcmp(module, "adaptive") == 0) preroll = 0;
+    if (strcmp(module, "adaptive") == 0 || strcmp(module, "studio_adaptive") == 0) preroll = 0;
     else if (strcmp(module, "avcodec") != 0 || !demux->p_next->out ||
              preroll <= 0 || preroll > 30 * CLOCK_FREQ) return VLC_EGENERIC;
 

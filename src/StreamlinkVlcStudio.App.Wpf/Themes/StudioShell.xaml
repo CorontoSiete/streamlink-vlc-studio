@@ -1,0 +1,166 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Shell primitives use the active palette, including when it changes at runtime. -->
+    <Style x:Key="StudioEyebrow" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+        <Setter Property="Margin" Value="0,0,0,10" />
+    </Style>
+    <Style x:Key="StudioPageTitle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI" />
+        <Setter Property="FontSize" Value="30" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style x:Key="StudioLibraryTitle" TargetType="TextBlock" BasedOn="{StaticResource StudioPageTitle}">
+        <Setter Property="FontSize" Value="28" />
+    </Style>
+    <Style x:Key="StudioPageSubtitle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Margin" Value="0,6,0,0" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style x:Key="StudioStatusPill" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
+        <Setter Property="CornerRadius" Value="14" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="Margin" Value="16,0,0,0" />
+        <Setter Property="VerticalAlignment" Value="Top" />
+    </Style>
+    <Style x:Key="StudioEmptyStateGlyph" TargetType="Border">
+        <Setter Property="Width" Value="64" />
+        <Setter Property="Height" Value="64" />
+        <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+        <Setter Property="CornerRadius" Value="20" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="Margin" Value="0,0,0,20" />
+        <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+    </Style>
+    <Style x:Key="StudioCardPlayAffordance" TargetType="Border">
+        <Setter Property="Width" Value="44" />
+        <Setter Property="Height" Value="44" />
+        <Setter Property="CornerRadius" Value="22" />
+        <Setter Property="Background" Value="#D9101211" />
+        <Setter Property="BorderBrush" Value="#50FFFFFF" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Opacity" Value="0" />
+        <Style.Triggers>
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Button}}" Value="True" />
+                    <Condition Binding="{Binding DataContext.Settings.EnableStreamHoverPreviews, RelativeSource={RelativeSource AncestorType=Window}}" Value="False" />
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Opacity" Value="1" />
+            </MultiDataTrigger>
+            <DataTrigger Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType=Button}}" Value="True">
+                <Setter Property="Opacity" Value="1" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="StudioQuietIconButton" TargetType="Button" BasedOn="{StaticResource StudioButtonStyle}">
+        <Setter Property="Width" Value="28" />
+        <Setter Property="Height" Value="28" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+    <Style x:Key="StudioRailButton" TargetType="Button">
+        <Setter Property="Height" Value="44" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+        <Setter Property="Padding" Value="14,0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="RailChrome" Background="{TemplateBinding Background}" CornerRadius="10">
+                        <Grid>
+                            <Border Width="3" Height="20" CornerRadius="0,2,2,0" HorizontalAlignment="Left"
+                                    Background="{TemplateBinding BorderBrush}" />
+                            <Grid Margin="{TemplateBinding Padding}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="30" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{TemplateBinding Tag}" FontFamily="Segoe MDL2 Assets" FontSize="16" VerticalAlignment="Center" />
+                                <ContentPresenter Grid.Column="1" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                            </Grid>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="RailChrome" Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="RailChrome" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="StudioRailLive" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
+        <Setter Property="Tag" Value="&#xE714;" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsFollowedHomePageSelected}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="StudioRailBrowse" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
+        <Setter Property="Tag" Value="&#xE774;" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsBrowseHomePageSelected}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="StudioRailVods" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
+        <Setter Property="Tag" Value="&#xE8B2;" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsTwitchVodsHomePageSelected}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="StudioRailRecent" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
+        <Setter Property="Tag" Value="&#xE81C;" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsRecentHomePageSelected}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="StudioSettingsNavigation" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
+        <Setter Property="Height" Value="44" />
+    </Style>
+</ResourceDictionary>

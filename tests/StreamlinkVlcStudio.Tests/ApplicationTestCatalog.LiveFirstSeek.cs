@@ -4,15 +4,24 @@ internal static partial class ApplicationTestCatalog
         string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")) ? [] :
         [
             ("live first seek: growing HLS startup and subsequent seeks", () => LiveFirstSeekAsync(false)),
-            ("live first seek: prepared input presents the requested pixels", PreparedReplayFirstPixelsAsync),
+            ("live first seek: prepared input presents the requested pixels", () => PreparedReplayFirstPixelsAsync(false)),
+            ("live first seek: newest available segment presents the requested pixels", () => PreparedReplayFirstPixelsAsync(true)),
             ("live first seek: cancellation replacement and stop release preparation", PreparedReplayLifetimeAsync),
-            ("live first seek: tab startup automatically prepares and adopts replay", PreparedReplayTabAsync),
-            ("live first seek: paused preparation follows a growing broadcast", PreparedReplayGrowthAsync),
+            ("live first seek: tab startup automatically prepares and adopts replay", () => PreparedReplayTabAsync()),
+            ("live first seek: paused preparation follows a growing broadcast", () => PreparedReplayGrowthAsync()),
+            ("live first seek: a growing broadcast can finish after preparation", () => PreparedReplayGrowthAsync(completed: true)),
             ("live first seek: activation stays silent until ready then applies changed volume", () => PreparedReplayAudioAsync(false)),
             ("live first seek: activation respects a new mute while seeking", () => PreparedReplayAudioAsync(true)),
+            ("live first seek: prepared input adoption preserves pause without an audio burst", () => PreparedReplayAudioAsync(false, startPaused: true)),
             ("live first seek: moving the video surface retains prepared replay", PreparedReplayRebindAsync),
+            ("live first seek: skip backward near the available edge", () => PreparedReplayNearEdgeAsync(false)),
+            ("live first seek: cold input opens near the available edge", () => PreparedReplayNearEdgeAsync(false, prepared: false)),
+            ("live first seek: playback continues after waiting for appended segments", LiveReplayContinuationAsync),
+            ("live first seek: skip backward button reaches the newest available segment", () => PreparedReplayTabAsync(nearEdge: true)),
             .. string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_LIVE_FIRST_SEEK_URI")) ? [] :
-                new (string, Func<Task>)[] { ("live first seek: actual broadcast startup and subsequent seeks", () => LiveFirstSeekAsync(true)) }
+                new (string, Func<Task>)[] {
+                    ("live first seek: actual broadcast startup and subsequent seeks", () => LiveFirstSeekAsync(true)),
+                    ("live first seek: actual broadcast skip backward near the available edge", () => PreparedReplayNearEdgeAsync(true)) }
         ];
 
     private static Task LiveFirstSeekAsync(bool actual) => TestSta.RunOffscreenAsync(async () =>
@@ -26,7 +35,8 @@ internal static partial class ApplicationTestCatalog
         try
         {
             await using var gateway = new TwitchMutedVodPlaybackGateway(logger);
-            using var engine = await new LibVlcPlaybackEngineFactory(logger, new ChatSettings(), gateway).CreateAsync(
+            using var engine = await new LibVlcPlaybackEngineFactory(logger, new ChatSettings(),
+                actual ? gateway : new LiveReplayFixtureGateway()).CreateAsync(
                 Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!, enableNativeOverlay: true,
                 rendererMode: VideoRendererMode.Gdi);
             engine.SetVideoHandle(handle);

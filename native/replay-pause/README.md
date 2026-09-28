@@ -3,7 +3,9 @@
 `replay_pause.c` is a small VLC 3.0 `demux_filter`, licensed under LGPL-2.1-or-later
 (see `COPYING.LIB`). It attaches only when the application supplies a per-input
 readiness event. On adaptive inputs it intercepts
-`DEMUX_SET_PAUSE_STATE`; all other controls and demux calls pass through.
+`DEMUX_SET_PAUSE_STATE`; all other controls and demux calls pass through. It also
+recognizes the explicitly selected `studio_adaptive` module used for validated
+growing MPEG-TS replay playlists (see `../adaptive-replay`).
 
 Completed MPEG-TS Twitch replays on VLC 3.0.23 can instead use the FFmpeg demuxer
 through the validated local HTTP transport. In that mode this module attaches
@@ -32,7 +34,7 @@ incompatible VLC versions, unsupported media, and replacement inputs cannot
 inherit the acknowledgement; they retain the existing restoration fallback.
 
 The checked-in DLL is embedded into the .NET assembly and extracted into a
-directory named by its SHA-256 under the application's local data directory.
+directory named by the combined plugins' SHA-256 hashes under the application's local data directory.
 It does not modify the installed VLC plugins. Source and license accompany app
 builds and publishes under `native/replay-pause`.
 

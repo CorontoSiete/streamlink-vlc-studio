@@ -105,8 +105,42 @@ static void benchmark(filter_t *filter, bool hidden)
     assert(bitmap_allocations == 0);
 }
 
+static bool check_frame_headers(void)
+{
+    const struct {
+        uint32_t width, height, payload;
+        bool valid;
+    } cases[] = {
+        {1, 1, 4, true},
+        {4096, 2048, MYO_MAX_PAYLOAD, true},
+        {4096, 2049, MYO_MAX_PAYLOAD, false},
+        {0, 1, 0, false},
+        {1, 0, 0, false},
+        {1, 1, 8, false},
+        /* width * height * 4 wraps twice at 64 bits into a plausible payload. */
+        {2470483914u, 3733427279u, 14056792u, false}
+    };
+    overlay_msg_v1 header = {0};
+    header.magic = MYO_MAGIC;
+    header.version = MYO_VERSION;
+    header.type = MYO_TYPE_FRAME;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        header.w = cases[i].width;
+        header.h = cases[i].height;
+        header.payload_size = cases[i].payload;
+        if (HeaderIsValid(&header) != cases[i].valid) {
+            fprintf(stderr, "Unexpected frame validation for %u x %u with %u payload bytes.\n",
+                header.w, header.h, header.payload_size);
+            return false;
+        }
+    }
+    puts("Frame dimensions and payload bounds passed.");
+    return true;
+}
+
 int main(void)
 {
+    if (!check_frame_headers()) return 1;
     filter_t filter = {0};
     filter_sys_t sys = {0};
     filter.p_sys = &sys;

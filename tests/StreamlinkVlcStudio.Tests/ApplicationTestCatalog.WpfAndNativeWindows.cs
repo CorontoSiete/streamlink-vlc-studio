@@ -96,7 +96,7 @@ internal static partial class ApplicationTestCatalog
                 window.UpdateLayout();
 
                 var liveClip = FindVisualDescendants<RoundedClipBorder>(window)
-                    .Single(border => ReferenceEquals(border.DataContext, liveItem));
+                    .Single(border => ReferenceEquals(border.DataContext, liveItem) && border.Parent is AspectRatioDecorator);
                 AssertHomeMediaThumbnailClip(liveClip);
                 AssertHomeCardCompactHorizontalGutter(window, liveClip);
                 var liveImage = FindVisualDescendants<AnimatedEmoteImage>(liveClip).Single();
@@ -119,7 +119,7 @@ internal static partial class ApplicationTestCatalog
                 window.UpdateLayout();
 
                 var vodClip = FindVisualDescendants<RoundedClipBorder>(window)
-                    .Single(border => ReferenceEquals(border.DataContext, vodItem));
+                    .Single(border => ReferenceEquals(border.DataContext, vodItem) && border.Parent is AspectRatioDecorator);
                 AssertHomeMediaThumbnailClip(vodClip);
                 AssertHomeCardCompactHorizontalGutter(window, vodClip);
 
@@ -136,7 +136,7 @@ internal static partial class ApplicationTestCatalog
                 window.UpdateLayout();
 
                 var browseClip = FindVisualDescendants<RoundedClipBorder>(window)
-                    .Single(border => ReferenceEquals(border.DataContext, browseItem));
+                    .Single(border => ReferenceEquals(border.DataContext, browseItem) && border.Parent is AspectRatioDecorator);
                 AssertHomeMediaThumbnailClip(browseClip);
                 AssertHomeCardCompactHorizontalGutter(window, browseClip);
                 var browseImage = FindVisualDescendants<AnimatedEmoteImage>(browseClip).Single();
@@ -1456,7 +1456,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(detachTab);
@@ -1606,7 +1606,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(viewModelField);
@@ -1699,7 +1699,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(detachTab);
@@ -1846,7 +1846,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(viewModelField);
@@ -1950,7 +1950,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(viewModelField);
@@ -2040,7 +2040,7 @@ internal static partial class ApplicationTestCatalog
             var tabsChanged = typeof(MainWindow).GetMethod(
                 "ViewModelTabsCollectionChanged",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(detachTab);
@@ -2168,7 +2168,7 @@ internal static partial class ApplicationTestCatalog
             var getDropTarget = typeof(MainWindow).GetMethod(
                 "GetPictureInPictureDropTarget",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var nativePointType = typeof(MainWindow).GetNestedType(
@@ -2318,8 +2318,7 @@ internal static partial class ApplicationTestCatalog
                     BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(window)!;
                 var showTopBarMenuItem = (System.Windows.Controls.MenuItem)window.FindName("ShowTopBarMenuItem");
                 var videoContextMenu = (System.Windows.Controls.ContextMenu)window.FindName("VideoContextMenu");
-                var chrome = System.Windows.Shell.WindowChrome.GetWindowChrome(window);
-                Assert.NotNull(chrome);
+                AssertPictureInPictureNativeResizeHits(window);
                 var shownWindowHeight = window.ActualHeight;
                 var shownVideoWidth = videoHost.ActualWidth;
                 var shownVideoHeight = videoHost.ActualHeight;
@@ -2333,8 +2332,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(0d, titleBarRow.Height.Value);
                 Assert.Equal(0d, bottomResizeGripRow.Height.Value);
                 Assert.Equal(System.Windows.ResizeMode.CanResize, window.ResizeMode);
-                Assert.Equal(0d, chrome!.CaptionHeight);
-                Assert.Equal(new System.Windows.Thickness(6), chrome.ResizeBorderThickness);
+                AssertPictureInPictureNativeResizeHits(window);
                 Assert.SequenceEqual(new[] { (tab, false) }, changes.ToArray());
                 AssertNear(shownWindowHeight - 34, window.ActualHeight, 1.0);
                 AssertNear(shownVideoWidth, videoHost.ActualWidth, 1.0);
@@ -2396,7 +2394,7 @@ internal static partial class ApplicationTestCatalog
                 var videoHostBottom = videoHost.PointToScreen(new Point(0, videoHost.ActualHeight)).Y;
                 var resizeGripBottom = bottomResizeGrip.PointToScreen(new Point(0, bottomResizeGrip.ActualHeight)).Y;
                 AssertNear(videoHostBottom, resizeGripBottom);
-                Assert.Equal(34d, chrome.CaptionHeight);
+                AssertPictureInPictureNativeResizeHits(window);
                 Assert.SequenceEqual(new[] { (tab, false), (tab, true) }, changes.ToArray());
                 AssertNear(shownWindowHeight, window.ActualHeight, 1.0);
                 AssertNear(window.ContentAspectRatio, videoHost.ActualWidth / videoHost.ActualHeight, 0.01);
@@ -2433,8 +2431,7 @@ internal static partial class ApplicationTestCatalog
                 window.UpdateLayout();
                 var titleBar = (System.Windows.FrameworkElement)window.FindName("TitleBar");
                 var bottomResizeGrip = (System.Windows.FrameworkElement)window.FindName("BottomResizeGrip");
-                var chrome = System.Windows.Shell.WindowChrome.GetWindowChrome(window);
-                Assert.NotNull(chrome);
+                AssertPictureInPictureNativeResizeHits(window);
 
                 window.EnterStreamFullscreen();
                 Assert.True(window.IsStreamFullscreen);
@@ -2453,8 +2450,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(System.Windows.Visibility.Collapsed, titleBar.Visibility);
                 Assert.Equal(System.Windows.Visibility.Collapsed, bottomResizeGrip.Visibility);
                 Assert.Equal(System.Windows.ResizeMode.CanResize, window.ResizeMode);
-                Assert.Equal(0d, chrome!.CaptionHeight);
-                Assert.Equal(new System.Windows.Thickness(6), chrome.ResizeBorderThickness);
+                AssertPictureInPictureNativeResizeHits(window);
             }
             finally
             {
@@ -2595,7 +2591,7 @@ internal static partial class ApplicationTestCatalog
                 Width = 740,
                 Height = 430
             };
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(detachedWindowsField);
@@ -3686,7 +3682,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(detachTab);
@@ -3753,14 +3749,11 @@ internal static partial class ApplicationTestCatalog
                 var handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
                 Assert.True(handle != IntPtr.Zero);
 
-                var chrome = System.Windows.Shell.WindowChrome.GetWindowChrome(window);
                 var titleBar = (System.Windows.FrameworkElement)window.FindName("TitleBar");
-                Assert.NotNull(chrome);
                 Assert.NotNull(titleBar);
-                Assert.Equal(new System.Windows.Thickness(6), chrome!.ResizeBorderThickness);
-                Assert.Equal(34d, chrome.CaptionHeight);
+                AssertPictureInPictureNativeResizeHits(window);
 
-                var minimumVisibleButtonTop = chrome.ResizeBorderThickness.Top + 1;
+                var minimumVisibleButtonTop = PictureInPictureWindowResize.BorderThickness + 1;
                 var titleButtons = FindVisualDescendants<System.Windows.Controls.Button>(titleBar).ToArray();
                 Assert.Equal(5, titleButtons.Length);
                 foreach (var button in titleButtons)
@@ -3778,8 +3771,7 @@ internal static partial class ApplicationTestCatalog
                 window.UpdateLayout();
 
                 Assert.Equal(false, window.IsStreamFullscreen);
-                Assert.Equal(new System.Windows.Thickness(0), chrome.ResizeBorderThickness);
-                Assert.Equal(34d, chrome.CaptionHeight);
+                AssertPictureInPictureResizeDisabled(window);
                 var screen = System.Windows.Forms.Screen.FromHandle(handle);
                 var maximizedBounds = NativeWindowTest.GetWindowBounds(handle);
                 Assert.Equal(screen.WorkingArea.Left, maximizedBounds.Left);
@@ -3829,8 +3821,7 @@ internal static partial class ApplicationTestCatalog
                     System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 window.UpdateLayout();
 
-                Assert.Equal(new System.Windows.Thickness(6), chrome.ResizeBorderThickness);
-                Assert.Equal(34d, chrome.CaptionHeight);
+                AssertPictureInPictureNativeResizeHits(window);
             }
             finally
             {
@@ -3872,7 +3863,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var toggleDetachedStreamFullscreen = typeof(MainWindow).GetMethod(
@@ -3966,7 +3957,7 @@ internal static partial class ApplicationTestCatalog
                 Width = 740,
                 Height = 430
             };
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var toggleDetachedStreamFullscreen = typeof(MainWindow).GetMethod(
@@ -4065,7 +4056,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var doubleClickHandler = typeof(DetachedVideoWindow).GetMethod(
@@ -4258,7 +4249,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(viewModelField);
@@ -4352,7 +4343,7 @@ internal static partial class ApplicationTestCatalog
             var detachTab = typeof(MainWindow).GetMethod(
                 "DetachTabToPictureInPicture",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var detachedWindowsField = typeof(MainWindow).GetField(
+            var detachedWindowsField = typeof(MainWindow).GetProperty(
                 "detachedWindows",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(viewModelField);
@@ -4444,9 +4435,9 @@ internal static partial class ApplicationTestCatalog
             // so what matters is that every toggle reaches for the same slot in each state.
             var selectedBackground = WpfVisualTest.PaletteColor(window, "StudioAccentPressedColor");
             var selectedBorder = WpfVisualTest.PaletteColor(window, "StudioAccentColor");
-            const string selectedForeground = "#FFFFFFFF";
-            var defaultBackground = WpfVisualTest.PaletteColor(window, "StudioSurface2Color");
-            var defaultBorder = WpfVisualTest.PaletteColor(window, "StudioBorderStrongColor");
+            var selectedForeground = WpfVisualTest.PaletteColor(window, "StudioTextColor");
+            const string defaultBackground = "#00FFFFFF";
+            const string defaultBorder = "#00FFFFFF";
             var defaultForeground = WpfVisualTest.PaletteColor(window, "StudioTextColor");
             var unavailableBackground = WpfVisualTest.PaletteColor(window, "StudioDisabledColor");
             var unavailableBorder = WpfVisualTest.PaletteColor(window, "StudioDisabledBorderColor");
@@ -4532,13 +4523,13 @@ internal static partial class ApplicationTestCatalog
             // dictionary), so it resolves through the tree rather than out of window.Resources.
             // These three pin the default dark palette so an accidental recolour is caught.
             WpfVisualTest.AssertSolidBrushColor(
-                "#FF0A0A0B",
+                "#FF1C1C1E",
                 WpfVisualTest.PaletteBrush(window, "StudioBaseBrush"));
             WpfVisualTest.AssertSolidBrushColor(
-                "#FF2DD4BF",
+                "#FF4ADE80",
                 WpfVisualTest.PaletteBrush(window, "StudioAccentBrush"));
             WpfVisualTest.AssertSolidBrushColor(
-                "#FF48C7B5",
+                "#FF4ADE80",
                 WpfVisualTest.PaletteBrush(window, "StudioFocusBrush"));
 
             var button = new System.Windows.Controls.Button
@@ -4675,7 +4666,7 @@ internal static partial class ApplicationTestCatalog
 
                 var lightPanel = WpfVisualTest.PaletteColor(window, "StudioSurface1Color");
                 var lightText = WpfVisualTest.PaletteColor(window, "StudioTextColor");
-                Assert.Equal("#FFF0F0F3", lightPanel);
+                Assert.Equal("#FFFFFFFF", lightPanel);
                 WpfVisualTest.AssertSolidBrushColor(lightPanel, titleBar.Background);
                 WpfVisualTest.AssertSolidBrushColor(lightText, osdIcon.Foreground);
                 AssertReplaySeekPalette();
@@ -4741,7 +4732,7 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal<UIElement?>(null, popup.PlacementTarget);
         });
     }),
-    ("home navigation selection uses contextual teal state", () =>
+    ("home navigation selection follows the active palette", () =>
     {
         return TestSta.RunAsync(() =>
         {
@@ -4760,7 +4751,9 @@ internal static partial class ApplicationTestCatalog
                 selected,
                 WpfVisualTest.PaletteColor(window, "StudioAccentPressedColor"),
                 WpfVisualTest.PaletteColor(window, "StudioAccentColor"));
-            WpfVisualTest.AssertSolidBrushColor("#FFFFFFFF", selected.Foreground);
+            WpfVisualTest.AssertSolidBrushColor(
+                WpfVisualTest.PaletteColor(window, "StudioAccentTextColor"),
+                selected.Foreground);
 
             var idle = new System.Windows.Controls.Button
             {
@@ -4864,8 +4857,6 @@ internal static partial class ApplicationTestCatalog
             var hotkeysPage = (System.Windows.Controls.StackPanel)window.FindName("HotkeysSettingsPage");
             var previousTabRecorder = (HotkeyRecorderButton)window.FindName("PreviousTabHotkeyRecorder");
             var resetHotkeysButton = (System.Windows.Controls.Button)window.FindName("ResetHotkeysButton");
-            var stickyFooter = (System.Windows.Controls.Border)window.FindName("SettingsStickyFooter");
-            var saveButton = (System.Windows.Controls.Button)window.FindName("SettingsSaveButton");
             SetMainWindowViewModel(window, viewModel);
 
             viewModel.IsSettingsOpen = true;
@@ -4878,8 +4869,8 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal(System.Windows.Visibility.Visible, generalPage.Visibility);
             Assert.Equal(System.Windows.Visibility.Collapsed, chatPage.Visibility);
             Assert.Equal(System.Windows.Visibility.Collapsed, hotkeysPage.Visibility);
-            Assert.Equal(System.Windows.Visibility.Visible, stickyFooter.Visibility);
-            Assert.NotNull(saveButton.Command);
+            Assert.True(window.FindName("SettingsStickyFooter") is null);
+            Assert.True(window.FindName("SettingsSaveButton") is null);
             Assert.Equal(false, viewModel.IsPlaybackWorkspaceVisible);
 
             viewModel.ShowChatSettingsCommand.Execute(null);
@@ -5516,12 +5507,12 @@ internal static partial class ApplicationTestCatalog
             viewModel.VideoTabs.Add(tab);
             viewModel.SelectedTab = tab;
 
-            var nativeOverlayPipeNameField = typeof(StreamTabViewModel).GetField(
+            var nativeOverlayPipeNameField = typeof(NativeChatOverlayController).GetField(
                 "nativeOverlayPipeName",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(nativeOverlayPipeNameField);
-            nativeOverlayPipeNameField!.SetValue(tab, pipeName);
-            var nativeOverlayProcessField = typeof(StreamTabViewModel).GetField(
+            nativeOverlayPipeNameField!.SetValue(tab.NativeOverlay, pipeName);
+            var nativeOverlayProcessField = typeof(NativeChatOverlayController).GetField(
                 "nativeOverlayProcess",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(nativeOverlayProcessField);
@@ -5573,7 +5564,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.True(overlayController.Start());
                 overlayController.BeginOutputReadLine();
                 overlayController.BeginErrorReadLine();
-                nativeOverlayProcessField!.SetValue(tab, overlayController);
+                nativeOverlayProcessField!.SetValue(tab.NativeOverlay, overlayController);
 
                 window.Show();
                 window.UpdateLayout();
@@ -5653,8 +5644,8 @@ internal static partial class ApplicationTestCatalog
                     UsesNativeOverlayOverride = true,
                     NativeOverlayPipeNameOverride = pipeName
                 });
-                nativeOverlayProcessField!.SetValue(tab, null);
-                nativeOverlayPipeNameField!.SetValue(tab, null);
+                nativeOverlayProcessField!.SetValue(tab.NativeOverlay, null);
+                nativeOverlayPipeNameField!.SetValue(tab.NativeOverlay, null);
                 await NativeOverlayControllerTest.SendEventAsync(
                     pipeName,
                     NativeOverlayControllerTest.ChatInputFocusEvent,
@@ -5915,7 +5906,7 @@ internal static partial class ApplicationTestCatalog
                 "MainWindowClosing");
             SetMainWindowViewModel(window, viewModel);
 
-            var fullscreenField = typeof(MainWindow).GetField(
+            var fullscreenField = typeof(MainWindow).GetProperty(
                 "fullscreen",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var toggleFullscreenMode = typeof(MainWindow).GetMethod(
@@ -7116,7 +7107,7 @@ internal static partial class ApplicationTestCatalog
             var closeButtonClick = typeof(MainWindow).GetMethod(
                 "CloseWindowButton_Click",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var exitRequestedField = typeof(MainWindow).GetField(
+            var exitRequestedField = typeof(MainWindow).GetProperty(
                 "exitRequested",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(closeButtonClick);

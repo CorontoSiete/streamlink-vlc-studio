@@ -93,46 +93,23 @@ public static class KickOAuthService
         Func<ChatSettings, KickOAuthTokenResult, CancellationToken, Task> applyTokenResultAsync,
         IAppLogger? logger = null,
         CancellationToken cancellationToken = default) =>
-        GetUsableAccessTokenAsync(settings, applyTokenResultAsync, RefreshUserTokenAsync, logger, cancellationToken);
+        KickUserTokenCoordinator.Shared.ResolveAsync(settings, applyTokenResultAsync, logger, cancellationToken);
 
-    internal static async Task<string?> GetUsableAccessTokenAsync(
+    public static Task<string?> ForceRefreshUserTokenAsync(
+        ChatSettings settings, string rejectedToken, IAppLogger? logger = null, CancellationToken cancellationToken = default) =>
+        KickUserTokenCoordinator.Shared.ResolveAsync(settings, static (target, result, _) =>
+        {
+            ApplyTokenResult(target, result);
+            return Task.CompletedTask;
+        }, logger, cancellationToken, rejectedToken);
+
+    internal static Task<string?> GetUsableAccessTokenAsync(
         ChatSettings settings,
         Func<ChatSettings, KickOAuthTokenResult, CancellationToken, Task> applyTokenResultAsync,
         Func<ChatSettings, CancellationToken, Task<KickOAuthTokenResult>> refreshTokenAsync,
         IAppLogger? logger,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var credentials = KickCredentialSnapshot.Capture(settings);
-        var snapshot = credentials.ToSettings();
-        var token = NormalizeBearerToken(snapshot.KickOAuthToken);
-        if (!string.IsNullOrWhiteSpace(token) && !ShouldRefresh(snapshot))
-        {
-            return token;
-        }
-
-        if (string.IsNullOrWhiteSpace(snapshot.KickRefreshToken) ||
-            string.IsNullOrWhiteSpace(snapshot.KickClientId) ||
-            string.IsNullOrWhiteSpace(snapshot.KickClientSecret))
-        {
-            return string.IsNullOrWhiteSpace(token) ? null : token;
-        }
-
-        try
-        {
-            var refreshed = await refreshTokenAsync(snapshot, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!credentials.Matches(settings)) return null;
-            await applyTokenResultAsync(settings, refreshed, cancellationToken);
-            logger?.Write(AppLogLevel.Info, "KickOAuth", "Refreshed Kick OAuth token.");
-            return NormalizeBearerToken(refreshed.AccessToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-        {
-            logger?.Write(AppLogLevel.Warning, "KickOAuth", "Kick OAuth token refresh failed.", ex);
-            return credentials.Matches(settings) && !string.IsNullOrWhiteSpace(token) ? token : null;
-        }
-    }
+        CancellationToken cancellationToken) =>
+        new KickUserTokenCoordinator(refreshTokenAsync).ResolveAsync(settings, applyTokenResultAsync, logger, cancellationToken);
 
     public static void ApplyTokenResult(ChatSettings settings, KickOAuthTokenResult token)
     {
@@ -468,7 +445,7 @@ public static class KickOAuthService
             .ConfigureAwait(false);
     }
 
-    private static bool ShouldRefresh(ChatSettings settings)
+    internal static bool ShouldRefresh(ChatSettings settings)
     {
         return settings.KickTokenExpiresAtUtc is { } expiresAt &&
             expiresAt <= DateTimeOffset.UtcNow.Add(RefreshSkew);

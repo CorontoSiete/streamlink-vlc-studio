@@ -22,7 +22,7 @@ namespace StreamlinkVlcStudio.App.Wpf.Chat;
 internal sealed class VodChatTimeline
 {
     private readonly object gate = new();
-    private readonly List<VodChatMessage> messages = [];
+    private readonly MessageRing messages = new();
     private readonly HashSet<string> messageKeys = new(StringComparer.Ordinal);
     private int cursor;
     private TimeSpan seekBoundary = TimeSpan.MinValue;
@@ -203,7 +203,7 @@ internal sealed class VodChatTimeline
             messageKeys.Remove(GetMessageKey(messages[index]));
         }
 
-        messages.RemoveRange(0, removeCount);
+        messages.RemoveFirst(removeCount);
         cursor = Math.Max(0, cursor - removeCount);
     }
 
@@ -261,5 +261,63 @@ internal sealed class VodChatTimeline
             chatMessage.Username,
             ":",
             chatMessage.Message);
+    }
+
+    /// <summary>Logical indices stay offset-ordered while eviction advances the head without shifting the history.</summary>
+    private sealed class MessageRing
+    {
+        private VodChatMessage?[] items = [];
+        private int head;
+
+        internal int Count { get; private set; }
+        internal VodChatMessage this[int index] => items[PhysicalIndex(index)]!;
+
+        internal void Insert(int index, VodChatMessage message)
+        {
+            if (Count == items.Length)
+            {
+                var grown = new VodChatMessage?[items.Length == 0 ? 16 : checked(items.Length * 2)];
+                for (var offset = 0; offset < Count; offset++) grown[offset] = this[offset];
+                items = grown;
+                head = 0;
+            }
+
+            // Appends are constant-time. Late arrivals retain the original upper-bound
+            // insertion/equal-time ordering; move the shorter side of the ring.
+            if (index < Count / 2)
+            {
+                head = head == 0 ? items.Length - 1 : head - 1;
+                for (var offset = 0; offset < index; offset++)
+                    items[PhysicalIndex(offset)] = items[PhysicalIndex(offset + 1)];
+            }
+            else
+            {
+                for (var offset = Count; offset > index; offset--)
+                    items[PhysicalIndex(offset)] = items[PhysicalIndex(offset - 1)];
+            }
+            items[PhysicalIndex(index)] = message;
+            Count++;
+        }
+
+        internal void RemoveFirst(int count)
+        {
+            var first = Math.Min(count, items.Length - head);
+            Array.Clear(items, head, first);
+            Array.Clear(items, 0, count - first);
+            head = PhysicalIndex(count);
+            Count -= count;
+            if (Count == 0) head = 0;
+        }
+
+        internal void Clear()
+        {
+            if (Count > 0) RemoveFirst(Count);
+        }
+
+        private int PhysicalIndex(int index)
+        {
+            var physical = head + index;
+            return physical >= items.Length ? physical - items.Length : physical;
+        }
     }
 }

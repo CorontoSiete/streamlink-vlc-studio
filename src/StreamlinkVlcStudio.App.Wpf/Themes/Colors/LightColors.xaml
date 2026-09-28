@@ -3,31 +3,31 @@
     <!-- Light Theme Colors -->
 
     <!-- Surfaces -->
-    <Color x:Key="StudioBaseColor">#F5F5F7</Color>
+    <Color x:Key="StudioBaseColor">#F4F6FA</Color>
     <Color x:Key="StudioSurface0Color">#FFFFFF</Color>
-    <Color x:Key="StudioSurface1Color">#F0F0F3</Color>
-    <Color x:Key="StudioSurface2Color">#E5E5EA</Color>
-    <Color x:Key="StudioSurface3Color">#D1D1D6</Color>
-    <Color x:Key="StudioSurfaceCardColor">#FAFAFA</Color>
-    <Color x:Key="StudioSurfaceHoverColor">#ECECEF</Color>
+    <Color x:Key="StudioSurface1Color">#FFFFFF</Color>
+    <Color x:Key="StudioSurface2Color">#EDF1F8</Color>
+    <Color x:Key="StudioSurface3Color">#DCE4F1</Color>
+    <Color x:Key="StudioSurfaceCardColor">#FFFFFF</Color>
+    <Color x:Key="StudioSurfaceHoverColor">#E8EEF8</Color>
 
     <!-- Borders -->
-    <Color x:Key="StudioBorderColor">#C7C7CC</Color>
-    <Color x:Key="StudioBorderStrongColor">#AEAEB2</Color>
+    <Color x:Key="StudioBorderColor">#D5DDE9</Color>
+    <Color x:Key="StudioBorderStrongColor">#A3B0C5</Color>
 
     <!-- Accent (Indigo) -->
-    <Color x:Key="StudioAccentColor">#5856D6</Color>
-    <Color x:Key="StudioAccentHoverColor">#3634A3</Color>
-    <Color x:Key="StudioAccentPressedColor">#7A78E0</Color>
-    <Color x:Key="StudioFocusColor">#5856D6</Color>
-    <Color x:Key="StudioAccentTextColor">#3F3DB0</Color>
+    <Color x:Key="StudioAccentColor">#4667C4</Color>
+    <Color x:Key="StudioAccentHoverColor">#3153B0</Color>
+    <Color x:Key="StudioAccentPressedColor">#E4EBFD</Color>
+    <Color x:Key="StudioFocusColor">#4667C4</Color>
+    <Color x:Key="StudioAccentTextColor">#3153A5</Color>
 
     <!-- Text -->
     <Color x:Key="StudioTextColor">#1C1C1E</Color>
     <Color x:Key="StudioTextSecondaryColor">#3A3A3C</Color>
-    <Color x:Key="StudioTextMutedColor">#8E8E93</Color>
-    <Color x:Key="StudioTextPlaceholderColor">#A0A0A5</Color>
-    <Color x:Key="StudioTextDimColor">#B0B0B5</Color>
+    <Color x:Key="StudioTextMutedColor">#626F83</Color>
+    <Color x:Key="StudioTextPlaceholderColor">#68768B</Color>
+    <Color x:Key="StudioTextDimColor">#74829A</Color>
 
     <!-- UI Elements -->
     <Color x:Key="StudioScrollbarColor">#B0B0B5</Color>
@@ -60,11 +60,6 @@
     <Color x:Key="StudioKickColor">#53FC18</Color>
     <Color x:Key="StudioKickSubtleColor">#E5FFD9</Color>
     <Color x:Key="StudioKickTextColor">#2A7A0E</Color>
-
-    <!-- Category Badge -->
-    <Color x:Key="StudioCategoryBgColor">#FFF8ED</Color>
-    <Color x:Key="StudioCategoryBorderColor">#D4A85A</Color>
-    <Color x:Key="StudioCategoryTextColor">#7A5B2E</Color>
 
     <!-- Brushes -->
     <SolidColorBrush x:Key="StudioBaseBrush" Color="{StaticResource StudioBaseColor}" />
@@ -104,7 +99,7 @@
     <SolidColorBrush x:Key="StudioKickBrush" Color="{StaticResource StudioKickColor}" />
     <SolidColorBrush x:Key="StudioKickSubtleBrush" Color="{StaticResource StudioKickSubtleColor}" />
     <SolidColorBrush x:Key="StudioKickTextBrush" Color="{StaticResource StudioKickTextColor}" />
-    <SolidColorBrush x:Key="StudioCategoryBgBrush" Color="{StaticResource StudioCategoryBgColor}" />
-    <SolidColorBrush x:Key="StudioCategoryBorderBrush" Color="{StaticResource StudioCategoryBorderColor}" />
-    <SolidColorBrush x:Key="StudioCategoryTextBrush" Color="{StaticResource StudioCategoryTextColor}" />
+    <!-- Primary actions may use a filled accent independently of selected surfaces. -->
+    <SolidColorBrush x:Key="StudioPrimaryBrush" Color="{StaticResource StudioAccentPressedColor}" />
+    <SolidColorBrush x:Key="StudioPrimaryTextBrush" Color="{StaticResource StudioAccentTextColor}" />
 </ResourceDictionary>

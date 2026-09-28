@@ -2,18 +2,26 @@ using System.Globalization;
 
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 
-/// <summary>Formats verified with VLC's FFmpeg HLS demuxer and the local segment transport.</summary>
+/// <summary>Playlists verified with the bundled live HLS and completed-replay demuxers.</summary>
 internal static class TwitchVodReplayPolicy
 {
     private static readonly Uri RelativeUriBase = new("https://example.invalid/");
 
-    internal static TimeSpan GetPreroll(string playlist, Version? version)
+    internal static TimeSpan GetPreroll(string playlist, Version? version) =>
+        GetSegmentDuration(playlist, version, completed: true);
+
+    internal static bool UseLiveReplayDemuxer(string playlist, Version? version) =>
+        GetSegmentDuration(playlist, version, completed: false) > TimeSpan.Zero;
+
+    private static TimeSpan GetSegmentDuration(string playlist, Version? version, bool completed)
     {
-        // Other VLC builds may have different FFmpeg protocol/seek behavior. Keep their
-        // existing adaptive path until they have the same native regression coverage.
+        // The bundled demuxer uses VLC 3.0.23's ABI. Other releases and playlist
+        // formats retain the installed modules, including encryption and fMP4 support.
         if (version is not { Major: 3, Minor: 0, Build: 23 }) return TimeSpan.Zero;
         var lines = playlist.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0 || lines[0].TrimStart('\uFEFF') != "#EXTM3U" || lines[^1] != "#EXT-X-ENDLIST") return TimeSpan.Zero;
+        if (lines.Length == 0 || lines[0].TrimStart('\uFEFF') != "#EXTM3U") return TimeSpan.Zero;
+        if (completed ? lines[^1] != "#EXT-X-ENDLIST" :
+            lines.Contains("#EXT-X-ENDLIST") || !lines.Contains("#EXT-X-PLAYLIST-TYPE:EVENT")) return TimeSpan.Zero;
         var pending = false;
         var segments = 0;
         var ended = false;

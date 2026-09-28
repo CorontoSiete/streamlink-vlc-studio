@@ -32,6 +32,20 @@ internal sealed class BackgroundOperationController(IAppLogger logger)
             TaskScheduler.Default);
     }
 
+    internal async Task WaitForIdleAsync()
+    {
+        while (true)
+        {
+            Task[] pending;
+            lock (gate) pending = operations.ToArray();
+            if (pending.Length == 0) return;
+            try { await Task.WhenAll(pending).ConfigureAwait(false); }
+            catch { /* Track observes failures; shutdown still waits for every operation. */ }
+            lock (gate)
+                foreach (var task in pending) operations.Remove(task);
+        }
+    }
+
     public async Task DrainAsync(TimeSpan timeout)
     {
         var startedAt = Stopwatch.GetTimestamp();

@@ -34,6 +34,12 @@ public sealed class HotkeyRecorderButton : Button
     private MouseButton? suppressedMouseUp;
     private MouseButton? canceledMouseUp;
 
+    static HotkeyRecorderButton()
+    {
+        ContextMenuProperty.OverrideMetadata(typeof(HotkeyRecorderButton),
+            new FrameworkPropertyMetadata(null, OnGestureChanged));
+    }
+
     public HotkeyRecorderButton()
     {
         Focusable = true;
@@ -77,6 +83,17 @@ public sealed class HotkeyRecorderButton : Button
     protected override void OnLostKeyboardFocus(KeyboardFocusChangedEventArgs e)
     {
         base.OnLostKeyboardFocus(e);
+        CancelCapture();
+    }
+
+    protected override void OnContextMenuOpening(ContextMenuEventArgs e)
+    {
+        if (ContextMenu is not null) CancelCapture();
+        base.OnContextMenuOpening(e);
+    }
+
+    private void CancelCapture()
+    {
         if (!IsCapturingInput)
         {
             return;
@@ -231,10 +248,13 @@ public sealed class HotkeyRecorderButton : Button
         var displayText = TryGetEffectiveGesture(out var effective)
             ? effective.ToDisplayString()
             : "Not assigned";
+        var helpText = ContextMenu is null
+            ? "Click, then press a new shortcut."
+            : "Click, then press a new shortcut. Right-click to change the skip seconds.";
         Content = displayText;
-        ToolTip = $"{displayText}\nClick, then press a new shortcut.";
+        ToolTip = $"{displayText}\n{helpText}";
         AutomationProperties.SetName(this, $"{GetActionName()}: {displayText}");
-        AutomationProperties.SetHelpText(this, "Click, then press a new shortcut.");
+        AutomationProperties.SetHelpText(this, helpText);
     }
 
     private bool TryGetEffectiveGesture(out HotkeyGesture gesture)

@@ -9,18 +9,32 @@ internal sealed class AppLogBuffer(
     Action<Action> dispatch,
     Func<Action, bool>? tryDispatch) : IDisposable
 {
-    private const int MaximumLines = 250;
+    private readonly BoundedUiLogBuffer<LogEntry> buffer = new(lines, dispatch, tryDispatch, 250,
+        static entry => $"{entry.Timestamp:HH:mm:ss} [{entry.Level}] {entry.Source}: {entry.Message}");
+
+    internal void Enqueue(LogEntry entry) => buffer.Enqueue(entry);
+    public void Dispose() => buffer.Dispose();
+}
+
+/// <summary>Queues one UI delivery and retains only the tail the destination can display.</summary>
+internal sealed class BoundedUiLogBuffer<T>(
+    ObservableCollection<string> lines,
+    Action<Action> dispatch,
+    Func<Action, bool>? tryDispatch,
+    int maximumLines,
+    Func<T, string> format) : IDisposable
+{
     private readonly object gate = new();
-    private readonly Queue<LogEntry> pending = new(MaximumLines);
+    private readonly Queue<T> pending = new(maximumLines);
     private bool dispatchQueued;
     private volatile bool disposed;
 
-    internal void Enqueue(LogEntry entry)
+    internal void Enqueue(T entry)
     {
         lock (gate)
         {
             if (disposed) return;
-            if (pending.Count == MaximumLines) pending.Dequeue();
+            if (pending.Count == maximumLines) pending.Dequeue();
             pending.Enqueue(entry);
             if (dispatchQueued) return;
             dispatchQueued = true;
@@ -63,7 +77,7 @@ internal sealed class AppLogBuffer(
 
     private void Deliver()
     {
-        LogEntry[] batch;
+        T[] batch;
         lock (gate)
         {
             if (disposed)
@@ -78,11 +92,11 @@ internal sealed class AppLogBuffer(
 
         try
         {
-            while (!disposed && lines.Count + batch.Length > MaximumLines) lines.RemoveAt(0);
+            while (!disposed && lines.Count + batch.Length > maximumLines) lines.RemoveAt(0);
             foreach (var entry in batch)
             {
                 if (disposed) return;
-                lines.Add($"{entry.Timestamp:HH:mm:ss} [{entry.Level}] {entry.Source}: {entry.Message}");
+                lines.Add(format(entry));
             }
         }
         finally

@@ -26,7 +26,7 @@ internal static partial class ApplicationTestCatalog
                                 control is ButtonBase or TextBox or PasswordBox or ComboBox or Slider)
                             .ToArray();
                         Assert.True(controls.Length > 0, $"No controls inspected on {category}.");
-                        foreach (var control in controls.Append((Control)window.FindName("SettingsSaveButton")))
+                        foreach (var control in controls)
                         {
                             RecordResponsiveClippingFailure(failures, $"{size.Width}x{size.Height} {category}", () =>
                                 AssertResponsiveControlCompletelyReachable(window, control, client,

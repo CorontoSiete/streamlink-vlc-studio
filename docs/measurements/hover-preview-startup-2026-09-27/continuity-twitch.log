@@ -1,0 +1,9 @@
+Using .NET SDK 10.0.302 at C:\Users\ComputerGuy\.dotnet\dotnet.exe
+Reusing existing Release output (-NoBuild); source changes are not rebuilt.
+Running filter 'stream hover preview: real provider delivers' (headless-safe; maximum skips: 254).
+dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore 
+--no-build
+  Live Twitch hover preview: transport ready 689 ms, first frame 1108 ms, 637 changing frames over 40052 ms, longest frame gap 133 ms; canceled and cleaned up in 14 ms.
+  PASS stream hover preview: real provider delivers changing live video
+  All 1 tests passed; 0 skipped.
+Test completed successfully.

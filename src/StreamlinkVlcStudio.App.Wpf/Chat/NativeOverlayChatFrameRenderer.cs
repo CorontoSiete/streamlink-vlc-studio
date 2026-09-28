@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using StreamlinkVlcStudio.App.Wpf.Controls;
@@ -15,7 +16,11 @@ internal static class NativeOverlayChatFrameRenderer
 {
     private const int NativeOverlayDefaultHeight = 292;
     private const int NativeOverlayHorizontalPadding = 8;
-    private const int NativeOverlayTopPadding = 8;
+    private const int NativeOverlayBaseTopPadding = 8;
+    private const int NativeOverlayMoveHandleMargin = 6;
+    private const int NativeOverlayMoveHandleHeight = 22;
+    private const int NativeOverlayTopPadding =
+        NativeOverlayBaseTopPadding + NativeOverlayMoveHandleMargin + NativeOverlayMoveHandleHeight;
     private const int NativeOverlayInputHeight = 30;
     private const int NativeOverlayInputGap = 6;
     private const int NativeOverlayBottomPadding = 8;
@@ -68,6 +73,8 @@ internal static class NativeOverlayChatFrameRenderer
         var frame = NativeOverlayProtocolCodec.CreateFrameMessage(width, height);
         if (messages.Count == 0)
         {
+            renderContext?.SetCurrentMessages(messages);
+            renderContext?.ClearTextSelection();
             if (imageCachePinOwner is not null)
             {
                 AnimatedEmoteImage.ClearCachePins(imageCachePinOwner);
@@ -116,6 +123,7 @@ internal static class NativeOverlayChatFrameRenderer
         var inputGap = ScaleReferencePixels(layout.VideoHeight, NativeOverlayInputGap);
         var bottomPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayBottomPadding);
         var bottomReserve = inputHeight + inputGap + bottomPadding;
+        renderContext?.SetCurrentMessages(messages);
         var selection = MeasureVisibleMessages(messages, layout, messageOffset, renderContext);
         var messageBlocks = selection.MessageBlocks;
         var images = messageBlocks
@@ -210,6 +218,8 @@ internal static class NativeOverlayChatFrameRenderer
         {
             root.UpdateLayout();
         }
+
+        renderContext?.ApplyTextSelection(messageBlocks);
 
         var bitmap = renderContext?.PrepareBitmap(width, height) ??
             new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
@@ -546,8 +556,15 @@ internal sealed class NativeReplayOverlayFrameRenderContext
     private readonly Dictionary<ChatMessage, DockedChatMessageTextBlock> messageBlocks =
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<DockedChatMessageTextBlock, (int Width, int Height, Thickness Margin)> measurements = [];
+    private readonly Dictionary<ChatMessage, int> currentMessageIndexes =
+        new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<DockedChatMessageTextBlock> highlightedBlocks = [];
     private NativeOverlayChatPresentation? presentation;
     private long contentVersion = long.MinValue;
+    private IReadOnlyList<ChatMessage> currentMessages = Array.Empty<ChatMessage>();
+    private NativeReplayOverlayTextSelectionEndpoint? textSelectionAnchor;
+    private NativeReplayOverlayTextSelectionEndpoint? textSelectionFocus;
+    private bool textSelectionInProgress;
 
     internal StackPanel Stack { get; } = new()
     {
@@ -565,9 +582,338 @@ internal sealed class NativeReplayOverlayFrameRenderContext
             return;
         }
 
+        ClearTextSelection();
         contentVersion = nextContentVersion;
         messageBlocks.Clear();
         measurements.Clear();
+        currentMessages = Array.Empty<ChatMessage>();
+        currentMessageIndexes.Clear();
+    }
+
+    internal void SetCurrentMessages(IReadOnlyList<ChatMessage> messages)
+    {
+        currentMessages = messages;
+        currentMessageIndexes.Clear();
+        for (var index = 0; index < messages.Count; index++)
+        {
+            currentMessageIndexes[messages[index]] = index;
+        }
+
+        if ((textSelectionAnchor is { } anchor && !currentMessageIndexes.ContainsKey(anchor.Message)) ||
+            (textSelectionFocus is { } focus && !currentMessageIndexes.ContainsKey(focus.Message)))
+        {
+            ClearTextSelection();
+        }
+    }
+
+    internal bool HandleTextSelectionEvent(uint eventType, int packedPoint)
+    {
+        if (eventType == NativeOverlayProtocolCodec.TextSelectionCancelEventType)
+        {
+            ClearTextSelection();
+            return false;
+        }
+
+        if (eventType == NativeOverlayProtocolCodec.TextSelectionBeginEventType)
+        {
+            ClearTextSelection();
+            textSelectionInProgress = true;
+        }
+        else if (eventType != NativeOverlayProtocolCodec.TextSelectionUpdateEventType &&
+                 eventType != NativeOverlayProtocolCodec.TextSelectionEndEventType)
+        {
+            return HasTextSelection;
+        }
+        else if (!textSelectionInProgress)
+        {
+            return HasTextSelection;
+        }
+
+        var pointValue = unchecked((uint)packedPoint);
+        var point = new Point(
+            (pointValue >> 16) & 0xFFFFu,
+            pointValue & 0xFFFFu);
+        if (TryHitTestText(point, out var endpoint))
+        {
+            textSelectionAnchor ??= endpoint;
+            textSelectionFocus = endpoint;
+        }
+
+        if (eventType == NativeOverlayProtocolCodec.TextSelectionEndEventType)
+        {
+            textSelectionInProgress = false;
+        }
+
+        ApplyTextSelection(Stack.Children.OfType<DockedChatMessageTextBlock>().ToArray());
+        return HasTextSelection;
+    }
+
+    internal Uri? HandleTextClickEvent(int packedPoint)
+    {
+        ClearTextSelection();
+
+        var pointValue = unchecked((uint)packedPoint);
+        var point = new Point(
+            (pointValue >> 16) & 0xFFFFu,
+            pointValue & 0xFFFFu);
+        return TryHitTestExternalLink(point, out var uri) ? uri : null;
+    }
+
+    internal void ClearTextSelection()
+    {
+        ClearTextSelectionVisuals();
+        textSelectionAnchor = null;
+        textSelectionFocus = null;
+        textSelectionInProgress = false;
+    }
+
+    internal string? GetSelectedMessageBodyText()
+    {
+        if (textSelectionInProgress || !TryGetOrderedTextSelection(
+                out var first,
+                out var last,
+                out var firstMessageIndex,
+                out var lastMessageIndex))
+        {
+            return null;
+        }
+
+        if (firstMessageIndex == lastMessageIndex)
+        {
+            var text = first.Block.GetMessageBodyText(first.Position, last.Position);
+            return text.Length == 0 ? null : text;
+        }
+
+        if (first.Block.MessageBodyEnd is not { } firstBodyEnd ||
+            last.Block.MessageBodyStart is not { } lastBodyStart)
+        {
+            return null;
+        }
+
+        var selectedBodies = new List<string>(lastMessageIndex - firstMessageIndex + 1)
+        {
+            first.Block.GetMessageBodyText(first.Position, firstBodyEnd)
+        };
+        for (var index = firstMessageIndex + 1; index < lastMessageIndex; index++)
+        {
+            selectedBodies.Add(NormalizeMessageBody(currentMessages[index].Message));
+        }
+
+        selectedBodies.Add(last.Block.GetMessageBodyText(lastBodyStart, last.Position));
+        var selectedText = string.Join("\r\n", selectedBodies);
+        return selectedText.Length == 0 ? null : selectedText;
+    }
+
+    private bool HasTextSelection => !textSelectionInProgress &&
+        TryGetOrderedTextSelection(out _, out _, out _, out _);
+
+    private bool TryHitTestText(
+        Point point,
+        out NativeReplayOverlayTextSelectionEndpoint endpoint)
+    {
+        endpoint = default;
+        if (root is null)
+        {
+            return false;
+        }
+
+        var found = false;
+        var bestScore = double.PositiveInfinity;
+        foreach (var block in Stack.Children.OfType<DockedChatMessageTextBlock>())
+        {
+            if (block.Message is not { } message)
+            {
+                continue;
+            }
+
+            var origin = block.TranslatePoint(new Point(0, 0), root);
+            var width = block.ActualWidth;
+            var height = block.ActualHeight;
+            if (width <= 0 || height <= 0)
+            {
+                continue;
+            }
+
+            var right = origin.X + width;
+            var bottom = origin.Y + height;
+            var horizontalDistance = point.X < origin.X
+                ? origin.X - point.X
+                : point.X > right ? point.X - right : 0;
+            var verticalDistance = point.Y < origin.Y
+                ? origin.Y - point.Y
+                : point.Y > bottom ? point.Y - bottom : 0;
+            var score = verticalDistance * 131072d + horizontalDistance;
+            if (score >= bestScore ||
+                !block.TryGetMessageBodyPositionFromPoint(
+                    new Point(point.X - origin.X, point.Y - origin.Y),
+                    out var position) ||
+                position is null ||
+                !currentMessageIndexes.ContainsKey(message))
+            {
+                continue;
+            }
+
+            endpoint = new NativeReplayOverlayTextSelectionEndpoint(message, block, position);
+            bestScore = score;
+            found = true;
+        }
+
+        return found;
+    }
+
+    private bool TryHitTestExternalLink(Point point, out Uri? uri)
+    {
+        uri = null;
+        if (root is null)
+        {
+            return false;
+        }
+
+        foreach (var block in Stack.Children.OfType<DockedChatMessageTextBlock>())
+        {
+            var origin = block.TranslatePoint(new Point(0, 0), root);
+            if (point.X < origin.X || point.Y < origin.Y ||
+                point.X > origin.X + block.ActualWidth ||
+                point.Y > origin.Y + block.ActualHeight)
+            {
+                continue;
+            }
+
+            if (block.TryGetExternalLinkAtPoint(
+                    new Point(point.X - origin.X, point.Y - origin.Y),
+                    out uri))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal void ApplyTextSelection(IReadOnlyList<DockedChatMessageTextBlock> visibleBlocks)
+    {
+        ClearTextSelectionVisuals();
+        if (!TryGetOrderedTextSelection(
+                out var first,
+                out var last,
+                out var firstMessageIndex,
+                out var lastMessageIndex))
+        {
+            return;
+        }
+
+        foreach (var block in visibleBlocks)
+        {
+            if (block.Message is not { } message ||
+                !currentMessageIndexes.TryGetValue(message, out var messageIndex) ||
+                messageIndex < firstMessageIndex ||
+                messageIndex > lastMessageIndex)
+            {
+                continue;
+            }
+
+            var start = messageIndex == firstMessageIndex
+                ? first.Position
+                : block.MessageBodyStart;
+            var end = messageIndex == lastMessageIndex
+                ? last.Position
+                : block.MessageBodyEnd;
+            if (start is null || end is null)
+            {
+                continue;
+            }
+
+            block.SetNativeOverlayTextSelection(start, end);
+            highlightedBlocks.Add(block);
+        }
+    }
+
+    private void ClearTextSelectionVisuals()
+    {
+        foreach (var block in highlightedBlocks)
+        {
+            block.SetNativeOverlayTextSelection(null, null);
+        }
+
+        highlightedBlocks.Clear();
+    }
+
+    private bool TryGetOrderedTextSelection(
+        out NativeReplayOverlayTextSelectionEndpoint first,
+        out NativeReplayOverlayTextSelectionEndpoint last,
+        out int firstMessageIndex,
+        out int lastMessageIndex)
+    {
+        first = default;
+        last = default;
+        firstMessageIndex = -1;
+        lastMessageIndex = -1;
+        if (textSelectionAnchor is not { } anchor ||
+            textSelectionFocus is not { } focus ||
+            !currentMessageIndexes.TryGetValue(anchor.Message, out var anchorIndex) ||
+            !currentMessageIndexes.TryGetValue(focus.Message, out var focusIndex))
+        {
+            return false;
+        }
+
+        if (anchorIndex < focusIndex)
+        {
+            first = anchor;
+            last = focus;
+            firstMessageIndex = anchorIndex;
+            lastMessageIndex = focusIndex;
+            return true;
+        }
+
+        if (anchorIndex > focusIndex)
+        {
+            first = focus;
+            last = anchor;
+            firstMessageIndex = focusIndex;
+            lastMessageIndex = anchorIndex;
+            return true;
+        }
+
+        if (!ReferenceEquals(anchor.Block, focus.Block))
+        {
+            return false;
+        }
+
+        var positionCompare = anchor.Position.CompareTo(focus.Position);
+        first = positionCompare <= 0 ? anchor : focus;
+        last = positionCompare <= 0 ? focus : anchor;
+        firstMessageIndex = anchorIndex;
+        lastMessageIndex = anchorIndex;
+        return positionCompare != 0;
+    }
+
+    private static string NormalizeMessageBody(string body)
+    {
+        if (body.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var normalized = new System.Text.StringBuilder(body.Length);
+        var pendingSpace = false;
+        foreach (var character in body)
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                if (!pendingSpace)
+                {
+                    normalized.Append(' ');
+                    pendingSpace = true;
+                }
+
+                continue;
+            }
+
+            normalized.Append(character);
+            pendingSpace = false;
+        }
+
+        return normalized.ToString();
     }
 
     internal RenderTargetBitmap PrepareBitmap(int width, int height)
@@ -625,6 +971,7 @@ internal sealed class NativeReplayOverlayFrameRenderContext
     {
         if (presentation is null || !presentation.Equals(nextPresentation))
         {
+            ClearTextSelection();
             presentation = nextPresentation;
             messageBlocks.Clear();
             measurements.Clear();
@@ -673,6 +1020,11 @@ internal sealed record NativeReplayOverlayMessageSelection(
     int UsedHeight,
     int CandidateLimit,
     NativeReplayOverlayRenderedSelection RenderedSelection);
+
+internal readonly record struct NativeReplayOverlayTextSelectionEndpoint(
+    ChatMessage Message,
+    DockedChatMessageTextBlock Block,
+    TextPointer Position);
 
 internal readonly record struct NativeReplayOverlayRenderedSelection(
     int MessageOffset,

@@ -20,8 +20,7 @@ The stock output composes chat into the source image, then uses
 columns: narrow glyph stems disappear and gaps between strokes close. The
 modified output receives RGBA subpictures separately, filters the chat at its
 displayed size, then blends it onto the video in an offscreen GDI bitmap. One
-final blit presents the combined image. Video retains its existing fast path;
-only chat incurs filtering work. At 1:1, no chat resampling is needed.
+final blit presents the combined image. At 1:1, no chat resampling is needed.
 
 `compositor.h` converts straight RGBA to premultiplied BGRA before filtering,
 preserving text/emote coverage without dark or colored fringes. `scaler.h` uses
@@ -38,13 +37,45 @@ VLC, and new pictures with identical content. Cropping, size changes, and even
 a single changed alpha byte invalidate the appropriate work. This adds one
 source-sized RGBA snapshot per visible layer, released with that layer.
 
-This output advertises RGBA subpicture composition, so VLC converts/downloads
-hardware-decoded video before passing video and chat separately to `Display`.
-The app enables automatic hardware decoding for its verified bundled plugin
-when the loaded VLC 3 module bank includes swscale. Stock GDI/custom plugins
-retain the software policy. The accelerated path explicitly requires
-`studio_gdi`, preventing an invisible-chat fallback to stock GDI's early blender.
-Video resolution, frame rate, scaling and chat filtering are unchanged.
+With the verified VLC **3.0.23** runtime, the app enables
+`studio-gdi-gpu-scaling`. `hardware.h` accepts progressive eight-bit SDR DXVA2
+pictures directly. A DXVA2 video processor converts and scales them to the
+visible tile size, and only that RGB target is downloaded into the GDI canvas.
+The source resolution and frame cadence stay unchanged. The final GDI blit,
+filtered chat and replay output gate are shared with the existing path. There
+is no Direct3D presentation call or video swapchain presented over the window.
+
+The decoder borrows the output's device through a shared 16x16 NV12 descriptor
+surface. Pool pictures do **not** allocate another full-size surface each. The
+real decoded surface belongs to VLC's picture context. Its private layout in
+`dxva2-picture.h` is extracted from VLC 3.0.23's
+[`d3d9_fmt.h`](https://github.com/videolan/vlc/blob/3.0.23/modules/video_chroma/d3d9_fmt.h)
+and [`va_surface.h`](https://github.com/videolan/vlc/blob/3.0.23/modules/codec/avcodec/va_surface.h),
+retaining their LGPL attribution. The managed runtime gates this path on the
+exact version and bundled plugin hash. Other VLC 3 versions use the original
+converter. Decoder restarts are checked against the current surface's device;
+resources from one device are never used to read another device's frames.
+
+BT.601/709 and full/limited range are passed to the video processor. Ten-bit,
+HDR, unsupported chroma locations and rotated sources keep VLC's converter.
+Missing GPU capabilities also negotiate the original RGB path at startup. If
+readback later fails, `HardwareDownload` creates VLC's existing full-resolution
+DXVA2-to-RGB converter chain, retaining hardware decoding and chat. Its colors
+match the prior VLC converter, including VLC 3's legacy BT.601 RGB conversion;
+the primary GPU path honors source color metadata. Both paths release pictures,
+device references, filters and GDI resources on close. Hidden zero-size outputs
+do not trigger an unnecessary fallback download.
+
+The app uses one FFmpeg frame worker for this hardware configuration, including
+prepared replay inputs. VLC's DXVA2 decoder still allocates the codec's required
+reference surfaces; it avoids the additional surfaces for parallel CPU frame
+workers. Software/custom-overlay replay retains its prior worker policy. No
+source quality setting, audio policy, frame skipping or CPU decoding switch is
+used to obtain the savings. Measurements and hardware limitations are recorded
+in `docs/multistream-gpu-resources-2026-09-27.md` in the repository.
+
+The app requires swscale and explicitly selects `studio_gdi` with accelerated
+native chat, preventing an invisible-chat fallback to stock GDI's early blender.
 
 The module is registered as `studio_gdi` inside `libmyoverlay_plugin.dll`.
 The app requests `studio_gdi` with accelerated native chat, or
@@ -56,7 +87,8 @@ if the VLC installation lacks swscale. No installed VLC files are modified.
 Upstream adaptations are limited to:
 
 - `wingdi.c`: separate subpicture composition using `compositor.h` and
-  `scaler.h`; open/close callbacks renamed and registered in the overlay's
+  `scaler.h`, and display-sized DXVA2 readback using `hardware.h`;
+  open/close callbacks renamed and registered in the overlay's
   module descriptor. Coordinate mapping follows VLC's Direct3D output.
 - `common.c` / `common.h`: omitted the unused DirectDraw/D3D plane-update helper
   and its chroma-copy dependency; GDI owns its bitmap.
@@ -85,3 +117,10 @@ requiring stable overlay bytes and saved panel size.
 installed scaler: transparent saturated colors, partial alpha, source crops,
 off-window clips, odd-width resize alignment, cache reuse and GDI handle
 cleanup. It also measures repeated chat composition on 1080p and 2160p sources.
+
+`scripts/test-gdi-hardware.ps1` requires a real DXVA2 GPU and VLC 3.0.23. It checks
+all four BT.601/709 and full/limited-range combinations against known colors,
+fractional resizing, crops, separately composed chat, format/interlace guards,
+fallback pixels after a different-device frame, continued frame changes, late
+picture ownership, and GDI handle cleanup. An unavailable hardware path fails
+the test rather than silently skipping it.

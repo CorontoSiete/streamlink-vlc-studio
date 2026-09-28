@@ -11,6 +11,8 @@ public interface IPlaybackEngine : IDisposable
     bool PreservesReplayPositionOnResume => false;
     // Check the current input and unpause atomically. False leaves it paused.
     Task<bool> TryResumeReplayAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    // Change the requested playback rate when the active media supports it.
+    Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default) => Task.FromResult(false);
     string? NativeOverlayPipeName { get; }
     string? NativeOverlayPositionStatePath { get; }
     string? NativeOverlayDirectory { get; }
@@ -20,6 +22,8 @@ public interface IPlaybackEngine : IDisposable
     Task PrepareReplayAsync(Uri mediaUri, CancellationToken cancellationToken = default) => Task.CompletedTask;
     // Open at this position before presenting decoded audio/video, and confirm readiness.
     Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default);
+    // Keep replacement output silent until the requested position is ready and paused.
+    Task PlayFromAsync(Uri mediaUri, TimeSpan position, int volume, PlaybackAudioState audioState, bool startPaused, CancellationToken cancellationToken = default);
     Task PauseAsync(CancellationToken cancellationToken = default);
     Task ResumeAsync(CancellationToken cancellationToken = default);
     Task SeekAsync(TimeSpan position, CancellationToken cancellationToken = default);

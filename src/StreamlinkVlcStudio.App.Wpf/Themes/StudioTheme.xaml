@@ -3,7 +3,7 @@
     <!-- Shared layout values (theme-independent) -->
     <CornerRadius x:Key="StudioCornerSmall">10</CornerRadius>
     <CornerRadius x:Key="StudioCornerMedium">14</CornerRadius>
-    <Thickness x:Key="StudioControlPadding">16,10</Thickness>
+    <Thickness x:Key="StudioControlPadding">16,9</Thickness>
     <Thickness x:Key="StudioCardPadding">20</Thickness>
 
     <Style x:Key="StudioFocusVisualStyle" TargetType="{x:Type Control}">
@@ -20,74 +20,69 @@
     </Style>
 
     <Style x:Key="StudioButtonStyle" TargetType="{x:Type Button}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="13" />
-        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
         <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-        <Setter Property="BorderThickness" Value="1.5" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="{StaticResource StudioControlPadding}" />
-        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type Button}">
-                    <Border x:Name="ButtonBorder"
-                            Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="{StaticResource StudioCornerSmall}"
-                            SnapsToDevicePixels="True">
+                    <Grid>
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{StaticResource StudioCornerSmall}" />
+                        <Border x:Name="InteractionLayer" Background="{DynamicResource StudioTextBrush}"
+                                CornerRadius="{StaticResource StudioCornerSmall}" Opacity="0" IsHitTestVisible="False" />
                         <ContentPresenter Margin="{TemplateBinding Padding}"
-                                          HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"
-                                          RecognizesAccessKey="True" />
-                    </Border>
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="Center" RecognizesAccessKey="True" />
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource StudioSurface3Brush}" />
-                            <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                            <Setter TargetName="InteractionLayer" Property="Opacity" Value="0.06" />
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
-                            <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource StudioAccentHoverBrush}" />
+                            <Setter TargetName="InteractionLayer" Property="Opacity" Value="0.12" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource StudioDisabledBrush}" />
-                            <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource StudioDisabledBorderBrush}" />
-                            <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
-                            <Setter Property="Opacity" Value="0.55" />
+                            <Setter Property="Opacity" Value="0.45" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
     </Style>
     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource StudioButtonStyle}" />
 
     <Style x:Key="StudioPrimaryButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource StudioButtonStyle}">
-        <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+        <Setter Property="Background" Value="{DynamicResource StudioPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
-        <Setter Property="Foreground" Value="#FFFFFFFF" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioPrimaryTextBrush}" />
     </Style>
 
     <Style x:Key="StudioTextBoxStyle" TargetType="{x:Type TextBox}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
         <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-        <Setter Property="BorderThickness" Value="1.5" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,9" />
-        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="CaretBrush" Value="{DynamicResource StudioAccentBrush}" />
         <Setter Property="SelectionBrush" Value="{DynamicResource StudioAccentPressedBrush}" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type TextBox}">
+                    <Grid>
                     <Border x:Name="TextBoxBorder"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
@@ -99,6 +94,10 @@
                                       VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                       VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
                     </Border>
+                    <Border x:Name="InputFocusRing" BorderBrush="{DynamicResource StudioFocusBrush}"
+                            BorderThickness="2" CornerRadius="{StaticResource StudioCornerSmall}"
+                            Opacity="0" IsHitTestVisible="False" />
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <MultiTrigger>
                             <MultiTrigger.Conditions>
@@ -109,7 +108,7 @@
                         </MultiTrigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="TextBoxBorder" Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
-                            <Setter TargetName="TextBoxBorder" Property="BorderThickness" Value="2" />
+                            <Setter TargetName="InputFocusRing" Property="Opacity" Value="1" />
                         </Trigger>
                         <Trigger Property="IsReadOnly" Value="True">
                             <Setter TargetName="TextBoxBorder" Property="Background" Value="{DynamicResource StudioDisabledBrush}" />
@@ -125,20 +124,21 @@
     <Style TargetType="{x:Type TextBox}" BasedOn="{StaticResource StudioTextBoxStyle}" />
 
     <Style TargetType="{x:Type PasswordBox}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
         <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-        <Setter Property="BorderThickness" Value="1.5" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,9" />
-        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="CaretBrush" Value="{DynamicResource StudioAccentBrush}" />
         <Setter Property="SelectionBrush" Value="{DynamicResource StudioAccentPressedBrush}" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type PasswordBox}">
+                    <Grid>
                     <Border x:Name="PasswordBoxBorder"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
@@ -150,6 +150,10 @@
                                       HorizontalScrollBarVisibility="Hidden"
                                       VerticalScrollBarVisibility="Hidden" />
                     </Border>
+                    <Border x:Name="InputFocusRing" BorderBrush="{DynamicResource StudioFocusBrush}"
+                            BorderThickness="2" CornerRadius="{StaticResource StudioCornerSmall}"
+                            Opacity="0" IsHitTestVisible="False" />
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <MultiTrigger>
                             <MultiTrigger.Conditions>
@@ -160,7 +164,7 @@
                         </MultiTrigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="PasswordBoxBorder" Property="BorderBrush" Value="{DynamicResource StudioFocusBrush}" />
-                            <Setter TargetName="PasswordBoxBorder" Property="BorderThickness" Value="2" />
+                            <Setter TargetName="InputFocusRing" Property="Opacity" Value="1" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.5" />
@@ -212,14 +216,14 @@
     </Style>
 
     <Style x:Key="StudioComboBoxStyle" TargetType="{x:Type ComboBox}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
         <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
-        <Setter Property="BorderThickness" Value="1.5" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,8" />
-        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="ItemContainerStyle" Value="{StaticResource StudioComboBoxItemStyle}" />
         <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
         <Setter Property="Template">
@@ -297,7 +301,7 @@
     <Style TargetType="{x:Type ComboBox}" BasedOn="{StaticResource StudioComboBoxStyle}" />
 
     <Style x:Key="StudioCheckBoxStyle" TargetType="{x:Type CheckBox}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
         <Setter Property="Cursor" Value="Hand" />
@@ -322,7 +326,7 @@
                                   Width="10"
                                   Height="7"
                                   Data="M0,3 L3.5,6.5 L10,0"
-                                  Stroke="#FFFFFFFF"
+                                  Stroke="{DynamicResource StudioAccentTextBrush}"
                                   StrokeThickness="2"
                                   StrokeStartLineCap="Round"
                                   StrokeEndLineCap="Round"
@@ -530,11 +534,11 @@
     </Style>
 
     <Style TargetType="{x:Type ToolTip}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
-        <Setter Property="Background" Value="#FA1F1F22" />
-        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
+        <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="9,6" />
         <Setter Property="HasDropShadow" Value="True" />
@@ -549,7 +553,7 @@
     </Style>
 
     <Style x:Key="StudioSectionTitleStyle" TargetType="{x:Type TextBlock}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="20" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
@@ -557,7 +561,7 @@
     </Style>
 
     <Style x:Key="StudioFieldLabelStyle" TargetType="{x:Type TextBlock}">
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontWeight" Value="Medium" />
         <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
@@ -566,7 +570,7 @@
 
     <Style x:Key="StudioEmptyStateStyle" TargetType="{x:Type Border}" BasedOn="{StaticResource StudioCardStyle}">
         <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderStrongBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
         <Setter Property="Padding" Value="24" />
     </Style>
 

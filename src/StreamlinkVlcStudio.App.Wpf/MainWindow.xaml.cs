@@ -9,9 +9,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Navigation;
 using System.Windows.Shell;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -42,8 +44,11 @@ namespace StreamlinkVlcStudio.App.Wpf;
 
 public partial class MainWindow : Window
 {
+    private readonly DockedChatScrollController dockedChatController;
+    private readonly PictureInPictureController pictureInPicture;
+    private readonly WindowModeController windowMode;
     private TwitchChannelPointsController? twitchChannelPoints;
-    private enum FullscreenMode
+    internal enum FullscreenMode
     {
         None,
         StreamOnly,
@@ -105,11 +110,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(8);
     private static readonly int WmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
     private static ITaskbarFullscreenController taskbarFullscreenController = WindowsTaskbarFullscreenController.Instance;
-
-    private readonly Dictionary<StreamTabViewModel, bool> fullscreenChatVisibility = [];
-    private readonly Dictionary<StreamTabViewModel, bool> fullscreenDockedChatPanelVisibility = [];
     private readonly Dictionary<StreamTabViewModel, VideoSurface> videoSurfaces = [];
-    private readonly Dictionary<StreamTabViewModel, DetachedVideoWindow> detachedWindows = [];
+    private Dictionary<StreamTabViewModel, DetachedVideoWindow> detachedWindows { get => pictureInPicture.detachedWindows; }
     private readonly IWindowHitTester windowHitTester;
     private MainViewModel? viewModel;
     private ISettingsService? settingsService;
@@ -120,25 +122,12 @@ public partial class MainWindow : Window
     private DispatcherTimer? videoReorderPollTimer;
     private DispatcherTimer? homeAutoScrollTimer;
     private IntPtr windowHandle;
-    private IntPtr taskbarFullscreenWindowHandle;
-    private IntPtr trayIconHandle;
-    private ScrollViewer? dockedChatScrollViewer;
     private ScrollViewer? homeAutoScrollViewer;
-    private bool exitRequested;
-    private bool trayIconVisible;
-    private bool destroyTrayIconHandle;
-    private bool fullscreen;
-    private bool fullscreenChatStateCaptured;
+    private bool exitRequested { get => windowMode.exitRequested; set => windowMode.exitRequested = value; }
+    private bool fullscreen { get => windowMode.fullscreen; set => windowMode.fullscreen = value; }
     private bool closeConfirmed;
     private bool shutdownStarted;
-    private bool dockedChatScrollPending;
-    private bool dockedChatForceScrollPending;
-    private bool dockedChatShouldFollowBottom = true;
-    private bool dockedChatManualScrollOverride;
-    private bool dockedChatScrollThumbDragging;
-    private bool dockedChatAnchorRestorePending;
     private readonly DoubleClickTracker videoDoubleClickTracker = new();
-    private object? dockedChatAnchorItem;
     private FrameworkElement? tabDetachDragSource;
     private StreamTabViewModel? tabDetachDragTab;
     private StreamTabViewModel? tabDetachDragMergeTarget;
@@ -159,18 +148,9 @@ public partial class MainWindow : Window
     private bool tabDetachDragStartedWithControlModifier;
     private volatile bool hasActiveLowLevelMouseMoveRoute;
     private readonly bool setupRequested;
-    private double dockedChatAnchorTop;
     private long homeAutoScrollLastTickTimestamp;
     private Cursor? homeAutoScrollPreviousCursor;
-    private FullscreenMode fullscreenMode = FullscreenMode.None;
-    private WindowState previousWindowState;
-    private WindowStyle previousWindowStyle;
-    private ResizeMode previousResizeMode;
-    private Rect previousWindowBounds;
-    private bool previousTopmost;
-    private GridLength previousTitleRowHeight;
-    private GridLength previousTopControlsRowHeight;
-    private ChatLayout? previousChatLayout;
+    private FullscreenMode fullscreenMode { get => windowMode.fullscreenMode; set => windowMode.fullscreenMode = value; }
 
     public MainWindow(bool setupRequested = false)
         : this(setupRequested, NativeWindowHitTester.Instance)
@@ -181,25 +161,19 @@ public partial class MainWindow : Window
     {
         this.setupRequested = setupRequested;
         this.windowHitTester = windowHitTester ?? throw new ArgumentNullException(nameof(windowHitTester));
+        dockedChatController = new DockedChatScrollController(this);
+        pictureInPicture = new PictureInPictureController(this);
+        windowMode = new WindowModeController(this);
         InitializeComponent();
-        DataContextChanged += (_, e) => SetBrowseScrollViewModel(e.NewValue as MainViewModel);
-        Closed += (_, _) => SetBrowseScrollViewModel(null);
+        AddHandler(Hyperlink.RequestNavigateEvent,
+            new RequestNavigateEventHandler(OnChatLinkRequestNavigate));
+        DataContextChanged += (_, e) => SetLibraryScrollViewModel(e.NewValue as MainViewModel);
+        Closed += (_, _) => SetLibraryScrollViewModel(null);
+        DataContextChanged += (_, e) => SetStudioNavigationViewModel(e.NewValue as MainViewModel);
+        Closed += (_, _) => SetStudioNavigationViewModel(null);
         PlaybackHost.SizeChanged += (_, _) => UpdateResponsiveLayout();
         ApplyWindowChromeHitTestState();
-        ((INotifyCollectionChanged)DockedChatListBox.Items).CollectionChanged += DockedChatItemsOnCollectionChanged;
-        DockedChatListBox.Loaded += (_, _) =>
-        {
-            EnsureDockedChatScrollViewer();
-            QueueDockedChatScrollToBottom(force: true);
-        };
-        DockedChatPanel.IsVisibleChanged += (_, _) =>
-        {
-            if (DockedChatPanel.IsVisible)
-            {
-                LockDockedChatToBottom();
-                QueueDockedChatScrollToBottom(force: true);
-            }
-        };
+        dockedChatController.Attach();
         SourceInitialized += MainWindowSourceInitialized;
         Loaded += MainWindowLoaded;
         Activated += MainWindowActivated;
@@ -212,6 +186,12 @@ public partial class MainWindow : Window
         PreviewKeyDown += MainWindowPreviewKeyDown;
         Closing += MainWindowClosing;
         Closed += MainWindowClosed;
+    }
+
+    private void OnChatLinkRequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        e.Handled = true;
+        viewModel?.OpenChatLink(e.Uri);
     }
 
     internal static ITaskbarFullscreenController TaskbarFullscreenController
@@ -315,6 +295,18 @@ public partial class MainWindow : Window
 
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.C &&
+            !e.IsRepeat &&
+            Keyboard.Modifiers == ModifierKeys.Control &&
+            Keyboard.FocusedElement is not TextBoxBase &&
+            viewModel?.SelectedTab is { } selectedTab &&
+            selectedTab.NativeOverlay.HasNativeReplayOverlayTextSelection)
+        {
+            e.Handled = true;
+            _ = selectedTab.NativeOverlay.CopyNativeReplayOverlayTextSelectionAsync();
+            return;
+        }
+
         var input = new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers);
         if (TryExecuteHotkey(input, Keyboard.FocusedElement, e.IsRepeat))
         {
@@ -327,6 +319,16 @@ public partial class MainWindow : Window
         if (focusedElement is HotkeyRecorderButton { IsCapturingInput: true })
         {
             return false;
+        }
+
+        if (TryNavigateHomeSearch(input, focusedElement)) return true;
+
+        if (input is { Key: Key.Escape, Modifiers: ModifierKeys.None, MouseButton: null } &&
+            viewModel?.IsStreamSearchPanelVisible == true)
+        {
+            HomeStreamSearchTextBox.Focus();
+            viewModel.DismissStreamSearchDropdown();
+            return true;
         }
 
         var hotkeys = viewModel?.Settings.Hotkeys ?? DefaultHotkeys;
@@ -446,8 +448,14 @@ public partial class MainWindow : Window
             : HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.VolumeDown, input)
                 ? AppHotkeyAction.VolumeDown
                 : (AppHotkeyAction?)null;
-        if (volumeAction is null ||
-            HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, volumeAction.Value, focusedElement))
+        if (volumeAction is null)
+        {
+            // Keep an older custom Back binding if it overlaps a new skip default.
+            if (HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.GoBack, input)) return false;
+            return ReplaySkipHotkey.TryExecute(tab, hotkeys, input, focusedElement, isRepeat);
+        }
+
+        if (HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, volumeAction.Value, focusedElement))
         {
             return false;
         }
@@ -765,7 +773,7 @@ public partial class MainWindow : Window
 
     private void TryLoadMoreBrowseCategories()
     {
-        if (pendingBrowseScroll is not null ||
+        if (pendingHomeScroll is not null ||
             viewModel?.IsBrowseCategoriesPageVisible != true ||
             viewModel.LoadMoreBrowseCategoriesCommand.CanExecute(null) != true ||
             !HomeAutoScrollController.IsNearBottom(
@@ -1114,6 +1122,9 @@ public partial class MainWindow : Window
         }
 
         DisposeTrayIcon();
+        dockedChatController.Dispose();
+        pictureInPicture.Dispose();
+        windowMode.Dispose();
     }
 
     private async Task DisposeMutedVodPlaybackGatewayAsync()
@@ -1884,90 +1895,9 @@ public partial class MainWindow : Window
         return true;
     }
 
-    internal bool AddTabsToPictureInPictureWindow(
-        DetachedVideoWindow targetWindow,
-        IReadOnlyList<StreamTabViewModel> tabs,
-        StreamTabViewModel? activeTab)
-    {
-        if (viewModel is null ||
-            targetWindow.IsClosing ||
-            !detachedWindows.ContainsValue(targetWindow))
-        {
-            return false;
-        }
+    internal bool AddTabsToPictureInPictureWindow(DetachedVideoWindow targetWindow, IReadOnlyList<StreamTabViewModel> tabs, StreamTabViewModel? activeTab) => pictureInPicture.AddTabsToPictureInPictureWindow(targetWindow, tabs, activeTab);
 
-        var tabsToAdd = tabs
-            .Where(viewModel.Tabs.Contains)
-            .Distinct()
-            .Where(tab => !targetWindow.Tabs.Contains(tab))
-            .ToArray();
-        if (tabsToAdd.Length == 0)
-        {
-            return false;
-        }
-
-        if (fullscreen)
-        {
-            ExitFullscreenMode();
-        }
-
-        foreach (var tab in tabsToAdd)
-        {
-            if (!detachedWindows.TryGetValue(tab, out var sourceWindow) ||
-                ReferenceEquals(sourceWindow, targetWindow))
-            {
-                continue;
-            }
-
-            detachedWindows.Remove(tab);
-            sourceWindow.RemoveTabForTransfer(tab);
-            viewModel.ClearPictureInPictureVisibleTabGroup([tab]);
-            if (sourceWindow.TabCount == 0)
-            {
-                RemoveDetachedWindowMappings(sourceWindow);
-                sourceWindow.CloseForTabDisposal();
-            }
-        }
-
-        if (!targetWindow.TryAddTabs(tabsToAdd, activeTab))
-        {
-            return false;
-        }
-
-        viewModel.SetPictureInPictureTabGroup(targetWindow.Tabs);
-        foreach (var tab in tabsToAdd)
-        {
-            detachedWindows[tab] = targetWindow;
-        }
-
-        var newlyDetachedTabs = tabsToAdd
-            .Where(tab => !tab.IsDetached)
-            .ToArray();
-        if (newlyDetachedTabs.Length > 0)
-        {
-            viewModel.SetTabsDetached(newlyDetachedTabs, detached: true);
-        }
-
-        viewModel.SelectedTab = activeTab is not null && viewModel.Tabs.Contains(activeTab)
-            ? activeTab
-            : tabsToAdd[0];
-        VideoViewport.UpdateLayout();
-        BringDetachedWindowForward(targetWindow);
-        targetWindow.UpdateLayout();
-        targetWindow.AttachVideoSurface();
-        SyncPictureInPictureVisibleTabGroup(targetWindow);
-        return true;
-    }
-
-    private StreamTabViewModel[] GetPictureInPictureDragTabs(StreamTabViewModel tab)
-    {
-        return viewModel is null
-            ? []
-            : viewModel.GetPictureInPictureDragTabs(tab)
-                .Where(viewModel.Tabs.Contains)
-                .Distinct()
-                .ToArray();
-    }
+    internal StreamTabViewModel[] GetPictureInPictureDragTabs(StreamTabViewModel tab) => pictureInPicture.GetPictureInPictureDragTabs(tab);
 
     private StreamTabViewModel[] GetTabDetachDragTabs(StreamTabViewModel tab)
     {
@@ -1985,34 +1915,7 @@ public partial class MainWindow : Window
             : GetPictureInPictureDragTabs(tab);
     }
 
-    private DetachedVideoWindow? GetPictureInPictureDropTarget(
-        NativePoint screenPoint,
-        IReadOnlyCollection<StreamTabViewModel> draggedTabs)
-    {
-        var draggedSet = draggedTabs.ToHashSet();
-        if (TryGetTabAtTabStripScreenPoint(screenPoint, out var targetTab) &&
-            targetTab is not null &&
-            !draggedSet.Contains(targetTab) &&
-            detachedWindows.TryGetValue(targetTab, out var tabWindow) &&
-            !tabWindow.IsClosing)
-        {
-            return tabWindow;
-        }
-
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (window.IsClosing ||
-                !window.Tabs.Any(tab => !draggedSet.Contains(tab)) ||
-                !window.ContainsScreenPoint(screenPoint.X, screenPoint.Y))
-            {
-                continue;
-            }
-
-            return window;
-        }
-
-        return null;
-    }
+    internal DetachedVideoWindow? GetPictureInPictureDropTarget(NativePoint screenPoint, IReadOnlyCollection<StreamTabViewModel> draggedTabs) => pictureInPicture.GetPictureInPictureDropTarget(screenPoint, draggedTabs);
 
     private bool TryGetTabAtTabStripScreenPoint(NativePoint screenPoint, out StreamTabViewModel? tab)
     {
@@ -2161,21 +2064,7 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private bool HasPotentialPictureInPictureDropTarget(IReadOnlyCollection<StreamTabViewModel> draggedTabs)
-    {
-        if (draggedTabs.Count == 0 ||
-            detachedWindows.Count == 0)
-        {
-            return false;
-        }
-
-        var draggedSet = draggedTabs.ToHashSet();
-        return detachedWindows
-            .Where(pair => !draggedSet.Contains(pair.Key))
-            .Select(pair => pair.Value)
-            .Distinct()
-            .Any(window => !window.IsClosing);
-    }
+    private bool HasPotentialPictureInPictureDropTarget(IReadOnlyCollection<StreamTabViewModel> draggedTabs) => pictureInPicture.HasPotentialPictureInPictureDropTarget(draggedTabs);
 
     private bool HasExceededTabDetachDragDistance(NativePoint screenPoint)
     {
@@ -2260,614 +2149,15 @@ public partial class MainWindow : Window
             : null;
     }
 
-    private void DetachTabToPictureInPicture(StreamTabViewModel tab, Point screenPoint, bool continueDrag)
-    {
-        if (viewModel is null || !viewModel.Tabs.Contains(tab))
-        {
-            return;
-        }
+    internal void DetachTabToPictureInPicture(StreamTabViewModel tab, Point screenPoint, bool continueDrag) => pictureInPicture.DetachTabToPictureInPicture(tab, screenPoint, continueDrag);
 
-        var detachedTabs = viewModel.GetPictureInPictureDragTabs(tab)
-            .Where(viewModel.Tabs.Contains)
-            .Distinct()
-            .ToArray();
-        if (detachedTabs.Length == 0)
-        {
-            return;
-        }
+    internal bool PositionDetachedWindow(DetachedVideoWindow window, Point screenPoint, bool useSavedLocation) => pictureInPicture.PositionDetachedWindow(window, screenPoint, useSavedLocation);
 
-        var existingWindow = detachedTabs
-            .Select(candidate => detachedWindows.TryGetValue(candidate, out var window) ? window : null)
-            .FirstOrDefault(window => window is not null);
-        if (existingWindow is not null)
-        {
-            BringDetachedWindowForward(existingWindow);
-            if (continueDrag)
-            {
-                existingWindow.BeginInteractiveMove();
-            }
+    internal Task RememberPictureInPictureWindowBoundsAsync(DetachedVideoWindow window) => pictureInPicture.RememberPictureInPictureWindowBoundsAsync(window);
 
-            return;
-        }
+    internal void ViewModelTabsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => pictureInPicture.ViewModelTabsCollectionChanged(sender, e);
 
-        if (fullscreen)
-        {
-            ExitFullscreenMode();
-        }
-
-        viewModel.SelectedTab = tab;
-        // Do not assign Owner here. Owned WPF windows minimize with the owner.
-        var detachedWindow = new DetachedVideoWindow(
-            detachedTabs,
-            tab,
-            GetSavedPictureInPictureTopBarVisibility(tab));
-        detachedWindow.IsPointerOverOverlayChat = (candidate, _, _) =>
-            IsPointerOverNativeOverlay(candidate);
-
-        var hasExistingDetachedWindow = detachedWindows.Values.Any(window => !window.IsClosing);
-        var usedSavedLocation = PositionDetachedWindow(
-            detachedWindow,
-            screenPoint,
-            useSavedLocation: !hasExistingDetachedWindow);
-        var restoreFullscreenMode = usedSavedLocation
-            ? GetSavedDetachedWindowFullscreenMode()
-            : null;
-        foreach (var detachedTab in detachedTabs)
-        {
-            detachedWindows[detachedTab] = detachedWindow;
-        }
-
-        detachedWindow.RestorableBoundsChanged += (_, _) => RememberPictureInPictureWindowBounds(detachedWindow);
-        detachedWindow.StateChanged += (_, _) => RememberPictureInPictureWindowBounds(detachedWindow);
-        detachedWindow.Closing += async (_, _) => await RememberPictureInPictureWindowBoundsAsync(detachedWindow);
-        detachedWindow.ReattachRequested += (_, _) => ReattachDetachedWindow(detachedWindow);
-        detachedWindow.VisibleTabsChanged += (_, _) => SyncPictureInPictureVisibleTabGroup(detachedWindow);
-        detachedWindow.TopBarVisibilityChanged += DetachedWindowOnTopBarVisibilityChanged;
-        detachedWindow.VideoMoveCandidateChanged += DetachedWindowOnVideoMoveCandidateChanged;
-        detachedWindow.TabActivated += activatedTab =>
-        {
-            if (viewModel?.Tabs.Contains(activatedTab) == true)
-            {
-                viewModel.ActivatePictureInPictureTab(activatedTab);
-            }
-        };
-
-        detachedWindow.Show();
-        detachedWindow.UpdateLayout();
-        if (restoreFullscreenMode is { } fullscreenModeToRestore)
-        {
-            RestoreDetachedWindowFullscreen(detachedWindow, fullscreenModeToRestore);
-        }
-
-        detachedWindow.AttachVideoSurface();
-
-        viewModel.SetPictureInPictureTabGroup(detachedWindow.Tabs);
-        SyncPictureInPictureVisibleTabGroup(detachedWindow);
-        if (!viewModel.SetTabsDetached(detachedTabs, detached: true))
-        {
-            RemoveDetachedWindowMappings(detachedWindow);
-            detachedWindow.CloseForTabDisposal();
-            return;
-        }
-
-        VideoViewport.UpdateLayout();
-        BringDetachedWindowForward(detachedWindow);
-        if (continueDrag && !usedSavedLocation)
-        {
-            detachedWindow.BeginInteractiveMove();
-        }
-    }
-
-    private void ReattachDetachedWindow(DetachedVideoWindow detachedWindow)
-    {
-        if (viewModel is null)
-        {
-            return;
-        }
-
-        var detachedTabs = detachedWindow.Tabs
-            .Where(viewModel.Tabs.Contains)
-            .Distinct()
-            .ToArray();
-        RemoveDetachedWindowMappings(detachedWindow);
-        if (detachedTabs.Length == 0)
-        {
-            return;
-        }
-
-        ShowMainWindow();
-        viewModel.SetTabsDetached(detachedTabs, detached: false);
-        viewModel.SelectedTab = detachedWindow.ActiveTab is { } activeTab && viewModel.Tabs.Contains(activeTab)
-            ? activeTab
-            : detachedTabs[0];
-        VideoViewport.UpdateLayout();
-    }
-
-    private bool PositionDetachedWindow(DetachedVideoWindow window, Point screenPoint, bool useSavedLocation)
-    {
-        if (useSavedLocation && viewModel?.Settings.PictureInPictureWindowLocation is { } savedLocation)
-        {
-            if (savedLocation.IsFullscreen)
-            {
-                var fullscreenWorkingArea = TryGetSavedPictureInPictureFullscreenWorkingArea(
-                    savedLocation,
-                    out var savedFullscreenWorkingArea)
-                    ? savedFullscreenWorkingArea
-                    : GetMonitorWorkingAreaAtDeviceIndependentPoint(new Point(savedLocation.Left, savedLocation.Top));
-                var fullscreenRestoreBounds = GetSavedDetachedFullscreenRestoreBounds(
-                    window,
-                    savedLocation,
-                    fullscreenWorkingArea);
-                ApplyDetachedWindowBounds(window, fullscreenRestoreBounds, fullscreenWorkingArea);
-                return true;
-            }
-
-            var savedPoint = new Point(savedLocation.Left, savedLocation.Top);
-            var savedWorkingArea = GetMonitorWorkingAreaAtDeviceIndependentPoint(savedPoint);
-            var savedSize = TryGetSavedDetachedWindowSize(window, savedLocation, savedWorkingArea, out var restoredSize)
-                ? restoredSize
-                : GetDetachedWindowSize(window, savedWorkingArea);
-            ApplyDetachedWindowBounds(window, savedLocation.Left, savedLocation.Top, savedSize, savedWorkingArea);
-            return true;
-        }
-
-        var workingArea = GetMonitorWorkingAreaAtScreenPoint(screenPoint);
-        var size = GetDetachedWindowSize(window, workingArea);
-        var dipPoint = this.ToDeviceIndependentPoint(screenPoint);
-        var bounds = GetAvailableDetachedWindowBounds(new Rect(
-            dipPoint.X - size.Width / 2,
-            dipPoint.Y - DetachedWindowTitleBarHeight / 2,
-            size.Width,
-            size.Height), workingArea);
-        ApplyDetachedWindowBounds(window, bounds, workingArea);
-        return false;
-    }
-
-    private PictureInPictureFullscreenMode? GetSavedDetachedWindowFullscreenMode()
-    {
-        var savedLocation = viewModel?.Settings.PictureInPictureWindowLocation;
-        return savedLocation?.IsFullscreen == true
-            ? savedLocation.FullscreenMode
-            : null;
-    }
-
-    private bool GetSavedPictureInPictureTopBarVisibility(StreamTabViewModel tab)
-    {
-        return viewModel?.Settings.StreamPictureInPictureTopBarVisibility.TryGetValue(
-            tab.Target.StateKey,
-            out var showTopBar) == true && showTopBar;
-    }
-
-    private void DetachedWindowOnTopBarVisibilityChanged(StreamTabViewModel tab, bool showTopBar)
-    {
-        if (viewModel?.Tabs.Contains(tab) == true)
-        {
-            _ = viewModel.RememberStreamPictureInPictureTopBarVisibilityAsync(tab.Target, showTopBar);
-        }
-    }
-
-    private void DetachedWindowOnVideoMoveCandidateChanged(object? sender, EventArgs e)
-    {
-        UpdateLowLevelMouseMoveRouteState();
-    }
-
-    private static void RestoreDetachedWindowFullscreen(
-        DetachedVideoWindow window,
-        PictureInPictureFullscreenMode fullscreenMode)
-    {
-        if (fullscreenMode == PictureInPictureFullscreenMode.MultiView)
-        {
-            window.EnterMultiViewFullscreen();
-        }
-        else
-        {
-            window.EnterStreamFullscreen();
-        }
-
-        window.UpdateLayout();
-    }
-
-    private static Size GetDetachedWindowSize(DetachedVideoWindow window, Rect workingArea)
-    {
-        var aspectRatio = double.IsFinite(window.ContentAspectRatio) && window.ContentAspectRatio > 0.2
-            ? window.ContentAspectRatio
-            : 16.0 / 9.0;
-        var titleBarHeight = window.IsTopBarShown ? DetachedWindowTitleBarHeight : 0;
-        var width = Math.Min(DetachedWindowDefaultWidth, Math.Max(window.MinWidth, workingArea.Width));
-        var height = Math.Max(
-            window.MinHeight,
-            titleBarHeight + width / aspectRatio);
-        if (height > workingArea.Height)
-        {
-            height = workingArea.Height;
-            width = Math.Max(
-                window.MinWidth,
-                (height - titleBarHeight) * aspectRatio);
-        }
-
-        return PictureInPictureWindowSizing.FitWindowSize(
-            new Size(width, height),
-            aspectRatio,
-            leftInset: 0,
-            topInset: titleBarHeight,
-            rightInset: 0,
-            bottomInset: 0,
-            window.MinWidth,
-            window.MinHeight);
-    }
-
-    private static bool TryGetSavedDetachedWindowSize(
-        DetachedVideoWindow window,
-        PictureInPictureWindowLocation savedLocation,
-        Rect workingArea,
-        out Size size)
-    {
-        size = default;
-        if (!IsUsableWindowLength(savedLocation.Width) ||
-            !IsUsableWindowLength(savedLocation.Height))
-        {
-            return false;
-        }
-
-        var maxWidth = Math.Max(window.MinWidth, workingArea.Width);
-        var maxHeight = Math.Max(window.MinHeight, workingArea.Height);
-        var requestedSize = new Size(
-            ClampWindowCoordinate(savedLocation.Width, window.MinWidth, maxWidth),
-            ClampWindowCoordinate(savedLocation.Height, window.MinHeight, maxHeight));
-        var aspectRatio = double.IsFinite(window.ContentAspectRatio) && window.ContentAspectRatio > 0.2
-            ? window.ContentAspectRatio
-            : 16.0 / 9.0;
-        var titleBarHeight = window.IsTopBarShown ? DetachedWindowTitleBarHeight : 0;
-        size = PictureInPictureWindowSizing.FitWindowSize(
-            requestedSize,
-            aspectRatio,
-            leftInset: 0,
-            topInset: titleBarHeight,
-            rightInset: 0,
-            bottomInset: 0,
-            window.MinWidth,
-            window.MinHeight);
-        return true;
-    }
-
-    private static void ApplyDetachedWindowBounds(DetachedVideoWindow window, double left, double top, Size size, Rect workingArea)
-    {
-        var width = size.Width;
-        var height = size.Height;
-        window.Width = width;
-        window.Height = height;
-        window.Left = ClampWindowCoordinate(left, workingArea.Left, workingArea.Right - width);
-        window.Top = ClampWindowCoordinate(top, workingArea.Top, workingArea.Bottom - height);
-    }
-
-    private static void ApplyDetachedWindowBounds(DetachedVideoWindow window, Rect bounds, Rect workingArea)
-    {
-        ApplyDetachedWindowBounds(window, bounds.Left, bounds.Top, bounds.Size, workingArea);
-    }
-
-    private Rect GetAvailableDetachedWindowBounds(Rect preferredBounds, Rect workingArea)
-    {
-        var existingBounds = detachedWindows.Values
-            .Distinct()
-            .Where(window => !window.IsClosing)
-            .Select(window => window.GetRestorableBounds())
-            .Where(IsUsableWindowBounds)
-            .ToArray();
-        var bounds = ClampDetachedWindowBounds(preferredBounds, workingArea);
-        if (existingBounds.Length == 0 || !HasDuplicateDetachedWindowPosition(bounds, existingBounds))
-        {
-            return bounds;
-        }
-
-        for (var attempt = 1; attempt <= DetachedWindowCascadeAttempts; attempt++)
-        {
-            var offset = DetachedWindowCascadeOffset * attempt;
-            var candidate = ClampDetachedWindowBounds(
-                new Rect(
-                    preferredBounds.Left + offset,
-                    preferredBounds.Top + offset,
-                    preferredBounds.Width,
-                    preferredBounds.Height),
-                workingArea);
-            if (!HasDuplicateDetachedWindowPosition(candidate, existingBounds))
-            {
-                return candidate;
-            }
-        }
-
-        return bounds;
-    }
-
-    private static Rect ClampDetachedWindowBounds(Rect bounds, Rect workingArea)
-    {
-        return new Rect(
-            ClampWindowCoordinate(bounds.Left, workingArea.Left, workingArea.Right - bounds.Width),
-            ClampWindowCoordinate(bounds.Top, workingArea.Top, workingArea.Bottom - bounds.Height),
-            bounds.Width,
-            bounds.Height);
-    }
-
-    private static bool HasDuplicateDetachedWindowPosition(Rect bounds, IReadOnlyList<Rect> existingBounds)
-    {
-        return existingBounds.Any(existing =>
-            Math.Abs(existing.Left - bounds.Left) < DetachedWindowCascadeDuplicateTolerance &&
-            Math.Abs(existing.Top - bounds.Top) < DetachedWindowCascadeDuplicateTolerance);
-    }
-
-    private static Rect GetSavedDetachedFullscreenRestoreBounds(
-        DetachedVideoWindow window,
-        PictureInPictureWindowLocation savedLocation,
-        Rect workingArea)
-    {
-        var size = TryGetSavedDetachedWindowSize(window, savedLocation, workingArea, out var restoredSize)
-            ? restoredSize
-            : GetDetachedWindowSize(window, workingArea);
-        var savedBounds = new Rect(new Point(savedLocation.Left, savedLocation.Top), size);
-        if (ContainsWindowCenter(workingArea, savedBounds))
-        {
-            return savedBounds;
-        }
-
-        return new Rect(
-            workingArea.Left + (workingArea.Width - size.Width) / 2,
-            workingArea.Top + (workingArea.Height - size.Height) / 2,
-            size.Width,
-            size.Height);
-    }
-
-    private static bool ContainsWindowCenter(Rect area, Rect bounds)
-    {
-        var center = new Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
-        return center.X >= area.Left &&
-            center.X <= area.Right &&
-            center.Y >= area.Top &&
-            center.Y <= area.Bottom;
-    }
-
-    private void RememberPictureInPictureWindowBounds(DetachedVideoWindow window)
-    {
-        if (viewModel is null ||
-            !TryGetPictureInPictureWindowLocation(window, out var location))
-        {
-            return;
-        }
-
-        viewModel.RememberPictureInPictureWindowBounds(location);
-    }
-
-    private async Task RememberPictureInPictureWindowBoundsAsync(DetachedVideoWindow window)
-    {
-        if (viewModel is null ||
-            !TryGetPictureInPictureWindowLocation(window, out var location))
-        {
-            return;
-        }
-
-        await viewModel.RememberPictureInPictureWindowBoundsAsync(location);
-    }
-
-    private bool TryGetPictureInPictureWindowLocation(
-        DetachedVideoWindow window,
-        out PictureInPictureWindowLocation location)
-    {
-        location = new PictureInPictureWindowLocation();
-        var bounds = window.GetRestorableBounds();
-        if (!IsUsableWindowBounds(bounds))
-        {
-            return false;
-        }
-
-        var previousLocation = viewModel?.Settings.PictureInPictureWindowLocation;
-        var previousFullscreenScreen = previousLocation?.FullscreenScreen;
-        var isFullscreen = window.IsStreamFullscreen ||
-            window.WindowState == WindowState.Maximized ||
-            (window.IsClosing && previousLocation?.IsFullscreen == true);
-        location = new PictureInPictureWindowLocation(
-            bounds.Left,
-            bounds.Top,
-            bounds.Width,
-            bounds.Height)
-        {
-            IsFullscreen = isFullscreen,
-            FullscreenMode = isFullscreen
-                ? window.GetRestorableFullscreenMode()
-                : PictureInPictureFullscreenMode.StreamOnly,
-            FullscreenScreen = isFullscreen && TryGetPictureInPictureFullscreenScreen(window, out var fullscreenScreen)
-                ? fullscreenScreen
-                : previousFullscreenScreen
-        };
-        return true;
-    }
-
-    private static bool TryGetPictureInPictureFullscreenScreen(
-        DetachedVideoWindow window,
-        out PictureInPictureFullscreenScreen fullscreenScreen)
-    {
-        fullscreenScreen = new PictureInPictureFullscreenScreen();
-        var handle = new WindowInteropHelper(window).Handle;
-        if (handle == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        var screen = System.Windows.Forms.Screen.FromHandle(handle);
-        if (screen is null)
-        {
-            return false;
-        }
-
-        fullscreenScreen = new PictureInPictureFullscreenScreen(
-            screen.DeviceName,
-            screen.Bounds.Left,
-            screen.Bounds.Top,
-            screen.Bounds.Width,
-            screen.Bounds.Height);
-        return true;
-    }
-
-    private bool TryGetSavedPictureInPictureFullscreenWorkingArea(
-        PictureInPictureWindowLocation savedLocation,
-        out Rect workingArea)
-    {
-        workingArea = default;
-        if (savedLocation.FullscreenScreen is not { } savedScreen ||
-            !TryFindSavedPictureInPictureFullscreenScreen(savedScreen, out var screen))
-        {
-            return false;
-        }
-
-        workingArea = this.ToDeviceIndependentRect(new NativeRectangle
-        {
-            Left = screen.WorkingArea.Left,
-            Top = screen.WorkingArea.Top,
-            Right = screen.WorkingArea.Right,
-            Bottom = screen.WorkingArea.Bottom
-        });
-        return true;
-    }
-
-    private static bool TryFindSavedPictureInPictureFullscreenScreen(
-        PictureInPictureFullscreenScreen savedScreen,
-        out System.Windows.Forms.Screen screen)
-    {
-        screen = System.Windows.Forms.Screen.PrimaryScreen ?? System.Windows.Forms.Screen.AllScreens[0];
-        if (!string.IsNullOrWhiteSpace(savedScreen.DeviceName))
-        {
-            var matchingScreen = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(candidate =>
-                string.Equals(candidate.DeviceName, savedScreen.DeviceName, StringComparison.OrdinalIgnoreCase));
-            if (matchingScreen is not null)
-            {
-                screen = matchingScreen;
-                return true;
-            }
-        }
-
-        if (!IsUsableWindowLength(savedScreen.Width) || !IsUsableWindowLength(savedScreen.Height))
-        {
-            return false;
-        }
-
-        var center = new System.Drawing.Point(
-            (int)Math.Round(savedScreen.Left + savedScreen.Width / 2),
-            (int)Math.Round(savedScreen.Top + savedScreen.Height / 2));
-        screen = System.Windows.Forms.Screen.FromPoint(center);
-        return true;
-    }
-
-    private static double ClampWindowCoordinate(double value, double min, double max)
-    {
-        return max < min ? min : Math.Clamp(value, min, max);
-    }
-
-    private static bool IsUsableWindowLength(double value)
-    {
-        return double.IsFinite(value) && value > 0;
-    }
-
-    private void BringDetachedWindowForward(DetachedVideoWindow window)
-    {
-        if (window.WindowState == WindowState.Minimized)
-        {
-            window.WindowState = WindowState.Normal;
-        }
-
-        window.Show();
-        window.Activate();
-        var wasTopmost = window.Topmost;
-        window.Topmost = true;
-        window.Topmost = wasTopmost;
-    }
-
-    private void ViewModelTabsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == NotifyCollectionChangedAction.Reset)
-        {
-            CloseAllDetachedWindows(reattach: false);
-            return;
-        }
-
-        if (e.Action is not (NotifyCollectionChangedAction.Remove or NotifyCollectionChangedAction.Replace) ||
-            e.OldItems is null)
-        {
-            return;
-        }
-
-        foreach (StreamTabViewModel tab in e.OldItems)
-        {
-            CloseDetachedWindowForTab(tab, reattach: false);
-        }
-    }
-
-    private void CloseAllDetachedWindows(bool reattach)
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            CloseDetachedWindow(window, reattach);
-        }
-    }
-
-    private void CloseDetachedWindowForTab(StreamTabViewModel tab, bool reattach)
-    {
-        if (!detachedWindows.TryGetValue(tab, out var window))
-        {
-            return;
-        }
-
-        if (reattach)
-        {
-            window.Close();
-            return;
-        }
-
-        detachedWindows.Remove(tab);
-        window.RemoveTabForDisposal(tab);
-        viewModel?.ClearPictureInPictureVisibleTabGroup([tab]);
-        viewModel?.ClearPictureInPictureTabGroup([tab]);
-        if (window.TabCount == 0)
-        {
-            RemoveDetachedWindowMappings(window);
-            window.CloseForTabDisposal();
-        }
-    }
-
-    private void CloseDetachedWindow(DetachedVideoWindow window, bool reattach)
-    {
-        if (reattach)
-        {
-            window.Close();
-            return;
-        }
-
-        RemoveDetachedWindowMappings(window);
-        window.CloseForTabDisposal();
-    }
-
-    private void RemoveDetachedWindowMappings(DetachedVideoWindow window)
-    {
-        window.TopBarVisibilityChanged -= DetachedWindowOnTopBarVisibilityChanged;
-        window.VideoMoveCandidateChanged -= DetachedWindowOnVideoMoveCandidateChanged;
-        viewModel?.ClearPictureInPictureVisibleTabGroup(window.Tabs);
-        viewModel?.ClearPictureInPictureTabGroup(window.Tabs);
-        foreach (var tab in detachedWindows
-            .Where(pair => ReferenceEquals(pair.Value, window))
-            .Select(pair => pair.Key)
-            .ToArray())
-        {
-            detachedWindows.Remove(tab);
-        }
-
-        UpdateLowLevelMouseMoveRouteState();
-    }
-
-    private void SyncPictureInPictureVisibleTabGroup(DetachedVideoWindow window)
-    {
-        if (viewModel is null || window.IsClosing)
-        {
-            return;
-        }
-
-        viewModel.SetPictureInPictureVisibleTabGroup(window.VisibleTabs);
-    }
+    private void CloseAllDetachedWindows(bool reattach) => pictureInPicture.CloseAllDetachedWindows(reattach);
 
     private void MuteButton_Click(object sender, RoutedEventArgs e)
     {
@@ -2926,260 +2216,23 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DockedChatPanel_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        if (e.Delta == 0)
-        {
-            return;
-        }
+    private void DockedChatPanel_PreviewMouseWheel(object sender, MouseWheelEventArgs e) => dockedChatController.DockedChatPanel_PreviewMouseWheel(sender, e);
 
-        if (!IsPointOverElement(DockedChatListBox, e.GetPosition(DockedChatListBox)))
-        {
-            return;
-        }
+    internal void DockedChatResizeThumb_DragDelta(object sender, DragDeltaEventArgs e) => dockedChatController.DockedChatResizeThumb_DragDelta(sender, e);
 
-        ScrollDockedChat(e.Delta);
-        e.Handled = true;
-    }
+    private void ChatListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e) => dockedChatController.ChatListBox_PreviewMouseWheel(sender, e);
 
-    private void DockedChatResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
-    {
-        if (viewModel is not null)
-        {
-            var currentWidth = viewModel.Settings.Chat.DockWidth;
-            viewModel.Settings.Chat.DockWidth = ChatSettings.NormalizeDockWidth(currentWidth - e.HorizontalChange);
-        }
+    private void DockedChatScrollThumb_DragStarted(object sender, DragStartedEventArgs e) => dockedChatController.DockedChatScrollThumb_DragStarted(sender, e);
 
-        e.Handled = true;
-    }
+    private void DockedChatScrollThumb_DragCompleted(object sender, DragCompletedEventArgs e) => dockedChatController.DockedChatScrollThumb_DragCompleted(sender, e);
 
-    private void ChatListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        DockedChatPanel_PreviewMouseWheel(sender, e);
-    }
+    private void EnsureDockedChatScrollViewer() => dockedChatController.EnsureDockedChatScrollViewer();
 
-    private void DockedChatScrollThumb_DragStarted(object sender, DragStartedEventArgs e)
-    {
-        dockedChatScrollThumbDragging = true;
-        dockedChatForceScrollPending = false;
-        dockedChatManualScrollOverride = true;
-        dockedChatShouldFollowBottom = false;
-        CaptureDockedChatScrollAnchor();
-    }
+    private void DockedChatItemsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => dockedChatController.DockedChatItemsOnCollectionChanged(sender, e);
 
-    private void DockedChatScrollThumb_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        dockedChatScrollThumbDragging = false;
-        EnsureDockedChatScrollViewer();
-        var scrollViewer = dockedChatScrollViewer;
-        if (scrollViewer is null)
-        {
-            return;
-        }
+    private void LockDockedChatToBottom() => dockedChatController.LockDockedChatToBottom();
 
-        UpdateDockedChatManualScrollState(scrollViewer, scrollViewer.VerticalOffset);
-        if (dockedChatShouldFollowBottom)
-        {
-            QueueDockedChatScrollToBottom(force: true);
-        }
-    }
-
-    private void EnsureDockedChatScrollViewer()
-    {
-        var scrollViewer = FindVisualChild<ScrollViewer>(DockedChatListBox);
-        if (scrollViewer is null || ReferenceEquals(scrollViewer, dockedChatScrollViewer))
-        {
-            return;
-        }
-
-        if (dockedChatScrollViewer is not null)
-        {
-            dockedChatScrollViewer.ScrollChanged -= DockedChatScrollViewerOnScrollChanged;
-        }
-
-        dockedChatScrollViewer = scrollViewer;
-        dockedChatScrollViewer.ScrollChanged += DockedChatScrollViewerOnScrollChanged;
-    }
-
-    private void DockedChatScrollViewerOnScrollChanged(object sender, ScrollChangedEventArgs e)
-    {
-        if (sender is not ScrollViewer scrollViewer)
-        {
-            return;
-        }
-
-        if (dockedChatManualScrollOverride || dockedChatScrollThumbDragging)
-        {
-            UpdateDockedChatManualScrollState(scrollViewer, scrollViewer.VerticalOffset);
-            return;
-        }
-
-        dockedChatShouldFollowBottom = true;
-        dockedChatAnchorItem = null;
-        if (!IsDockedChatAtBottom(scrollViewer, scrollViewer.VerticalOffset))
-        {
-            QueueDockedChatScrollToBottom(force: true);
-        }
-    }
-
-    private void DockedChatItemsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action is NotifyCollectionChangedAction.Add or
-            NotifyCollectionChangedAction.Remove or
-            NotifyCollectionChangedAction.Reset or
-            NotifyCollectionChangedAction.Replace)
-        {
-            if (dockedChatManualScrollOverride || !dockedChatShouldFollowBottom)
-            {
-                QueueDockedChatAnchorRestore();
-                return;
-            }
-
-            QueueDockedChatScrollToBottom(force: false);
-        }
-    }
-
-    private void LockDockedChatToBottom()
-    {
-        dockedChatManualScrollOverride = false;
-        dockedChatShouldFollowBottom = true;
-        dockedChatAnchorItem = null;
-    }
-
-    private void UpdateDockedChatManualScrollState(ScrollViewer scrollViewer, double verticalOffset)
-    {
-        if (IsDockedChatAtBottom(scrollViewer, verticalOffset) && !dockedChatScrollThumbDragging)
-        {
-            LockDockedChatToBottom();
-            return;
-        }
-
-        dockedChatManualScrollOverride = true;
-        dockedChatShouldFollowBottom = false;
-        if (IsDockedChatAtBottom(scrollViewer, verticalOffset))
-        {
-            dockedChatAnchorItem = null;
-        }
-        else
-        {
-            CaptureDockedChatScrollAnchor();
-        }
-    }
-
-    private void QueueDockedChatScrollToBottom(bool force)
-    {
-        dockedChatForceScrollPending |= force;
-        if (dockedChatScrollPending)
-        {
-            return;
-        }
-
-        dockedChatScrollPending = true;
-        _ = Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() =>
-        {
-            var shouldScroll = dockedChatForceScrollPending || dockedChatShouldFollowBottom;
-            dockedChatScrollPending = false;
-            dockedChatForceScrollPending = false;
-
-            if (shouldScroll)
-            {
-                ScrollDockedChatToBottom();
-            }
-        }));
-    }
-
-    private void QueueDockedChatAnchorRestore()
-    {
-        if (dockedChatAnchorItem is null && !CaptureDockedChatScrollAnchor())
-        {
-            return;
-        }
-
-        if (dockedChatAnchorRestorePending)
-        {
-            return;
-        }
-
-        dockedChatAnchorRestorePending = true;
-        _ = Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() =>
-        {
-            dockedChatAnchorRestorePending = false;
-            RestoreDockedChatScrollAnchor();
-        }));
-    }
-
-    private bool CaptureDockedChatScrollAnchor()
-    {
-        EnsureDockedChatScrollViewer();
-        var scrollViewer = dockedChatScrollViewer;
-        if (scrollViewer is null)
-        {
-            return false;
-        }
-
-        foreach (var item in DockedChatListBox.Items)
-        {
-            if (DockedChatListBox.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement container ||
-                container.RenderSize.Height <= 0)
-            {
-                continue;
-            }
-
-            var top = container.TransformToAncestor(scrollViewer).Transform(new Point(0, 0)).Y;
-            var bottom = top + container.RenderSize.Height;
-            if (bottom <= 0 || top >= scrollViewer.ViewportHeight)
-            {
-                continue;
-            }
-
-            dockedChatAnchorItem = item;
-            dockedChatAnchorTop = top;
-            return true;
-        }
-
-        dockedChatAnchorItem = null;
-        return false;
-    }
-
-    private void RestoreDockedChatScrollAnchor()
-    {
-        EnsureDockedChatScrollViewer();
-        var scrollViewer = dockedChatScrollViewer;
-        if (scrollViewer is null || dockedChatAnchorItem is null)
-        {
-            return;
-        }
-
-        DockedChatListBox.UpdateLayout();
-        if (DockedChatListBox.ItemContainerGenerator.ContainerFromItem(dockedChatAnchorItem) is not FrameworkElement container)
-        {
-            dockedChatAnchorItem = null;
-            return;
-        }
-
-        var currentTop = container.TransformToAncestor(scrollViewer).Transform(new Point(0, 0)).Y;
-        var targetOffset = Math.Clamp(
-            scrollViewer.VerticalOffset + currentTop - dockedChatAnchorTop,
-            0,
-            scrollViewer.ScrollableHeight);
-
-        if (Math.Abs(targetOffset - scrollViewer.VerticalOffset) > double.Epsilon)
-        {
-            scrollViewer.ScrollToVerticalOffset(targetOffset);
-        }
-
-        dockedChatShouldFollowBottom = IsDockedChatAtBottom(scrollViewer, targetOffset);
-        if (dockedChatShouldFollowBottom)
-        {
-            LockDockedChatToBottom();
-        }
-        else
-        {
-            dockedChatManualScrollOverride = true;
-            DockedChatListBox.UpdateLayout();
-            CaptureDockedChatScrollAnchor();
-        }
-    }
+    private void QueueDockedChatScrollToBottom(bool force) => dockedChatController.QueueDockedChatScrollToBottom(force);
 
     private void TabListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -3231,82 +2284,17 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private bool TryRouteDetachedMouseWheel(NativePoint screenPoint, int delta)
-    {
-        if (delta == 0)
-        {
-            return false;
-        }
+    private bool TryRouteDetachedMouseWheel(NativePoint screenPoint, int delta) => pictureInPicture.TryRouteDetachedMouseWheel(screenPoint, delta);
 
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (window.TryRouteMouseWheel(screenPoint.X, screenPoint.Y, delta))
-            {
-                return true;
-            }
-        }
+    private bool TryBeginDetachedResizeFromScreenClick(NativePoint screenPoint) => pictureInPicture.TryBeginDetachedResizeFromScreenClick(screenPoint);
 
-        return false;
-    }
+    private bool TryBeginDetachedVideoMoveFromScreenClick(NativePoint screenPoint) => pictureInPicture.TryBeginDetachedVideoMoveFromScreenClick(screenPoint);
 
-    private bool TryBeginDetachedResizeFromScreenClick(NativePoint screenPoint)
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (window.TryBeginResizeFromScreenClick(screenPoint.X, screenPoint.Y))
-            {
-                return true;
-            }
-        }
+    private bool TryContinueDetachedVideoMove(NativePoint screenPoint) => pictureInPicture.TryContinueDetachedVideoMove(screenPoint);
 
-        return false;
-    }
+    private void CancelDetachedVideoMoveCandidates() => pictureInPicture.CancelDetachedVideoMoveCandidates();
 
-    private bool TryBeginDetachedVideoMoveFromScreenClick(NativePoint screenPoint)
-    {
-        var started = false;
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            started |= window.TryBeginVideoMoveFromScreenClick(screenPoint.X, screenPoint.Y);
-        }
-
-        return started;
-    }
-
-    private bool TryContinueDetachedVideoMove(NativePoint screenPoint)
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (window.HasVideoMoveCandidate &&
-                window.TryContinueVideoMove(screenPoint.X, screenPoint.Y))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private void CancelDetachedVideoMoveCandidates()
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            window.CancelVideoMoveCandidate();
-        }
-    }
-
-    private bool TryOpenDetachedVideoContextMenu(NativePoint screenPoint)
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (window.TryOpenVideoContextMenu(screenPoint.X, screenPoint.Y))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private bool TryOpenDetachedVideoContextMenu(NativePoint screenPoint) => pictureInPicture.TryOpenDetachedVideoContextMenu(screenPoint);
 
     private bool TryRouteNativeOverlayWheel(StreamTabViewModel tab, NativePoint screenPoint, int delta)
     {
@@ -3335,59 +2323,7 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private void ScrollDockedChat(int delta)
-    {
-        EnsureDockedChatScrollViewer();
-        var scrollViewer = dockedChatScrollViewer;
-        if (scrollViewer is null)
-        {
-            return;
-        }
-
-        var notches = delta / (double)Mouse.MouseWheelDeltaForOneLine;
-        var targetOffset = Math.Clamp(
-            scrollViewer.VerticalOffset - notches * ChatPixelsPerWheelNotch,
-            0,
-            scrollViewer.ScrollableHeight);
-
-        if (IsDockedChatAtBottom(scrollViewer, targetOffset) && !dockedChatScrollThumbDragging)
-        {
-            LockDockedChatToBottom();
-        }
-        else
-        {
-            dockedChatForceScrollPending = false;
-            dockedChatManualScrollOverride = true;
-            dockedChatShouldFollowBottom = false;
-        }
-
-        scrollViewer.ScrollToVerticalOffset(targetOffset);
-        UpdateDockedChatManualScrollState(scrollViewer, targetOffset);
-    }
-
-    private void ScrollDockedChatToBottom()
-    {
-        if (!DockedChatListBox.IsLoaded)
-        {
-            return;
-        }
-
-        DockedChatListBox.UpdateLayout();
-        EnsureDockedChatScrollViewer();
-        var scrollViewer = dockedChatScrollViewer;
-        if (scrollViewer is null)
-        {
-            return;
-        }
-
-        scrollViewer.ScrollToVerticalOffset(scrollViewer.ScrollableHeight);
-        LockDockedChatToBottom();
-    }
-
-    private static bool IsDockedChatAtBottom(ScrollViewer scrollViewer, double verticalOffset)
-    {
-        return scrollViewer.ScrollableHeight - verticalOffset <= ChatBottomFollowTolerance;
-    }
+    private void ScrollDockedChat(int delta) => dockedChatController.ScrollDockedChat(delta);
 
     private void ScrollTabs(int delta)
     {
@@ -3607,7 +2543,6 @@ public partial class MainWindow : Window
     {
         return NativeOverlaySizing.ScaleReferencePixels(videoHeight, value);
     }
-
 
     private static bool TryReadIntFile(string path, out int[] values)
     {
@@ -3883,267 +2818,31 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void FullscreenButton_Click(object sender, RoutedEventArgs e)
-    {
-        ToggleFullscreenMode(GetFullscreenButtonMode());
-    }
+    private void FullscreenButton_Click(object sender, RoutedEventArgs e) => windowMode.FullscreenButton_Click(sender, e);
 
-    private void TheatreButton_Click(object sender, RoutedEventArgs e)
-    {
-        ToggleFullscreenMode(FullscreenMode.Theatre);
-    }
+    private void TheatreButton_Click(object sender, RoutedEventArgs e) => windowMode.TheatreButton_Click(sender, e);
 
-    private FullscreenMode GetFullscreenButtonMode()
-    {
-        return viewModel?.IsCurrentVideoViewMultiStream() == true
-            ? FullscreenMode.MultiView
-            : FullscreenMode.StreamOnly;
-    }
+    internal FullscreenMode GetFullscreenButtonMode() => windowMode.GetFullscreenButtonMode();
 
-    private void ToggleFullscreenMode(FullscreenMode requestedMode)
-    {
-        if (fullscreen && fullscreenMode == requestedMode)
-        {
-            ExitFullscreenMode();
-            return;
-        }
+    internal void ToggleFullscreenMode(FullscreenMode requestedMode) => windowMode.ToggleFullscreenMode(requestedMode);
 
-        if (!fullscreen)
-        {
-            EnterFullscreenWindow();
-        }
+    private void ApplyFullscreenSelectedTabState() => windowMode.ApplyFullscreenSelectedTabState();
 
-        ApplyFullscreenMode(requestedMode);
-    }
+    internal void ApplyTheatreModeChatToSelectedTab() => windowMode.ApplyTheatreModeChatToSelectedTab();
 
-    private void EnterFullscreenWindow()
-    {
-        previousWindowState = WindowState;
-        previousWindowStyle = WindowStyle;
-        previousResizeMode = ResizeMode;
-        previousWindowBounds = GetRestorableWindowBounds();
-        previousTopmost = Topmost;
-        previousTitleRowHeight = TitleRow.Height;
-        previousTopControlsRowHeight = TopControlsRow.Height;
+    internal void ExitFullscreenMode() => windowMode.ExitFullscreenMode();
 
-        CaptureFullscreenChatState();
+    private void MarkTaskbarFullscreen(bool force = false) => windowMode.MarkTaskbarFullscreen(force);
 
-        if (viewModel is not null)
-        {
-            viewModel.IsSettingsOpen = false;
-        }
+    private bool ShouldMarkTaskbarFullscreen() => windowMode.ShouldMarkTaskbarFullscreen();
 
-        TitleBar.Visibility = Visibility.Collapsed;
-        TopControlsBar.Visibility = Visibility.Collapsed;
-        TitleRow.Height = new GridLength(0);
-        TopControlsRow.Height = new GridLength(0);
-        WindowStyle = WindowStyle.None;
-        ResizeMode = ResizeMode.NoResize;
-        fullscreen = true;
-        ApplyWindowChromeHitTestState();
-        Topmost = false;
-        WindowState = WindowState.Normal;
-        Activate();
-    }
+    private void ClearTaskbarFullscreen() => windowMode.ClearTaskbarFullscreen();
 
-    private void ApplyFullscreenMode(FullscreenMode mode)
-    {
-        fullscreenMode = mode;
-        ApplyFullscreenWindowBounds(mode);
-        if (viewModel is not null)
-        {
-            var isVideoFullscreen = mode is FullscreenMode.StreamOnly or FullscreenMode.MultiView;
-            viewModel.IsVideoFullscreenActive = isVideoFullscreen;
-            viewModel.IsStreamOnlyFullscreenActive = mode == FullscreenMode.StreamOnly;
-        }
+    internal bool ToggleStreamFullscreenFromVideoDoubleClick() => windowMode.ToggleStreamFullscreenFromVideoDoubleClick();
 
-        if (mode == FullscreenMode.Theatre)
-        {
-            ApplyTheatreModeChatToSelectedTab();
-            return;
-        }
-    }
+    internal bool TryToggleDetachedStreamFullscreenFromVideoDoubleClick(NativePoint screenPoint) => pictureInPicture.TryToggleDetachedStreamFullscreenFromVideoDoubleClick(screenPoint);
 
-    private void ApplyFullscreenSelectedTabState()
-    {
-        if (fullscreenMode == FullscreenMode.Theatre)
-        {
-            ApplyTheatreModeChatToSelectedTab();
-        }
-    }
-
-    private void ApplyTheatreModeChatToSelectedTab()
-    {
-        if (viewModel is null)
-        {
-            return;
-        }
-
-        var theatreChatTabs = viewModel.GetTheatreModeChatTargetTabs();
-        foreach (var tab in theatreChatTabs)
-        {
-            CaptureFullscreenChatVisibility(tab);
-        }
-
-        viewModel.ApplyTheatreModeDockedChat(theatreChatTabs);
-        LockDockedChatToBottom();
-        QueueDockedChatScrollToBottom(force: true);
-    }
-
-    private void ApplyFullscreenWindowBounds(FullscreenMode mode)
-    {
-        if (!fullscreen)
-        {
-            return;
-        }
-
-        ApplyWindowBounds(GetCurrentMonitorBounds(useWorkingArea: mode == FullscreenMode.Theatre));
-        MarkTaskbarFullscreen();
-    }
-
-    private void ExitFullscreenMode()
-    {
-        ClearTaskbarFullscreen();
-
-        if (viewModel is not null)
-        {
-            viewModel.IsStreamOnlyFullscreenActive = false;
-            viewModel.IsVideoFullscreenActive = false;
-        }
-
-        RestoreFullscreenChatState();
-        ResetVideoDoubleClickTracking();
-
-        TitleRow.Height = previousTitleRowHeight;
-        TopControlsRow.Height = previousTopControlsRowHeight;
-        TitleBar.Visibility = Visibility.Visible;
-        TopControlsBar.Visibility = Visibility.Visible;
-        WindowStyle = previousWindowStyle;
-        ResizeMode = previousResizeMode;
-        fullscreenMode = FullscreenMode.None;
-        fullscreen = false;
-        ApplyWindowChromeHitTestState();
-        Topmost = previousTopmost;
-        WindowState = WindowState.Normal;
-        if (previousWindowState == WindowState.Maximized)
-        {
-            WindowState = WindowState.Maximized;
-        }
-        else
-        {
-            ApplyWindowBounds(previousWindowBounds);
-            WindowState = previousWindowState == WindowState.Minimized
-                ? WindowState.Normal
-                : previousWindowState;
-        }
-
-        // Retry once after the placement transition if the shell was temporarily unavailable
-        // for the first unregistration request.
-        ClearTaskbarFullscreen();
-        UpdateResponsiveLayout();
-    }
-
-    private void MarkTaskbarFullscreen(bool force = false)
-    {
-        var handle = new WindowInteropHelper(this).Handle;
-        if (force && taskbarFullscreenWindowHandle == handle)
-        {
-            // Explorer was recreated, so its prior registration no longer exists. Drop the
-            // local cache before retrying and leave it clear if the new shell is not ready yet.
-            taskbarFullscreenWindowHandle = IntPtr.Zero;
-        }
-
-        if (handle == IntPtr.Zero || (!force && taskbarFullscreenWindowHandle == handle))
-        {
-            return;
-        }
-
-        if (taskbarFullscreenWindowHandle != IntPtr.Zero &&
-            taskbarFullscreenWindowHandle != handle)
-        {
-            ClearTaskbarFullscreen();
-            if (taskbarFullscreenWindowHandle != IntPtr.Zero)
-            {
-                return;
-            }
-        }
-
-        if (TaskbarFullscreenController.TrySetFullscreen(handle, fullscreen: true))
-        {
-            taskbarFullscreenWindowHandle = handle;
-        }
-    }
-
-    private bool ShouldMarkTaskbarFullscreen()
-    {
-        return fullscreen;
-    }
-
-    private void ClearTaskbarFullscreen()
-    {
-        var handle = taskbarFullscreenWindowHandle;
-        if (handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        if (TaskbarFullscreenController.TrySetFullscreen(handle, fullscreen: false))
-        {
-            taskbarFullscreenWindowHandle = IntPtr.Zero;
-        }
-    }
-
-    private bool ToggleStreamFullscreenFromVideoDoubleClick()
-    {
-        if (viewModel?.SelectedTab is null)
-        {
-            return false;
-        }
-
-        if (fullscreen)
-        {
-            ExitFullscreenMode();
-        }
-        else
-        {
-            ToggleFullscreenMode(FullscreenMode.StreamOnly);
-        }
-
-        return true;
-    }
-
-    private bool TryToggleDetachedStreamFullscreenFromVideoDoubleClick(NativePoint screenPoint)
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (!window.TryToggleStreamFullscreenFromScreenClick(screenPoint.X, screenPoint.Y))
-            {
-                continue;
-            }
-
-            if (window.ActiveTab is { } activeTab && viewModel?.Tabs.Contains(activeTab) == true)
-            {
-                viewModel.ActivatePictureInPictureTab(activeTab);
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private bool TryActivateDetachedVideoTabFromScreenClick(NativePoint screenPoint)
-    {
-        foreach (var window in detachedWindows.Values.Distinct().ToArray())
-        {
-            if (window.TryActivateTabFromScreenClick(screenPoint.X, screenPoint.Y))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private bool TryActivateDetachedVideoTabFromScreenClick(NativePoint screenPoint) => pictureInPicture.TryActivateDetachedVideoTabFromScreenClick(screenPoint);
 
     internal bool TryActivateVideoTabFromScreenClick(int screenX, int screenY)
     {
@@ -4220,76 +2919,7 @@ public partial class MainWindow : Window
             includeOwnedPopups: false);
     }
 
-    private void CaptureFullscreenChatState()
-    {
-        if (fullscreenChatStateCaptured)
-        {
-            return;
-        }
-
-        fullscreenChatStateCaptured = true;
-        fullscreenChatVisibility.Clear();
-        fullscreenDockedChatPanelVisibility.Clear();
-        previousChatLayout = viewModel?.Settings.Chat.Layout;
-        if (viewModel?.SelectedTab is { } tab)
-        {
-            CaptureFullscreenChatVisibility(tab);
-        }
-    }
-
-    private void CaptureFullscreenChatVisibility(StreamTabViewModel tab)
-    {
-        if (!fullscreenChatVisibility.ContainsKey(tab))
-        {
-            fullscreenChatVisibility[tab] = tab.IsChatVisible;
-        }
-
-        if (!fullscreenDockedChatPanelVisibility.ContainsKey(tab))
-        {
-            fullscreenDockedChatPanelVisibility[tab] = tab.IsDockedChatPanelVisible;
-        }
-    }
-
-    private void RestoreFullscreenChatState()
-    {
-        if (!fullscreenChatStateCaptured)
-        {
-            return;
-        }
-
-        if (viewModel is not null && previousChatLayout is { } chatLayout)
-        {
-            viewModel.Settings.Chat.Layout = chatLayout;
-        }
-
-        foreach (var (tab, chatVisible) in fullscreenChatVisibility)
-        {
-            tab.IsChatVisible = chatVisible;
-        }
-
-        foreach (var (tab, chatPanelVisible) in fullscreenDockedChatPanelVisibility)
-        {
-            tab.IsDockedChatPanelVisible = chatPanelVisible;
-        }
-
-        viewModel?.ClearTheatreModeDockedChatOverrides();
-
-        fullscreenChatVisibility.Clear();
-        fullscreenDockedChatPanelVisibility.Clear();
-        previousChatLayout = null;
-        fullscreenChatStateCaptured = false;
-    }
-
-    private void ApplyWindowChromeHitTestState()
-    {
-        if (WindowChrome.GetWindowChrome(this) is { } chrome)
-        {
-            chrome.CaptionHeight = fullscreen ? 0 : TitleBarChromeCaptionHeight * chromeScale.ScaleY;
-            chrome.ResizeBorderThickness = fullscreen || WindowState == WindowState.Maximized
-                ? new Thickness(0)
-                : WindowChromeResizeBorderThickness;
-        }
-    }
+    private void ApplyWindowChromeHitTestState() => windowMode.ApplyWindowChromeHitTestState();
 
     private void MinimizeButton_Click(object sender, RoutedEventArgs e)
     {
@@ -4307,207 +2937,21 @@ public partial class MainWindow : Window
         Close();
     }
 
-    private void InitializeTrayIcon()
-    {
-        if (trayIconVisible || windowHandle == IntPtr.Zero)
-        {
-            return;
-        }
+    private void InitializeTrayIcon() => windowMode.InitializeTrayIcon();
 
-        trayIconHandle = CreateTrayIconHandle(out destroyTrayIconHandle);
-        var data = CreateNotifyIconData(NifMessage | NifIcon | NifTip);
-        trayIconVisible = Shell_NotifyIcon(NimAdd, ref data);
-    }
+    private void HandleTrayIconMessage(IntPtr lParam) => windowMode.HandleTrayIconMessage(lParam);
 
-    private static IntPtr CreateTrayIconHandle(out bool destroyIcon)
-    {
-        destroyIcon = false;
-        var processPath = Environment.ProcessPath;
-        if (!string.IsNullOrWhiteSpace(processPath) &&
-            File.Exists(processPath) &&
-            ExtractIconEx(processPath, 0, out var largeIcon, out var smallIcon, 1) > 0)
-        {
-            if (smallIcon != IntPtr.Zero)
-            {
-                if (largeIcon != IntPtr.Zero)
-                {
-                    DestroyIcon(largeIcon);
-                }
+    private void HideToTray() => windowMode.HideToTray();
 
-                destroyIcon = true;
-                return smallIcon;
-            }
+    private void ShowMainWindow() => windowMode.ShowMainWindow();
 
-            if (largeIcon != IntPtr.Zero)
-            {
-                destroyIcon = true;
-                return largeIcon;
-            }
-        }
+    private void RequestApplicationExit() => windowMode.RequestApplicationExit();
 
-        return LoadIcon(IntPtr.Zero, new IntPtr(IdiApplication));
-    }
+    private void DisposeTrayIcon() => windowMode.DisposeTrayIcon();
 
-    private NotifyIconData CreateNotifyIconData(uint flags)
-    {
-        return new NotifyIconData
-        {
-            Size = Marshal.SizeOf<NotifyIconData>(),
-            WindowHandle = windowHandle,
-            Id = TrayIconId,
-            Flags = flags,
-            CallbackMessage = WmAppTrayIcon,
-            IconHandle = trayIconHandle,
-            Tip = "Twitch & Kick player",
-            State = 0,
-            StateMask = 0,
-            Info = "",
-            TimeoutOrVersion = 0,
-            InfoTitle = "",
-            InfoFlags = 0,
-            Guid = Guid.Empty,
-            BalloonIconHandle = IntPtr.Zero
-        };
-    }
+    private void ToggleMaximizeRestore() => windowMode.ToggleMaximizeRestore();
 
-    private void HandleTrayIconMessage(IntPtr lParam)
-    {
-        var mouseMessage = lParam.ToInt32();
-        if (mouseMessage is WmLeftButtonUp or WmLeftButtonDoubleClick)
-        {
-            ShowMainWindow();
-            return;
-        }
-
-        if (mouseMessage == WmRightButtonUp)
-        {
-            ShowTrayMenu();
-        }
-    }
-
-    private void ShowTrayMenu()
-    {
-        var menu = CreatePopupMenu();
-        if (menu == IntPtr.Zero)
-        {
-            return;
-        }
-
-        try
-        {
-            AppendMenu(menu, MfString, new UIntPtr((uint)TrayCommandOpen), "Open");
-            AppendMenu(menu, MfSeparator, UIntPtr.Zero, null);
-            AppendMenu(menu, MfString, new UIntPtr((uint)TrayCommandExit), "Exit");
-
-            if (!GetCursorPos(out var cursorPoint))
-            {
-                return;
-            }
-
-            SetForegroundWindow(windowHandle);
-            var command = TrackPopupMenuEx(
-                menu,
-                TpmRightButton | TpmReturnCommand,
-                cursorPoint.X,
-                cursorPoint.Y,
-                windowHandle,
-                IntPtr.Zero);
-
-            if (command == TrayCommandOpen)
-            {
-                ShowMainWindow();
-            }
-            else if (command == TrayCommandExit)
-            {
-                RequestApplicationExit();
-            }
-        }
-        finally
-        {
-            DestroyMenu(menu);
-        }
-    }
-
-    private void HideToTray()
-    {
-        if (fullscreen)
-        {
-            ExitFullscreenMode();
-        }
-
-        ShowInTaskbar = false;
-        Hide();
-    }
-
-    private void ShowMainWindow()
-    {
-        if (!Dispatcher.CheckAccess())
-        {
-            DispatchToUi(ShowMainWindow);
-            return;
-        }
-
-        if (shutdownStarted)
-        {
-            return;
-        }
-
-        ShowInTaskbar = true;
-        Show();
-        if (WindowState == WindowState.Minimized)
-        {
-            WindowState = WindowState.Normal;
-        }
-
-        var wasTopmost = Topmost;
-        Topmost = true;
-        Topmost = wasTopmost;
-        Activate();
-        Focus();
-    }
-
-    private void RequestApplicationExit()
-    {
-        if (shutdownStarted)
-        {
-            return;
-        }
-
-        exitRequested = true;
-        Close();
-    }
-
-    private void DisposeTrayIcon()
-    {
-        if (trayIconVisible)
-        {
-            var data = CreateNotifyIconData(0);
-            Shell_NotifyIcon(NimDelete, ref data);
-            trayIconVisible = false;
-        }
-
-        if (trayIconHandle != IntPtr.Zero && destroyTrayIconHandle)
-        {
-            DestroyIcon(trayIconHandle);
-        }
-
-        trayIconHandle = IntPtr.Zero;
-        destroyTrayIconHandle = false;
-    }
-
-    private void ToggleMaximizeRestore()
-    {
-        WindowState = WindowState == WindowState.Maximized
-            ? WindowState.Normal
-            : WindowState.Maximized;
-        UpdateMaximizeRestoreButton();
-    }
-
-    private void UpdateMaximizeRestoreButton()
-    {
-        MaximizeRestoreButton.Content = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
-        MaximizeRestoreButton.ToolTip = WindowState == WindowState.Maximized ? "Restore" : "Maximize";
-    }
+    private void UpdateMaximizeRestoreButton() => windowMode.UpdateMaximizeRestoreButton();
 
     private void ChatInputTextBox_KeyDown(object sender, KeyEventArgs e)
     {
@@ -4614,7 +3058,7 @@ public partial class MainWindow : Window
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly struct NativePoint
+    internal readonly struct NativePoint
     {
         public NativePoint(int x, int y)
         {
@@ -4626,7 +3070,7 @@ public partial class MainWindow : Window
         public readonly int Y;
     }
 
-    private readonly struct TabStripItemBounds
+    internal readonly struct TabStripItemBounds
     {
         public TabStripItemBounds(TabStripItemViewModel item, double left, double right, double top, double bottom)
         {
@@ -4645,7 +3089,7 @@ public partial class MainWindow : Window
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct NotifyIconData
+    internal struct NotifyIconData
     {
         public int Size;
         public IntPtr WindowHandle;
@@ -4667,7 +3111,7 @@ public partial class MainWindow : Window
         public IntPtr BalloonIconHandle;
     }
 
-    private readonly struct VideoRect
+    internal readonly struct VideoRect
     {
         public VideoRect(int left, int top, int width, int height)
         {

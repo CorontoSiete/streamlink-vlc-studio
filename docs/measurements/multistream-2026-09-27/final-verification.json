@@ -1,0 +1,99 @@
+{
+  "verifiedUtc": "2026-09-27T08:44:44.133566+00:00",
+  "verifiedBaselineFiles": 1163,
+  "unchangedMeasuredBinaries": [
+    {
+      "version": "before",
+      "name": "StreamStudio.dll",
+      "sha256": "3bb61ac0a99c9473f647c9c01a2db05c4eb86caeeb804b400d1f3a1e5bf7c8cf"
+    },
+    {
+      "version": "before",
+      "name": "StreamlinkVlcStudio.Infrastructure.dll",
+      "sha256": "2f547694121e9df42d20aab35fa126934ac5a644cf904e0283987c0fb2cb76c3"
+    },
+    {
+      "version": "before",
+      "name": "StreamlinkVlcStudio.Core.dll",
+      "sha256": "8044fb40ea1b20ce6dc9d8eb8da35483bc652969b7dec5711cc833df43a84e14"
+    },
+    {
+      "version": "before",
+      "name": "StreamlinkVlcStudio.Tests.dll",
+      "sha256": "4e26fdf3f14973d7171544bbf83c9611df6d69be3520c2848a389e724c823dd6"
+    },
+    {
+      "version": "before",
+      "name": "StreamlinkVlcStudio.Tests.runtimeconfig.json",
+      "sha256": "96bc2946dff8790400d652ec7f8de7bb043e954980d59470c112788b68a1fbd3"
+    },
+    {
+      "version": "before",
+      "name": "StreamlinkVlcStudio.Tests.deps.json",
+      "sha256": "17bfed815491ac31292fb8b3115a0b789c4c3a9f38d7f8315600e6c5f4d8711e"
+    },
+    {
+      "version": "before",
+      "name": "libmyoverlay_plugin.dll",
+      "sha256": "41354c6ad4f43e5a31e1c4d4a945791fb3ce914c62c0588de1d1559d51d0fd1a"
+    },
+    {
+      "version": "before",
+      "name": "vlc_chat_overlay.exe",
+      "sha256": "26dee8d3ab1a1f1a36b69f61b6a7c8d092002ed8522cd744c964f93da3dc677d"
+    },
+    {
+      "version": "after",
+      "name": "StreamStudio.dll",
+      "sha256": "e3450db30c98603ff1fc5cd5c97541c557078b26f85a456468e252c640b6eefd"
+    },
+    {
+      "version": "after",
+      "name": "StreamlinkVlcStudio.Infrastructure.dll",
+      "sha256": "381d46669eef10174c4de13d5e66107b3a4c8203fa8e1669802618f2cdd00b15"
+    },
+    {
+      "version": "after",
+      "name": "StreamlinkVlcStudio.Core.dll",
+      "sha256": "0e4d16da4e3baea9245fe9e0c615d1b8522895f04cc755c027c608d8497c4eee"
+    },
+    {
+      "version": "after",
+      "name": "StreamlinkVlcStudio.Tests.dll",
+      "sha256": "96f8df052e6bc0b4c5cfea58f81ed40d456ed0576d67fdfae46204c322f90b27"
+    },
+    {
+      "version": "after",
+      "name": "StreamlinkVlcStudio.Tests.runtimeconfig.json",
+      "sha256": "96bc2946dff8790400d652ec7f8de7bb043e954980d59470c112788b68a1fbd3"
+    },
+    {
+      "version": "after",
+      "name": "StreamlinkVlcStudio.Tests.deps.json",
+      "sha256": "17bfed815491ac31292fb8b3115a0b789c4c3a9f38d7f8315600e6c5f4d8711e"
+    },
+    {
+      "version": "after",
+      "name": "libmyoverlay_plugin.dll",
+      "sha256": "f00754305b56235581a5dc3f978a07c3690b93615d4b12c37e8c57a12224d314"
+    },
+    {
+      "version": "after",
+      "name": "vlc_chat_overlay.exe",
+      "sha256": "26dee8d3ab1a1f1a36b69f61b6a7c8d092002ed8522cd744c964f93da3dc677d"
+    }
+  ],
+  "postMeasurementSourceChanges": [
+    {
+      "path": "docs/multistream-efficiency-2026-09-27.md",
+      "capturedSha256": "0a4b61035829694574b438a2101b5c107b7c5ae88d41d4541b6ab4665fa110e9",
+      "finalSha256": "08c9172e94d3d0f4b04ce8fa39718685019d8d93c5ed5310b56482098aca0c8a"
+    },
+    {
+      "path": "scripts/summarize-multistream.py",
+      "capturedSha256": "948e03d8989b8e85b1c9785e79841eb3eb0d6ae24c75759593c9fb49afab0e42",
+      "finalSha256": "7bfa40a6b1117b0b7e707b48e593b2cf5372ca622d50883daef70732b2589f64"
+    }
+  ],
+  "sourceChangeReason": "Report completion and additional summary validation/I/O columns; no production or test source changed after the formal matrix."
+}

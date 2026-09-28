@@ -1,0 +1,62 @@
+[
+  {
+    "trial": 0,
+    "version": "before",
+    "histories": 4,
+    "capacity": 40000,
+    "additions": 20000,
+    "elapsedSeconds": 0.7638817,
+    "cpuSeconds": 0.78125,
+    "allocatedBytes": 5125624
+  },
+  {
+    "trial": 0,
+    "version": "after",
+    "histories": 4,
+    "capacity": 40000,
+    "additions": 20000,
+    "elapsedSeconds": 0.0523499,
+    "cpuSeconds": 0.046875,
+    "allocatedBytes": 5119808
+  },
+  {
+    "trial": 1,
+    "version": "after",
+    "histories": 4,
+    "capacity": 40000,
+    "additions": 20000,
+    "elapsedSeconds": 0.0243309,
+    "cpuSeconds": 0.03125,
+    "allocatedBytes": 5119784
+  },
+  {
+    "trial": 1,
+    "version": "before",
+    "histories": 4,
+    "capacity": 40000,
+    "additions": 20000,
+    "elapsedSeconds": 0.7258468,
+    "cpuSeconds": 0.71875,
+    "allocatedBytes": 5119784
+  },
+  {
+    "trial": 2,
+    "version": "before",
+    "histories": 4,
+    "capacity": 40000,
+    "additions": 20000,
+    "elapsedSeconds": 0.7653871,
+    "cpuSeconds": 0.765625,
+    "allocatedBytes": 5119784
+  },
+  {
+    "trial": 2,
+    "version": "after",
+    "histories": 4,
+    "capacity": 40000,
+    "additions": 20000,
+    "elapsedSeconds": 0.0196073,
+    "cpuSeconds": 0.046875,
+    "allocatedBytes": 5119784
+  }
+]

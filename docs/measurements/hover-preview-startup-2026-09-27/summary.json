@@ -1,0 +1,34 @@
+[
+  {
+    "provider": "Twitch",
+    "before": [
+      2563,
+      2362,
+      2463
+    ],
+    "after": [
+      1160,
+      1169,
+      1055
+    ],
+    "before_median": 2463,
+    "after_median": 1160,
+    "reduction_percent": 52.9
+  },
+  {
+    "provider": "Kick",
+    "before": [
+      2436,
+      2332,
+      2227
+    ],
+    "after": [
+      1052,
+      1058,
+      847
+    ],
+    "before_median": 2332,
+    "after_median": 1052,
+    "reduction_percent": 54.9
+  }
+]

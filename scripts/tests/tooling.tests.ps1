@@ -8,6 +8,7 @@ $developmentExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorActio
 $developmentHadExitCode = $null -ne $developmentExitCode
 $developmentSavedExitCode = if ($developmentHadExitCode) { $developmentExitCode.Value } else { $null }
 & (Join-Path $PSScriptRoot 'development.tests.ps1')
+& (Join-Path $PSScriptRoot 'install-lifecycle.tests.ps1')
 $developmentExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
 if (($null -ne $developmentExitCode) -ne $developmentHadExitCode -or
     ($developmentHadExitCode -and $developmentExitCode.Value -ne $developmentSavedExitCode)) {

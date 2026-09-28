@@ -6,11 +6,13 @@ using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 using StreamlinkVlcStudio.App.Wpf.Chat;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using IoMemoryStream = System.IO.MemoryStream;
@@ -18,13 +20,15 @@ using WpfImage = System.Windows.Controls.Image;
 
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
 
-public sealed class DockedChatMessageTextBlock : TextBlock
+public sealed class DockedChatMessageTextBlock : RichTextBox
 {
     private static readonly Brush TimestampBrush = CreateFrozenBrush("#6F7B8C");
     private static readonly Brush UsernameFallbackBrush = CreateFrozenBrush("#8AB4F8");
     private static readonly Brush MessageBrush = CreateFrozenBrush("#E8EAED");
+    private static readonly Brush LinkBrush = CreateFrozenBrush("#8AB4F8");
     private static readonly Brush NativeOverlayMessageBrush = CreateFrozenBrush("#FFFFFF");
     private static readonly Brush NativeOverlaySystemBrush = CreateFrozenBrush("#93C5FD");
+    private static readonly Brush NativeOverlaySelectionBrush = CreateFrozenBrush("#CD2E78C9");
     private static readonly Brush[] NativeOverlayUsernameBrushes =
     [
         CreateFrozenBrush("#7DD3FC"),
@@ -108,6 +112,16 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     private bool hasNativeOverlayEmote;
     private NativeOverlayChatPresentation? nativeOverlayPresentation;
     private readonly List<AnimatedEmoteImage> animatedEmoteImages = [];
+    private readonly List<string> bodyInlineImageTexts = [];
+    private readonly ClipboardService clipboardService = new();
+    private readonly Paragraph messageParagraph = new();
+    private TextPointer? bodyStart;
+    private TextPointer? bodyEnd;
+    private TextRange? nativeOverlaySelectionRange;
+    private bool isBuildingMessageBody;
+
+    internal InlineCollection Inlines => messageParagraph.Inlines;
+    private TextPointer ContentEnd => messageParagraph.ContentEnd;
 
     public static readonly DependencyProperty MessageProperty = DependencyProperty.Register(
         nameof(Message),
@@ -124,7 +138,29 @@ public sealed class DockedChatMessageTextBlock : TextBlock
     public DockedChatMessageTextBlock()
     {
         FontFamily = ChatTextFontFamily;
-        TextWrapping = TextWrapping.Wrap;
+        IsReadOnly = true;
+        IsUndoEnabled = false;
+        IsDocumentEnabled = true;
+        Focusable = true;
+        IsTabStop = false;
+        Cursor = Cursors.IBeam;
+        Padding = new Thickness(0);
+        BorderThickness = new Thickness(0);
+        Background = Brushes.Transparent;
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+        VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
+        Document = new FlowDocument(messageParagraph)
+        {
+            PagePadding = new Thickness(0),
+            FontFamily = ChatTextFontFamily,
+            FontSize = 13,
+            Foreground = MessageBrush,
+            LineStackingStrategy = LineStackingStrategy.MaxHeight
+        };
+        messageParagraph.Margin = new Thickness(0);
+        SizeChanged += OnSizeChanged;
+        AddHandler(Keyboard.PreviewKeyDownEvent,
+            new KeyEventHandler(OnPreviewKeyDown), handledEventsToo: true);
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -143,12 +179,16 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
     internal IReadOnlyList<AnimatedEmoteImage> AnimatedEmoteImages => animatedEmoteImages;
 
+    internal TextPointer? MessageBodyStart => bodyStart;
+
+    internal TextPointer? MessageBodyEnd => bodyEnd;
+
     internal void ApplyNativeOverlayPresentation(NativeOverlayChatPresentation presentation)
     {
         nativeOverlayPresentation = presentation;
         FontFamily = new FontFamily("Segoe UI");
-        TextWrapping = TextWrapping.WrapWithOverflow;
-        LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+        Document.FontFamily = FontFamily;
+        Document.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
         Effect = new DropShadowEffect
         {
             BlurRadius = 0,
@@ -173,6 +213,9 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             }
 
             textBlock.FontSize = textBlock.ChatFontSize;
+            textBlock.Document.FontSize = textBlock.FontSize;
+            textBlock.Document.FontFamily = textBlock.FontFamily;
+            textBlock.Document.Foreground = textBlock.Foreground;
             textBlock.RebuildInlines();
         }
     }
@@ -188,6 +231,40 @@ public sealed class DockedChatMessageTextBlock : TextBlock
 
         EnsureMessageCatalogs();
         RebuildInlines();
+    }
+
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateDocumentWidth(ActualWidth);
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        UpdateDocumentWidth(availableSize.Width);
+        return base.MeasureOverride(availableSize);
+    }
+
+    private void UpdateDocumentWidth(double controlWidth)
+    {
+        var availableWidth = controlWidth
+            - Padding.Left - Padding.Right
+            - BorderThickness.Left - BorderThickness.Right;
+        if (!double.IsFinite(availableWidth) || availableWidth <= 0)
+        {
+            return;
+        }
+
+        if (!double.IsFinite(Document.PageWidth)
+            || Math.Abs(Document.PageWidth - availableWidth) > 0.5)
+        {
+            Document.PageWidth = availableWidth;
+        }
+
+        if (!double.IsFinite(Document.ColumnWidth)
+            || Math.Abs(Document.ColumnWidth - availableWidth) > 0.5)
+        {
+            Document.ColumnWidth = availableWidth;
+        }
     }
 
     private void EnsureMessageCatalogs()
@@ -302,7 +379,12 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         try
         {
             animatedEmoteImages.Clear();
+            bodyInlineImageTexts.Clear();
+            bodyStart = null;
+            bodyEnd = null;
+            isBuildingMessageBody = false;
             hasNativeOverlayEmote = false;
+            ClearNativeOverlayTextSelection();
             Inlines.Clear();
             var message = Message;
             if (message is null)
@@ -321,7 +403,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             AppendBadges(message, MessageBrush);
             AppendRun(message.Username, ResolveUsernameBrush(message.Color), FontWeights.SemiBold);
             AppendRun(": ", TimestampBrush);
-            AppendMessageBody(message, MessageBrush);
+            AppendTrackedMessageBody(message, MessageBrush);
         }
         finally
         {
@@ -336,6 +418,8 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         var isSystem = string.Equals(message.Username, "system", StringComparison.OrdinalIgnoreCase);
         FontSize = presentation.GetFontSize(isSystem);
         FontWeight = isSystem ? FontWeights.Normal : FontWeights.Bold;
+        Document.FontSize = FontSize;
+        Document.FontWeight = FontWeight;
 
         var bodyBrush = isSystem ? NativeOverlaySystemBrush : NativeOverlayMessageBrush;
         var prefixBrush = isSystem
@@ -343,7 +427,7 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             : ResolveNativeOverlayUsernameBrush(message.Username);
         AppendBadges(message, bodyBrush);
         AppendRun($"{message.Username}: ", prefixBrush);
-        AppendMessageBody(message, bodyBrush, allowEmotes: !isSystem);
+        AppendTrackedMessageBody(message, bodyBrush, allowEmotes: !isSystem);
 
         var contentHeight = presentation.GetFontCellHeight(isSystem);
         if (hasNativeOverlayEmote)
@@ -351,7 +435,263 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             contentHeight = Math.Max(contentHeight, presentation.EmoteHeight);
         }
 
-        LineHeight = contentHeight + presentation.LineGap;
+        Document.LineHeight = contentHeight + presentation.LineGap;
+    }
+
+    private void AppendTrackedMessageBody(
+        ChatMessage message,
+        Brush bodyBrush,
+        bool allowEmotes = true)
+    {
+        bodyInlineImageTexts.Clear();
+        bodyStart = ContentEnd.GetPositionAtOffset(0, LogicalDirection.Backward);
+        isBuildingMessageBody = true;
+        try
+        {
+            AppendMessageBody(message, bodyBrush, allowEmotes);
+        }
+        finally
+        {
+            isBuildingMessageBody = false;
+            bodyEnd = ContentEnd;
+        }
+    }
+
+    private async void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.C || (Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        {
+            return;
+        }
+
+        // TextBlock's built-in copy includes the timestamp and sender. Keep the
+        // selection interaction native, but limit the copied range to this row's
+        // message body.
+        e.Handled = true;
+        var text = GetSelectedMessageBodyText();
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        try
+        {
+            _ = await clipboardService.TrySetTextAsync(text);
+        }
+        catch (InvalidOperationException)
+        {
+            // The WPF dispatcher is STA; this only covers clipboard teardown
+            // racing a window shutdown.
+        }
+    }
+
+    private string? GetSelectedMessageBodyText()
+    {
+        if (Message is null || bodyStart is null || bodyEnd is null)
+        {
+            return null;
+        }
+
+        var selection = Selection;
+        if (selection.IsEmpty)
+        {
+            return null;
+        }
+
+        var start = selection.Start.CompareTo(bodyStart) < 0
+            ? bodyStart
+            : selection.Start;
+        var end = selection.End.CompareTo(bodyEnd) > 0
+            ? bodyEnd
+            : selection.End;
+        if (start.CompareTo(end) >= 0)
+        {
+            return null;
+        }
+
+        return GetMessageBodyText(start, end);
+    }
+
+    internal bool TryGetMessageBodyPositionFromPoint(Point point, out TextPointer? position)
+    {
+        position = null;
+        if (bodyStart is null || bodyEnd is null)
+        {
+            return false;
+        }
+
+        var hit = GetPositionFromPoint(point, snapToText: true);
+        if (hit is null)
+        {
+            return false;
+        }
+
+        position = ClampToMessageBody(hit);
+        return true;
+    }
+
+    internal bool TryGetExternalLinkAtPoint(Point point, out Uri? uri)
+    {
+        uri = null;
+        if (bodyStart is null || bodyEnd is null)
+        {
+            return false;
+        }
+
+        var hit = GetPositionFromPoint(point, snapToText: false);
+        if (hit is null || hit.CompareTo(bodyStart) < 0 || hit.CompareTo(bodyEnd) > 0)
+        {
+            return false;
+        }
+
+        return TryGetExternalLinkAtPosition(hit, out uri);
+    }
+
+    internal bool TryGetExternalLinkAtPosition(TextPointer position, out Uri? uri)
+    {
+        uri = null;
+        if (bodyStart is null || bodyEnd is null ||
+            position.CompareTo(bodyStart) < 0 || position.CompareTo(bodyEnd) > 0)
+        {
+            return false;
+        }
+
+        if (TryGetHyperlinkUri(position, out uri))
+        {
+            return true;
+        }
+
+        var previous = position.GetNextInsertionPosition(LogicalDirection.Backward);
+        if (previous is not null && TryGetHyperlinkUri(previous, out uri))
+        {
+            return true;
+        }
+
+        var next = position.GetNextInsertionPosition(LogicalDirection.Forward);
+        return next is not null && TryGetHyperlinkUri(next, out uri);
+    }
+
+    private static bool TryGetHyperlinkUri(TextPointer position, out Uri? uri)
+    {
+        uri = null;
+        var current = position.Parent;
+        while (current is not null)
+        {
+            if (current is Hyperlink hyperlink && ChatLinkParser.IsSupportedWebUri(hyperlink.NavigateUri))
+            {
+                uri = hyperlink.NavigateUri;
+                return true;
+            }
+
+            current = LogicalTreeHelper.GetParent(current);
+        }
+
+        return false;
+    }
+
+    internal void SetNativeOverlayTextSelection(TextPointer? start, TextPointer? end)
+    {
+        ClearNativeOverlayTextSelection();
+        if (start is null || end is null || bodyStart is null || bodyEnd is null)
+        {
+            return;
+        }
+
+        start = ClampToMessageBody(start);
+        end = ClampToMessageBody(end);
+        if (start.CompareTo(end) > 0)
+        {
+            (start, end) = (end, start);
+        }
+
+        var range = new TextRange(start, end);
+        if (range.IsEmpty)
+        {
+            return;
+        }
+
+        range.ApplyPropertyValue(TextElement.BackgroundProperty, NativeOverlaySelectionBrush);
+        nativeOverlaySelectionRange = range;
+    }
+
+    internal string GetMessageBodyText(TextPointer start, TextPointer end)
+    {
+        if (bodyStart is null || bodyEnd is null)
+        {
+            return string.Empty;
+        }
+
+        start = ClampToMessageBody(start);
+        end = ClampToMessageBody(end);
+        if (start.CompareTo(end) > 0)
+        {
+            (start, end) = (end, start);
+        }
+
+        if (start.CompareTo(end) >= 0)
+        {
+            return string.Empty;
+        }
+
+        var prefix = new TextRange(bodyStart, start).Text;
+        var selected = new TextRange(start, end).Text;
+        selected = selected.TrimEnd('\r', '\n');
+        var imageIndex = prefix.Count(character => character == '\uFFFC');
+        var result = new StringBuilder(selected.Length);
+        foreach (var character in selected)
+        {
+            if (character != '\uFFFC')
+            {
+                result.Append(character);
+                continue;
+            }
+
+            if (imageIndex < bodyInlineImageTexts.Count)
+            {
+                result.Append(bodyInlineImageTexts[imageIndex]);
+            }
+
+            imageIndex++;
+        }
+
+        return result.ToString();
+    }
+
+    private TextPointer ClampToMessageBody(TextPointer position)
+    {
+        if (bodyStart is null || bodyEnd is null)
+        {
+            return position;
+        }
+
+        if (position.CompareTo(bodyStart) < 0)
+        {
+            return bodyStart;
+        }
+
+        return position.CompareTo(bodyEnd) > 0 ? bodyEnd : position;
+    }
+
+    private void ClearNativeOverlayTextSelection()
+    {
+        if (nativeOverlaySelectionRange is not { } range)
+        {
+            return;
+        }
+
+        nativeOverlaySelectionRange = null;
+        try
+        {
+            range.ApplyPropertyValue(TextElement.BackgroundProperty, Brushes.Transparent);
+        }
+        catch (ArgumentException)
+        {
+            // Rebuilding a rich-text row can invalidate the previous selection range.
+        }
+        catch (InvalidOperationException)
+        {
+            // Rebuilding a rich-text row can invalidate the previous selection range.
+        }
     }
 
     private void AppendBadges(ChatMessage message, Brush spacingBrush)
@@ -589,7 +929,34 @@ public sealed class DockedChatMessageTextBlock : TextBlock
             return;
         }
 
-        AppendRun(text, bodyBrush);
+        AppendTextWithLinks(text, bodyBrush);
+    }
+
+    private void AppendTextWithLinks(string text, Brush bodyBrush)
+    {
+        var cursor = 0;
+        foreach (var link in ChatLinkParser.FindLinks(text))
+        {
+            if (link.Start > cursor)
+            {
+                AppendRun(text[cursor..link.Start], bodyBrush);
+            }
+
+            var hyperlink = new Hyperlink(new Run(text.Substring(link.Start, link.Length)))
+            {
+                NavigateUri = link.Uri,
+                Foreground = LinkBrush,
+                TextDecorations = TextDecorations.Underline,
+                Cursor = Cursors.Hand
+            };
+            Inlines.Add(hyperlink);
+            cursor = link.Start + link.Length;
+        }
+
+        if (cursor < text.Length)
+        {
+            AppendRun(text[cursor..], bodyBrush);
+        }
     }
 
     private void AppendImage(DockedChatEmoteImage emote)
@@ -620,6 +987,11 @@ public sealed class DockedChatMessageTextBlock : TextBlock
         RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
 
         animatedEmoteImages.Add(image);
+        if (isBuildingMessageBody && image.ToolTip is string imageText)
+        {
+            bodyInlineImageTexts.Add(imageText);
+        }
+
         hasNativeOverlayEmote |= nativeOverlayPresentation is not null;
         Inlines.Add(new InlineUIContainer(image)
         {
@@ -781,6 +1153,11 @@ public sealed class DockedChatMessageTextBlock : TextBlock
                 : new Thickness(0)
         };
         RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+
+        if (isBuildingMessageBody)
+        {
+            bodyInlineImageTexts.Add(text);
+        }
 
         Inlines.Add(new InlineUIContainer(image)
         {

@@ -21,6 +21,7 @@ internal static partial class ApplicationTestCatalog
                 ("pause seekbar: native VLC first content frame from HLS starts at the held position", () => NativeReplayFirstOutputAsync(true)),
                 ("pause seekbar: native VLC restore stays silent then applies the latest volume", () => NativeReplayAudioGateAsync(false)),
                 ("pause seekbar: native VLC restore preserves a mute requested while loading", () => NativeReplayAudioGateAsync(true)),
+                ("pause seekbar: native VLC paused replacement stays silent and holds its clock", () => NativeReplayAudioGateAsync(false, startPaused: true)),
                 .. string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_RESUME_HLS_URI"))
                     ? Array.Empty<(string, Func<Task>)>()
                     : [("pause seekbar: native VLC HLS seek then pause resumes at the decoder position", () => NativeHlsReplayResumeAsync(false)),

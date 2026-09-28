@@ -1,0 +1,2 @@
+  All 1306 tests passed; 254 skipped.
+Test completed successfully.

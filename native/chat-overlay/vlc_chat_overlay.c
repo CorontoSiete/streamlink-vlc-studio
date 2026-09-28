@@ -12,9 +12,9 @@
  *               pushes chat_msg_t into g_queue and signals g_render_signal.
  *   ASSETS   -- loads optional Twitch emote/badge catalogs without delaying
  *               pipe, render, or IRC startup.
- *   RENDER   -- waits on g_render_signal (or 80 ms heartbeat); composes
- *               a fresh frame from g_queue's tail; sends it through the
- *               pipe; reconnects pipe on EOF.
+ *   RENDER   -- waits on g_render_signal (or 80 ms heartbeat); reuses
+ *               unchanged static frames, updates animation/input as before;
+ *               sends through the pipe and reconnects on EOF.
  *   WATCH    -- polls g_owner_pid every ~250 ms; exits when parent dies.
  *
  * CLI (matches the orchestrator's PowerShell overlay so it's a drop-in):
@@ -44,6 +44,7 @@
 #define INITGUID
 #include <winsock2.h>
 #include <windows.h>
+#include <shellapi.h>
 #include <wincrypt.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -89,6 +90,7 @@
 #define PLUGIN_POSITION_FILE_REL "\\vlc-overlay\\position.txt"
 
 #define BTTV_MAX_EMOTES   32768
+#define BTTV_CODE_BUCKETS (BTTV_MAX_EMOTES * 2)
 #define BTTV_CODE_MAX     192
 #define BTTV_ID_MAX       80
 #define BTTV_TYPE_MAX     8
@@ -102,6 +104,8 @@
 #define CHAT_INPUT_H      30
 #define CHAT_INPUT_GAP    6
 #define CHAT_INPUT_MARGIN 8
+#define MOVE_HANDLE_H     22
+#define MOVE_HANDLE_MARGIN 6
 #define CHAT_MIN_W        220
 #define CHAT_MIN_H        120
 #define CHAT_MAX_W        1920
@@ -158,6 +162,7 @@ static HWND             g_input_focus_hwnd = NULL;
 static DWORD            g_input_focus_pid = 0;
 static DWORD            g_keyboard_thread_id = 0;
 static HHOOK            g_keyboard_hook = NULL;
+static HWND             g_clipboard_owner_hwnd = NULL;
 
 static CRITICAL_SECTION g_irc_send_cs;
 static tls_conn_t      *g_irc_send_conn = NULL;
@@ -181,6 +186,7 @@ typedef struct {
 } chat_badge_t;
 
 typedef struct {
+    uint64_t id;
     char user[MAX_USERNAME];
     char text[MAX_MSG_TEXT];
     bool is_system;
@@ -198,7 +204,41 @@ typedef struct {
     int              count;
 } msg_queue_t;
 
+typedef struct {
+    uint64_t message_id;
+    int byte_offset;
+} text_selection_endpoint_t;
+
+typedef struct {
+    uint64_t message_id;
+    int byte_start;
+    int byte_end;
+    bool is_link;
+    int x;
+    int y;
+    int width;
+    int height;
+    int line_y;
+    int line_height;
+    int leading_x;
+    int trailing_x;
+} text_selection_hit_t;
+
+typedef struct {
+    bool selecting;
+    bool anchor_valid;
+    bool has_selection;
+    text_selection_endpoint_t anchor;
+    text_selection_endpoint_t focus;
+} text_selection_state_t;
+
 static msg_queue_t   g_queue;
+static SRWLOCK        g_text_selection_lock = SRWLOCK_INIT;
+static text_selection_hit_t *g_text_selection_hits = NULL;
+static size_t         g_text_selection_hit_count = 0;
+static size_t         g_text_selection_hit_capacity = 0;
+static text_selection_state_t g_text_selection = {0};
+static volatile LONG64 g_next_chat_message_id = 0;
 
 static char          g_channel[64]              = {0};
 static char          g_channel_display_name[MAX_CHANNEL_DISPLAY] = {0};
@@ -237,8 +277,7 @@ static bool          g_size_state_reference       = false;
 
 typedef struct {
     char     code[BTTV_CODE_MAX];
-    char     id[BTTV_ID_MAX];
-    char     image_type[BTTV_TYPE_MAX];
+    uint64_t source_generation;
     char     host[80];
     char     path[IMAGE_PATH_MAX];
     bool     local_file;
@@ -262,6 +301,9 @@ typedef struct {
 typedef struct {
     CRITICAL_SECTION cs;
     bttv_emote_t     items[BTTV_MAX_EMOTES];
+    /* Index + 1; zero is an empty bucket. Item indices stay stable for queued
+     * image loads. All reads and updates use cs, as the catalog itself does. */
+    uint32_t        code_buckets[BTTV_CODE_BUCKETS];
     int              count;
     bool             global_loaded;
     bool             channel_loaded;
@@ -283,9 +325,14 @@ typedef struct {
 #define IMAGE_LOAD_QUEUE_CAP 1024
 
 typedef struct {
+    int index;
+    uint64_t generation;
+} image_load_request_t;
+
+typedef struct {
     CRITICAL_SECTION cs;
     HANDLE           signal;
-    int              items[IMAGE_LOAD_QUEUE_CAP];
+    image_load_request_t items[IMAGE_LOAD_QUEUE_CAP];
     int              head;
     int              count;
 } image_load_queue_t;
@@ -365,6 +412,28 @@ static int utf8_valid_sequence_len(const unsigned char *s, size_t remain)
     return need;
 }
 
+static uint32_t utf8_decode_scalar(const unsigned char *s, int length)
+{
+    if (!s || length <= 0) return 0xFFFDu;
+    if (length == 1) return s[0];
+    if (length == 2) {
+        return ((uint32_t)(s[0] & 0x1Fu) << 6)
+             | (uint32_t)(s[1] & 0x3Fu);
+    }
+    if (length == 3) {
+        return ((uint32_t)(s[0] & 0x0Fu) << 12)
+             | ((uint32_t)(s[1] & 0x3Fu) << 6)
+             | (uint32_t)(s[2] & 0x3Fu);
+    }
+    if (length == 4) {
+        return ((uint32_t)(s[0] & 0x07u) << 18)
+             | ((uint32_t)(s[1] & 0x3Fu) << 12)
+             | ((uint32_t)(s[2] & 0x3Fu) << 6)
+             | (uint32_t)(s[3] & 0x3Fu);
+    }
+    return 0xFFFDu;
+}
+
 static size_t utf8_valid_prefix_bytes(const char *src, size_t max_bytes)
 {
     if (!src || max_bytes == 0) return 0;
@@ -424,6 +493,7 @@ static void queue_push_ex(msg_queue_t *q, const char *user, const char *text,
         q->head = (q->head + 1) % QUEUE_CAP;
     }
     chat_msg_t *m = &q->buf[idx];
+    m->id = (uint64_t)InterlockedIncrement64(&g_next_chat_message_id);
     copy_utf8_truncated(m->user, MAX_USERNAME, user ? user : "chat");
     copy_utf8_truncated(m->text, MAX_MSG_TEXT, text ? text : "");
     m->is_system = is_system;
@@ -470,6 +540,522 @@ static int queue_snapshot_scrolled(msg_queue_t *q, chat_msg_t *dst, int max,
     if (out_offset) *out_offset = offset;
     if (out_max_offset) *out_max_offset = max_offset;
     return n;
+}
+
+static int text_selection_endpoint_compare(text_selection_endpoint_t left,
+                                           text_selection_endpoint_t right)
+{
+    if (left.message_id < right.message_id) return -1;
+    if (left.message_id > right.message_id) return 1;
+    if (left.byte_offset < right.byte_offset) return -1;
+    if (left.byte_offset > right.byte_offset) return 1;
+    return 0;
+}
+
+static bool is_link_word_byte(unsigned char value)
+{
+    return (value >= 'a' && value <= 'z')
+        || (value >= 'A' && value <= 'Z')
+        || (value >= '0' && value <= '9')
+        || value >= 0x80u
+        || value == '_' || value == '@' || value == '.'
+        || value == '+' || value == '-';
+}
+
+static bool chat_link_prefix_at(const char *text, int text_len, int index,
+                                int *prefix_len, bool *needs_https_prefix)
+{
+    if (!text || !prefix_len || !needs_https_prefix
+        || index < 0 || index >= text_len
+        || (index > 0 && is_link_word_byte((unsigned char)text[index - 1]))) {
+        return false;
+    }
+
+    *prefix_len = 0;
+    *needs_https_prefix = false;
+    if (text_len - index >= 8
+        && _strnicmp(text + index, "https://", 8) == 0) {
+        *prefix_len = 8;
+        return true;
+    }
+    if (text_len - index >= 7
+        && _strnicmp(text + index, "http://", 7) == 0) {
+        *prefix_len = 7;
+        return true;
+    }
+    if (text_len - index >= 4
+        && _strnicmp(text + index, "www.", 4) == 0) {
+        *prefix_len = 4;
+        *needs_https_prefix = true;
+        return true;
+    }
+    return false;
+}
+
+static int count_link_byte(const char *text, int start, int end,
+                           unsigned char value)
+{
+    int count = 0;
+    for (int index = start; index < end; index++) {
+        if ((unsigned char)text[index] == value) count++;
+    }
+    return count;
+}
+
+static int trim_chat_link_end(const char *text, int start, int end)
+{
+    while (end > start) {
+        const unsigned char last = (unsigned char)text[end - 1];
+        if (last == '.' || last == ',' || last == '!' || last == '?'
+            || last == ';' || last == ':' || last == '"'
+            || last == '\'' || last == '>') {
+            end--;
+            continue;
+        }
+
+        unsigned char opening = 0;
+        if (last == ')') opening = '(';
+        else if (last == ']') opening = '[';
+        else if (last == '}') opening = '{';
+        if (opening == 0
+            || count_link_byte(text, start, end, last)
+                <= count_link_byte(text, start, end, opening)) {
+            break;
+        }
+        end--;
+    }
+    return end;
+}
+
+static bool normalize_chat_link(const char *text, int start, int end,
+                                bool needs_https_prefix,
+                                char *destination, size_t destination_cap)
+{
+    if (!text || !destination || start < 0 || end <= start
+        || destination_cap == 0) {
+        return false;
+    }
+
+    const size_t text_len = (size_t)(end - start);
+    const size_t prefix_len = needs_https_prefix ? 8u : 0u;
+    if (text_len + prefix_len >= destination_cap) return false;
+    size_t offset = 0;
+    if (needs_https_prefix) {
+        memcpy(destination, "https://", prefix_len);
+        offset = prefix_len;
+    }
+    memcpy(destination + offset, text + start, text_len);
+    offset += text_len;
+    destination[offset] = '\0';
+
+    const char *scheme_end = strstr(destination, "://");
+    if (!scheme_end) return false;
+    const size_t scheme_len = (size_t)(scheme_end - destination);
+    if (!((scheme_len == 4 && _strnicmp(destination, "http", 4) == 0)
+          || (scheme_len == 5 && _strnicmp(destination, "https", 5) == 0))) {
+        return false;
+    }
+
+    const char *host = scheme_end + 3;
+    const char *url_end = destination + offset;
+    const char *authority_end = host;
+    while (authority_end < url_end && *authority_end != '/'
+           && *authority_end != '?' && *authority_end != '#') {
+        authority_end++;
+    }
+    if (authority_end == host
+        || memchr(host, '@', (size_t)(authority_end - host)) != NULL) {
+        return false;
+    }
+
+    for (const char *cursor = destination; cursor < url_end; cursor++) {
+        const unsigned char value = (unsigned char)*cursor;
+        if (value <= 0x20u || value == 0x7Fu || value == '\\') return false;
+    }
+
+    if (*host == '[') {
+        const char *closing = memchr(host, ']', (size_t)(authority_end - host));
+        if (!closing || closing == host + 1) return false;
+        if (closing + 1 < authority_end) {
+            if (closing[1] != ':' || closing + 2 == authority_end) return false;
+            for (const char *port = closing + 2; port < authority_end; port++) {
+                if (*port < '0' || *port > '9') return false;
+            }
+        }
+        return true;
+    }
+
+    const char *host_end = authority_end;
+    const char *colon = memchr(host, ':', (size_t)(authority_end - host));
+    if (colon) {
+        if (colon == host || colon + 1 == authority_end) return false;
+        for (const char *port = colon + 1; port < authority_end; port++) {
+            if (*port < '0' || *port > '9') return false;
+        }
+        host_end = colon;
+    }
+    if (host_end == host || *host == '.' || *host == '-') return false;
+    if (host_end[-1] == '-' || host_end[-1] == '.') return false;
+    for (const char *cursor = host; cursor < host_end; cursor++) {
+        const unsigned char value = (unsigned char)*cursor;
+        if (!((value >= 'a' && value <= 'z')
+              || (value >= 'A' && value <= 'Z')
+              || (value >= '0' && value <= '9')
+              || value == '.' || value == '-'
+              || value >= 0x80u)) {
+            return false;
+        }
+    }
+
+    wchar_t wide_url[MAX_MSG_TEXT + 16];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                            destination, -1,
+                            wide_url, (int)(sizeof(wide_url) / sizeof(wide_url[0]))) <= 0) {
+        return false;
+    }
+
+    URL_COMPONENTS components = {0};
+    components.dwStructSize = sizeof(components);
+    components.dwSchemeLength = (DWORD)-1;
+    components.dwHostNameLength = (DWORD)-1;
+    components.dwUserNameLength = (DWORD)-1;
+    components.dwPasswordLength = (DWORD)-1;
+    if (!WinHttpCrackUrl(wide_url, 0, 0, &components)
+        || (components.nScheme != INTERNET_SCHEME_HTTP
+            && components.nScheme != INTERNET_SCHEME_HTTPS)
+        || components.dwHostNameLength == 0
+        || components.dwUserNameLength != 0
+        || components.dwPasswordLength != 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool find_next_chat_link(const char *text, int text_len, int search_from,
+                                int *link_start, int *link_end,
+                                char *normalized, size_t normalized_cap)
+{
+    if (!text || text_len <= 0 || !link_start || !link_end
+        || !normalized) {
+        return false;
+    }
+
+    if (search_from < 0) search_from = 0;
+    for (int index = search_from; index < text_len; index++) {
+        int prefix_len = 0;
+        bool add_https = false;
+        if (!chat_link_prefix_at(text, text_len, index, &prefix_len, &add_https)) {
+            continue;
+        }
+
+        int candidate_end = index + prefix_len;
+        while (candidate_end < text_len
+               && !isspace((unsigned char)text[candidate_end])
+               && !iscntrl((unsigned char)text[candidate_end])) {
+            candidate_end++;
+        }
+        candidate_end = trim_chat_link_end(text, index, candidate_end);
+        if (candidate_end <= index
+            || !normalize_chat_link(text, index, candidate_end, add_https,
+                                    normalized, normalized_cap)) {
+            continue;
+        }
+
+        *link_start = index;
+        *link_end = candidate_end;
+        return true;
+    }
+    return false;
+}
+
+static bool text_selection_hit_test_locked(int x, int y,
+                                           text_selection_endpoint_t *out)
+{
+    if (!out || !g_text_selection_hits || g_text_selection_hit_count == 0) {
+        return false;
+    }
+
+    bool found = false;
+    uint64_t best_score = UINT64_MAX;
+    text_selection_endpoint_t best = {0};
+    for (size_t i = 0; i < g_text_selection_hit_count; i++) {
+        const text_selection_hit_t *hit = &g_text_selection_hits[i];
+        int line_height = hit->line_height > 0 ? hit->line_height : 1;
+        int line_bottom = hit->line_y + line_height;
+        int vertical_distance = y < hit->line_y
+            ? hit->line_y - y
+            : y >= line_bottom ? y - line_bottom + 1 : 0;
+        if (vertical_distance > line_height / 2 + 1) {
+            continue;
+        }
+
+        int leading_distance = abs(x - hit->leading_x);
+        int trailing_distance = abs(x - hit->trailing_x);
+        int horizontal_distance = leading_distance < trailing_distance
+            ? leading_distance
+            : trailing_distance;
+        uint64_t score = (uint64_t)vertical_distance * 131072u
+                       + (uint64_t)horizontal_distance;
+        if (score >= best_score) {
+            continue;
+        }
+
+        best_score = score;
+        best.message_id = hit->message_id;
+        best.byte_offset = leading_distance <= trailing_distance
+            ? hit->byte_start
+            : hit->byte_end;
+        found = true;
+    }
+
+    if (found) *out = best;
+    return found;
+}
+
+static bool text_link_hit_test_locked(int x, int y,
+                                      text_selection_endpoint_t *out)
+{
+    if (!out || !g_text_selection_hits || g_text_selection_hit_count == 0) {
+        return false;
+    }
+
+    for (size_t index = 0; index < g_text_selection_hit_count; index++) {
+        const text_selection_hit_t *hit = &g_text_selection_hits[index];
+        if (!hit->is_link || hit->width <= 0 || hit->height <= 0
+            || x < hit->x || x >= hit->x + hit->width
+            || y < hit->y || y >= hit->y + hit->height) {
+            continue;
+        }
+
+        out->message_id = hit->message_id;
+        out->byte_offset = hit->byte_start;
+        return true;
+    }
+    return false;
+}
+
+static void open_chat_link_at_endpoint(text_selection_endpoint_t endpoint)
+{
+    chat_msg_t message = {0};
+    bool have_message = false;
+    EnterCriticalSection(&g_queue.cs);
+    for (int index = 0; index < g_queue.count; index++) {
+        const int slot = (g_queue.head + index) % QUEUE_CAP;
+        if (g_queue.buf[slot].id == endpoint.message_id) {
+            message = g_queue.buf[slot];
+            have_message = true;
+            break;
+        }
+    }
+    LeaveCriticalSection(&g_queue.cs);
+    if (!have_message) return;
+
+    const int text_len = (int)strlen(message.text);
+    int search_from = 0;
+    int link_start = 0;
+    int link_end = 0;
+    char normalized[MAX_MSG_TEXT + 16];
+    while (find_next_chat_link(message.text, text_len, search_from,
+                               &link_start, &link_end,
+                               normalized, sizeof(normalized))) {
+        if (endpoint.byte_offset >= link_start && endpoint.byte_offset < link_end) {
+            wchar_t wide_url[MAX_MSG_TEXT + 16];
+            if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                    normalized, -1,
+                                    wide_url, (int)(sizeof(wide_url) / sizeof(wide_url[0]))) <= 0) {
+                return;
+            }
+
+            HINSTANCE result = ShellExecuteW(NULL, L"open", wide_url,
+                                              NULL, NULL, SW_SHOWNORMAL);
+            if ((INT_PTR)result <= 32) {
+                log_msg("Could not open a link from native chat (ShellExecute result=%lld).",
+                        (long long)(INT_PTR)result);
+            }
+            return;
+        }
+        search_from = link_end;
+    }
+}
+
+static void text_selection_update_locked(int x, int y, bool finish)
+{
+    if (!g_text_selection.selecting) return;
+
+    text_selection_endpoint_t endpoint;
+    if (text_selection_hit_test_locked(x, y, &endpoint)) {
+        if (!g_text_selection.anchor_valid) {
+            g_text_selection.anchor = endpoint;
+            g_text_selection.anchor_valid = true;
+        }
+        g_text_selection.focus = endpoint;
+        g_text_selection.has_selection =
+            text_selection_endpoint_compare(g_text_selection.anchor,
+                                            g_text_selection.focus) != 0;
+    }
+
+    if (finish) g_text_selection.selecting = false;
+}
+
+static void handle_text_selection_event(uint32_t type, int32_t value)
+{
+    int x = MYO_UNPACK_SIZE_W(value);
+    int y = MYO_UNPACK_SIZE_H(value);
+    bool changed = false;
+
+    AcquireSRWLockExclusive(&g_text_selection_lock);
+    if (type == MYO_EVENT_TEXT_SELECT_CANCEL) {
+        changed = g_text_selection.selecting || g_text_selection.has_selection
+               || g_text_selection.anchor_valid;
+        memset(&g_text_selection, 0, sizeof(g_text_selection));
+    } else if (type == MYO_EVENT_TEXT_SELECT_BEGIN) {
+        memset(&g_text_selection, 0, sizeof(g_text_selection));
+        g_text_selection.selecting = true;
+        text_selection_update_locked(x, y, false);
+        changed = true;
+    } else if (type == MYO_EVENT_TEXT_SELECT_UPDATE
+               || type == MYO_EVENT_TEXT_SELECT_END) {
+        if (g_text_selection.selecting) {
+            text_selection_update_locked(
+                x, y, type == MYO_EVENT_TEXT_SELECT_END);
+            changed = true;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_text_selection_lock);
+
+    if (changed) signal_render();
+}
+
+static void handle_text_click_event(int32_t value)
+{
+    const int x = MYO_UNPACK_SIZE_W(value);
+    const int y = MYO_UNPACK_SIZE_H(value);
+    text_selection_endpoint_t endpoint = {0};
+    bool changed;
+
+    AcquireSRWLockExclusive(&g_text_selection_lock);
+    const bool hit_link = text_link_hit_test_locked(x, y, &endpoint);
+    changed = g_text_selection.selecting || g_text_selection.has_selection
+           || g_text_selection.anchor_valid;
+    memset(&g_text_selection, 0, sizeof(g_text_selection));
+    ReleaseSRWLockExclusive(&g_text_selection_lock);
+
+    if (changed) signal_render();
+    if (hit_link) open_chat_link_at_endpoint(endpoint);
+}
+
+static bool append_selected_body_bytes(char *dst, size_t dst_cap,
+                                       size_t *dst_len, const char *source,
+                                       int start, int end)
+{
+    bool pending_space = false;
+    int cursor = start;
+    while (cursor < end) {
+        unsigned char value = (unsigned char)source[cursor];
+        if (isspace(value)) {
+            if (!pending_space) {
+                if (*dst_len + 1 >= dst_cap) return false;
+                dst[(*dst_len)++] = ' ';
+                pending_space = true;
+            }
+            cursor++;
+            continue;
+        }
+
+        int step = utf8_valid_sequence_len(
+            (const unsigned char *)source + cursor,
+            (size_t)(end - cursor));
+        if (step <= 0) step = 1;
+        if (*dst_len + (size_t)step >= dst_cap) return false;
+        memcpy(dst + *dst_len, source + cursor, (size_t)step);
+        *dst_len += (size_t)step;
+        cursor += step;
+        pending_space = false;
+    }
+    return true;
+}
+
+static char *queue_copy_text_selection(const text_selection_state_t *selection,
+                                      size_t *out_len)
+{
+    if (out_len) *out_len = 0;
+    if (!selection || !selection->has_selection || selection->selecting
+        || !selection->anchor_valid) {
+        return NULL;
+    }
+
+    text_selection_endpoint_t first = selection->anchor;
+    text_selection_endpoint_t last = selection->focus;
+    if (text_selection_endpoint_compare(first, last) > 0) {
+        text_selection_endpoint_t swap = first;
+        first = last;
+        last = swap;
+    }
+    if (text_selection_endpoint_compare(first, last) == 0) return NULL;
+
+    EnterCriticalSection(&g_queue.cs);
+    int first_index = -1;
+    int last_index = -1;
+    for (int i = 0; i < g_queue.count; i++) {
+        int index = (g_queue.head + i) % QUEUE_CAP;
+        if (g_queue.buf[index].id == first.message_id) first_index = i;
+        if (g_queue.buf[index].id == last.message_id) last_index = i;
+    }
+    if (first_index < 0 || last_index < first_index) {
+        LeaveCriticalSection(&g_queue.cs);
+        return NULL;
+    }
+
+    const size_t message_count = (size_t)(last_index - first_index + 1);
+    const size_t capacity = message_count * (MAX_MSG_TEXT + 2u) + 1u;
+    char *copy = (char *)malloc(capacity);
+    if (!copy) {
+        LeaveCriticalSection(&g_queue.cs);
+        return NULL;
+    }
+
+    size_t copy_len = 0;
+    bool ok = true;
+    for (int i = first_index; i <= last_index && ok; i++) {
+        int index = (g_queue.head + i) % QUEUE_CAP;
+        const chat_msg_t *message = &g_queue.buf[index];
+        int text_len = (int)strlen(message->text);
+        int start = i == first_index ? first.byte_offset : 0;
+        int end = i == last_index ? last.byte_offset : text_len;
+        if (start < 0) start = 0;
+        if (start > text_len) start = text_len;
+        if (end < start) end = start;
+        if (end > text_len) end = text_len;
+        while (start > 0
+               && (((unsigned char)message->text[start] & 0xC0u) == 0x80u)) {
+            start--;
+        }
+        while (end > start
+               && end < text_len
+               && (((unsigned char)message->text[end] & 0xC0u) == 0x80u)) {
+            end--;
+        }
+
+        if (i > first_index) {
+            if (copy_len + 2 >= capacity) {
+                ok = false;
+                break;
+            }
+            copy[copy_len++] = '\r';
+            copy[copy_len++] = '\n';
+        }
+        ok = append_selected_body_bytes(copy, capacity, &copy_len,
+                                        message->text, start, end);
+    }
+    LeaveCriticalSection(&g_queue.cs);
+
+    if (!ok || copy_len == 0) {
+        free(copy);
+        return NULL;
+    }
+    copy[copy_len] = '\0';
+    if (out_len) *out_len = copy_len;
+    return copy;
 }
 
 static void adjust_scroll_offset(int notches) {
@@ -770,12 +1356,12 @@ static void image_load_queue_destroy(image_load_queue_t *q) {
     DeleteCriticalSection(&q->cs);
 }
 
-static bool image_load_queue_push(image_load_queue_t *q, int index) {
+static bool image_load_queue_push(image_load_queue_t *q, image_load_request_t request) {
     bool ok = false;
     EnterCriticalSection(&q->cs);
     if (q->count < IMAGE_LOAD_QUEUE_CAP) {
         int tail = (q->head + q->count) % IMAGE_LOAD_QUEUE_CAP;
-        q->items[tail] = index;
+        q->items[tail] = request;
         q->count++;
         SetEvent(q->signal);
         ok = true;
@@ -784,7 +1370,7 @@ static bool image_load_queue_push(image_load_queue_t *q, int index) {
     return ok;
 }
 
-static bool image_load_queue_pop(image_load_queue_t *q, int *out_index,
+static bool image_load_queue_pop(image_load_queue_t *q, image_load_request_t *out_request,
                                  DWORD timeout_ms)
 {
     if (WaitForSingleObject(q->signal, timeout_ms) != WAIT_OBJECT_0) {
@@ -794,7 +1380,7 @@ static bool image_load_queue_pop(image_load_queue_t *q, int *out_index,
     bool ok = false;
     EnterCriticalSection(&q->cs);
     if (q->count > 0) {
-        *out_index = q->items[q->head];
+        *out_request = q->items[q->head];
         q->head = (q->head + 1) % IMAGE_LOAD_QUEUE_CAP;
         q->count--;
         ok = true;
@@ -2428,6 +3014,7 @@ static void submit_current_input(void) {
 static void bttv_catalog_init(void) {
     InitializeCriticalSection(&g_bttv.cs);
     g_bttv.count = 0;
+    memset(g_bttv.code_buckets, 0, sizeof(g_bttv.code_buckets));
     g_bttv.global_loaded = false;
     g_bttv.channel_loaded = false;
     g_bttv.ffz_global_loaded = false;
@@ -2457,11 +3044,37 @@ static void bttv_catalog_destroy(void) {
     DeleteCriticalSection(&g_bttv.cs);
 }
 
-static int bttv_find_locked(const char *code) {
-    for (int i = 0; i < g_bttv.count; i++) {
-        if (strcmp(g_bttv.items[i].code, code) == 0) return i;
+static uint32_t fnv1a_32(const char *text);
+
+static size_t bttv_code_slot_locked(const char *code)
+{
+    _Static_assert((BTTV_CODE_BUCKETS & (BTTV_CODE_BUCKETS - 1)) == 0,
+        "The emote index requires a power-of-two bucket count");
+    size_t slot = fnv1a_32(code) & (BTTV_CODE_BUCKETS - 1);
+    /* At most half the buckets can be occupied; an empty slot always exists.
+     * Compare the complete, case-sensitive code even when hashes collide. */
+    while (g_bttv.code_buckets[slot] != 0) {
+        int index = (int)g_bttv.code_buckets[slot] - 1;
+        if (strcmp(g_bttv.items[index].code, code) == 0) break;
+        slot = (slot + 1) & (BTTV_CODE_BUCKETS - 1);
     }
-    return -1;
+    return slot;
+}
+
+static int bttv_find_locked(const char *code)
+{
+    return (int)g_bttv.code_buckets[bttv_code_slot_locked(code)] - 1;
+}
+
+static int bttv_find_or_add_locked(const char *code)
+{
+    size_t slot = bttv_code_slot_locked(code);
+    if (g_bttv.code_buckets[slot]) return (int)g_bttv.code_buckets[slot] - 1;
+    if (g_bttv.count >= BTTV_MAX_EMOTES) return -1;
+    int index = g_bttv.count++;
+    strcpy(g_bttv.items[index].code, code); /* validated by both callers */
+    g_bttv.code_buckets[slot] = (uint32_t)index + 1;
+    return index;
 }
 
 static void emote_reset_image_locked(bttv_emote_t *e) {
@@ -2497,13 +3110,10 @@ static bool emote_catalog_add_direct(const char *code, const char *host,
     }
 
     EnterCriticalSection(&g_bttv.cs);
-    int idx = bttv_find_locked(code);
+    int idx = bttv_find_or_add_locked(code);
     if (idx < 0) {
-        if (g_bttv.count >= BTTV_MAX_EMOTES) {
-            LeaveCriticalSection(&g_bttv.cs);
-            return false;
-        }
-        idx = g_bttv.count++;
+        LeaveCriticalSection(&g_bttv.cs);
+        return false;
     }
 
     bttv_emote_t *e = &g_bttv.items[idx];
@@ -2511,12 +3121,11 @@ static bool emote_catalog_add_direct(const char *code, const char *host,
                    && e->host[0]
                    && strcmp(e->host, host) == 0
                    && strcmp(e->path, path) == 0;
-    if (!same_image)
+    bool changed = !same_image || e->api_w != api_w || e->api_h != api_h;
+    if (!same_image) {
         emote_reset_image_locked(e);
-    size_t code_len = strlen(code);
-    memcpy(e->code, code, code_len + 1);
-    e->id[0] = '\0';
-    e->image_type[0] = '\0';
+        e->source_generation++;
+    }
     strcpy(e->host, host);
     strcpy(e->path, path);
     e->local_file = false;
@@ -2526,6 +3135,7 @@ static bool emote_catalog_add_direct(const char *code, const char *host,
         e->tried_image = false;
     }
     LeaveCriticalSection(&g_bttv.cs);
+    if (changed) signal_render();
     return true;
 }
 
@@ -2544,25 +3154,20 @@ static bool emote_catalog_add_file(const char *code, const char *path,
     }
 
     EnterCriticalSection(&g_bttv.cs);
-    int idx = bttv_find_locked(code);
+    int idx = bttv_find_or_add_locked(code);
     if (idx < 0) {
-        if (g_bttv.count >= BTTV_MAX_EMOTES) {
-            LeaveCriticalSection(&g_bttv.cs);
-            return false;
-        }
-        idx = g_bttv.count++;
+        LeaveCriticalSection(&g_bttv.cs);
+        return false;
     }
 
     bttv_emote_t *e = &g_bttv.items[idx];
     bool same_image = e->local_file && strcmp(e->path, path) == 0;
+    bool changed = !same_image || e->api_w != api_w || e->api_h != api_h;
     if (!same_image) {
         emote_reset_image_locked(e);
+        e->source_generation++;
     }
 
-    size_t code_len = strlen(code);
-    memcpy(e->code, code, code_len + 1);
-    e->id[0] = '\0';
-    e->image_type[0] = '\0';
     e->host[0] = '\0';
     strcpy(e->path, path);
     e->local_file = true;
@@ -2572,6 +3177,7 @@ static bool emote_catalog_add_file(const char *code, const char *path,
         e->tried_image = false;
     }
     LeaveCriticalSection(&g_bttv.cs);
+    if (changed) signal_render();
     return true;
 }
 
@@ -4354,23 +4960,64 @@ static void emote_select_animation_frame_locked(bttv_emote_t *e,
     }
 }
 
-static void bttv_finish_image_load(int index, bool tried) {
+static bool bttv_source_is_current_locked(image_load_request_t request) {
+    return request.index >= 0 && request.index < g_bttv.count
+        && g_bttv.items[request.index].source_generation == request.generation;
+}
+
+static void bttv_finish_image_load(image_load_request_t request, bool tried) {
     EnterCriticalSection(&g_bttv.cs);
-    if (index >= 0 && index < g_bttv.count) {
-        g_bttv.items[index].loading_image = false;
-        if (tried) g_bttv.items[index].tried_image = true;
+    if (bttv_source_is_current_locked(request)) {
+        g_bttv.items[request.index].loading_image = false;
+        if (tried) g_bttv.items[request.index].tried_image = true;
     }
     LeaveCriticalSection(&g_bttv.cs);
 }
 
-static bool bttv_load_image_sync(int index) {
+static bool bttv_apply_static_fallback(image_load_request_t request, const char *path) {
+    bool current;
+    EnterCriticalSection(&g_bttv.cs);
+    current = bttv_source_is_current_locked(request);
+    if (current) snprintf(g_bttv.items[request.index].path, IMAGE_PATH_MAX, "%s", path);
+    LeaveCriticalSection(&g_bttv.cs);
+    return current;
+}
+
+/* Takes ownership of decoded resources even when a replacement won the race. */
+static bool bttv_commit_image_load(image_load_request_t request, GpImage *image,
+                                    IStream *stream, UINT iw, UINT ih) {
+    bool accepted = false;
+    EnterCriticalSection(&g_bttv.cs);
+    if (bttv_source_is_current_locked(request)) {
+        bttv_emote_t *e = &g_bttv.items[request.index];
+        if (!e->image) {
+            e->image = image;
+            e->image_stream = stream;
+            e->image_w = iw;
+            e->image_h = ih;
+            emote_init_animation_locked(e);
+            accepted = true;
+        }
+        e->tried_image = true;
+        e->loading_image = false;
+    }
+    LeaveCriticalSection(&g_bttv.cs);
+    if (!accepted) {
+        GdipDisposeImage(image);
+        stream->lpVtbl->Release(stream);
+    }
+    return accepted;
+}
+
+static bool bttv_load_image_sync(image_load_request_t request) {
+    int index = request.index;
     if (!g_gdiplus_ready || index < 0) return false;
 
     char host[80];
     char path[IMAGE_PATH_MAX];
     bool local_file = false;
     EnterCriticalSection(&g_bttv.cs);
-    if (index >= g_bttv.count) {
+    if (!bttv_source_is_current_locked(request)) {
         LeaveCriticalSection(&g_bttv.cs);
         return false;
     }
@@ -4396,7 +5043,7 @@ static bool bttv_load_image_sync(int index) {
     if (local_file) {
         if (!file_read_bytes(path, HTTP_MAX_IMAGE, &bytes)) {
             log_emote_debug("local image read failed for %s", path);
-            bttv_finish_image_load(index, true);
+            bttv_finish_image_load(request, true);
             return false;
         }
     } else {
@@ -4404,7 +5051,7 @@ static bool bttv_load_image_sync(int index) {
         wchar_t wpath[IMAGE_PATH_MAX];
         if (!utf8_to_wide_path(host, whost, 80)
             || !utf8_to_wide_path(path, wpath, IMAGE_PATH_MAX)) {
-            bttv_finish_image_load(index, true);
+            bttv_finish_image_load(request, true);
             return false;
         }
 
@@ -4417,22 +5064,16 @@ static bool bttv_load_image_sync(int index) {
             retried_static = true;
             if (https_get_image_bytes(whost, wpath, host,
                                       HTTP_MAX_IMAGE, &bytes)) {
-                EnterCriticalSection(&g_bttv.cs);
-                if (index < g_bttv.count
-                    && strcmp(g_bttv.items[index].host, host) == 0) {
-                    size_t path_len = strlen(path);
-                    if (path_len >= sizeof(g_bttv.items[index].path))
-                        path_len = sizeof(g_bttv.items[index].path) - 1;
-                    memcpy(g_bttv.items[index].path, path, path_len);
-                    g_bttv.items[index].path[path_len] = '\0';
+                if (!bttv_apply_static_fallback(request, path)) {
+                    byte_buf_free(&bytes);
+                    return false;
                 }
-                LeaveCriticalSection(&g_bttv.cs);
             }
         }
         if (!bytes.data) {
             log_emote_debug("image fetch failed for %s%s%s", host, path,
                             retried_static ? " (after static fallback)" : "");
-            bttv_finish_image_load(index, true);
+            bttv_finish_image_load(request, true);
             return false;
         }
         }
@@ -4441,14 +5082,14 @@ static bool bttv_load_image_sync(int index) {
     HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, bytes.size);
     if (!hmem) {
         byte_buf_free(&bytes);
-        bttv_finish_image_load(index, true);
+        bttv_finish_image_load(request, true);
         return false;
     }
     void *dst = GlobalLock(hmem);
     if (!dst) {
         GlobalFree(hmem);
         byte_buf_free(&bytes);
-        bttv_finish_image_load(index, true);
+        bttv_finish_image_load(request, true);
         return false;
     }
     memcpy(dst, bytes.data, bytes.size);
@@ -4459,7 +5100,7 @@ static bool bttv_load_image_sync(int index) {
     HRESULT hr = CreateStreamOnHGlobal(hmem, TRUE, &stream);
     if (FAILED(hr) || !stream) {
         GlobalFree(hmem);
-        bttv_finish_image_load(index, true);
+        bttv_finish_image_load(request, true);
         return false;
     }
 
@@ -4468,7 +5109,7 @@ static bool bttv_load_image_sync(int index) {
     if (st != 0 || !image) {
         log_emote_debug("image decode failed status=%d for %s%s", (int)st, host, path);
         stream->lpVtbl->Release(stream);
-        bttv_finish_image_load(index, true);
+        bttv_finish_image_load(request, true);
         return false;
     }
 
@@ -4476,33 +5117,10 @@ static bool bttv_load_image_sync(int index) {
     GdipGetImageWidth(image, &iw);
     GdipGetImageHeight(image, &ih);
 
-    bool ok = false;
-    EnterCriticalSection(&g_bttv.cs);
-    if (index < g_bttv.count
-        && g_bttv.items[index].local_file == local_file
-        && (local_file || strcmp(g_bttv.items[index].host, host) == 0)
-        && strcmp(g_bttv.items[index].path, path) == 0) {
-        if (!g_bttv.items[index].image) {
-            g_bttv.items[index].image = image;
-            g_bttv.items[index].image_stream = stream;
-            g_bttv.items[index].image_w = iw;
-            g_bttv.items[index].image_h = ih;
-            emote_init_animation_locked(&g_bttv.items[index]);
-            ok = true;
-        }
-        g_bttv.items[index].tried_image = true;
-    }
-    if (index < g_bttv.count) {
-        g_bttv.items[index].loading_image = false;
-    }
-    LeaveCriticalSection(&g_bttv.cs);
-
-    if (!ok) {
-        GdipDisposeImage(image);
-        stream->lpVtbl->Release(stream);
-    } else if (local_file) {
+    bool ok = bttv_commit_image_load(request, image, stream, iw, ih);
+    if (ok && local_file) {
         log_emote_debug("image loaded: %s", path);
-    } else {
+    } else if (ok) {
         log_emote_debug("image loaded: %s%s", host, path);
     }
     return ok;
@@ -4515,6 +5133,7 @@ static bool bttv_preload_image_by_code(const char *code)
 
     bool ready = false;
     bool should_load = false;
+    image_load_request_t request = { index, 0 };
     EnterCriticalSection(&g_bttv.cs);
     if (index < g_bttv.count) {
         bttv_emote_t *e = &g_bttv.items[index];
@@ -4524,12 +5143,13 @@ static bool bttv_preload_image_by_code(const char *code)
         } else if (!e->tried_image && !e->loading_image) {
             e->loading_image = true;
             should_load = true;
+            request.generation = e->source_generation;
         }
     }
     LeaveCriticalSection(&g_bttv.cs);
 
     if (ready) return true;
-    return should_load && bttv_load_image_sync(index);
+    return should_load && bttv_load_image_sync(request);
 }
 
 static bool bttv_ensure_image(int index) {
@@ -4537,6 +5157,7 @@ static bool bttv_ensure_image(int index) {
 
     bool ready = false;
     bool should_queue = false;
+    image_load_request_t request = { index, 0 };
     EnterCriticalSection(&g_bttv.cs);
     if (index < g_bttv.count) {
         bttv_emote_t *e = &g_bttv.items[index];
@@ -4545,13 +5166,14 @@ static bool bttv_ensure_image(int index) {
         } else if (!e->tried_image && !e->loading_image) {
             e->loading_image = true;
             should_queue = true;
+            request.generation = e->source_generation;
         }
     }
     LeaveCriticalSection(&g_bttv.cs);
 
     if (ready) return true;
-    if (should_queue && !image_load_queue_push(&g_image_load_queue, index)) {
-        bttv_finish_image_load(index, true);
+    if (should_queue && !image_load_queue_push(&g_image_load_queue, request)) {
+        bttv_finish_image_load(request, false);
     }
     return false;
 }
@@ -4562,11 +5184,11 @@ static DWORD WINAPI image_loader_thread(LPVOID arg) {
     bool co_ready = SUCCEEDED(co_hr);
 
     while (!g_stop) {
-        int index = -1;
-        if (!image_load_queue_pop(&g_image_load_queue, &index, 250)) {
+        image_load_request_t request = { -1, 0 };
+        if (!image_load_queue_pop(&g_image_load_queue, &request, 250)) {
             continue;
         }
-        (void)bttv_load_image_sync(index);
+        (void)bttv_load_image_sync(request);
         signal_render();
     }
 
@@ -5742,16 +6364,108 @@ static bool input_foreground_context_is_active(void) {
     return true;
 }
 
+static bool text_selection_foreground_context_is_active(void)
+{
+    if (g_owner_pid == 0) return false;
+    HWND foreground = GetForegroundWindow();
+    if (!foreground) return false;
+    DWORD foreground_pid = 0;
+    GetWindowThreadProcessId(foreground, &foreground_pid);
+    return foreground_pid == g_owner_pid;
+}
+
+static bool copy_utf8_to_clipboard(const char *text, size_t text_len)
+{
+    if (!text || text_len == 0 || text_len > 1024u * 1024u
+        || !g_clipboard_owner_hwnd) {
+        return false;
+    }
+
+    int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       text, (int)text_len, NULL, 0);
+    if (wide_len <= 0) {
+        wide_len = MultiByteToWideChar(CP_UTF8, 0, text, (int)text_len,
+                                       NULL, 0);
+    }
+    if (wide_len <= 0) return false;
+
+    const SIZE_T allocation_size = ((SIZE_T)wide_len + 1u) * sizeof(wchar_t);
+    HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
+                               allocation_size);
+    if (!data) return false;
+    wchar_t *wide = (wchar_t *)GlobalLock(data);
+    if (!wide) {
+        GlobalFree(data);
+        return false;
+    }
+    int converted = MultiByteToWideChar(CP_UTF8, 0, text, (int)text_len,
+                                        wide, wide_len);
+    if (converted != wide_len) {
+        GlobalUnlock(data);
+        GlobalFree(data);
+        return false;
+    }
+    wide[wide_len] = L'\0';
+    GlobalUnlock(data);
+
+    bool opened = false;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (OpenClipboard(g_clipboard_owner_hwnd)) {
+            opened = true;
+            break;
+        }
+        Sleep(10);
+    }
+    if (!opened) {
+        GlobalFree(data);
+        return false;
+    }
+
+    bool copied = false;
+    if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, data)) {
+        copied = true;
+        data = NULL; /* The clipboard now owns the movable global block. */
+    }
+    CloseClipboard();
+    if (data) GlobalFree(data);
+    return copied;
+}
+
+static bool text_selection_copy_to_clipboard(void)
+{
+    text_selection_state_t selection;
+    AcquireSRWLockShared(&g_text_selection_lock);
+    selection = g_text_selection;
+    ReleaseSRWLockShared(&g_text_selection_lock);
+    if (!selection.has_selection || selection.selecting) return false;
+
+    size_t text_len = 0;
+    char *text = queue_copy_text_selection(&selection, &text_len);
+    if (!text) return false;
+    bool copied = copy_utf8_to_clipboard(text, text_len);
+    free(text);
+    return copied;
+}
+
 static bool input_handle_virtual_key(DWORD vk, DWORD scan_code, DWORD flags) {
-    if (!input_is_focused()) return false;
+    const bool ctrl_down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0
+                        || (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0
+                        || (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
+    const bool alt_down = (flags & LLKHF_ALTDOWN) != 0
+                       || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    if (!input_is_focused()) {
+        if (vk == 'C' && ctrl_down && !alt_down
+            && text_selection_foreground_context_is_active()) {
+            return text_selection_copy_to_clipboard();
+        }
+        return false;
+    }
 
     if (!input_foreground_context_is_active()) {
         input_set_focused(false);
         return false;
     }
 
-    const bool alt_down = (flags & LLKHF_ALTDOWN) != 0
-                       || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
     if (alt_down) {
         input_set_focused(false);
         return false;
@@ -5767,10 +6481,6 @@ static bool input_handle_virtual_key(DWORD vk, DWORD scan_code, DWORD flags) {
     if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) {
         return false;
     }
-
-    const bool ctrl_down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0
-                        || (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0
-                        || (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
 
     if (vk == VK_ESCAPE) {
         input_set_focused(false);
@@ -5836,10 +6546,21 @@ static LRESULT CALLBACK keyboard_hook_proc(int code, WPARAM wparam, LPARAM lpara
 static DWORD WINAPI keyboard_thread(LPVOID arg) {
     (void)arg;
     g_keyboard_thread_id = GetCurrentThreadId();
+    g_clipboard_owner_hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"STATIC", L"", WS_POPUP, 0, 0, 0, 0,
+        NULL, NULL, GetModuleHandleW(NULL), NULL);
+    if (!g_clipboard_owner_hwnd) {
+        log_msg("clipboard owner window unavailable (gle=%lu)", GetLastError());
+    }
     g_keyboard_hook = SetWindowsHookExA(WH_KEYBOARD_LL,
                                         keyboard_hook_proc, NULL, 0);
     if (!g_keyboard_hook) {
         log_msg("keyboard hook unavailable (gle=%lu)", GetLastError());
+        if (g_clipboard_owner_hwnd) {
+            DestroyWindow(g_clipboard_owner_hwnd);
+            g_clipboard_owner_hwnd = NULL;
+        }
         return 0;
     }
 
@@ -5851,6 +6572,10 @@ static DWORD WINAPI keyboard_thread(LPVOID arg) {
 
     UnhookWindowsHookEx(g_keyboard_hook);
     g_keyboard_hook = NULL;
+    if (g_clipboard_owner_hwnd) {
+        DestroyWindow(g_clipboard_owner_hwnd);
+        g_clipboard_owner_hwnd = NULL;
+    }
     return 0;
 }
 
@@ -6621,6 +7346,7 @@ static const COLORREF kPalette[] = {
     RGB(0xFD, 0xBA, 0x74),  /* orange */
 };
 static const COLORREF kSystemColor = RGB(0x93, 0xC5, 0xFD);  /* light blue */
+static const COLORREF kChatLinkColor = RGB(0x8A, 0xB4, 0xF8);
 static const COLORREF kShadowColor = RGB(0x00, 0x00, 0x00);
 static const COLORREF kWhiteColor  = RGB(0xFF, 0xFF, 0xFF);
 
@@ -6754,6 +7480,7 @@ typedef struct {
 
 typedef struct {
     int                 index;
+    uint64_t            source_generation;
     int                 width;
     int                 height;
     int                 frame;
@@ -6793,11 +7520,18 @@ typedef struct {
     uint64_t               text_layout_cache_clock;
     emote_render_cache_entry_t emote_render_cache[EMOTE_RENDER_CACHE_CAP];
     uint64_t               emote_render_cache_clock;
+    text_selection_hit_t  *text_selection_hit_scratch;
+    size_t                 text_selection_hit_scratch_count;
+    size_t                 text_selection_hit_scratch_capacity;
+    bool                   text_selection_hit_scratch_failed;
     /* Sticky scratch buffer for the RGBA conversion sent to the pipe. */
     uint8_t *rgba_out;
     int      rgba_cap;
     chat_msg_t *snapshot;
     bool     empty_frame_ready;
+    bool     frame_ready;
+    bool     frame_requires_heartbeat;
+    LONG     frame_generation;
 } renderer_t;
 
 static void renderer_release_directwrite(renderer_t *r)
@@ -6898,30 +7632,53 @@ failed:
     return false;
 }
 
+/* Keep normal chat panels small. Grow geometrically during a drag so pixel
+ * surfaces are not recreated for each mouse move, and fall back to the exact
+ * requested dimensions when spare capacity would exceed the protocol bound. */
+static bool renderer_surface_capacity(int width, int height,
+                                      int previous_width, int previous_height,
+                                      int *surface_width, int *surface_height,
+                                      int *surface_bytes)
+{
+    if (width <= 0 || height <= 0) return false;
+    uint64_t bytes = (uint64_t)width * (uint64_t)height * 4u;
+    if (bytes > MYO_MAX_PAYLOAD || bytes > INT_MAX) return false;
+
+    int64_t next_width = previous_width;
+    int64_t next_height = previous_height;
+    if (width > next_width) {
+        next_width += next_width / 2;
+        if (next_width < width) next_width = width;
+    }
+    if (height > next_height) {
+        next_height += next_height / 2;
+        if (next_height < height) next_height = height;
+    }
+    next_width = (next_width + 63) & ~(int64_t)63;
+    next_height = (next_height + 63) & ~(int64_t)63;
+    bytes = (uint64_t)next_width * (uint64_t)next_height * 4u;
+    if (bytes > MYO_MAX_PAYLOAD || bytes > INT_MAX) {
+        next_width = width;
+        next_height = height;
+        bytes = (uint64_t)width * (uint64_t)height * 4u;
+    }
+    *surface_width = (int)next_width;
+    *surface_height = (int)next_height;
+    *surface_bytes = (int)bytes;
+    return true;
+}
+
 static bool renderer_init(renderer_t *r, int width, int height) {
     memset(r, 0, sizeof(*r));
-    if (width <= 0 || height <= 0) return false;
-    uint64_t rgba_bytes = (uint64_t)width * (uint64_t)height * 4u;
-    if (rgba_bytes == 0 || rgba_bytes > MYO_MAX_PAYLOAD || rgba_bytes > INT_MAX) {
+    int surface_bytes;
+    if (!renderer_surface_capacity(width, height, 0, 0,
+            &r->surface_width, &r->surface_height, &surface_bytes)) {
         return false;
     }
 
     r->scale_height = current_video_height();
     r->width = width;
     r->height = height;
-    r->surface_width = scale_reference_px(CHAT_MAX_W);
-    r->surface_height = scale_reference_px(CHAT_MAX_H);
-    if (r->surface_width < width) r->surface_width = width;
-    if (r->surface_height < height) r->surface_height = height;
-    uint64_t surface_bytes = (uint64_t)r->surface_width
-                           * (uint64_t)r->surface_height * 4u;
-    if (surface_bytes == 0 || surface_bytes > MYO_MAX_PAYLOAD
-        || surface_bytes > INT_MAX) {
-        r->surface_width = width;
-        r->surface_height = height;
-        surface_bytes = rgba_bytes;
-    }
-
     HDC screen_dc = GetDC(NULL);
     r->mem_dc = CreateCompatibleDC(screen_dc);
     ReleaseDC(NULL, screen_dc);
@@ -7004,17 +7761,14 @@ static bool renderer_resize(renderer_t *r, int width, int height)
         r->width = width;
         r->height = height;
         r->empty_frame_ready = false;
+        r->frame_ready = false;
         return true;
     }
 
-    int new_surface_width = r->surface_width > width
-                          ? r->surface_width : width;
-    int new_surface_height = r->surface_height > height
-                           ? r->surface_height : height;
-    uint64_t surface_bytes = (uint64_t)new_surface_width
-                           * (uint64_t)new_surface_height * 4u;
-    if (surface_bytes == 0 || surface_bytes > MYO_MAX_PAYLOAD
-        || surface_bytes > INT_MAX) {
+    int new_surface_width, new_surface_height, surface_bytes;
+    if (!renderer_surface_capacity(width, height,
+            r->surface_width, r->surface_height,
+            &new_surface_width, &new_surface_height, &surface_bytes)) {
         return false;
     }
 
@@ -7057,6 +7811,7 @@ static bool renderer_resize(renderer_t *r, int width, int height)
     r->rgba_out = new_rgba;
     r->rgba_cap = (int)surface_bytes;
     r->empty_frame_ready = false;
+    r->frame_ready = false;
     SetBkMode(r->mem_dc, TRANSPARENT);
     return true;
 }
@@ -7065,8 +7820,10 @@ static void renderer_end_text_batch(renderer_t *r)
 {
     if (!r || !r->d2d_batch_active) return;
 
-    (void)ID2D1RenderTarget_EndDraw(
-        (ID2D1RenderTarget *)r->d2d_target, NULL, NULL);
+    if (FAILED(ID2D1RenderTarget_EndDraw(
+            (ID2D1RenderTarget *)r->d2d_target, NULL, NULL))) {
+        r->frame_requires_heartbeat = true;
+    }
     for (int i = 0; i < r->d2d_batch_brush_count; i++) {
         if (r->d2d_batch_brushes[i]) {
             ID2D1SolidColorBrush_Release(r->d2d_batch_brushes[i]);
@@ -7085,7 +7842,10 @@ static bool renderer_begin_text_batch(renderer_t *r)
     RECT target_rect = {0, 0, r->width, r->height};
     HRESULT hr = ID2D1DCRenderTarget_BindDC(
         r->d2d_target, r->mem_dc, &target_rect);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        r->frame_requires_heartbeat = true;
+        return false;
+    }
 
     ID2D1RenderTarget_SetTextAntialiasMode(
         (ID2D1RenderTarget *)r->d2d_target,
@@ -7119,7 +7879,10 @@ static ID2D1SolidColorBrush *renderer_text_batch_brush(renderer_t *r,
         &brush_color,
         NULL,
         &brush);
-    if (FAILED(hr) || !brush) return NULL;
+    if (FAILED(hr) || !brush) {
+        r->frame_requires_heartbeat = true;
+        return NULL;
+    }
 
     int index = r->d2d_batch_brush_count++;
     r->d2d_batch_colors[index] = color;
@@ -7148,6 +7911,7 @@ static void renderer_destroy(renderer_t *r) {
     if (r->font_sys) DeleteObject(r->font_sys);
     DeleteDC(r->mem_dc);
     free(r->rgba_out);
+    free(r->text_selection_hit_scratch);
     free(r->snapshot);
     memset(r, 0, sizeof(*r));
 }
@@ -7229,7 +7993,10 @@ static IDWriteTextLayout *create_directwrite_layout(renderer_t *r, HFONT font,
         max_width,
         max_height,
         &layout);
-    if (FAILED(hr) || !layout) return NULL;
+    if (FAILED(hr) || !layout) {
+        r->frame_requires_heartbeat = true;
+        return NULL;
+    }
     return layout;
 }
 
@@ -7328,7 +8095,10 @@ static bool draw_directwrite_layout(renderer_t *r,
         RECT target_rect = {0, 0, r->width, r->height};
         hr = ID2D1DCRenderTarget_BindDC(
             r->d2d_target, r->mem_dc, &target_rect);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            r->frame_requires_heartbeat = true;
+            return false;
+        }
 
         D2D1_COLOR_F brush_color = {
             (FLOAT)GetRValue(color) / 255.0f,
@@ -7341,7 +8111,10 @@ static bool draw_directwrite_layout(renderer_t *r,
             &brush_color,
             NULL,
             &brush);
-        if (FAILED(hr) || !brush) return false;
+        if (FAILED(hr) || !brush) {
+            r->frame_requires_heartbeat = true;
+            return false;
+        }
 
         ID2D1RenderTarget_SetTextAntialiasMode(
             (ID2D1RenderTarget *)r->d2d_target,
@@ -7376,6 +8149,7 @@ static bool draw_directwrite_layout(renderer_t *r,
         hr = ID2D1RenderTarget_EndDraw(
             (ID2D1RenderTarget *)r->d2d_target, NULL, NULL);
         ID2D1SolidColorBrush_Release(brush);
+        if (FAILED(hr)) r->frame_requires_heartbeat = true;
         return SUCCEEDED(hr);
     }
     return true;
@@ -7408,7 +8182,10 @@ static int measure_directwrite_text_width(renderer_t *r, HFONT font,
     int cached_width = 0;
     IDWriteTextLayout *layout = renderer_find_text_layout(
         r, font, text, text_len, &cached_width);
-    if (layout) return cached_width;
+    if (layout) {
+        IDWriteTextLayout_Release(layout);
+        return cached_width;
+    }
 
     layout = create_directwrite_layout(r, font, text, text_len,
                                        32768.0f, 4096.0f);
@@ -7418,6 +8195,7 @@ static int measure_directwrite_text_width(renderer_t *r, HFONT font,
     memset(&metrics, 0, sizeof(metrics));
     HRESULT hr = IDWriteTextLayout_GetMetrics(layout, &metrics);
     if (FAILED(hr)) {
+        r->frame_requires_heartbeat = true;
         IDWriteTextLayout_Release(layout);
         return 0;
     }
@@ -7540,6 +8318,13 @@ typedef struct {
     run_type_t type;
     wchar_t    text[384];
     int        text_len;
+    bool       is_body_content;
+    bool       is_link;
+    bool       is_collapsed_body_space;
+    int        body_byte_start;
+    int        body_byte_end;
+    const char *body_source;
+    int        body_source_len;
     int        emote_index;
     badge_icon_t badge_icon;
     int        w;
@@ -7553,6 +8338,7 @@ typedef struct {
 typedef struct {
     int  x;
     int  draw_y;
+    int  line_y;
     bool visible;
 } layout_run_position_t;
 
@@ -7924,12 +8710,12 @@ static void draw_badge_run(renderer_t *r, const layout_run_t *run,
 }
 
 static emote_render_cache_entry_t *renderer_find_emote_cache(
-    renderer_t *r, int index, int w, int h, int frame, const GpImage *image)
+    renderer_t *r, int index, int w, int h, int frame, const GpImage *image, uint64_t generation)
 {
     if (!r || !image || w <= 0 || h <= 0) return NULL;
     for (int i = 0; i < EMOTE_RENDER_CACHE_CAP; i++) {
         emote_render_cache_entry_t *entry = &r->emote_render_cache[i];
-        if (!entry->pixels || entry->index != index
+        if (!entry->pixels || entry->index != index || entry->source_generation != generation
             || entry->width != w || entry->height != h
             || entry->frame != frame || entry->image != image) {
             continue;
@@ -7942,7 +8728,7 @@ static emote_render_cache_entry_t *renderer_find_emote_cache(
 
 static void renderer_store_emote_cache(renderer_t *r, int index,
                                         int w, int h, int frame,
-                                        const GpImage *image,
+                                        const GpImage *image, uint64_t generation,
                                         const uint8_t *pixels,
                                         size_t pixel_bytes)
 {
@@ -7956,7 +8742,7 @@ static void renderer_store_emote_cache(renderer_t *r, int index,
     uint64_t oldest = UINT64_MAX;
     for (int i = 0; i < EMOTE_RENDER_CACHE_CAP; i++) {
         emote_render_cache_entry_t *entry = &r->emote_render_cache[i];
-        if (entry->pixels && entry->index == index
+        if (entry->pixels && entry->index == index && entry->source_generation == generation
             && entry->width == w && entry->height == h
             && entry->frame == frame && entry->image == image) {
             slot = i;
@@ -7979,6 +8765,7 @@ static void renderer_store_emote_cache(renderer_t *r, int index,
     emote_render_cache_entry_t *entry = &r->emote_render_cache[slot];
     free(entry->pixels);
     entry->index = index;
+    entry->source_generation = generation;
     entry->width = w;
     entry->height = h;
     entry->frame = frame;
@@ -8034,19 +8821,22 @@ static void draw_bttv_emote(renderer_t *r, int index, int x, int y, int w, int h
     if (index < 0 || w <= 0 || h <= 0) return;
 
     const GpImage *image = NULL;
+    uint64_t generation = 0;
     int frame = -1;
     EnterCriticalSection(&g_bttv.cs);
     if (index < g_bttv.count && g_bttv.items[index].image) {
         bttv_emote_t *e = &g_bttv.items[index];
+        if (e->animated && e->frame_count > 1) r->frame_requires_heartbeat = true;
         emote_select_animation_frame_locked(e, occurrence_started_ms);
         image = e->image;
+        generation = e->source_generation;
         frame = e->animated ? (int)e->current_frame : -1;
     }
     LeaveCriticalSection(&g_bttv.cs);
     if (!image) return;
 
     emote_render_cache_entry_t *cached = renderer_find_emote_cache(
-        r, index, w, h, frame, image);
+        r, index, w, h, frame, image, generation);
     if (cached) {
         blend_bttv_emote_pixels(r, cached->pixels, x, y, w, h);
         return;
@@ -8056,13 +8846,17 @@ static void draw_bttv_emote(renderer_t *r, int index, int x, int y, int w, int h
     if (pixel_bytes == 0 || pixel_bytes > SIZE_MAX / 2u) return;
 
     uint8_t *tmp = (uint8_t *)calloc(pixel_bytes, 1);
-    if (!tmp) return;
+    if (!tmp) {
+        r->frame_requires_heartbeat = true;
+        return;
+    }
 
     GpBitmap *bmp = NULL;
     GpStatus st = GdipCreateBitmapFromScan0(w, h, w * 4,
                                             PixelFormat32bppPARGB,
                                             tmp, &bmp);
     if (st != 0 || !bmp) {
+        r->frame_requires_heartbeat = true;
         free(tmp);
         return;
     }
@@ -8070,6 +8864,7 @@ static void draw_bttv_emote(renderer_t *r, int index, int x, int y, int w, int h
     GpGraphics *g = NULL;
     st = GdipGetImageGraphicsContext((GpImage *)bmp, &g);
     if (st != 0 || !g) {
+        r->frame_requires_heartbeat = true;
         GdipDisposeImage((GpImage *)bmp);
         free(tmp);
         return;
@@ -8086,13 +8881,14 @@ static void draw_bttv_emote(renderer_t *r, int index, int x, int y, int w, int h
         bttv_emote_t *e = &g_bttv.items[index];
         emote_select_animation_frame_locked(e, occurrence_started_ms);
         image = e->image;
+        generation = e->source_generation;
         frame = e->animated ? (int)e->current_frame : -1;
-        cached = renderer_find_emote_cache(r, index, w, h, frame, image);
+        cached = renderer_find_emote_cache(r, index, w, h, frame, image, generation);
         if (cached) {
             cached_pixels = cached->pixels;
         } else {
-            GdipDrawImageRectI(g, (GpImage *)image, 0, 0, w, h);
-            rendered = true;
+            rendered = GdipDrawImageRectI(g, (GpImage *)image, 0, 0, w, h) == 0;
+            if (!rendered) r->frame_requires_heartbeat = true;
         }
     }
     LeaveCriticalSection(&g_bttv.cs);
@@ -8102,7 +8898,7 @@ static void draw_bttv_emote(renderer_t *r, int index, int x, int y, int w, int h
     if (cached_pixels) {
         blend_bttv_emote_pixels(r, cached_pixels, x, y, w, h);
     } else if (rendered) {
-        renderer_store_emote_cache(r, index, w, h, frame, image,
+        renderer_store_emote_cache(r, index, w, h, frame, image, generation,
                                     tmp, pixel_bytes);
         blend_bttv_emote_pixels(r, tmp, x, y, w, h);
     }
@@ -8146,6 +8942,7 @@ static int add_text_run(renderer_t *r, layout_run_t *runs, int count, int cap,
             DWRITE_TEXT_METRICS metrics;
             memset(&metrics, 0, sizeof(metrics));
             if (FAILED(IDWriteTextLayout_GetMetrics(layout, &metrics))) {
+                r->frame_requires_heartbeat = true;
                 IDWriteTextLayout_Release(layout);
                 goto measure_fallback;
             }
@@ -8161,6 +8958,108 @@ measure_fallback:
     }
     run->h = text_height_for_font(r, font);
     return count + 1;
+}
+
+static void mark_body_run(layout_run_t *run, int byte_start, int byte_end,
+                          const char *source, int source_len,
+                          bool collapsed_space)
+{
+    if (!run || byte_end <= byte_start || !source || source_len <= 0) return;
+    run->is_body_content = true;
+    run->is_collapsed_body_space = collapsed_space;
+    run->body_byte_start = byte_start;
+    run->body_byte_end = byte_end;
+    run->body_source = source;
+    run->body_source_len = source_len;
+}
+
+static int add_body_text_run(renderer_t *r, layout_run_t *runs,
+                             int count, int cap,
+                             const char *source, int source_len,
+                             int byte_start, int byte_end,
+                             HFONT font, COLORREF color)
+{
+    int next = add_text_run(r, runs, count, cap, source, source_len,
+                            font, color);
+    if (next > count) {
+        mark_body_run(&runs[count], byte_start, byte_end,
+                      source, source_len, false);
+    }
+    return next;
+}
+
+static int add_body_link_run(renderer_t *r, layout_run_t *runs,
+                             int count, int cap,
+                             const char *source, int source_len,
+                             int byte_start, int byte_end,
+                             HFONT font)
+{
+    int next = add_text_run(r, runs, count, cap, source, source_len,
+                            font, kChatLinkColor);
+    if (next > count) {
+        runs[count].is_link = true;
+        mark_body_run(&runs[count], byte_start, byte_end,
+                      source, source_len, false);
+    }
+    return next;
+}
+
+static int add_link_aware_body_text_runs(renderer_t *r, layout_run_t *runs,
+                                         int count, int cap,
+                                         const char *source, int source_len,
+                                         int byte_start, HFONT font,
+                                         COLORREF color)
+{
+    int cursor = 0;
+    while (cursor < source_len && count < cap) {
+        int link_start = 0;
+        int link_end = 0;
+        char normalized[MAX_MSG_TEXT + 16];
+        if (!find_next_chat_link(source, source_len, cursor,
+                                 &link_start, &link_end,
+                                 normalized, sizeof(normalized))) {
+            break;
+        }
+
+        if (link_start > cursor) {
+            count = add_body_text_run(
+                r, runs, count, cap,
+                source + cursor, link_start - cursor,
+                byte_start + cursor, byte_start + link_start,
+                font, color);
+        }
+        if (count < cap) {
+            count = add_body_link_run(
+                r, runs, count, cap,
+                source + link_start, link_end - link_start,
+                byte_start + link_start, byte_start + link_end,
+                font);
+        }
+        cursor = link_end;
+    }
+
+    if (cursor < source_len && count < cap) {
+        count = add_body_text_run(
+            r, runs, count, cap,
+            source + cursor, source_len - cursor,
+            byte_start + cursor, byte_start + source_len,
+            font, color);
+    }
+    return count;
+}
+
+static int add_body_space_run(renderer_t *r, layout_run_t *runs,
+                              int count, int cap,
+                              const char *source, int source_len,
+                              int byte_start, int byte_end,
+                              HFONT font, COLORREF color)
+{
+    int next = add_text_run(r, runs, count, cap, " ", 1, font, color);
+    if (next > count) {
+        mark_body_run(&runs[count], byte_start, byte_end,
+                      source, source_len, true);
+    }
+    return next;
 }
 
 static badge_image_run_result_t add_badge_image_run(layout_run_t *runs,
@@ -8299,6 +9198,7 @@ static int add_badge_run(renderer_t *r, layout_run_t *runs, int count, int cap,
 static int add_emote_or_text_run(renderer_t *r, layout_run_t *runs,
                                  int count, int cap,
                                  const char *token, int token_len,
+                                 int byte_start, int byte_end,
                                  HFONT font, COLORREF color,
                                  bool allow_emotes, bool *has_emote)
 {
@@ -8315,6 +9215,8 @@ static int add_emote_or_text_run(renderer_t *r, layout_run_t *runs,
             run->type = RUN_EMOTE;
             run->emote_index = emote_index;
             bttv_scaled_size(emote_index, &run->w, &run->h);
+            mark_body_run(run, byte_start, byte_end,
+                          token, token_len, false);
             *has_emote = true;
             return count + 1;
         }
@@ -8323,15 +9225,20 @@ static int add_emote_or_text_run(renderer_t *r, layout_run_t *runs,
         }
     }
 
-    return add_text_run(r, runs, count, cap, token, token_len, font, color);
+    return add_link_aware_body_text_runs(
+        r, runs, count, cap, token, token_len, byte_start,
+        font, color);
 }
 
 static int add_text_segment_runs(renderer_t *r, layout_run_t *runs,
                                  int count, int cap,
+                                 const char *body_text,
                                  const char *text, int text_len,
                                  HFONT font, COLORREF color,
                                  bool allow_emotes, bool *has_emote,
-                                 bool *need_space)
+                                 bool *need_space,
+                                 int *pending_space_start,
+                                 int *pending_space_end)
 {
     const char *p = text;
     const char *end = text + text_len;
@@ -8342,20 +9249,40 @@ static int add_text_segment_runs(renderer_t *r, layout_run_t *runs,
             spaces++;
         }
         if (spaces > 0) {
+            if (!*need_space && pending_space_start) {
+                *pending_space_start = (int)(p - body_text);
+            }
+            if (pending_space_end) {
+                *pending_space_end = (int)(p - body_text) + spaces;
+            }
             *need_space = true;
             p += spaces;
         }
         if (p >= end) break;
 
         if (*need_space) {
-            count = add_text_run(r, runs, count, cap, " ", 1, font, color);
+            const int space_start = pending_space_start
+                ? *pending_space_start
+                : (int)(p - body_text);
+            const int space_end = pending_space_end
+                ? *pending_space_end
+                : space_start + 1;
+            count = add_body_space_run(
+                r, runs, count, cap,
+                body_text + space_start, space_end - space_start,
+                space_start, space_end, font, color);
             *need_space = false;
+            if (pending_space_start) *pending_space_start = -1;
+            if (pending_space_end) *pending_space_end = -1;
         }
 
         const char *start = p;
         while (p < end && !isspace((unsigned char)*p)) p++;
+        const int byte_start = (int)(start - body_text);
+        const int byte_end = (int)(p - body_text);
         count = add_emote_or_text_run(r, runs, count, cap,
                                       start, (int)(p - start),
+                                      byte_start, byte_end,
                                       font, color,
                                       allow_emotes, has_emote);
     }
@@ -8366,6 +9293,8 @@ static int add_text_segment_runs(renderer_t *r, layout_run_t *runs,
 static int add_explicit_emote_run(renderer_t *r, layout_run_t *runs,
                                   int count, int cap,
                                   const chat_emote_t *emote,
+                                  const char *source,
+                                  int byte_start, int byte_end,
                                   HFONT font, COLORREF color,
                                   bool *has_emote)
 {
@@ -8378,6 +9307,8 @@ static int add_explicit_emote_run(renderer_t *r, layout_run_t *runs,
         run->type = RUN_EMOTE;
         run->emote_index = emote_index;
         bttv_scaled_size(emote_index, &run->w, &run->h);
+        mark_body_run(run, byte_start, byte_end,
+                      source, byte_end - byte_start, false);
         *has_emote = true;
         return count + 1;
     }
@@ -8385,9 +9316,10 @@ static int add_explicit_emote_run(renderer_t *r, layout_run_t *runs,
     if (emote_index >= 0) {
         log_emote_debug("tagged but unavailable: %s", emote->code);
     }
-    return add_text_run(r, runs, count, cap,
-                        emote->code, (int)strlen(emote->code),
-                        font, color);
+    return add_body_text_run(r, runs, count, cap,
+                             source, byte_end - byte_start,
+                             byte_start, byte_end,
+                             font, color);
 }
 
 static int build_message_runs(renderer_t *r, const chat_msg_t *m,
@@ -8421,6 +9353,8 @@ static int build_message_runs(renderer_t *r, const chat_msg_t *m,
         const int text_len = (int)strlen(m->text);
         int cursor = 0;
         bool need_space = false;
+        int pending_space_start = -1;
+        int pending_space_end = -1;
 
         for (int i = 0; i < m->emote_count && count < cap; i++) {
             const chat_emote_t *emote = &m->emotes[i];
@@ -8432,34 +9366,54 @@ static int build_message_runs(renderer_t *r, const chat_msg_t *m,
             if (end > text_len) end = text_len;
 
             count = add_text_segment_runs(r, runs, count, cap,
+                                          m->text,
                                           m->text + cursor, start - cursor,
                                           font, body_color, true, has_emote,
-                                          &need_space);
+                                          &need_space,
+                                          &pending_space_start,
+                                          &pending_space_end);
             if (need_space && count < cap) {
-                count = add_text_run(r, runs, count, cap, " ", 1,
-                                     font, body_color);
+                count = add_body_space_run(
+                    r, runs, count, cap,
+                    m->text + pending_space_start,
+                    pending_space_end - pending_space_start,
+                    pending_space_start, pending_space_end,
+                    font, body_color);
                 need_space = false;
+                pending_space_start = -1;
+                pending_space_end = -1;
             }
             count = add_explicit_emote_run(r, runs, count, cap, emote,
+                                           m->text + start, start, end,
                                            font, body_color, has_emote);
             cursor = end;
             need_space = false;
+            pending_space_start = -1;
+            pending_space_end = -1;
         }
 
         if (cursor < text_len && count < cap) {
             count = add_text_segment_runs(r, runs, count, cap,
+                                          m->text,
                                           m->text + cursor, text_len - cursor,
                                           font, body_color, true, has_emote,
-                                          &need_space);
+                                          &need_space,
+                                          &pending_space_start,
+                                          &pending_space_end);
         }
         return count;
     }
 
     const char *p = m->text;
     bool need_space = false;
-    count = add_text_segment_runs(r, runs, count, cap, p, (int)strlen(p),
+    int pending_space_start = -1;
+    int pending_space_end = -1;
+    count = add_text_segment_runs(r, runs, count, cap,
+                                  m->text, p, (int)strlen(p),
                                   font, body_color,
-                                  !m->is_system, has_emote, &need_space);
+                                  !m->is_system, has_emote, &need_space,
+                                  &pending_space_start,
+                                  &pending_space_end);
 
     return count;
 }
@@ -8483,6 +9437,356 @@ static int layout_line_count(const layout_run_t *runs, int n, int max_width) {
         x += run->w;
     }
     return lines;
+}
+
+static void layout_runs_position(const layout_run_t *runs, int n,
+                                int x0, int y0, int max_width, int line_h,
+                                layout_run_position_t *positions)
+{
+    if (!runs || n <= 0 || !positions) return;
+    memset(positions, 0, (size_t)n * sizeof(*positions));
+    int x = x0;
+    int y = y0;
+    int content_h = line_h - scale_reference_px(LINE_GAP_PX);
+    int clip_right = x0 + max_width;
+
+    for (int i = 0; i < n; i++) {
+        const layout_run_t *run = &runs[i];
+        bool is_space = run->type == RUN_TEXT
+                     && run->text_len == 1
+                     && run->text[0] == L' ';
+        if (is_space && x == x0) continue;
+        if (x > x0 && x + run->w > clip_right) {
+            y += line_h;
+            x = x0;
+            if (is_space) continue;
+        }
+
+        int draw_y = y + (content_h - run->h) / 2;
+        if (draw_y < y) draw_y = y;
+
+        positions[i].x = x;
+        positions[i].draw_y = draw_y;
+        positions[i].line_y = y;
+        positions[i].visible = true;
+        x += run->w;
+    }
+}
+
+static void text_selection_hit_frame_reset(renderer_t *r)
+{
+    if (!r) return;
+    r->text_selection_hit_scratch_count = 0;
+    r->text_selection_hit_scratch_failed = false;
+}
+
+static bool text_selection_hit_frame_append(renderer_t *r,
+                                            const text_selection_hit_t *hit)
+{
+    if (!r || !hit || r->text_selection_hit_scratch_failed) return false;
+    if (r->text_selection_hit_scratch_count
+        == r->text_selection_hit_scratch_capacity) {
+        size_t next_capacity = r->text_selection_hit_scratch_capacity
+            ? r->text_selection_hit_scratch_capacity * 2u
+            : 512u;
+        if (next_capacity < r->text_selection_hit_scratch_capacity
+            || next_capacity > SIZE_MAX / sizeof(*hit)) {
+            r->text_selection_hit_scratch_failed = true;
+            return false;
+        }
+        text_selection_hit_t *next = (text_selection_hit_t *)realloc(
+            r->text_selection_hit_scratch,
+            next_capacity * sizeof(*hit));
+        if (!next) {
+            r->text_selection_hit_scratch_failed = true;
+            return false;
+        }
+        r->text_selection_hit_scratch = next;
+        r->text_selection_hit_scratch_capacity = next_capacity;
+    }
+
+    r->text_selection_hit_scratch[r->text_selection_hit_scratch_count++] = *hit;
+    return true;
+}
+
+static void text_selection_hit_frame_publish(renderer_t *r)
+{
+    if (!r) return;
+    if (r->text_selection_hit_scratch_failed) {
+        r->text_selection_hit_scratch_count = 0;
+    }
+
+    AcquireSRWLockExclusive(&g_text_selection_lock);
+    text_selection_hit_t *old_hits = g_text_selection_hits;
+    size_t old_capacity = g_text_selection_hit_capacity;
+    g_text_selection_hits = r->text_selection_hit_scratch;
+    g_text_selection_hit_count = r->text_selection_hit_scratch_count;
+    g_text_selection_hit_capacity =
+        r->text_selection_hit_scratch_capacity;
+    r->text_selection_hit_scratch = old_hits;
+    r->text_selection_hit_scratch_count = 0;
+    r->text_selection_hit_scratch_capacity = old_capacity;
+    r->text_selection_hit_scratch_failed = false;
+    ReleaseSRWLockExclusive(&g_text_selection_lock);
+}
+
+static bool text_selection_hit_is_selected(
+    const text_selection_hit_t *hit,
+    text_selection_endpoint_t first,
+    text_selection_endpoint_t last)
+{
+    if (hit->message_id < first.message_id
+        || hit->message_id > last.message_id) {
+        return false;
+    }
+    if (first.message_id == last.message_id) {
+        return hit->message_id == first.message_id
+            && hit->byte_end > first.byte_offset
+            && hit->byte_start < last.byte_offset;
+    }
+    if (hit->message_id == first.message_id) {
+        return hit->byte_end > first.byte_offset;
+    }
+    if (hit->message_id == last.message_id) {
+        return hit->byte_start < last.byte_offset;
+    }
+    return true;
+}
+
+static void draw_text_selection_highlights(renderer_t *r,
+                                           const text_selection_hit_t *hits,
+                                           size_t hit_count)
+{
+    if (!r || !hits || hit_count == 0) return;
+    text_selection_state_t selection;
+    AcquireSRWLockShared(&g_text_selection_lock);
+    selection = g_text_selection;
+    ReleaseSRWLockShared(&g_text_selection_lock);
+    if (!selection.has_selection || !selection.anchor_valid) return;
+
+    text_selection_endpoint_t first = selection.anchor;
+    text_selection_endpoint_t last = selection.focus;
+    if (text_selection_endpoint_compare(first, last) > 0) {
+        text_selection_endpoint_t swap = first;
+        first = last;
+        last = swap;
+    }
+
+    for (size_t i = 0; i < hit_count; i++) {
+        const text_selection_hit_t *hit = &hits[i];
+        if (!text_selection_hit_is_selected(hit, first, last)) continue;
+        fill_bgra_rect(r, hit->x, hit->y,
+                       hit->width > 0 ? hit->width : 1,
+                       hit->height > 0 ? hit->height : 1,
+                       RGB(0x2E, 0x78, 0xC9), 205);
+    }
+}
+
+static int round_text_coordinate(float value)
+{
+    return (int)(value >= 0.0f ? value + 0.5f : value - 0.5f);
+}
+
+static void append_text_run_selection_hits(
+    renderer_t *r, const layout_run_t *run,
+    const layout_run_position_t *position,
+    uint64_t message_id, int clip_right, int line_h)
+{
+    if (!r || !run || !position || !position->visible
+        || !run->is_body_content || run->body_byte_end <= run->body_byte_start
+        || !run->body_source || run->body_source_len <= 0) {
+        return;
+    }
+
+    if (run->type == RUN_EMOTE) {
+        text_selection_hit_t hit = {0};
+        hit.message_id = message_id;
+        hit.byte_start = run->body_byte_start;
+        hit.byte_end = run->body_byte_end;
+        hit.x = position->x;
+        hit.y = position->draw_y;
+        hit.width = run->w;
+        hit.height = run->h;
+        hit.line_y = position->line_y;
+        hit.line_height = line_h;
+        hit.leading_x = position->x;
+        hit.trailing_x = position->x + run->w;
+        text_selection_hit_frame_append(r, &hit);
+        return;
+    }
+    if (run->type != RUN_TEXT || run->text_len <= 0) return;
+
+    const int line_height = run->h > 0 ? run->h : line_h;
+    if (run->is_collapsed_body_space) {
+        int visible_width = run->w;
+        if (position->x + visible_width > clip_right) {
+            visible_width = clip_right - position->x;
+        }
+        if (visible_width <= 0) return;
+        text_selection_hit_t hit = {0};
+        hit.message_id = message_id;
+        hit.byte_start = run->body_byte_start;
+        hit.byte_end = run->body_byte_end;
+        hit.x = position->x;
+        hit.y = position->draw_y;
+        hit.width = visible_width;
+        hit.height = line_height;
+        hit.line_y = position->line_y;
+        hit.line_height = line_height;
+        hit.leading_x = position->x;
+        hit.trailing_x = position->x + visible_width;
+        text_selection_hit_frame_append(r, &hit);
+        return;
+    }
+
+    int source_byte_start[384];
+    int source_byte_end[384];
+    int text_index[384];
+    int text_units[384];
+    int char_count = 0;
+    int byte_cursor = 0;
+    int wchar_cursor = 0;
+    while (byte_cursor < run->body_source_len
+           && wchar_cursor < run->text_len
+           && char_count < (int)(sizeof(source_byte_start)
+                                 / sizeof(source_byte_start[0]))) {
+        int bytes = utf8_valid_sequence_len(
+            (const unsigned char *)run->body_source + byte_cursor,
+            (size_t)(run->body_source_len - byte_cursor));
+        if (bytes <= 0) break;
+        uint32_t scalar = utf8_decode_scalar(
+            (const unsigned char *)run->body_source + byte_cursor, bytes);
+        int units = scalar > 0xFFFFu ? 2 : 1;
+        if (wchar_cursor + units > run->text_len) break;
+
+        source_byte_start[char_count] = run->body_byte_start + byte_cursor;
+        source_byte_end[char_count] = run->body_byte_start + byte_cursor + bytes;
+        text_index[char_count] = wchar_cursor;
+        text_units[char_count] = units;
+        char_count++;
+        byte_cursor += bytes;
+        wchar_cursor += units;
+    }
+    if (char_count == 0) return;
+
+    int gdi_extent[384] = {0};
+    HFONT previous_font = (HFONT)SelectObject(r->mem_dc, run->font);
+    int fit_count = 0;
+    if (!GetTextExtentExPointW(r->mem_dc, run->text, run->text_len, 32768,
+                               &fit_count, gdi_extent, NULL)) {
+        for (int i = 0; i < run->text_len; i++) {
+            SIZE size = {0, 0};
+            GetTextExtentPoint32W(r->mem_dc, run->text, i + 1, &size);
+            gdi_extent[i] = size.cx;
+        }
+    }
+
+    size_t previous_hit_index = SIZE_MAX;
+    for (int i = 0; i < char_count; i++) {
+        int u16_start = text_index[i];
+        int u16_end = u16_start + text_units[i];
+        float leading_x = 0.0f;
+        float leading_y = 0.0f;
+        DWRITE_HIT_TEST_METRICS metrics;
+        memset(&metrics, 0, sizeof(metrics));
+        bool have_directwrite_metrics = run->dwrite_layout
+            && SUCCEEDED(IDWriteTextLayout_HitTestTextPosition(
+                run->dwrite_layout, (UINT32)u16_start, FALSE,
+                &leading_x, &leading_y, &metrics));
+
+        int relative_leading;
+        int hit_x;
+        int hit_y;
+        int hit_width;
+        int hit_height;
+        if (have_directwrite_metrics) {
+            relative_leading = round_text_coordinate(leading_x);
+            hit_x = position->x + (int)metrics.left;
+            hit_y = position->draw_y + (int)metrics.top;
+            hit_width = round_text_coordinate(metrics.width);
+            hit_height = round_text_coordinate(metrics.height);
+        } else {
+            int before = u16_start > 0 ? gdi_extent[u16_start - 1] : 0;
+            int after = u16_end > 0 ? gdi_extent[u16_end - 1] : before;
+            relative_leading = before;
+            hit_x = position->x + (before < after ? before : after);
+            hit_y = position->draw_y;
+            hit_width = abs(after - before);
+            hit_height = line_height;
+        }
+
+        if (previous_hit_index != SIZE_MAX) {
+            r->text_selection_hit_scratch[previous_hit_index].trailing_x =
+                position->x + relative_leading;
+        }
+
+        if (hit_x < position->x) {
+            hit_width -= position->x - hit_x;
+            hit_x = position->x;
+        }
+        if (hit_x + hit_width > clip_right) {
+            hit_width = clip_right - hit_x;
+        }
+        if (hit_width <= 0) continue;
+        if (hit_height <= 0) hit_height = line_height > 0 ? line_height : 1;
+
+        text_selection_hit_t hit = {0};
+        hit.message_id = message_id;
+        hit.byte_start = source_byte_start[i];
+        hit.byte_end = source_byte_end[i];
+        hit.is_link = run->is_link;
+        hit.x = hit_x;
+        hit.y = hit_y;
+        hit.width = hit_width;
+        hit.height = hit_height;
+        hit.line_y = position->line_y;
+        hit.line_height = line_h > 0 ? line_h : hit_height;
+        hit.leading_x = position->x + relative_leading;
+        hit.trailing_x = hit.leading_x;
+        if (text_selection_hit_frame_append(r, &hit)) {
+            previous_hit_index = r->text_selection_hit_scratch_count - 1u;
+        }
+    }
+
+    if (previous_hit_index != SIZE_MAX) {
+        int last_index = text_index[char_count - 1];
+        int last_units = text_units[char_count - 1];
+        if (run->dwrite_layout) {
+            FLOAT trailing_x = 0.0f;
+            FLOAT trailing_y = 0.0f;
+            DWRITE_HIT_TEST_METRICS trailing_metrics;
+            memset(&trailing_metrics, 0, sizeof(trailing_metrics));
+            if (SUCCEEDED(IDWriteTextLayout_HitTestTextPosition(
+                    run->dwrite_layout,
+                    (UINT32)(last_index + last_units - 1), TRUE,
+                    &trailing_x, &trailing_y, &trailing_metrics))) {
+                r->text_selection_hit_scratch[previous_hit_index].trailing_x =
+                    position->x + round_text_coordinate(trailing_x);
+            }
+        } else {
+            int trailing = gdi_extent[last_index + last_units - 1];
+            r->text_selection_hit_scratch[previous_hit_index].trailing_x =
+                position->x + trailing;
+        }
+    }
+
+    if (previous_font) SelectObject(r->mem_dc, previous_font);
+}
+
+static void build_text_selection_hit_frame(
+    renderer_t *r, const layout_run_t *runs, int n,
+    uint64_t message_id, int x0, int y0, int max_width,
+    int line_h)
+{
+    if (!r || !runs || n <= 0) return;
+    layout_run_position_t positions[MAX_LAYOUT_RUNS];
+    layout_runs_position(runs, n, x0, y0, max_width, line_h, positions);
+    int clip_right = x0 + max_width;
+    for (int i = 0; i < n; i++) {
+        if (!positions[i].visible || !runs[i].is_body_content) continue;
+        append_text_run_selection_hits(r, &runs[i], &positions[i],
+                                       message_id, clip_right, line_h);
+    }
 }
 
 static void draw_text_run_group(renderer_t *r, const layout_run_t *runs,
@@ -8533,6 +9837,30 @@ static void draw_text_run_group(renderer_t *r, const layout_run_t *runs,
     if (layout) IDWriteTextLayout_Release(layout);
 }
 
+static void draw_link_underlines(renderer_t *r, const layout_run_t *runs,
+                                 const layout_run_position_t *positions,
+                                 int n, int clip_right)
+{
+    if (!r || !runs || !positions) return;
+    int thickness = scale_reference_px(1);
+    if (thickness < 1) thickness = 1;
+
+    for (int index = 0; index < n; index++) {
+        const layout_run_t *run = &runs[index];
+        if (!run->is_link || run->type != RUN_TEXT || !positions[index].visible) {
+            continue;
+        }
+
+        const int width = run->w < clip_right - positions[index].x
+            ? run->w
+            : clip_right - positions[index].x;
+        const int underline_y = positions[index].draw_y + run->h
+                              - scale_reference_px(2);
+        fill_bgra_rect(r, positions[index].x, underline_y,
+                       width, thickness, kChatLinkColor, 255);
+    }
+}
+
 static void draw_layout_runs(renderer_t *r, const layout_run_t *runs, int n,
                              int x0, int y0, int max_width, int line_h,
                              ULONGLONG occurrence_started_ms,
@@ -8541,34 +9869,8 @@ static void draw_layout_runs(renderer_t *r, const layout_run_t *runs, int n,
     if (!runs || n <= 0) return;
 
     layout_run_position_t positions[MAX_LAYOUT_RUNS];
-    memset(positions, 0, sizeof(positions));
-    int x = x0;
-    int y = y0;
-    int content_h = line_h - scale_reference_px(LINE_GAP_PX);
     int clip_right = x0 + max_width;
-
-    for (int i = 0; i < n; i++) {
-        const layout_run_t *run = &runs[i];
-        bool is_space = run->type == RUN_TEXT
-                     && run->text_len == 1
-                     && run->text[0] == L' ';
-        if (is_space && x == x0) {
-            continue;
-        }
-        if (x > x0 && x + run->w > clip_right) {
-            y += line_h;
-            x = x0;
-            if (is_space) continue;
-        }
-
-        int draw_y = y + (content_h - run->h) / 2;
-        if (draw_y < y) draw_y = y;
-
-        positions[i].x = x;
-        positions[i].draw_y = draw_y;
-        positions[i].visible = true;
-        x += run->w;
-    }
+    layout_runs_position(runs, n, x0, y0, max_width, line_h, positions);
 
     if (mode != LAYOUT_DRAW_ASSETS_ONLY) {
         /* Text drawing is expensive to begin/end on a DCRenderTarget. Draw
@@ -8604,6 +9906,10 @@ static void draw_layout_runs(renderer_t *r, const layout_run_t *runs, int n,
         renderer_end_text_batch(r);
     }
 
+    if (mode != LAYOUT_DRAW_ASSETS_ONLY) {
+        draw_link_underlines(r, runs, positions, n, clip_right);
+    }
+
     if (mode == LAYOUT_DRAW_TEXT_ONLY) return;
 
     for (int i = 0; i < n; i++) {
@@ -8634,13 +9940,16 @@ static void release_layout_runs(layout_run_t *runs, int n)
 static int visible_message_limit(renderer_t *r)
 {
     const int padding = scale_reference_px(8);
+    const int top_clearance = scale_reference_px(
+        8 + MOVE_HANDLE_MARGIN + MOVE_HANDLE_H);
     const int line_gap = scale_reference_px(LINE_GAP_PX);
     const int input_h = scale_reference_px(CHAT_INPUT_H);
     const int input_gap = scale_reference_px(CHAT_INPUT_GAP);
     int line_h = text_height_for_font(r, r->font_msg) + line_gap + scale_reference_px(2);
     if (line_h < 1) line_h = scale_reference_px(g_font_size_px) + line_gap + scale_reference_px(2);
 
-    int available_h = r->height - padding * 2 - input_h - input_gap;
+    int available_h = r->height - padding - top_clearance
+                    - input_h - input_gap;
     int limit = available_h > 0 ? (available_h + line_h - 1) / line_h : 1;
 
     if (limit < g_max_messages) limit = g_max_messages;
@@ -8651,6 +9960,10 @@ static int visible_message_limit(renderer_t *r)
 
 /* Renders the current message tail into r's DIB. */
 static void render_chat(renderer_t *r) {
+    /* A cached image with an input notice must still be redrawn after that
+     * notice expires; decide from the image being rendered, not only from the
+     * next heartbeat's input snapshot. Focus/caret retain their old cadence. */
+    r->frame_requires_heartbeat = !input_is_idle();
     chat_msg_t *snap = r->snapshot;
     if (!snap) return;
     int visible_limit = visible_message_limit(r);
@@ -8668,6 +9981,8 @@ static void render_chat(renderer_t *r) {
     InterlockedExchange(&g_scroll_total, snap_n + max_offset);
 
     if (snap_n == 0) {
+        text_selection_hit_frame_reset(r);
+        text_selection_hit_frame_publish(r);
         bool idle_input = input_is_idle();
         if (r->empty_frame_ready && idle_input) return;
         clear_frame(r);
@@ -8685,13 +10000,15 @@ static void render_chat(renderer_t *r) {
                            scale_reference_px(8), scale_reference_px(8),
                            r->width - scale_reference_px(16), kSystemColor);
         draw_input_box(r);
-        r->empty_frame_ready = idle_input;
+        r->empty_frame_ready = idle_input && !r->frame_requires_heartbeat;
         return;
     }
 
     r->empty_frame_ready = false;
     clear_frame(r);
     const int padding = scale_reference_px(8);
+    const int top_clearance = scale_reference_px(
+        8 + MOVE_HANDLE_MARGIN + MOVE_HANDLE_H);
     const int input_h = scale_reference_px(CHAT_INPUT_H);
     const int input_gap = scale_reference_px(CHAT_INPUT_GAP);
     const int emote_render_h = scale_reference_px(EMOTE_RENDER_H);
@@ -8700,6 +10017,7 @@ static void render_chat(renderer_t *r) {
     int y = r->height - padding - input_h - input_gap;
     message_render_info_t infos[QUEUE_CAP];
     int info_n = 0;
+    text_selection_hit_frame_reset(r);
 
     for (int i = snap_n - 1; i >= 0; i--) {
         chat_msg_t *m = &snap[i];
@@ -8715,7 +10033,7 @@ static void render_chat(renderer_t *r) {
         int block_h = lines * line_h;
 
         y -= block_h;
-        if (y < 0) {
+        if (y < top_clearance) {
             release_layout_runs(runs, run_n);
             break;
         }
@@ -8723,11 +10041,19 @@ static void render_chat(renderer_t *r) {
             infos[info_n].snapshot_index = i;
             infos[info_n].y = y;
             infos[info_n].line_h = line_h;
+            build_text_selection_hit_frame(
+                r, runs, run_n, m->id, padding, y,
+                max_text_width, line_h);
             info_n++;
         }
         release_layout_runs(runs, run_n);
         y -= scale_reference_px(2);
     }
+
+    draw_text_selection_highlights(
+        r, r->text_selection_hit_scratch,
+        r->text_selection_hit_scratch_count);
+    text_selection_hit_frame_publish(r);
 
     /* Build the text portion of the entire frame in one Direct2D batch. The
      * second pass composites emotes/badges after that batch is closed, so the
@@ -8804,6 +10130,23 @@ static void dib_to_rgba(renderer_t *r) {
             dst += 4;
         }
     }
+}
+
+/* Generation is sampled before rendering. Events arriving while drawing must
+ * remain pending for the next frame. Keep the existing pipe heartbeat even
+ * when reusing pixels, so a restarted VLC input receives the current image. */
+static bool renderer_prepare_frame(renderer_t *r)
+{
+    LONG generation = InterlockedCompareExchange(&g_render_generation, 0, 0);
+    if (r->frame_ready && r->frame_generation == generation &&
+        !r->frame_requires_heartbeat) {
+        return false;
+    }
+    render_chat(r);
+    dib_to_rgba(r);
+    r->frame_generation = generation;
+    r->frame_ready = true;
+    return true;
 }
 
 /* ===== Pipe writer ====================================================== */
@@ -9041,8 +10384,7 @@ static DWORD WINAPI render_thread(LPVOID arg) {
             break;
         }
 
-        render_chat(&rend);
-        dib_to_rgba(&rend);
+        (void)renderer_prepare_frame(&rend);
 
         /* Seed the plugin's initial position only while no persisted plugin
          * position exists. That gives first-run launches the orchestrator's
@@ -9136,11 +10478,23 @@ static bool overlay_event_is_valid(const overlay_event_v1 *event) {
             || event->type == MYO_EVENT_CHAT_INPUT_HOVER
             || event->type == MYO_EVENT_SHUTDOWN
             || event->type == MYO_EVENT_UI_SCALE
-            || event->type == MYO_EVENT_VIDEO_SIZE);
+            || event->type == MYO_EVENT_VIDEO_SIZE
+            || event->type == MYO_EVENT_TEXT_SELECT_BEGIN
+            || event->type == MYO_EVENT_TEXT_SELECT_UPDATE
+            || event->type == MYO_EVENT_TEXT_SELECT_END
+            || event->type == MYO_EVENT_TEXT_SELECT_CANCEL
+            || event->type == MYO_EVENT_TEXT_CLICK);
 }
 
 static void handle_overlay_event(const overlay_event_v1 *event) {
-    if (event->type == MYO_EVENT_SCROLL) {
+    if (event->type == MYO_EVENT_TEXT_CLICK) {
+        handle_text_click_event(event->value);
+    } else if (event->type == MYO_EVENT_TEXT_SELECT_BEGIN
+        || event->type == MYO_EVENT_TEXT_SELECT_UPDATE
+        || event->type == MYO_EVENT_TEXT_SELECT_END
+        || event->type == MYO_EVENT_TEXT_SELECT_CANCEL) {
+        handle_text_selection_event(event->type, event->value);
+    } else if (event->type == MYO_EVENT_SCROLL) {
         adjust_scroll_offset(event->value);
     } else if (event->type == MYO_EVENT_SCROLL_TO) {
         set_scroll_offset(event->value);
@@ -9617,6 +10971,15 @@ int main(int argc, char **argv) {
     }
     const HANDLE workers[] = {t_img, t_evt, t_key, t_chat, t_twitch_assets, t_wch, t_ren};
     finish_workers(workers, (DWORD)(sizeof(workers) / sizeof(workers[0])), 12000);
+
+    AcquireSRWLockExclusive(&g_text_selection_lock);
+    text_selection_hit_t *selection_hits = g_text_selection_hits;
+    g_text_selection_hits = NULL;
+    g_text_selection_hit_count = 0;
+    g_text_selection_hit_capacity = 0;
+    memset(&g_text_selection, 0, sizeof(g_text_selection));
+    ReleaseSRWLockExclusive(&g_text_selection_lock);
+    free(selection_hits);
 
     bttv_catalog_destroy();
     image_load_queue_destroy(&g_image_load_queue);

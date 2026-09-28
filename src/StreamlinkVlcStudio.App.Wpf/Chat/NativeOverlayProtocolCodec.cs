@@ -15,6 +15,11 @@ internal static class NativeOverlayProtocolCodec
     internal const uint ChatInputFocusEventType = 4u;
     internal const uint ShutdownEventType = 6u;
     internal const uint UiScaleEventType = 8u;
+    internal const uint TextSelectionBeginEventType = 9u;
+    internal const uint TextSelectionUpdateEventType = 10u;
+    internal const uint TextSelectionEndEventType = 11u;
+    internal const uint TextSelectionCancelEventType = 12u;
+    internal const uint TextClickEventType = 13u;
     internal const int HeaderSize = 36;
     internal const int EventMessageSize = 16;
     internal const int MaximumEncodedMessageBytes = 32 * 1024 * 1024;

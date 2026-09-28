@@ -82,20 +82,59 @@ internal static class UpdateHelperRunner
             completion = new(operationId, AppUpdateCompletionOutcome.Failed, -1, logPath, $"Update failed. {ex.Message}", DateTimeOffset.UtcNow);
         }
 
-        await WriteAtomicAsync(resultPath, completion).ConfigureAwait(false);
+        await CompleteAndRelaunchAsync(resultPath, completion, installDirectory, info => Process.Start(info)?.Dispose()).ConfigureAwait(false);
+        return completion.Outcome is AppUpdateCompletionOutcome.Succeeded or AppUpdateCompletionOutcome.SucceededRebootRequired ? 0 : 1;
+    }
+
+    internal static async Task CompleteAndRelaunchAsync(
+        string resultPath,
+        AppUpdateCompletion completion,
+        string installDirectory,
+        Action<ProcessStartInfo> startProcess)
+    {
+        try
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await WriteAtomicAsync(resultPath, completion).ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception exception) when (attempt < 5 && exception is IOException or UnauthorizedAccessException)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt)).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            // A locked completion record must not leave the user without the app
+            // after Setup exits. Reboot-required outcomes still leave it closed.
+            RelaunchAfterUpdate(completion.Outcome, installDirectory, startProcess);
+        }
+    }
+
+    internal static void RelaunchAfterUpdate(
+        AppUpdateCompletionOutcome outcome,
+        string installDirectory,
+        Action<ProcessStartInfo> startProcess)
+    {
+        // Windows Installer may still have queued replacements for locked binaries.
+        // Keep the recorded completion for the next launch after Windows restarts.
+        if (outcome == AppUpdateCompletionOutcome.SucceededRebootRequired) return;
         var installed = Path.Combine(installDirectory, AppIdentity.ManagedExecutableName);
         if (File.Exists(installed))
         {
             try
             {
-                Process.Start(new ProcessStartInfo(installed) { UseShellExecute = true, WorkingDirectory = installDirectory })?.Dispose();
+                startProcess(new ProcessStartInfo(installed) { UseShellExecute = true, WorkingDirectory = installDirectory });
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
             {
                 // Preserve the install result for the next manual launch even if relaunch fails.
             }
         }
-        return completion.Outcome is AppUpdateCompletionOutcome.Succeeded or AppUpdateCompletionOutcome.SucceededRebootRequired ? 0 : 1;
     }
 
     internal static AppUpdateCompletionOutcome MapExitCode(int code)

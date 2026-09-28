@@ -12,6 +12,7 @@
     <PublishSingleFile>false</PublishSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico</ApplicationIcon>
     <AssemblyName>StreamStudio.Bootstrapper</AssemblyName>
@@ -31,6 +32,8 @@
     <!-- Share bounded process handling without adding the application's native payload to Setup. -->
     <Compile Include="..\StreamlinkVlcStudio.Infrastructure\Processes\ProcessExtensions.cs"
              Link="Processes\ProcessExtensions.cs" />
+    <Compile Include="..\StreamlinkVlcStudio.Infrastructure\Processes\RedirectedProcessOwner.cs"
+             Link="Processes\RedirectedProcessOwner.cs" />
     <Compile Include="..\StreamlinkVlcStudio.Infrastructure\Limits\PayloadLimits.cs"
              Link="Processes\PayloadLimits.cs" />
   </ItemGroup>

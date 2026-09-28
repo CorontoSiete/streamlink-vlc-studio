@@ -23,14 +23,18 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 {
     private const int WmCancelMode = 0x001F;
     private const int WmGetMinMaxInfo = 0x0024;
+    private const int WmNcCalcSize = 0x0083;
     private const int WmNcHitTest = 0x0084;
+    private const int WmNcActivate = 0x0086;
     private const int WmNcLeftButtonDown = 0x00A1;
     private const int WmSysCommand = 0x0112;
     private const int WmMouseMove = 0x0200;
     private const int WmLeftButtonUp = 0x0202;
     private const int WmCaptureChanged = 0x0215;
     private const int MkLeftButton = 0x0001;
+    private const int HtClient = 1;
     private const int HtCaption = 2;
+    private const int WvrRedraw = 0x0300;
     private const int IdcSizeNwse = 32642;
     private const int IdcSizeNesw = 32643;
     private const int IdcSizeWe = 32644;
@@ -49,7 +53,6 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private static readonly int WmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
     private static readonly GridLength VisibleTitleBarHeight = new(34);
     private static readonly GridLength VisibleBottomResizeGripHeight = new(BottomBorderThickness);
-    private static readonly Thickness WindowChromeResizeBorderThickness = new(PictureInPictureWindowResize.BorderThickness);
     private static ITaskbarFullscreenController taskbarFullscreenController = WindowsTaskbarFullscreenController.Instance;
     private readonly Dictionary<StreamTabViewModel, VideoSurface> detachedSurfaces = [];
     private readonly Dictionary<StreamTabViewModel, DetachedVideoItem> videoItemByTab = [];
@@ -122,6 +125,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         }
 
         UpdateVideoLayout();
+        PreviewKeyDown += DetachedVideoWindowPreviewKeyDown;
+        PreviewMouseUp += DetachedVideoWindowPreviewMouseUp;
         Activated += DetachedVideoWindowActivated;
         SourceInitialized += DetachedVideoWindowSourceInitialized;
         Closed += DetachedVideoWindowClosed;
@@ -133,6 +138,37 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void DetachedVideoWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.C &&
+            !e.IsRepeat &&
+            Keyboard.Modifiers == ModifierKeys.Control &&
+            Keyboard.FocusedElement is not TextBoxBase &&
+            activeTab is { } tab &&
+            tab.NativeOverlay.HasNativeReplayOverlayTextSelection)
+        {
+            e.Handled = true;
+            _ = tab.NativeOverlay.CopyNativeReplayOverlayTextSelectionAsync();
+            return;
+        }
+
+        if (ReplaySkipHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys,
+                new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers), Keyboard.FocusedElement, e.IsRepeat))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void DetachedVideoWindowPreviewMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (HotkeyGesture.IsBindableMouseButton(e.ChangedButton) &&
+            ReplaySkipHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys,
+                HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers), Keyboard.FocusedElement))
+        {
+            e.Handled = true;
+        }
+    }
 
     internal static ITaskbarFullscreenController TaskbarFullscreenController
     {
@@ -733,21 +769,11 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             CancelVideoMoveCandidate();
         }
 
-        ApplyWindowChromeHitTestState();
         if (streamFullscreen)
         {
             ApplyFullscreenNativePlacement();
             MarkTaskbarFullscreen();
             QueueFullscreenNativePlacement();
-        }
-    }
-
-    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
-    {
-        base.OnPropertyChanged(e);
-        if (e.Property == ResizeModeProperty)
-        {
-            ApplyWindowChromeHitTestState();
         }
     }
 
@@ -758,6 +784,10 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             source.AddHook(WindowMessageHook);
             contextMenuWindowHandle = source.Handle;
             NativePictureInPictureContextMenuTarget.RegisterWindow(source.Handle, OpenCapturedVideoContextMenu);
+            // Recalculate the frame now that WM_NCCALCSIZE belongs to this window.
+            // Keep the native resizable style, but give the entire window to our content.
+            _ = SetWindowPos(source.Handle, IntPtr.Zero, 0, 0, 0, 0,
+                SwpNoMove | SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
         }
 
         if (streamFullscreen)
@@ -770,6 +800,24 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private IntPtr WindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == WmNcCalcSize)
+        {
+            // The PiP already owns caption dragging and resize hit testing. Extend its
+            // client area without WindowChrome's glass frame (which shows through native
+            // video as a white edge) or its per-resize window regions (which cause flashing).
+            // Keep WPF's resize invalidation: its client content renders asynchronously.
+            // VideoSurface preserves the native video's pixels independently.
+            handled = true;
+            return wParam == IntPtr.Zero ? IntPtr.Zero : new IntPtr(WvrRedraw);
+        }
+
+        if (msg == WmNcActivate)
+        {
+            // Complete activation without drawing a legacy border over our client area.
+            handled = true;
+            return DefWindowProc(hwnd, msg, wParam, new IntPtr(-1));
+        }
+
         if (msg == WmNcLeftButtonDown && wParam.ToInt32() == HtCaption)
         {
             BeginWindowMoveFromMessagePoint(lParam);
@@ -844,14 +892,25 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             return IntPtr.Zero;
         }
 
-        if (msg == WmNcHitTest &&
-            TryGetResizeHitTest(
-                GetLParamSignedLowWord(lParam),
-                GetLParamSignedHighWord(lParam),
-                out var hitTest))
+        if (msg == WmNcHitTest)
         {
+            var screenX = GetLParamSignedLowWord(lParam);
+            var screenY = GetLParamSignedHighWord(lParam);
             handled = true;
-            return new IntPtr(hitTest);
+            if (TryGetResizeHitTest(screenX, screenY, out var hitTest))
+            {
+                return new IntPtr(hitTest);
+            }
+
+            // Preserve caption behavior while keeping title-bar buttons in the client area.
+            if (IsScreenPointOverElement(TitleBar, screenX, screenY) &&
+                InputHitTest(PointFromScreen(new Point(screenX, screenY))) is { } input &&
+                !WindowChrome.GetIsHitTestVisibleInChrome(input))
+            {
+                return new IntPtr(HtCaption);
+            }
+
+            return new IntPtr(HtClient);
         }
 
         return IntPtr.Zero;
@@ -1615,7 +1674,6 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         }
 
         UpdateFullscreenButton();
-        ApplyWindowChromeHitTestState();
         FitNormalWindowToContent();
         SyncDetachedVideoSurfaces();
     }
@@ -1656,18 +1714,6 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             MinHeight);
         Width = fittedSize.Width;
         Height = fittedSize.Height;
-    }
-
-    private void ApplyWindowChromeHitTestState()
-    {
-        if (WindowChrome.GetWindowChrome(this) is { } chrome)
-        {
-            chrome.CaptionHeight = streamFullscreen || !showTopBar ? 0 : 34;
-            chrome.ResizeBorderThickness = streamFullscreen || WindowState != WindowState.Normal ||
-                ResizeMode is ResizeMode.NoResize or ResizeMode.CanMinimize
-                ? new Thickness(0)
-                : WindowChromeResizeBorderThickness;
-        }
     }
 
     private void UpdateTopmostButton()
@@ -2216,6 +2262,9 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     [LibraryImport("user32", EntryPoint = "SendMessageW")]
     private static partial IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [LibraryImport("user32", EntryPoint = "DefWindowProcW")]
+    private static partial IntPtr DefWindowProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [LibraryImport("user32", EntryPoint = "LoadCursorW", SetLastError = true)]
     private static partial IntPtr LoadCursor(IntPtr instance, IntPtr cursorName);
