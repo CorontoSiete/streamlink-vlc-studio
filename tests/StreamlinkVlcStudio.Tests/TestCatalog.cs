@@ -1,6 +1,6 @@
 internal static class TestCatalog
 {
-    private const int CharacterizedTestCount = 702;
+    private const int CharacterizedTestCount = 703;
 
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } = Build();
 

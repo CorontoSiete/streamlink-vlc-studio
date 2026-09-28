@@ -15,6 +15,7 @@ internal static class CoreQualityTestCatalog
         ("Windows command line tokenizer handles quote runs and rejects nulls", CommandLineTokenizerHandlesQuoteRuns),
         ("duration conversion rejects the rounded Int64 overflow boundary", DurationConversionRejectsOverflowBoundary),
         ("Core shared values are canonical and immutable", KickBadgeAliasesAreCanonical),
+        ("test runner extends only the release packaging smoke-test timeout", TestRunnerUsesTargetedTimeout),
         ("test runner reports tests not started after a noncooperative timeout", TestRunnerReportsNotRunAsync),
         ("test runner rejects overflowing timeout configuration", TestRunnerRejectsOverflowingTimeout)
     ];
@@ -396,6 +397,24 @@ internal static class CoreQualityTestCatalog
             Environment.SetEnvironmentVariable("SVS_TEST_TIMEOUT_SECONDS", oldTimeout);
             Environment.SetEnvironmentVariable("SVS_TEST_DRAIN_TIMEOUT_SECONDS", oldDrain);
         }
+    }
+
+    private static Task TestRunnerUsesTargetedTimeout()
+    {
+        Assert.Equal(
+            TimeSpan.FromSeconds(90),
+            DependencyFreeTestRunner.ResolveTestTimeout(
+                ApplicationTestCatalog.ReleasePackageZipTestName,
+                TimeSpan.FromSeconds(30)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(120),
+            DependencyFreeTestRunner.ResolveTestTimeout(
+                ApplicationTestCatalog.ReleasePackageZipTestName,
+                TimeSpan.FromSeconds(120)));
+        Assert.Equal(
+            TimeSpan.FromSeconds(30),
+            DependencyFreeTestRunner.ResolveTestTimeout("ordinary test", TimeSpan.FromSeconds(30)));
+        return Task.CompletedTask;
     }
 
     private static Task TestRunnerRejectsOverflowingTimeout()

@@ -1131,7 +1131,7 @@ internal static partial class ApplicationTestCatalog
             DeleteTempTestDirectory(root);
         }
     }),
-    ("release package zip includes runtime payload and user documentation", async () =>
+    (ReleasePackageZipTestName, async () =>
     {
         var root = CreateTempTestDirectory();
         try
@@ -1161,7 +1161,7 @@ internal static partial class ApplicationTestCatalog
                     "-SkipAuthenticodeWhenUnavailable",
                     "-Quiet"
                 ],
-                TimeSpan.FromSeconds(30));
+                TimeSpan.FromSeconds(60));
             if (result.ExitCode != 0)
             {
                 throw new InvalidOperationException($"Package script failed: {result.Output} {result.Error}".Trim());

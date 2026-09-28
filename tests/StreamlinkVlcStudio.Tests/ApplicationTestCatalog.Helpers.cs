@@ -1,5 +1,7 @@
 internal static partial class ApplicationTestCatalog
 {
+    internal const string ReleasePackageZipTestName = "release package zip includes runtime payload and user documentation";
+
     static HttpResponseMessage CreateTwitchTokenValidationResponse(string clientId) =>
         new(HttpStatusCode.OK)
         {
