@@ -91,6 +91,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private readonly SemaphoreSlim replayPlaybackTransitionGate = new(1, 1);
     private readonly SemaphoreSlim playbackRateChangeGate = new(1, 1);
     private readonly object playbackRateSelectionGate = new();
+    private CancellationTokenSource? playbackRateChangeCancellation;
     private TaskCompletionSource<IntPtr> videoHandleReady = CreateVideoHandleReadySource();
     private TaskCompletionSource videoSurfaceStateChanged = CreateVideoSurfaceStateChangedSource();
     private IStreamTransportSession? streamSession;
@@ -196,6 +197,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private int playbackRateIndex = DefaultPlaybackRateIndex;
     private int selectedPlaybackRateIndex = DefaultPlaybackRateIndex;
     private long playbackRateChangeVersion;
+    private long playbackRateResetVersion;
     private string replayElapsedText = "0:00";
     private string replayDurationText = "0:00";
     private string replayLiveStateText = "Live";
@@ -266,6 +268,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         profileImageUrl = (target.ProfileImageUrl ?? "").Trim();
         categoryName = target.CategoryName?.Trim() ?? "";
         volume = NormalizeVolume(initialVolume);
+        PauseOrResumeCommand = CreateCommand(PauseOrResumeAsync, () => !disposed);
         SendChatMessageCommand = CreateCommand(SendChatMessageAsync, () => !string.IsNullOrWhiteSpace(OutgoingChatText) && CanSendChatMessages);
         RewindReplay30SecondsCommand = CreateCommand(RewindReplay30SecondsAsync, () => CanStepReplay);
         FastForwardReplay30SecondsCommand = CreateCommand(FastForwardReplay30SecondsAsync, () => CanStepReplay);
@@ -288,6 +291,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     public ObservableCollection<object> DockedChatFeedItems { get; } = [];
     public ObservableCollection<TwitchPredictionOutcomeInputViewModel> TwitchPredictionOutcomeInputs { get; } = [];
     public ObservableCollection<string> Logs { get; } = [];
+    public AsyncRelayCommand PauseOrResumeCommand { get; }
     public AsyncRelayCommand SendChatMessageCommand { get; }
     public AsyncRelayCommand RewindReplay30SecondsCommand { get; }
     public AsyncRelayCommand FastForwardReplay30SecondsCommand { get; }
@@ -407,6 +411,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             OnPropertyChanged();
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(IsVodFinished));
+            OnPropertyChanged(nameof(CanChangePlaybackRate));
         }
     }
 
@@ -464,6 +469,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             if (SetProperty(ref isReplaySeekInProgress, value))
             {
                 RaiseReplaySeekAvailabilityChanged();
+                OnPropertyChanged(nameof(CanChangePlaybackRate));
                 OnPropertyChanged(nameof(CanReturnToLive));
                 ReturnToLiveCommand.RaiseCanExecuteChanged();
             }
@@ -529,7 +535,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         get => Volatile.Read(ref selectedPlaybackRateIndex);
         set
         {
-            if ((uint)value >= PlaybackRateValues.Length)
+            if ((uint)value >= PlaybackRateValues.Length || !CanChangePlaybackRate || disposed)
             {
                 dispatch(() => OnPropertyChanged(nameof(PlaybackRateIndex)));
                 return;
@@ -546,21 +552,43 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     public bool IsPlaybackRateControlVisible => Target.IsExplicitVod || IsBehindLive;
 
-    public bool CanChangePlaybackRate => IsPlaybackRateControlVisible && playbackEngine is not null;
+    public bool CanChangePlaybackRate => IsPlaybackRateControlVisible && playbackEngine is not null &&
+        !IsReplaySeekInProgress && Status is PlaybackStatus.Playing or PlaybackStatus.Paused;
 
     private async Task ApplyPlaybackRateSelectionAsync(
         int requestedIndex,
         long? expectedSeekOperationVersion = null,
-        long? expectedPlaybackStateVersion = null)
+        long? expectedPlaybackStateVersion = null,
+        long? expectedPlaybackRateChangeVersion = null,
+        CancellationToken cancellationToken = default)
     {
         long requestVersion;
+        long resetVersion;
         bool selectionChanged;
+        IPlaybackEngine? engine;
+        CancellationTokenSource requestCancellation;
+        CancellationTokenSource? previousCancellation;
         lock (playbackRateSelectionGate)
         {
+            // A live-edge sample cannot replace a newer manual speed choice.
+            if (disposed || cancellationToken.IsCancellationRequested ||
+                (expectedPlaybackRateChangeVersion is { } expectedRateVersion &&
+                    expectedRateVersion != playbackRateChangeVersion) ||
+                (expectedSeekOperationVersion is { } expectedSeekVersion &&
+                    !IsReplayClockSampleCurrent(expectedSeekVersion, expectedPlaybackStateVersion)))
+                return;
+
+            requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetimeCancellation.Token, cancellationToken);
+            previousCancellation = playbackRateChangeCancellation;
+            playbackRateChangeCancellation = requestCancellation;
             requestVersion = Interlocked.Increment(ref playbackRateChangeVersion);
+            resetVersion = playbackRateResetVersion;
+            engine = playbackEngine;
             selectionChanged = Interlocked.Exchange(ref selectedPlaybackRateIndex, requestedIndex) != requestedIndex;
         }
 
+        // Cancellation callbacks must run outside the selection lock.
+        CancelCancellationSource(previousCancellation);
         if (selectionChanged)
         {
             dispatch(() =>
@@ -575,7 +603,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         var enteredGate = false;
         try
         {
-            await playbackRateChangeGate.WaitAsync(lifetimeCancellation.Token).ConfigureAwait(false);
+            await playbackRateChangeGate.WaitAsync(requestCancellation.Token).ConfigureAwait(false);
             enteredGate = true;
             if (disposed || requestVersion != Volatile.Read(ref playbackRateChangeVersion))
             {
@@ -589,41 +617,60 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 return;
             }
 
-            var engine = playbackEngine;
-            if (engine is null || !CanChangePlaybackRate)
+            if (engine is null || !ReferenceEquals(engine, playbackEngine) || !CanChangePlaybackRate)
             {
                 RestorePlaybackRateSelection(requestVersion);
                 return;
             }
 
             var rate = PlaybackRateValues[requestedIndex];
-            var applied = await engine.TrySetPlaybackRateAsync(rate, lifetimeCancellation.Token)
+            var seekVersion = Volatile.Read(ref replaySeekOperationVersion);
+            var playbackStateVersion = replayClock.PlaybackStateVersion;
+            var applied = await engine.TrySetPlaybackRateAsync(rate, requestCancellation.Token)
                 .ConfigureAwait(false);
-            var appliedToCurrentEngine = applied && ReferenceEquals(engine, playbackEngine) && CanChangePlaybackRate;
-            if (appliedToCurrentEngine)
+            if (disposed || resetVersion != Volatile.Read(ref playbackRateResetVersion) || !ReferenceEquals(engine, playbackEngine))
+                return;
+
+            if (applied)
             {
-                if (!IsReplaySeekInProgress && replaySession is { IsAvailable: true } replay)
+                var observedAtUtc = DateTimeOffset.UtcNow;
+                ReplayClockSnapshot? acceptedClock = null;
+                if (IsReplayClockSampleCurrent(seekVersion, playbackStateVersion) &&
+                    replaySession is { IsAvailable: true } replay)
                 {
-                    var observedAtUtc = DateTimeOffset.UtcNow;
-                    var seekVersion = Volatile.Read(ref replaySeekOperationVersion);
-                    var playbackStateVersion = replayClock.PlaybackStateVersion;
                     // A rate resynchronization can temporarily make VLC report time zero.
                     // Use the same clock validation as the seekbar before moving its anchor.
-                    var clock = ResolveReplayClock(replay, seekVersion, sampleBeganDuringSeek: false,
-                        sampledPlaybackStateVersion: playbackStateVersion);
-                    if (IsReplayClockSampleCurrent(seekVersion, playbackStateVersion))
+                    try
                     {
-                        replayClock.ReanchorForPlaybackRateChange(
-                            clock.Position, clock.Duration, seekVersion, playbackStateVersion, observedAtUtc);
+                        acceptedClock = ResolveReplayClock(replay, seekVersion, sampleBeganDuringSeek: false,
+                            sampledPlaybackStateVersion: playbackStateVersion);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Clock sampling is optional after the engine has committed the rate.
+                        // Preserve that success and continue from the existing clock anchor.
+                        logger.Write(AppLogLevel.Warning, "Replay",
+                            $"Could not refresh the replay clock after changing playback speed for {Target.DisplayName}.", ex);
                     }
                 }
 
-                Interlocked.Exchange(ref playbackRateIndex, requestedIndex);
+                lock (playbackRateSelectionGate)
+                {
+                    // A reload can finish while the old player's clock is being sampled.
+                    if (disposed || resetVersion != playbackRateResetVersion || !ReferenceEquals(engine, playbackEngine))
+                        return;
+                    // A native setter can commit just before a newer selection cancels its
+                    // token. Retain that successful rate so a later rejection restores it.
+                    replayClock.CommitPlaybackRateChange(replaySession, acceptedClock,
+                        seekVersion, playbackStateVersion, observedAtUtc,
+                        () => Interlocked.Exchange(ref playbackRateIndex, requestedIndex));
+                }
             }
             else
             {
-                logger.Write(AppLogLevel.Warning, "Playback",
-                    $"Could not change playback speed to {PlaybackRateOptionLabels[requestedIndex]} for {Target.DisplayName}.");
+                if (!requestCancellation.IsCancellationRequested)
+                    logger.Write(AppLogLevel.Warning, "Playback",
+                        $"Could not change playback speed to {PlaybackRateOptionLabels[requestedIndex]} for {Target.DisplayName}.");
                 RestorePlaybackRateSelection(requestVersion);
                 return;
             }
@@ -638,8 +685,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 OnPropertyChanged(nameof(PlaybackRateIndex));
             });
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (requestCancellation.IsCancellationRequested)
         {
+            RestorePlaybackRateSelection(requestVersion);
         }
         catch (Exception ex)
         {
@@ -648,6 +696,12 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         }
         finally
         {
+            lock (playbackRateSelectionGate)
+            {
+                if (ReferenceEquals(playbackRateChangeCancellation, requestCancellation))
+                    playbackRateChangeCancellation = null;
+            }
+            requestCancellation.Dispose();
             if (enteredGate)
             {
                 playbackRateChangeGate.Release();
@@ -1492,7 +1546,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
             await StopChatAsync(clearNativeOverlay: true);
             await StopPlaybackOnlyAsync(PlaybackStopTimeout);
-            ResetPlaybackRate();
             CancelReplayAvailabilityRefresh();
             ResetReplayState("Replay availability has not been checked yet.");
 
@@ -2284,9 +2337,12 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     public Task CommitReplaySeekPreviewAsync(double sliderOffsetSeconds, CancellationToken cancellationToken = default)
     {
-        ReplaySeekSliderValue = sliderOffsetSeconds;
+        // Ending the preview permits clock updates to replace the slider value.
+        // Capture the bounded user input before raising those notifications.
+        var offset = TimeSpan.FromSeconds(Math.Clamp(sliderOffsetSeconds, 0, ReplaySeekMaximum));
+        ReplaySeekSliderValue = offset.TotalSeconds;
         IsReplaySeekPreviewActive = false;
-        return SeekReplayAsync(TimeSpan.FromSeconds(ReplaySeekSliderValue), cancellationToken);
+        return SeekReplayAsync(offset, cancellationToken);
     }
 
     public void CancelReplaySeekPreview()
@@ -2356,6 +2412,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private long BeginReplaySeekOperation()
     {
+        CancelPendingPlaybackRateChange();
         // Publish the in-progress state before advancing the generation. The replay clock poller
         // reads both values on a background thread; this ordering prevents it from treating the
         // narrow gap between those writes as a stable, post-seek clock sample.
@@ -4382,6 +4439,13 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         currentReplayPlaybackKey = null;
         replaySession = null;
         explicitVodPlaybackUri = null;
+        ResetReplayControls();
+        ReplayLiveStateText = "Live";
+        ReplaySeekToolTip = reason;
+    }
+
+    private void ResetReplayControls()
+    {
         CancelLiveDvrPromotionPolling();
         StopVodChat();
         CancelReplaySeekPreview();
@@ -4394,21 +4458,24 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         ReplaySeekMaximum = 1;
         ReplayElapsedText = "0:00";
         ReplayDurationText = "0:00";
-        ReplayLiveStateText = "Live";
-        ReplaySeekToolTip = reason;
     }
 
     private void ResetPlaybackRate()
     {
         int appliedIndex;
         int selectedIndex;
+        CancellationTokenSource? pendingCancellation;
         lock (playbackRateSelectionGate)
         {
             Interlocked.Increment(ref playbackRateChangeVersion);
+            Interlocked.Increment(ref playbackRateResetVersion);
+            pendingCancellation = playbackRateChangeCancellation;
+            playbackRateChangeCancellation = null;
             appliedIndex = Interlocked.Exchange(ref playbackRateIndex, DefaultPlaybackRateIndex);
             selectedIndex = Interlocked.Exchange(ref selectedPlaybackRateIndex, DefaultPlaybackRateIndex);
         }
 
+        CancelCancellationSource(pendingCancellation);
         if (appliedIndex == DefaultPlaybackRateIndex && selectedIndex == DefaultPlaybackRateIndex)
         {
             return;
@@ -4417,23 +4484,19 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         OnPropertyChanged(nameof(PlaybackRateIndex));
     }
 
+    private void CancelPendingPlaybackRateChange()
+    {
+        CancellationTokenSource? pendingCancellation;
+        lock (playbackRateSelectionGate) pendingCancellation = playbackRateChangeCancellation;
+        CancelCancellationSource(pendingCancellation);
+    }
+
     private void SetReplayUnavailable(string reason)
     {
         StopNativeReplayOverlayEventHost();
         CancelReplayPlaybackUrlResolution();
         currentReplayPlaybackKey = null;
-        CancelLiveDvrPromotionPolling();
-        StopVodChat();
-        CancelReplaySeekPreview();
-        CancelReplaySeekOperation();
-        ClearReplayClockAnchor();
-        IsReplayMode = false;
-        IsBehindLive = false;
-        IsReplaySeekEnabled = false;
-        ReplaySeekValue = 0;
-        ReplaySeekMaximum = 1;
-        ReplayElapsedText = "0:00";
-        ReplayDurationText = "0:00";
+        ResetReplayControls();
         ReplayLiveStateText = string.IsNullOrWhiteSpace(reason) ? "Replay unavailable" : reason;
         ReplaySeekToolTip = ReplayLiveStateText;
     }
@@ -4553,6 +4616,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         // through instead of relying only on the later IsReplaySeekInProgress snapshot.
         var sampledSeekOperationVersion = Volatile.Read(ref replaySeekOperationVersion);
         var sampledPlaybackStateVersion = replayClock.PlaybackStateVersion;
+        var sampledPlaybackRateChangeVersion = Volatile.Read(ref playbackRateChangeVersion);
         var seekWasInProgress = IsReplaySeekInProgress;
         var clock = ResolveReplayClock(
             replay,
@@ -4594,7 +4658,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                     await ApplyPlaybackRateSelectionAsync(
                         DefaultPlaybackRateIndex,
                         sampledSeekOperationVersion,
-                        sampledPlaybackStateVersion).ConfigureAwait(false);
+                        sampledPlaybackStateVersion,
+                        sampledPlaybackRateChangeVersion,
+                        cancellationToken).ConfigureAwait(false);
                 }
             }
             finally
@@ -4613,7 +4679,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             !IsReplayMode ||
             !IsBehindLive ||
             Status != PlaybackStatus.Playing ||
-            Volatile.Read(ref playbackRateIndex) <= DefaultPlaybackRateIndex)
+            Volatile.Read(ref playbackRateIndex) <= DefaultPlaybackRateIndex ||
+            Volatile.Read(ref selectedPlaybackRateIndex) <= DefaultPlaybackRateIndex)
         {
             return false;
         }
@@ -5441,6 +5508,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private async Task StopPlaybackOnlyAsync(TimeSpan? playbackStopTimeout = null)
     {
+        ResetPlaybackRate();
         StopLivePlaybackMonitoring();
         livePlaybackConnectionSuspended = false;
         replayClock.ClearResumeHold();

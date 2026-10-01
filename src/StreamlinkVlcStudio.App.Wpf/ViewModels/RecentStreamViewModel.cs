@@ -64,6 +64,7 @@ public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenIte
         liveStatus = status;
         if (previousStatus.State != status.State)
         {
+            OnPropertyChanged(nameof(IsOffline));
             OnPropertyChanged(nameof(LiveStatusKey));
             OnPropertyChanged(nameof(LiveStatusText));
         }
@@ -92,6 +93,8 @@ public sealed class RecentStreamViewModel : ObservableObject, IHomeStreamOpenIte
     public string ThumbnailUrl => stream.ThumbnailUrl;
 
     public bool HasThumbnail => !string.IsNullOrWhiteSpace(stream.ThumbnailUrl);
+
+    public bool IsOffline => liveStatus.State == RecentStreamLiveState.Offline;
 
     public string LiveStatusKey => liveStatus.State switch
     {

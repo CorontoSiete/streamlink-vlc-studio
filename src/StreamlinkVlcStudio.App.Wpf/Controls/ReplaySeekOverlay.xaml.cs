@@ -16,6 +16,9 @@ public partial class ReplaySeekOverlay : UserControl
 {
     internal static readonly TimeSpan IdleDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan FadeDuration = TimeSpan.FromMilliseconds(180);
+    private static readonly DependencyPropertyKey ReservedBottomHeightPropertyKey = DependencyProperty.RegisterAttachedReadOnly(
+        nameof(ReservedBottomHeight), typeof(double), typeof(ReplaySeekOverlay), new PropertyMetadata(0d));
+    internal static readonly DependencyProperty ReservedBottomHeightProperty = ReservedBottomHeightPropertyKey.DependencyProperty;
     public static readonly DependencyProperty PlacementTargetProperty = DependencyProperty.Register(
         nameof(PlacementTarget), typeof(FrameworkElement), typeof(ReplaySeekOverlay),
         new PropertyMetadata(null, OnTargetChanged));
@@ -28,6 +31,7 @@ public partial class ReplaySeekOverlay : UserControl
     private readonly DispatcherTimer pointerTimer;
     private Window? owner;
     private FrameworkElement? subscribedTarget;
+    private FrameworkElement? reservedTarget;
     private Point? lastPointer;
     private long lastActivity;
     private int animationVersion;
@@ -93,8 +97,10 @@ public partial class ReplaySeekOverlay : UserControl
             }
             else if (owner is DetachedVideoWindow && DataContext is StreamTabViewModel tab &&
                      HotkeyGesture.IsBindableMouseButton(e.ChangedButton) &&
-                     ReplaySkipHotkey.TryExecute(tab, tab.PlaybackHotkeys,
-                         HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers), Keyboard.FocusedElement))
+                     (ReplaySkipHotkey.TryExecute(tab, tab.PlaybackHotkeys,
+                         HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers), Keyboard.FocusedElement) ||
+                      PlaybackPauseHotkey.TryExecute(tab, tab.PlaybackHotkeys,
+                         HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers), Keyboard.FocusedElement)))
             {
                 e.Handled = true;
             }
@@ -108,8 +114,10 @@ public partial class ReplaySeekOverlay : UserControl
             }
 
             if (DataContext is StreamTabViewModel tab &&
-                ReplaySkipHotkey.TryExecute(tab, tab.PlaybackHotkeys,
-                    new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers), Keyboard.FocusedElement, e.IsRepeat))
+                (ReplaySkipHotkey.TryExecute(tab, tab.PlaybackHotkeys,
+                    new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers), Keyboard.FocusedElement, e.IsRepeat) ||
+                 PlaybackPauseHotkey.TryExecute(tab, tab.PlaybackHotkeys,
+                    new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers), Keyboard.FocusedElement, e.IsRepeat)))
             {
                 CancelSeek();
                 Reveal(Environment.TickCount64);
@@ -191,9 +199,7 @@ public partial class ReplaySeekOverlay : UserControl
     }
 
     internal bool IsOverlayOpen => OverlayHost.IsOpen;
-    internal double ReservedBottomHeight => OverlayHost.IsOpen
-        ? OverlayChrome.ActualHeight + (PlacementTarget?.ActualWidth < 400 ? 8 : 16)
-        : 0;
+    internal double ReservedBottomHeight => reservedTarget is null ? 0 : (double)reservedTarget.GetValue(ReservedBottomHeightProperty);
 
     private bool CanDisplay => IsLoaded && IsOverlayEnabled &&
         DataContext is StreamTabViewModel && IsOwnerAvailable &&
@@ -256,7 +262,11 @@ public partial class ReplaySeekOverlay : UserControl
         if (subscribedTarget is null) return;
         subscribedTarget.IsVisibleChanged += OnTargetVisibilityChanged;
         subscribedTarget.SizeChanged += OnTargetSizeChanged;
-        if (subscribedTarget is VideoSurface surface) surface.NativeBoundsChanged += OnNativeBoundsChanged;
+        if (subscribedTarget is VideoSurface surface)
+        {
+            surface.NativeBoundsChanged += OnNativeBoundsChanged;
+            surface.NativeHandleDestroying += OnNativeTargetDestroying;
+        }
         else subscribedTarget.LayoutUpdated += OnTargetLayoutUpdated;
     }
 
@@ -265,7 +275,11 @@ public partial class ReplaySeekOverlay : UserControl
         if (subscribedTarget is null) return;
         subscribedTarget.IsVisibleChanged -= OnTargetVisibilityChanged;
         subscribedTarget.SizeChanged -= OnTargetSizeChanged;
-        if (subscribedTarget is VideoSurface surface) surface.NativeBoundsChanged -= OnNativeBoundsChanged;
+        if (subscribedTarget is VideoSurface surface)
+        {
+            surface.NativeBoundsChanged -= OnNativeBoundsChanged;
+            surface.NativeHandleDestroying -= OnNativeTargetDestroying;
+        }
         else subscribedTarget.LayoutUpdated -= OnTargetLayoutUpdated;
         subscribedTarget = null;
     }
@@ -291,6 +305,7 @@ public partial class ReplaySeekOverlay : UserControl
     private void OnTargetVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateTimer();
     private void OnTargetSizeChanged(object sender, SizeChangedEventArgs e) => UpdateOpenPlacement();
     private void OnNativeBoundsChanged(object? sender, EventArgs e) => UpdateOpenPlacement();
+    private void OnNativeTargetDestroying(object? sender, EventArgs e) => HideImmediately();
     private void OnTargetLayoutUpdated(object? sender, EventArgs e) => UpdateOpenPlacement();
 
     private void UpdateOpenPlacement()
@@ -406,6 +421,7 @@ public partial class ReplaySeekOverlay : UserControl
         CancelSeek();
         OverlayChrome.BeginAnimation(OpacityProperty, null);
         OverlayHost.Close();
+        ReleaseReservedBottomSpace();
     }
 
     private void UpdatePlacement()
@@ -421,7 +437,21 @@ public partial class ReplaySeekOverlay : UserControl
         var top = Math.Max(0, size.Height - OverlayChrome.DesiredSize.Height - inset);
         replayOverlayBounds = new Rect(left, top, OverlayChrome.Width, OverlayChrome.DesiredSize.Height);
         OverlayHost.SetBounds(replayOverlayBounds);
+        if (OverlayHost.IsOpen)
+        {
+            if (!ReferenceEquals(reservedTarget, target)) ReleaseReservedBottomSpace();
+            reservedTarget = target;
+            // Publish the measured top edge on the actual placement target. The video
+            // can be nested in a presenter, and compact controls can have extra rows.
+            target.SetValue(ReservedBottomHeightPropertyKey, Math.Max(0, target.RenderSize.Height - top));
+        }
         if (SeekPreviewHost.IsOpen) UpdateSeekHoverPlacement();
+    }
+
+    private void ReleaseReservedBottomSpace()
+    {
+        reservedTarget?.ClearValue(ReservedBottomHeightPropertyKey);
+        reservedTarget = null;
     }
 
     private void BeginSeek()

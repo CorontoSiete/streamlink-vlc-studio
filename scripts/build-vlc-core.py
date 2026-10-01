@@ -38,6 +38,22 @@ PATCH_NEW = """            BOOL haveNativeAddressWaits =
 
             if (!haveNativeAddressWaits)
             {"""
+PREROLL_BUFFER_OLD = """    const vlc_tick_t i_buffering_duration = p_sys->i_pts_delay +
+                                         i_preroll_duration +
+                                         p_sys->i_buffering_extra_stream - p_sys->i_buffering_extra_initial;"""
+PREROLL_BUFFER_NEW = """    /* Decoder delay is in system time; preroll and extra buffering are in
+     * stream time. Convert the delay before comparing stream durations. */
+    const vlc_tick_t i_buffering_duration = p_sys->i_pts_delay * INPUT_RATE_DEFAULT / p_sys->i_rate +
+                                         i_preroll_duration +
+                                         p_sys->i_buffering_extra_stream - p_sys->i_buffering_extra_initial;"""
+PREROLL_ORIGIN_OLD = """    input_clock_ChangeSystemOrigin( p_sys->p_pgrm->p_clock, true,
+                                    i_current_date + i_wakeup_delay - i_buffering_duration );"""
+PREROLL_ORIGIN_NEW = """    /* Rebase the stream buffering interval in system time at the input rate.
+     * ChangeSystemOrigin accounts for the PTS delay's rate offset, so the
+     * decoder delay remains in wall time when the preroll is released. */
+    input_clock_ChangeSystemOrigin( p_sys->p_pgrm->p_clock, true,
+                                    i_current_date + i_wakeup_delay -
+                                    i_buffering_duration * p_sys->i_rate / INPUT_RATE_DEFAULT );"""
 SYSTEM_DLLS = {
     "advapi32.dll",
     "bcrypt.dll",
@@ -141,6 +157,19 @@ def apply_wait_patch(thread_path: Path, output_path: Path) -> None:
     if occurrences != 1:
         raise ValueError(f"Expected exactly one VLC 3.0.23 wait lookup to patch, found {occurrences}")
     output_path.write_text(source.replace(PATCH_OLD, PATCH_NEW), encoding="utf-8", newline="\n")
+
+
+def apply_preroll_rate_patch(source_path: Path, output_path: Path) -> None:
+    source = source_path.read_text(encoding="utf-8")
+    for original, replacement in [
+        (PREROLL_BUFFER_OLD, PREROLL_BUFFER_NEW),
+        (PREROLL_ORIGIN_OLD, PREROLL_ORIGIN_NEW),
+    ]:
+        occurrences = source.count(original)
+        if occurrences != 1:
+            raise ValueError(f"Expected exactly one VLC 3.0.23 preroll calculation to patch, found {occurrences}")
+        source = source.replace(original, replacement)
+    output_path.write_text(source, encoding="utf-8", newline="\n")
 
 
 def generated_about_header(source: Path, output: Path) -> None:
@@ -269,9 +298,11 @@ def build_once(
     # otherwise identical DLLs differ.
     patched_source = source / ".studio_build_thread.c"
     apply_wait_patch(source / "src" / "win32" / "thread.c", patched_source)
+    patched_es_out = source / "src" / "input" / ".studio_build_es_out.c"
+    apply_preroll_rate_patch(source / "src" / "input" / "es_out.c", patched_es_out)
     generated_about_header(source, build / "vlc_about.h")
     (build / "revision.c").write_text(
-        'const char psz_vlc_changeset[] = "3.0.23-windows-address-waits";\n', encoding="ascii"
+        'const char psz_vlc_changeset[] = "3.0.23-windows-address-waits-replay-clock";\n', encoding="ascii"
     )
     (build / "config.h").write_text(
         '#include "' + (Path(__file__).resolve().parent.parent / "native" / "vlc-core" / "core-config.h").as_posix() + '"\n',
@@ -315,15 +346,13 @@ def build_once(
     objects = build / "objects"
     objects.mkdir()
     files = source_files(source)
-    jobs = [(name, patched_source if name == "win32/thread.c" else source / "src" / name) for name in files]
+    patched_files = {"win32/thread.c": patched_source, "input/es_out.c": patched_es_out}
+    jobs = [(name, patched_files.get(name, source / "src" / name)) for name in files]
 
     def compile_one(item: tuple[str, Path]) -> tuple[Path | None, str]:
         name, source_file = item
         output = objects / (name.replace("/", "_").replace(".", "_") + ".o")
-        if name == "win32/thread.c":
-            argument = ".studio_build_thread.c"
-        else:
-            argument = "src/" + name
+        argument = os.path.relpath(source_file, source).replace("\\", "/")
         result = subprocess.run(
             [str(gcc), *flags, "-c", argument, "-o", os.path.relpath(output, source).replace("\\", "/")],
             cwd=source,

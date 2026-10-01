@@ -59,6 +59,11 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private static readonly TimeSpan SeekTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan SeekPollInterval = TimeSpan.FromMilliseconds(50);
     private const long SeekConfirmationToleranceMilliseconds = 2000;
+    private static readonly TimeSpan PlaybackRateRecoveryTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PlaybackRateRecoverySettleTime = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan PlaybackRateStalledClockWait = TimeSpan.FromSeconds(2);
+    private const long PlaybackRateRecoveryMinimumAdvanceMilliseconds = 250;
+    private const long PlaybackRateRecoveryClockToleranceMilliseconds = 10_000;
     private static readonly TimeSpan[] AudioStateConvergenceDelays =
     [
         TimeSpan.Zero,
@@ -77,6 +82,8 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private readonly IAppLogger logger;
     private readonly string vlcDirectory;
     private readonly object nativeGate = new();
+    private readonly bool rateAwareReplayPreroll;
+    private readonly SemaphoreSlim nativePlaybackRateChangeGate = new(1, 1);
     private readonly LibVlcAudioStateController audioStateController = new();
     private readonly SemaphoreSlim audioApplySignal = new(0, 1);
     private readonly CancellationTokenSource audioApplyCancellation = new();
@@ -99,6 +106,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private long suppressPlaybackRateResynchronizationUntilMilliseconds = -1;
     private long playbackRateResynchronizationStartedAt;
     private bool playbackRateResynchronizationPending;
+    private long playbackRatePositionVersion;
     private bool replayOutputPending;
     private bool preserveReplayPause;
     private bool usingAvformatReplay;
@@ -169,6 +177,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
 
         LibVlcNative.SetDllDirectory(this.vlcDirectory);
+        rateAwareReplayPreroll = LibVlcNative.RateAwareReplayPrerollAvailable;
         logger.Write(AppLogLevel.Info, "libVLC", LibVlcNative.CoreSelectionDescription);
         try
         {
@@ -419,7 +428,9 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                         throw new InvalidOperationException("libVLC failed to start playback.");
                     }
 
-                    ApplyRequestedPlaybackRateCore();
+                    // Establish the replay position at the normal input rate. Applying a
+                    // retained fast rate during preroll can skip its confirmation window.
+                    if (!startPosition.HasValue) ApplyRequestedPlaybackRateCore();
 
                     logger.Write(
                         AppLogLevel.Info,
@@ -549,156 +560,232 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
 
         ObjectDisposedException.ThrowIf(disposed, this);
-        if (!await WaitForPlaybackRateResynchronizationAsync(cancellationToken).ConfigureAwait(false))
+        var generation = Volatile.Read(ref playerGeneration);
+        var positionVersion = Volatile.Read(ref playbackRatePositionVersion);
+        await nativePlaybackRateChangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return false;
+            return await ApplyPlaybackRateAsync(rate, generation, positionVersion, cancellationToken).ConfigureAwait(false);
         }
-
-        return await RunBlockingNativeAsync(() =>
+        finally
         {
-            lock (nativeGate)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (disposed)
-                {
-                    return false;
-                }
-
-                var previousRate = requestedPlaybackRate;
-                if (player == IntPtr.Zero)
-                {
-                    requestedPlaybackRate = rate;
-                    return true;
-                }
-
-                if (previousRate == rate)
-                {
-                    return true;
-                }
-
-                var nativeTime = LibVlcNative.libvlc_media_player_get_time(player);
-                var length = LibVlcNative.libvlc_media_player_get_length(player);
-                var state = LibVlcNative.libvlc_media_player_get_state(player);
-                var canResynchronize = nativeTime >= 0 && length > 0 &&
-                    nativeTime < length - 1_000 &&
-                    !replayOutputPending &&
-                    (lastPlaybackRateResynchronizationTimeMilliseconds < 0 ||
-                        nativeTime >= lastPlaybackRateResynchronizationTimeMilliseconds - SeekConfirmationToleranceMilliseconds) &&
-                    (suppressPlaybackRateResynchronizationUntilMilliseconds < 0 ||
-                        nativeTime >= suppressPlaybackRateResynchronizationUntilMilliseconds) &&
-                    LibVlcNative.libvlc_media_player_is_seekable(player) != 0 &&
-                    state is LibVlcNative.MediaPlayerState.Playing or LibVlcNative.MediaPlayerState.Paused;
-                var playbackUri = originalMediaUri ?? currentMediaSource?.PlaybackUri ?? currentMediaUri;
-                var liveReplaySegmentDuration = currentMediaSource?.LiveReplaySegmentDuration ?? TimeSpan.Zero;
-                var resynchronizeHls = canResynchronize &&
-                    playbackUri is { } uri && HlsReplayTimeline.IsPlaylist(uri) &&
-                    (liveReplaySegmentDuration <= TimeSpan.Zero ||
-                        length - nativeTime > liveReplaySegmentDuration.TotalMilliseconds);
-
-                if (resynchronizeHls && rate < 1f)
-                {
-                    // A high-to-slow switch needs a 1x clock reset before entering
-                    // slow motion. Routine slowdowns can use the buffered input;
-                    // seeking it again can briefly starve audio.
-                    if (previousRate > 1f)
-                    {
-                        if (LibVlcNative.libvlc_media_player_set_rate(player, 1f) != 0)
-                        {
-                            logger.Write(AppLogLevel.Warning, "libVLC", "libVLC rejected playback rate 1x.");
-                            return false;
-                        }
-
-                        requestedPlaybackRate = 1f;
-                        TrySubmitPlaybackRateResynchronizationCore(nativeTime);
-                    }
-                }
-
-                if (LibVlcNative.libvlc_media_player_set_rate(player, rate) != 0)
-                {
-                    logger.Write(AppLogLevel.Warning, "libVLC", $"libVLC rejected playback rate {rate:0.##}x.");
-                    return false;
-                }
-
-                requestedPlaybackRate = rate;
-                if (resynchronizeHls && rate >= 1f)
-                {
-                    // Flush audio queued at the old rate without waiting for a
-                    // position-confirmation poll before accepting another speed input.
-                    TrySubmitPlaybackRateResynchronizationCore(nativeTime);
-                }
-
-                return true;
-            }
-        }, cancellationToken).ConfigureAwait(false);
+            nativePlaybackRateChangeGate.Release();
+        }
     }
 
-    private async Task<bool> WaitForPlaybackRateResynchronizationAsync(CancellationToken cancellationToken)
+    private async Task<bool> ApplyPlaybackRateAsync(float rate, long generation, long positionVersion, CancellationToken cancellationToken)
     {
         var deadline = Stopwatch.StartNew();
         long lastObservedTime = -1;
         long pendingTarget = -1;
         var lastState = LibVlcNative.MediaPlayerState.NothingSpecial;
-        while (true)
+        var recoveringNormalRate = false;
+        var previousRate = 1f;
+        var applied = false;
+        try
         {
-            var waitState = await RunBlockingNativeAsync(() =>
+            while (true)
             {
-                lock (nativeGate)
+                var startedNormalRateRecovery = false;
+                var result = await RunBlockingNativeAsync(() =>
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (disposed || player == IntPtr.Zero || !playbackRateResynchronizationPending)
-                        return PlaybackRateWaitState.Ready;
-                    var state = LibVlcNative.libvlc_media_player_get_state(player);
-                    lastState = state;
-                    if (state is LibVlcNative.MediaPlayerState.Stopped or
-                        LibVlcNative.MediaPlayerState.Ended or LibVlcNative.MediaPlayerState.Error)
-                        return PlaybackRateWaitState.Unavailable;
-                    if (state == LibVlcNative.MediaPlayerState.Paused)
+                    lock (nativeGate)
                     {
-                        playbackRateResynchronizationPending = false;
-                        return PlaybackRateWaitState.Ready;
-                    }
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (disposed || generation != playerGeneration || positionVersion != playbackRatePositionVersion)
+                            return PlaybackRateWaitState.Unavailable;
 
-                    var time = LibVlcNative.libvlc_media_player_get_time(player);
-                    lastObservedTime = time;
-                    pendingTarget = lastPlaybackRateResynchronizationTimeMilliseconds;
-                    if (Stopwatch.GetElapsedTime(playbackRateResynchronizationStartedAt) >= TimeSpan.FromMilliseconds(500) &&
-                        time >= lastPlaybackRateResynchronizationTimeMilliseconds + 250 &&
-                        time - lastPlaybackRateResynchronizationTimeMilliseconds < 10_000)
-                    {
-                        playbackRateResynchronizationPending = false;
-                        return PlaybackRateWaitState.Ready;
-                    }
+                        // An already-applied selection is independent of clock recovery.
+                        // It must not queue another seek or delay an unchanged speed.
+                        if (!recoveringNormalRate && requestedPlaybackRate == rate) return PlaybackRateWaitState.Ready;
+                        if (player == IntPtr.Zero)
+                        {
+                            requestedPlaybackRate = rate;
+                            return PlaybackRateWaitState.Ready;
+                        }
 
-                    if (deadline.Elapsed >= TimeSpan.FromSeconds(2) &&
-                        Math.Abs(time - lastPlaybackRateResynchronizationTimeMilliseconds) <= 250)
-                    {
-                        // A growing playlist can stop at its published edge. Let the
-                        // user change speed there, but do not seek that stalled input
-                        // again until its playback clock actually advances.
-                        suppressPlaybackRateResynchronizationUntilMilliseconds =
-                            lastPlaybackRateResynchronizationTimeMilliseconds + 250;
-                        playbackRateResynchronizationPending = false;
-                        return PlaybackRateWaitState.Ready;
-                    }
+                        var recoveryRate = recoveringNormalRate ? 1f : requestedPlaybackRate;
+                        var waitState = GetPlaybackRateRecoveryStateCore(deadline.Elapsed, recoveryRate,
+                            out lastObservedTime, out pendingTarget, out lastState);
+                        if (waitState != PlaybackRateWaitState.Ready) return waitState;
 
-                    return PlaybackRateWaitState.Pending;
+                        // Complete precise FFmpeg preroll at 1x on uncorrected cores
+                        // before applying slow motion.
+                        if (recoveringNormalRate)
+                            return TrySetRequestedPlaybackRateCore(rate) ? PlaybackRateWaitState.Ready : PlaybackRateWaitState.Unavailable;
+
+                        // Keep the recovery check and submission in one native critical section.
+                        // Another speed request or explicit seek cannot reset the clock between them.
+                        previousRate = requestedPlaybackRate;
+                        var outcome = TryApplyPlaybackRateCore(rate, out recoveringNormalRate);
+                        startedNormalRateRecovery = recoveringNormalRate;
+                        return outcome;
+                    }
+                }, cancellationToken).ConfigureAwait(false);
+                if (result == PlaybackRateWaitState.Ready)
+                {
+                    applied = true;
+                    return true;
                 }
-            }, cancellationToken).ConfigureAwait(false);
-            if (waitState == PlaybackRateWaitState.Ready) return true;
-            if (waitState == PlaybackRateWaitState.Unavailable) return false;
-            if (deadline.Elapsed >= TimeSpan.FromSeconds(5))
-            {
-                logger.Write(AppLogLevel.Warning, "libVLC",
-                    $"Playback speed change waited for the previous HLS position to recover and timed out: " +
-                    $"state={lastState}, timeMs={lastObservedTime}, targetMs={pendingTarget}.");
-                return false;
-            }
+                if (result == PlaybackRateWaitState.Unavailable) return false;
+                if (startedNormalRateRecovery) deadline.Restart();
+                if (deadline.Elapsed >= PlaybackRateRecoveryTimeout)
+                {
+                    logger.Write(AppLogLevel.Warning, "libVLC",
+                        $"Playback speed change waited for the previous HLS position to recover and timed out: " +
+                        $"state={lastState}, timeMs={lastObservedTime}, targetMs={pendingTarget}.");
+                    return false;
+                }
 
-            await Task.Delay(SeekPollInterval, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(SeekPollInterval, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (recoveringNormalRate && !applied)
+                await RestorePlaybackRateAfterInterruptedRecoveryAsync(previousRate, generation).ConfigureAwait(false);
         }
     }
 
-    private void TrySubmitPlaybackRateResynchronizationCore(long nativeTime)
+    private Task RestorePlaybackRateAfterInterruptedRecoveryAsync(float previousRate, long generation) => RunBlockingNativeAsync(() =>
+    {
+        lock (nativeGate)
+        {
+            // The remembered rate stays unchanged until the target is committed,
+            // so replacement players inherit it. Restore only this player's temporary
+            // 1x rate; never submit another seek or change a replacement input.
+            if (disposed || player == IntPtr.Zero || generation != playerGeneration) return;
+            if (LibVlcNative.libvlc_media_player_set_rate(player, previousRate) != 0)
+                logger.Write(AppLogLevel.Warning, "libVLC", $"Could not restore playback rate {previousRate:0.##}x after interrupted recovery.");
+        }
+    });
+
+    private PlaybackRateWaitState TryApplyPlaybackRateCore(float rate, out bool recoveringNormalRate)
+    {
+        recoveringNormalRate = false;
+        var previousRate = requestedPlaybackRate;
+        var nativeTime = LibVlcNative.libvlc_media_player_get_time(player);
+        var length = LibVlcNative.libvlc_media_player_get_length(player);
+        var state = LibVlcNative.libvlc_media_player_get_state(player);
+        var canResynchronize = nativeTime >= 0 && length > 0 &&
+            nativeTime < length - 1_000 &&
+            !replayOutputPending &&
+            (lastPlaybackRateResynchronizationTimeMilliseconds < 0 ||
+                nativeTime >= lastPlaybackRateResynchronizationTimeMilliseconds - SeekConfirmationToleranceMilliseconds) &&
+            (suppressPlaybackRateResynchronizationUntilMilliseconds < 0 ||
+                nativeTime >= suppressPlaybackRateResynchronizationUntilMilliseconds) &&
+            LibVlcNative.libvlc_media_player_is_seekable(player) != 0 &&
+            state is LibVlcNative.MediaPlayerState.Playing or LibVlcNative.MediaPlayerState.Paused;
+        var playbackUri = originalMediaUri ?? currentMediaSource?.PlaybackUri ?? currentMediaUri;
+        var liveReplaySegmentDuration = currentMediaSource?.LiveReplaySegmentDuration ?? TimeSpan.Zero;
+        // Only an active audio decoder has queued samples at the previous rate.
+        // A video-only input does not need an audio resynchronization seek.
+        var resynchronizeHls = canResynchronize &&
+            playbackUri is { } uri && HlsReplayTimeline.IsPlaylist(uri) &&
+            (liveReplaySegmentDuration <= TimeSpan.Zero ||
+                length - nativeTime > liveReplaySegmentDuration.TotalMilliseconds) &&
+            LibVlcNative.libvlc_audio_get_track(player) >= 0;
+
+        if (resynchronizeHls && usingAvformatReplay && rateAwareReplayPreroll)
+        {
+            // This core converts preroll between media time and wall time at the
+            // selected rate. Flush old audio after setting the rate, then let the
+            // next request wait for the completed replay's clock to recover.
+            if (!TrySetRequestedPlaybackRateCore(rate)) return PlaybackRateWaitState.Unavailable;
+            TrySubmitPlaybackRateResynchronizationCore(nativeTime, waitForRecovery: true);
+            return PlaybackRateWaitState.Ready;
+        }
+
+        if (resynchronizeHls && rate < 1f && previousRate > 1f)
+        {
+            // A high-to-slow switch needs a 1x clock reset before entering
+            // slow motion. Routine slowdowns can use the buffered input;
+            // seeking it again can briefly starve audio.
+            if (LibVlcNative.libvlc_media_player_set_rate(player, 1f) != 0)
+            {
+                logger.Write(AppLogLevel.Warning, "libVLC", "libVLC rejected playback rate 1x.");
+                return PlaybackRateWaitState.Unavailable;
+            }
+
+            if (usingAvformatReplay && state == LibVlcNative.MediaPlayerState.Playing && !desiredPaused)
+            {
+                TrySubmitPlaybackRateResynchronizationCore(nativeTime, waitForRecovery: true);
+                recoveringNormalRate = true;
+                return PlaybackRateWaitState.Pending;
+            }
+
+            requestedPlaybackRate = 1f;
+            TrySubmitPlaybackRateResynchronizationCore(nativeTime);
+        }
+
+        if (!TrySetRequestedPlaybackRateCore(rate)) return PlaybackRateWaitState.Unavailable;
+        if (resynchronizeHls && rate >= 1f)
+        {
+            // Flush audio queued at the old rate without waiting for a
+            // position-confirmation poll before accepting another speed input.
+            TrySubmitPlaybackRateResynchronizationCore(nativeTime);
+        }
+
+        return PlaybackRateWaitState.Ready;
+    }
+
+    private bool TrySetRequestedPlaybackRateCore(float rate)
+    {
+        if (LibVlcNative.libvlc_media_player_set_rate(player, rate) != 0)
+        {
+            logger.Write(AppLogLevel.Warning, "libVLC", $"libVLC rejected playback rate {rate:0.##}x.");
+            return false;
+        }
+
+        requestedPlaybackRate = rate;
+        return true;
+    }
+
+    private PlaybackRateWaitState GetPlaybackRateRecoveryStateCore(TimeSpan waitElapsed, float recoveryRate,
+        out long time, out long pendingTarget, out LibVlcNative.MediaPlayerState state)
+    {
+        time = -1;
+        pendingTarget = lastPlaybackRateResynchronizationTimeMilliseconds;
+        state = LibVlcNative.MediaPlayerState.NothingSpecial;
+        if (!playbackRateResynchronizationPending) return PlaybackRateWaitState.Ready;
+        state = LibVlcNative.libvlc_media_player_get_state(player);
+        if (state is LibVlcNative.MediaPlayerState.Stopped or LibVlcNative.MediaPlayerState.Ended or LibVlcNative.MediaPlayerState.Error)
+            return PlaybackRateWaitState.Unavailable;
+        if (state == LibVlcNative.MediaPlayerState.Paused)
+        {
+            playbackRateResynchronizationPending = false;
+            return PlaybackRateWaitState.Ready;
+        }
+
+        time = LibVlcNative.libvlc_media_player_get_time(player);
+        // Recovery is checked on the next speed request, which can arrive
+        // long after playback resumed. Allow the clock's elapsed progress
+        // at the current rate while retaining the transient-jump tolerance.
+        var elapsedSinceResynchronization = Stopwatch.GetElapsedTime(playbackRateResynchronizationStartedAt);
+        var maximumAdvanceMilliseconds = PlaybackRateRecoveryClockToleranceMilliseconds + elapsedSinceResynchronization.TotalMilliseconds * recoveryRate;
+        if (elapsedSinceResynchronization >= PlaybackRateRecoverySettleTime &&
+            time >= pendingTarget + PlaybackRateRecoveryMinimumAdvanceMilliseconds &&
+            time - pendingTarget < maximumAdvanceMilliseconds)
+        {
+            playbackRateResynchronizationPending = false;
+            return PlaybackRateWaitState.Ready;
+        }
+
+        if (waitElapsed >= PlaybackRateStalledClockWait &&
+            Math.Abs(time - pendingTarget) <= PlaybackRateRecoveryMinimumAdvanceMilliseconds)
+        {
+            // A growing playlist can stop at its published edge. Let the
+            // user change speed there, but do not seek that stalled input
+            // again until its playback clock actually advances.
+            suppressPlaybackRateResynchronizationUntilMilliseconds = pendingTarget + PlaybackRateRecoveryMinimumAdvanceMilliseconds;
+            playbackRateResynchronizationPending = false;
+            return PlaybackRateWaitState.Ready;
+        }
+
+        return PlaybackRateWaitState.Pending;
+    }
+
+    private void TrySubmitPlaybackRateResynchronizationCore(long nativeTime, bool waitForRecovery = false)
     {
         try
         {
@@ -707,7 +794,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             // second rate change must not treat that reset as the user's position.
             lastPlaybackRateResynchronizationTimeMilliseconds = nativeTime;
             if (preserveReplayPause &&
-                LibVlcNative.libvlc_media_player_get_state(player) == LibVlcNative.MediaPlayerState.Playing)
+                (waitForRecovery || LibVlcNative.libvlc_media_player_get_state(player) == LibVlcNative.MediaPlayerState.Playing))
             {
                 playbackRateResynchronizationStartedAt = Stopwatch.GetTimestamp();
                 playbackRateResynchronizationPending = true;
@@ -779,6 +866,11 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         long requestedMilliseconds;
         lock (nativeGate)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (generation != playerGeneration)
+                throw new OperationCanceledException("The playback media changed while seeking.");
+            Interlocked.Increment(ref playbackRatePositionVersion);
             lastPlaybackRateResynchronizationTimeMilliseconds = -1;
             suppressPlaybackRateResynchronizationUntilMilliseconds = -1;
             playbackRateResynchronizationPending = false;
@@ -1363,6 +1455,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                 var state = LibVlcNative.libvlc_media_player_get_state(player);
                 if (!desiredPaused || state == LibVlcNative.MediaPlayerState.Paused)
                 {
+                    ApplyRequestedPlaybackRateCore();
                     if (!desiredPaused && state == LibVlcNative.MediaPlayerState.Paused)
                         LibVlcNative.libvlc_media_player_set_pause(player, 0);
                     ReleaseReplayOutputCore();

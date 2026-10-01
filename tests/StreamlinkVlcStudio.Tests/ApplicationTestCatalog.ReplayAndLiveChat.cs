@@ -1740,8 +1740,7 @@ internal static partial class ApplicationTestCatalog
             () => streamlink.ResolveStreamUrlCount == 1,
             TimeSpan.FromSeconds(1));
 
-        tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(25).TotalSeconds;
-        await tab.SeekReplayAsync(TimeSpan.FromSeconds(tab.ReplaySeekSliderValue));
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(25));
         Assert.True(tab.IsReplayMode);
         Assert.True(tab.IsBehindLive);
         Assert.Equal(TimeSpan.FromMinutes(25), playbackFactory.Engine!.Position);
@@ -2023,8 +2022,7 @@ internal static partial class ApplicationTestCatalog
             () => streamlink.ResolveStreamUrlCount == 1,
             TimeSpan.FromSeconds(1));
 
-        tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(25).TotalSeconds;
-        await tab.SeekReplayAsync(TimeSpan.FromSeconds(tab.ReplaySeekSliderValue));
+        await tab.SeekReplayAsync(TimeSpan.FromMinutes(25));
         Assert.True(tab.IsBehindLive);
         Assert.Equal("25:00", tab.ReplayElapsedText);
 

@@ -43,6 +43,11 @@ if ($coreProvenance.schemaVersion -ne 1 -or
     @($coreProvenance.buildInputs.contribPackages).Count -ne 5) {
     throw 'Bundled VLC core provenance is missing its supported version or license.'
 }
+if (@($coreProvenance.additionalPatches).Count -ne 1 -or
+    $coreProvenance.additionalPatches[0].sourcePath -cne 'src/input/es_out.c' -or
+    $coreProvenance.additionalPatches[0].patch -cne 'replay-preroll-rate.patch') {
+    throw 'Bundled VLC core provenance is missing its replay clock source patch.'
+}
 $coreRuntimePath = Join-Path $repoRoot 'src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledVlcCoreRuntime.cs'
 $coreRuntimeSource = Get-Content -LiteralPath $coreRuntimePath -Raw
 $runtimeHashMatch = [regex]::Match(
@@ -57,6 +62,7 @@ foreach ($relativePath in (@(
         'README.md',
         'core-config.h',
         'windows-address-waits.patch',
+        'replay-preroll-rate.patch',
         'provenance.json') + @($coreProvenance.licenseFiles))) {
     if (-not (Test-Path -LiteralPath (Join-Path $coreRoot $relativePath) -PathType Leaf)) {
         throw "Bundled VLC core source material is missing: $relativePath"
@@ -100,4 +106,4 @@ try {
 if ($actualCoreHash -cne [string]$coreProvenance.binarySha256) {
     throw "Bundled VLC core SHA-256 mismatch: expected $($coreProvenance.binarySha256), got $actualCoreHash."
 }
-Write-Host "Verified bundled VLC 3.0.23 condition-wait core ($actualCoreHash)."
+Write-Host "Verified bundled VLC 3.0.23 condition-wait and replay-clock core ($actualCoreHash)."

@@ -20,9 +20,10 @@ internal static partial class ApplicationTestCatalog
         internal readonly MemoryLogger Logger = new();
         internal readonly TwitchMutedVodPlaybackGateway Gateway;
         private readonly System.Net.Http.HttpClient upstream;
-        internal FastVodFixture(bool muted = false, bool stalled = false, bool longGop = false)
+        internal FastVodFixture(bool muted = false, bool stalled = false, bool longGop = false, bool withAudio = false)
         {
-            var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", longGop ? "replay-position-long-gop" : "replay-position-event");
+            var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", withAudio ? "replay-position-audio" :
+                longGop ? "replay-position-long-gop" : "replay-position-event");
             var playlist = File.ReadAllText(Path.Combine(directory, "index.m3u8"));
             if (!playlist.Contains("#EXT-X-ENDLIST")) playlist += "\n#EXT-X-ENDLIST\n";
             if (muted) playlist = playlist.Replace("index3.ts", "index3-muted.ts");

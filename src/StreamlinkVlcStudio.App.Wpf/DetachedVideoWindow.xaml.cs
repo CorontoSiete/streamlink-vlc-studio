@@ -153,8 +153,9 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (ReplaySkipHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys,
-                new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers), Keyboard.FocusedElement, e.IsRepeat))
+        var input = new HotkeyGesture(HotkeyGesture.GetEventKey(e), Keyboard.Modifiers);
+        if (ReplaySkipHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys, input, Keyboard.FocusedElement, e.IsRepeat) ||
+            PlaybackPauseHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys, input, Keyboard.FocusedElement, e.IsRepeat))
         {
             e.Handled = true;
         }
@@ -162,9 +163,10 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void DetachedVideoWindowPreviewMouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (HotkeyGesture.IsBindableMouseButton(e.ChangedButton) &&
-            ReplaySkipHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys,
-                HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers), Keyboard.FocusedElement))
+        if (!HotkeyGesture.IsBindableMouseButton(e.ChangedButton)) return;
+        var input = HotkeyGesture.FromMouseButton(e.ChangedButton, Keyboard.Modifiers);
+        if (ReplaySkipHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys, input, Keyboard.FocusedElement) ||
+            PlaybackPauseHotkey.TryExecute(activeTab, activeTab?.PlaybackHotkeys, input, Keyboard.FocusedElement))
         {
             e.Handled = true;
         }
@@ -2029,6 +2031,11 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private UIElement ResolveVolumeOsdTarget(StreamTabViewModel tab)
     {
+        if (tab.IsVodFinished && tab.VideoSurfacePresenterOwner?.Parent is UIElement { IsVisible: true } finishedScreen)
+        {
+            return finishedScreen;
+        }
+
         return detachedSurfaces.TryGetValue(tab, out var surface) && surface.IsVisible
             ? surface
             : VideoHost;

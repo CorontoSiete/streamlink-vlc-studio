@@ -1,3 +1,5 @@
+using System.Windows.Automation;
+
 internal static partial class OfflineFollowedChannelsTestCatalog
 {
     private static Task TransitionsAsync() => TestSta.RunOffscreenAsync(async () =>
@@ -179,9 +181,12 @@ internal static partial class OfflineFollowedChannelsTestCatalog
     private static Task LayoutAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         var followed = new FakeFollowedStreamsService();
-        Enqueue(followed, Result([Live("liveone")], [Offline("twitch_offline"), Offline("kick-offline", PlatformKind.Kick)]));
+        Enqueue(followed, Result([Live("liveone")],
+            [Offline("twitch_offline") with { DisplayName = "A favorite streamer with a long display name" },
+             Offline("kick-offline", PlatformKind.Kick)]));
         await using var model = CreateModel(followed);
         await model.RefreshFollowedChannelsCommand.ExecuteAsync();
+        model.OfflineFollowedChannels.Last().TogglePinCommand.Execute(null);
         var window = new MainWindow { DataContext = model };
         ApplicationTestCatalog.RemoveMainWindowAutomaticStartup(window);
         var root = (FrameworkElement)window.Content;
@@ -208,6 +213,19 @@ internal static partial class OfflineFollowedChannelsTestCatalog
                     Assert.True(button.ActualHeight >= 100 && button.ActualHeight < 180);
                     var bounds = Bounds(button, offlineList);
                     Assert.True(bounds.Left >= -0.5 && bounds.Right <= offlineList.ActualWidth + 0.5);
+                    var pin = Descendants<Button>(offlineList).Single(candidate => ReferenceEquals(candidate.Command, card.TogglePinCommand));
+                    Assert.True(pin.IsEnabled && pin.Focusable && pin.IsTabStop);
+                    Assert.Equal(card.PinActionText, AutomationProperties.GetName(pin));
+                    Assert.Equal(card.PinStatusText, AutomationProperties.GetItemStatus(pin));
+                    Assert.Equal(false, Descendants<Button>(button).Contains(pin));
+                    var pinBounds = Bounds(pin, offlineList);
+                    Assert.True(pinBounds.Width >= 32 && pinBounds.Height >= 32);
+                    Assert.True(pinBounds.Left >= bounds.Left && pinBounds.Right <= bounds.Right + 0.5);
+                    Assert.True(pinBounds.Top >= bounds.Top && pinBounds.Bottom <= bounds.Bottom + 0.5);
+                    var name = Descendants<TextBlock>(button).Single(text => text.Text == card.DisplayName);
+                    Assert.True(Bounds(name, offlineList).Right <= pinBounds.Left + 0.5);
+                    var badge = Descendants<Border>(button).Single(border => Equals(border.ToolTip, card.PlatformText));
+                    Assert.True(Bounds(badge, offlineList).Top >= pinBounds.Bottom - 0.5);
                 }
                 var title = Descendants<TextBlock>(section).Single(text => text.Text == "Offline followed channels");
                 Assert.True(Bounds(title, section).Right <= section.ActualWidth + 0.5);

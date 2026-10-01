@@ -939,9 +939,9 @@
                             <controls:RoundedClipBorder Width="32" Height="32" CornerRadius="16" VerticalAlignment="Center" HorizontalAlignment="Left"
                                                         Background="{DynamicResource StudioSurface3Brush}">
                                 <Grid>
-                                    <Path Style="{StaticResource StudioLineIcon}" Data="{StaticResource StudioIconAccount}"
-                                          Width="14" Height="14" HorizontalAlignment="Center" Stroke="{DynamicResource StudioTextMutedBrush}" />
-                                    <controls:AnimatedEmoteImage ImageUrl="{Binding ProfileImageUrl}" MaxImageBytes="8388608" Stretch="UniformToFill" />
+                                    <Path x:Name="ProfileAvatarPlaceholder" Style="{StaticResource StudioLineIcon}" Data="{StaticResource StudioIconAccount}"
+                                          Width="14" Height="14" HorizontalAlignment="Center" Stroke="{DynamicResource StudioTextMutedBrush}" Visibility="Collapsed" />
+                                    <controls:AnimatedEmoteImage x:Name="ProfileAvatarImage" ImageUrl="{Binding ProfileImageUrl}" MaxImageBytes="8388608" Stretch="UniformToFill" />
                                 </Grid>
                             </controls:RoundedClipBorder>
                             <TextBlock Grid.Column="1" Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"
@@ -956,6 +956,10 @@
                 </Grid>
             </Button>
             <DataTemplate.Triggers>
+                <!-- A decoded avatar can be transparent; only show the fallback when no Source is available. -->
+                <DataTrigger Binding="{Binding Source, ElementName=ProfileAvatarImage}" Value="{x:Null}">
+                    <Setter TargetName="ProfileAvatarPlaceholder" Property="Visibility" Value="Visible" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding Opacity, ElementName=LiveCardPlayAffordance}" Value="1">
                     <Setter TargetName="LiveCardPlaceholder" Property="Opacity" Value="0" />
                 </DataTrigger>
@@ -963,33 +967,66 @@
         </DataTemplate>
 
         <DataTemplate x:Key="OfflineFollowedChannelTemplate" DataType="{x:Type vm:OfflineFollowedChannelViewModel}">
-            <Button Style="{StaticResource HomeCardButton}" Command="{Binding OpenCommand}" MinHeight="104"
-                    AutomationProperties.Name="{Binding DisplayName}" ToolTip="Browse this channel's videos">
-                <Grid Margin="14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="50" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="26" />
-                    </Grid.ColumnDefinitions>
-                    <controls:RoundedClipBorder Width="48" Height="48" CornerRadius="24"
-                                                Background="{DynamicResource StudioSurface2Brush}" VerticalAlignment="Center">
-                        <Grid>
-                            <TextBlock Text="&#xE77B;" FontFamily="Segoe MDL2 Assets" FontSize="22"
-                                       Foreground="{DynamicResource StudioTextDimBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                            <controls:AnimatedEmoteImage ImageUrl="{Binding ProfileImageUrl}" Stretch="UniformToFill" />
-                        </Grid>
-                    </controls:RoundedClipBorder>
-                    <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="Offline" FontSize="12" Foreground="{DynamicResource StudioTextSecondaryBrush}" Margin="0,4,0,0" />
-                        <TextBlock Text="View videos" FontSize="12" Foreground="{DynamicResource StudioAccentBrush}" Margin="0,5,0,0" />
-                    </StackPanel>
-                    <Border Grid.Column="2" Style="{StaticResource HomePlatformBadgeStyle}" Width="26" Height="26"
-                            Padding="6" BorderThickness="0" VerticalAlignment="Center" ToolTip="{Binding PlatformText}">
-                        <Viewbox><Path Style="{StaticResource HomePlatformIconStyle}" /></Viewbox>
-                    </Border>
-                </Grid>
-            </Button>
+            <Grid>
+                <Button Style="{StaticResource HomeCardButton}" Command="{Binding OpenCommand}" MinHeight="104"
+                        AutomationProperties.Name="{Binding DisplayName}" ToolTip="Browse this channel's videos">
+                    <Grid Margin="14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="50" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="36" />
+                        </Grid.ColumnDefinitions>
+                        <controls:RoundedClipBorder Width="48" Height="48" CornerRadius="24"
+                                                    Background="{DynamicResource StudioSurface2Brush}" VerticalAlignment="Center">
+                            <Grid>
+                                <TextBlock x:Name="ProfileAvatarPlaceholder" Text="&#xE77B;" FontFamily="Segoe MDL2 Assets" FontSize="22" Visibility="Collapsed"
+                                           Foreground="{DynamicResource StudioTextDimBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                <controls:AnimatedEmoteImage x:Name="ProfileAvatarImage" ImageUrl="{Binding ProfileImageUrl}" Stretch="UniformToFill" />
+                            </Grid>
+                        </controls:RoundedClipBorder>
+                        <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="Offline" FontSize="12" Foreground="{DynamicResource StudioTextSecondaryBrush}" Margin="0,4,0,0" />
+                            <TextBlock Text="View videos" FontSize="12" Foreground="{DynamicResource StudioAccentBrush}" Margin="0,5,0,0" />
+                        </StackPanel>
+                        <Border Grid.Column="2" Style="{StaticResource HomePlatformBadgeStyle}" Width="26" Height="26"
+                                Padding="6" BorderThickness="0" VerticalAlignment="Bottom" HorizontalAlignment="Right" ToolTip="{Binding PlatformText}">
+                            <Viewbox><Path Style="{StaticResource HomePlatformIconStyle}" /></Viewbox>
+                        </Border>
+                    </Grid>
+                </Button>
+                <Button x:Name="OfflineFollowedPinButton" Command="{Binding TogglePinCommand}"
+                        Width="32" Height="32" MinHeight="32" Margin="0,12,12,0"
+                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                        ToolTip="{Binding PinActionText}" AutomationProperties.Name="{Binding PinActionText}"
+                        AutomationProperties.ItemStatus="{Binding PinStatusText}">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource StudioQuietIconButton}">
+                            <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
+                            <Setter Property="BorderThickness" Value="1" />
+                            <Setter Property="BorderBrush" Value="Transparent" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsPinned}" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource StudioAccentBrush}" />
+                                    <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
+                                    <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                    <Path x:Name="OfflineFollowedPinIcon" Style="{StaticResource StudioLineIcon}"
+                          Data="{StaticResource StudioIconPin}" Width="16" Height="16"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                </Button>
+            </Grid>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Source, ElementName=ProfileAvatarImage}" Value="{x:Null}">
+                    <Setter TargetName="ProfileAvatarPlaceholder" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsPinned}" Value="True">
+                    <Setter TargetName="OfflineFollowedPinIcon" Property="Fill" Value="{DynamicResource StudioAccentBrush}" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
         </DataTemplate>
 
         <ItemsPanelTemplate x:Key="HomeCardItemsPanel">
@@ -2800,13 +2837,13 @@
                                                                                             DataContext="{Binding ProfileImageUrl}"
                                                                                             VerticalAlignment="Center">
                                                                     <Grid>
-                                                                        <TextBlock Text="&#xE77B;"
+                                                                        <TextBlock x:Name="ProfileAvatarPlaceholder" Text="&#xE77B;" Visibility="Collapsed"
                                                                                    FontFamily="Segoe MDL2 Assets"
                                                                                    FontSize="15"
                                                                                    Foreground="{DynamicResource StudioTextDimBrush}"
                                                                                    HorizontalAlignment="Center"
                                                                                    VerticalAlignment="Center" />
-                                                                        <controls:AnimatedEmoteImage ImageUrl="{Binding}"
+                                                                        <controls:AnimatedEmoteImage x:Name="ProfileAvatarImage" ImageUrl="{Binding}"
                                                                                                      MaxImageBytes="8388608"
                                                                                                      Stretch="UniformToFill" />
                                                                     </Grid>
@@ -2844,6 +2881,11 @@
                                                     </Grid>
                                                 </controls:AspectRatioDecorator>
                                                 </Grid>
+                                                <DataTemplate.Triggers>
+                                                    <DataTrigger Binding="{Binding Source, ElementName=ProfileAvatarImage}" Value="{x:Null}">
+                                                        <Setter TargetName="ProfileAvatarPlaceholder" Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </DataTemplate.Triggers>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
@@ -3744,13 +3786,13 @@
                                                                 DataContext="{Binding ProfileImageUrl}"
                                                                 VerticalAlignment="Center">
                                         <Grid>
-                                            <TextBlock Text="&#xE77B;"
+                                            <TextBlock x:Name="ProfileAvatarPlaceholder" Text="&#xE77B;" Visibility="Collapsed"
                                                        FontFamily="Segoe MDL2 Assets"
                                                        FontSize="11"
                                                        Foreground="{DynamicResource StudioTextDimBrush}"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center" />
-                                            <controls:AnimatedEmoteImage ImageUrl="{Binding}"
+                                            <controls:AnimatedEmoteImage x:Name="ProfileAvatarImage" ImageUrl="{Binding}"
                                                                          MaxImageBytes="8388608"
                                                                          Stretch="UniformToFill" />
                                         </Grid>
@@ -3807,6 +3849,9 @@
                                 </DockPanel>
                             </Border>
                             <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding Source, ElementName=ProfileAvatarImage}" Value="{x:Null}">
+                                    <Setter TargetName="ProfileAvatarPlaceholder" Property="Visibility" Value="Visible" />
+                                </DataTrigger>
                                 <MultiDataTrigger>
                                     <MultiDataTrigger.Conditions>
                                         <Condition Binding="{Binding IsGroup}" Value="False" />
@@ -4849,6 +4894,23 @@
                                                         </ContextMenu>
                                                     </controls:HotkeyRecorderButton.ContextMenu>
                                                 </controls:HotkeyRecorderButton>
+                                            </controls:ResponsiveColumnsPanel>
+                                            <Border Height="1" Background="{DynamicResource StudioBorderBrush}" Margin="0,0,0,18" />
+                                            <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">
+                                                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="Pause / resume" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                    <TextBlock Text="Pause or resume playback for the selected stream."
+                                                               Style="{StaticResource SettingsPageDescriptionStyle}"
+                                                               Margin="0,4,0,0" />
+                                                </StackPanel>
+                                                <controls:HotkeyRecorderButton x:Name="TogglePauseHotkeyRecorder"
+                                                                               Grid.Column="1"
+                                                                               Style="{StaticResource HotkeyRecorderButtonStyle}"
+                                                                               Gesture="{Binding Settings.Hotkeys.TogglePause, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                               DefaultGesture="{x:Static settings:HotkeySettings.DefaultTogglePause}"
+                                                                               Tag="TogglePause"
+                                                                               GestureChanging="HotkeyRecorder_GestureChanging"
+                                                                               ActionName="Pause or resume playback hotkey" />
                                             </controls:ResponsiveColumnsPanel>
                                             <Border Height="1" Background="{DynamicResource StudioBorderBrush}" Margin="0,0,0,18" />
                                             <controls:ResponsiveColumnsPanel Margin="0,0,0,18" MinimumColumnWidth="190" ColumnGap="16" RowGap="10">

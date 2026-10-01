@@ -4,6 +4,12 @@
   "upstreamSha256": "847f1c4d7b848b3f6a3c04b7d0c05ab9fbc5f174c9f8adcd6203057e8908285e",
   "sourcePath": "src/win32/thread.c",
   "patch": "windows-address-waits.patch",
+  "additionalPatches": [
+    {
+      "sourcePath": "src/input/es_out.c",
+      "patch": "replay-preroll-rate.patch"
+    }
+  ],
   "configuration": "core-config.h",
   "license": "LGPL-3.0-or-later",
   "vlcSourceLicense": "LGPL-2.1-or-later",
@@ -100,5 +106,5 @@
   "referenceVlcSha256": "8ae9f16a72441f43fb4ae8f72c843736726e067ea4a8def2646748631cc4e872",
   "referenceVlcCoreSha256": "d3475b834dd3eb77910f37f71b0341d358bcbdda5b9f04cc4a3a8e2be1bc8e35",
   "binary": "src/StreamlinkVlcStudio.Infrastructure/Vlc/BundledVlcCore/libvlccore.dll",
-  "binarySha256": "6efb3c92094ddfe9aca032910a4fadf1a5ce53488488720ca84bba56722291a2"
+  "binarySha256": "11405e61822376a94db5fec69138fb1f646cf0b38a8cce21e929ddcbed7e5745"
 }

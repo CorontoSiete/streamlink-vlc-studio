@@ -538,6 +538,9 @@ internal static partial class ApplicationTestCatalog
         var requests = new List<HttpRequestMessage>();
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer browse-top-token", request.Headers.Authorization?.ToString());
@@ -651,6 +654,9 @@ internal static partial class ApplicationTestCatalog
         var pageRequests = 0;
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer browse-pagination-token", request.Headers.Authorization?.ToString());
@@ -683,6 +689,9 @@ internal static partial class ApplicationTestCatalog
         var requests = new List<HttpRequestMessage>();
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer browse-search-token", request.Headers.Authorization?.ToString());
@@ -773,6 +782,9 @@ internal static partial class ApplicationTestCatalog
         var apiRequests = 0;
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 validateRequests++;
@@ -965,6 +977,9 @@ internal static partial class ApplicationTestCatalog
         var requests = new List<HttpRequestMessage>();
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer browse-viewer-auth-token", request.Headers.Authorization?.ToString());
@@ -997,6 +1012,9 @@ internal static partial class ApplicationTestCatalog
         var requests = new List<HttpRequestMessage>();
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer browse-rate-token", request.Headers.Authorization?.ToString());
@@ -1049,6 +1067,9 @@ internal static partial class ApplicationTestCatalog
         var rateLimitReturned = false;
         using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
         {
+            if (request.RequestUri!.Host == "gql.twitch.tv")
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+
             if (request.RequestUri!.Host == "id.twitch.tv")
             {
                 Assert.Equal("Bearer browse-retry-token", request.Headers.Authorization?.ToString());

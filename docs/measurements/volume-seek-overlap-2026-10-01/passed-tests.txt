@@ -1,0 +1,55 @@
+﻿detached multi-stream wheel adjusts only hovered stream volume
+picture-in-picture context menu restores the top bar from the visible native replay seek overlay
+picture-in-picture context menu restores the top bar through the visible volume indicator
+Playback hotkeys repeat volume clamp bounds and preserve wheel targeting
+replay seek overlay cancels a drag when the selected stream changes
+replay seek overlay cancels an interrupted thumb drag without seeking
+replay seek overlay closes and cancels preview when disabled or unloaded
+replay seek overlay composes and receives physical input over real Direct3D11 VLC video
+replay seek overlay composes and receives physical input over real GDI VLC video
+replay seek overlay hover decodes thumbnail sprites into frozen images
+replay seek overlay hover loads bounded provider storyboards and rejects unsafe images
+replay seek overlay hover maps time without changing playback and clamps preview edges
+replay seek overlay hover rejects late thumbnails and closes across lifecycle changes
+replay seek overlay hover stays stable during native placement refreshes
+replay seek overlay hover stays visible while replacing a thumbnail
+replay seek overlay hover storyboard selects sprite cells and rejects unsafe metadata
+replay seek overlay is a transparent video child that moves synchronously and stays above renderer children
+replay seek overlay Kick VOD preview decodes real video frames
+replay seek overlay Kick VOD preview displays a frame without seeking playback
+replay seek overlay Kick VOD preview loads and caches the hovered segment
+replay seek overlay Kick VOD preview reuses resolved media through seek and restart
+replay seek overlay live hover caches frames and refreshes growing playlists
+replay seek overlay live hover downloads and caches matching MP4 initialization sections
+replay seek overlay live hover maps DVR segments and rejects ambiguous timelines
+replay seek overlay live hover reads observed fragmented MP4 timelines and initialization changes
+replay seek overlay live hover retries failures and cancels obsolete decoding
+replay seek overlay live hover uses current DVR without seeking playback
+replay seek overlay maps pointer positions independently of pending thumb layout
+replay seek overlay owns native input while volume popup remains routable
+replay seek overlay physical clicks land exactly under the pointer across layouts
+replay seek overlay physical track and thumb drags preserve exact pointer position
+replay seek overlay pointer moves stay exact before pending layout runs
+replay seek overlay polls real movement over native renderer children
+replay seek overlay protects keyboard seeking and mouse capture from idle dismissal
+replay seek overlay repairs existing renderer z-order on repeated reveal activity
+replay seek overlay repairs existing renderer z-order while the pointer is stationary
+replay seek overlay repairs native renderer reorder without pointer polling or activity
+replay seek overlay retargets between video surfaces and releases the previous host
+replay seek overlay stays open through physical playback speed selection in a normal window
+replay seek overlay stays open through physical playback speed selection in a topmost window
+replay seek overlay stays visible over controls and hides on stationary video pointer
+replay seek overlay stays visible while scrubbing and commits exactly once
+replay seek overlay track respects ranges directions and unavailable geometry
+switching the theme repaints the picture-in-picture window seekbar and volume overlay
+volume changes are remembered per stream
+volume overlay releases its popup target when its window unloads
+volume popup clears the seekbar in the main player and fullscreen
+volume popup follows seekbar visibility and compact sizing on a finished screen
+volume popup follows seekbar visibility and compact sizing on a presented video
+volume popup releases seekbar space when the seekbar retargets or unloads
+volume popup remains inside a tiny video while its window resizes
+volume popup targets the finished VOD screen in main and detached players
+volume wheel busy dispatcher leaves replay seek overlay input to its native child
+volume wheel busy dispatcher preserves normal WPF scrolling and context menu input exactly once
+volume wheel routes by its screen point without VLC geometry or cursor queries

@@ -20,10 +20,12 @@ internal static class HotkeySettingsExpansionTestCatalog
         settings.VolumeUp = " Alt+Up ";
         settings.VolumeDown = " Alt+Down ";
         settings.GoBack = " Ctrl+Mouse5 ";
+        settings.TogglePause = " Ctrl+P ";
         Assert.Equal("Ctrl+M", settings.ToggleMultiStream);
         Assert.Equal("Alt+Up", settings.VolumeUp);
         Assert.Equal("Alt+Down", settings.VolumeDown);
         Assert.Equal("Ctrl+Mouse5", settings.GoBack);
+        Assert.Equal("Ctrl+P", settings.TogglePause);
 
         changed.Clear();
         settings.ResetToDefaults();
@@ -33,13 +35,15 @@ internal static class HotkeySettingsExpansionTestCatalog
             nameof(HotkeySettings.ToggleMultiStream),
             nameof(HotkeySettings.VolumeUp),
             nameof(HotkeySettings.VolumeDown),
-            nameof(HotkeySettings.GoBack)
+            nameof(HotkeySettings.GoBack),
+            nameof(HotkeySettings.TogglePause)
         }));
 
         settings.ToggleMultiStream = " ";
         settings.VolumeUp = null!;
         settings.VolumeDown = "";
         settings.GoBack = " ";
+        settings.TogglePause = null!;
         AssertExtraDefaults(settings);
         return Task.CompletedTask;
     }
@@ -51,7 +55,8 @@ internal static class HotkeySettingsExpansionTestCatalog
         {
             (AppHotkeyAction.ToggleMultiStream, Key.M),
             (AppHotkeyAction.VolumeUp, Key.Up),
-            (AppHotkeyAction.VolumeDown, Key.Down)
+            (AppHotkeyAction.VolumeDown, Key.Down),
+            (AppHotkeyAction.TogglePause, Key.Space)
         })
         {
             Assert.True(HotkeyBindingPolicy.Matches(settings, action, key, ModifierKeys.None));
@@ -74,7 +79,9 @@ internal static class HotkeySettingsExpansionTestCatalog
             (AppHotkeyAction.VolumeUp, AppHotkeyAction.VolumeDown),
             (AppHotkeyAction.VolumeDown, AppHotkeyAction.NextTab),
             (AppHotkeyAction.GoBack, AppHotkeyAction.PreviousTab),
-            (AppHotkeyAction.VolumeUp, AppHotkeyAction.GoBack)
+            (AppHotkeyAction.VolumeUp, AppHotkeyAction.GoBack),
+            (AppHotkeyAction.TogglePause, AppHotkeyAction.VolumeUp),
+            (AppHotkeyAction.VolumeUp, AppHotkeyAction.TogglePause)
         })
         {
             settings.ResetToDefaults();
@@ -108,7 +115,8 @@ internal static class HotkeySettingsExpansionTestCatalog
                 {
                     AppHotkeyAction.ToggleMultiStream,
                     AppHotkeyAction.VolumeUp,
-                    AppHotkeyAction.VolumeDown
+                    AppHotkeyAction.VolumeDown,
+                    AppHotkeyAction.TogglePause
                 })
                 {
                     foreach (var editor in editors)
@@ -157,6 +165,7 @@ internal static class HotkeySettingsExpansionTestCatalog
             settings.Hotkeys.VolumeUp = "Alt+Up";
             settings.Hotkeys.VolumeDown = "Alt+Down";
             settings.Hotkeys.GoBack = "Ctrl+Mouse5";
+            settings.Hotkeys.TogglePause = "Ctrl+P";
             await new JsonSettingsService(path).SaveAsync(settings);
 
             var loaded = await new JsonSettingsService(path).LoadAsync();
@@ -164,6 +173,7 @@ internal static class HotkeySettingsExpansionTestCatalog
             Assert.Equal("Alt+Up", loaded.Hotkeys.VolumeUp);
             Assert.Equal("Alt+Down", loaded.Hotkeys.VolumeDown);
             Assert.Equal("Ctrl+Mouse5", loaded.Hotkeys.GoBack);
+            Assert.Equal("Ctrl+P", loaded.Hotkeys.TogglePause);
             loaded.Hotkeys.ResetToDefaults();
             await new JsonSettingsService(path).SaveAsync(loaded);
             AssertExtraDefaults((await new JsonSettingsService(path).LoadAsync()).Hotkeys);
@@ -212,5 +222,6 @@ internal static class HotkeySettingsExpansionTestCatalog
         Assert.Equal("Up", settings.VolumeUp);
         Assert.Equal("Down", settings.VolumeDown);
         Assert.Equal("Mouse4", settings.GoBack);
+        Assert.Equal("Space", settings.TogglePause);
     }
 }

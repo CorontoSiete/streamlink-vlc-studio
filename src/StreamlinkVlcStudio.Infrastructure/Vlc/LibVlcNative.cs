@@ -15,6 +15,7 @@ internal static partial class LibVlcNative
     private static IntPtr libVlcHandle;
     private static IntPtr libVlcCoreHandle;
     private static string? coreSelectionDescription;
+    private static bool rateAwareReplayPrerollAvailable;
 
     static LibVlcNative()
     {
@@ -38,6 +39,14 @@ internal static partial class LibVlcNative
         {
             lock (InitializationGate)
                 return coreSelectionDescription ?? "VLC native libraries are not configured.";
+        }
+    }
+
+    internal static bool RateAwareReplayPrerollAvailable
+    {
+        get
+        {
+            lock (InitializationGate) return rateAwareReplayPrerollAvailable;
         }
     }
 
@@ -84,7 +93,7 @@ internal static partial class LibVlcNative
                 var libVlcSha256 = FileHash.GetSha256(libVlcPath);
                 var coreSha256 = FileHash.GetSha256(Path.Combine(fullDirectory, "libvlccore.dll"));
                 var description = selection.IsBundledAddressWaitBuild
-                    ? $"Loaded verified VLC 3.0.23 address-wait core SHA-256 {selection.Sha256}."
+                    ? $"Loaded verified VLC 3.0.23 address-wait and replay-clock core SHA-256 {selection.Sha256}."
                     : $"Loaded the selected VLC core SHA-256 {selection.Sha256}; its DLL pair did not match the bundled 3.0.23 build.";
                 libVlcCoreHandle = coreHandle;
                 libVlcHandle = vlcHandle;
@@ -92,6 +101,7 @@ internal static partial class LibVlcNative
                 configuredLibVlcSha256 = libVlcSha256;
                 configuredCoreSha256 = coreSha256;
                 coreSelectionDescription = description;
+                rateAwareReplayPrerollAvailable = selection.IsBundledAddressWaitBuild;
             }
             catch
             {

@@ -1,4 +1,4 @@
-# VLC 3.0.23 Windows condition-wait fix
+# VLC 3.0.23 Windows condition waits and replay timing
 
 This folder contains the reproducible source patch and build configuration for
 the bundled `libvlccore.dll` used with one exact official VLC 3.0.23 Windows
@@ -12,9 +12,26 @@ sharing one of 32 hashed wait buckets. The included patch tries `kernelbase.dll`
 before retaining VLC's original fallback. It leaves the Windows 7 compatibility
 target in place and does not import newer APIs directly.
 
+The replay patch corrects two time conversions after buffering in
+`src/input/es_out.c`. The decoder's PTS delay is in wall time, while seek
+preroll and extra buffering are in stream time. The patch converts the delay
+to stream time before testing whether enough media has been buffered, then
+converts the whole interval to wall time before rebasing the clock.
+`input_clock_ChangeSystemOrigin` already compensates for the rate-dependent
+PTS delay offset; both conversions are needed to release the first decoder
+timestamp on time. The calculation is unchanged at 1x. This lets completed
+FFmpeg HLS replay finish accurate seek preroll at slow and fast speeds without
+placing decoder timestamps far in the future or past.
+
+The managed engine uses this capability only with this verified bundled core.
+Other VLC builds retain the managed 1x recovery before a high-to-slow transition.
+Playback-rate regression tests measure media time against elapsed wall time
+and require continuing decoded video, including transitions from 2x to 0.5x.
+
 The upstream VLC source is VideoLAN VLC 3.0.23 from the exact archive and hash
-in `provenance.json`. The patch changes only `src/win32/thread.c`; that upstream
-source is LGPL-2.1-or-later and its `COPYING.LIB` is included.
+in `provenance.json`. The two patches change only `src/win32/thread.c` and
+`src/input/es_out.c`; that upstream source is LGPL-2.1-or-later and its
+`COPYING.LIB` is included.
 
 The Windows DLL statically links `libintl.a`, `libiconv.a`, `libidn.a`,
 `libgcrypt.a`, and `libgpg-error.a`, plus GCC's `libgcc.a` and MinGW-w64's

@@ -12,6 +12,7 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
     public const string DefaultGoBack = "Mouse4";
     public const string DefaultSkipBackward = "NumPad4";
     public const string DefaultSkipForward = "NumPad6";
+    public const string DefaultTogglePause = "Space";
     public const int DefaultSkipSeconds = 30;
     public const int MinimumSkipSeconds = 1;
     public const int MaximumSkipSeconds = 300;
@@ -26,6 +27,7 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
     private string goBack = DefaultGoBack;
     private string skipBackward = DefaultSkipBackward;
     private string skipForward = DefaultSkipForward;
+    private string togglePause = DefaultTogglePause;
     private int skipBackwardSeconds = DefaultSkipSeconds;
     private int skipForwardSeconds = DefaultSkipSeconds;
 
@@ -91,6 +93,12 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
         set => SetProperty(ref skipForward, Normalize(value, DefaultSkipForward));
     }
 
+    public string TogglePause
+    {
+        get => togglePause;
+        set => SetProperty(ref togglePause, Normalize(value, DefaultTogglePause));
+    }
+
     public int SkipBackwardSeconds
     {
         get => skipBackwardSeconds;
@@ -115,6 +123,7 @@ public sealed class HotkeySettings : NotifyPropertyChangedObject
         GoBack = DefaultGoBack;
         SkipBackward = DefaultSkipBackward;
         SkipForward = DefaultSkipForward;
+        TogglePause = DefaultTogglePause;
         SkipBackwardSeconds = DefaultSkipSeconds;
         SkipForwardSeconds = DefaultSkipSeconds;
     }

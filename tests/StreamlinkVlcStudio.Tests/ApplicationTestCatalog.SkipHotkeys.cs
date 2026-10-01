@@ -313,7 +313,8 @@ internal static partial class ApplicationTestCatalog
         private readonly FakePlaybackEngineFactory otherPlayback;
         private readonly SkipHotkeyPresentationSource source;
 
-        internal SkipHotkeyFixture(bool live = false, Task? seekCompletion = null, ISettingsService? settingsService = null)
+        internal SkipHotkeyFixture(bool live = false, Task? seekCompletion = null, ISettingsService? settingsService = null,
+            Task? pauseCompletion = null)
         {
             Settings = new AppSettings { StreamlinkPath = "streamlink.exe", VlcDirectory = @"C:\VLC", KeepInactiveTabsRunning = true };
             Settings.Chat.ConnectAutomatically = false;
@@ -322,6 +323,7 @@ internal static partial class ApplicationTestCatalog
             playback = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
             {
                 Duration = TimeSpan.FromHours(1),
+                PauseCompletion = pauseCompletion ?? Task.CompletedTask,
                 SeekCompletion = seekCompletion ?? Task.CompletedTask
             });
             otherPlayback = new FakePlaybackEngineFactory(() => new FakePlaybackEngine { Duration = TimeSpan.FromHours(1) });

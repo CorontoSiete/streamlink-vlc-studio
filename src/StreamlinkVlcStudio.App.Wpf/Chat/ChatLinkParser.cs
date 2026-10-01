@@ -84,6 +84,24 @@ internal static class ChatLinkParser
 
     private static int TrimTrailingPunctuation(string text, int start, int end)
     {
+        // Count each delimiter once. Rescanning a long URL for every unmatched
+        // closing character makes a message's trailing punctuation quadratic.
+        var parentheses = 0;
+        var brackets = 0;
+        var braces = 0;
+        for (var index = start; index < end; index++)
+        {
+            switch (text[index])
+            {
+                case '(': parentheses++; break;
+                case ')': parentheses--; break;
+                case '[': brackets++; break;
+                case ']': brackets--; break;
+                case '{': braces++; break;
+                case '}': braces--; break;
+            }
+        }
+
         while (end > start)
         {
             var last = text[end - 1];
@@ -93,36 +111,18 @@ internal static class ChatLinkParser
                 continue;
             }
 
-            var opening = last switch
+            switch (last)
             {
-                ')' => '(',
-                ']' => '[',
-                '}' => '{',
-                _ => '\0'
-            };
-            if (opening == '\0' || Count(text, start, end, last) <= Count(text, start, end, opening))
-            {
-                break;
+                case ')' when parentheses < 0: parentheses++; break;
+                case ']' when brackets < 0: brackets++; break;
+                case '}' when braces < 0: braces++; break;
+                default: return end;
             }
 
             end--;
         }
 
         return end;
-    }
-
-    private static int Count(string text, int start, int end, char value)
-    {
-        var count = 0;
-        for (var index = start; index < end; index++)
-        {
-            if (text[index] == value)
-            {
-                count++;
-            }
-        }
-
-        return count;
     }
 
     private static bool TryCreateWebUri(

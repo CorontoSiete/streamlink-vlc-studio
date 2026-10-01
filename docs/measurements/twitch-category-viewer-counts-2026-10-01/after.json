@@ -1,0 +1,103 @@
+{
+  "TimestampUtc": "2026-10-01T15:03:45.7106695+00:00",
+  "Concurrency": 4,
+  "Categories": 10,
+  "FirstCountMilliseconds": 252.9,
+  "AllCountsMilliseconds": 480.9,
+  "StreamRequests": 0,
+  "AggregateRequests": 10,
+  "Rows": [
+    {
+      "Id": "509658",
+      "Name": "Just Chatting",
+      "Status": "Available",
+      "ViewerCount": 369763,
+      "LookupMilliseconds": 251.6,
+      "ReadyMilliseconds": 252.9
+    },
+    {
+      "Id": "511224",
+      "Name": "Apex Legends",
+      "Status": "Available",
+      "ViewerCount": 192262,
+      "LookupMilliseconds": 242.7,
+      "ReadyMilliseconds": 252.9
+    },
+    {
+      "Id": "29595",
+      "Name": "Dota 2",
+      "Status": "Available",
+      "ViewerCount": 122134,
+      "LookupMilliseconds": 242.1,
+      "ReadyMilliseconds": 252.9
+    },
+    {
+      "Id": "32399",
+      "Name": "Counter-Strike",
+      "Status": "Available",
+      "ViewerCount": 117649,
+      "LookupMilliseconds": 242,
+      "ReadyMilliseconds": 252.9
+    },
+    {
+      "Id": "32982",
+      "Name": "Grand Theft Auto V",
+      "Status": "Available",
+      "ViewerCount": 101194,
+      "LookupMilliseconds": 110.1,
+      "ReadyMilliseconds": 363.2
+    },
+    {
+      "Id": "771448419",
+      "Name": "AION 2",
+      "Status": "Available",
+      "ViewerCount": 97011,
+      "LookupMilliseconds": 133.6,
+      "ReadyMilliseconds": 387
+    },
+    {
+      "Id": "509672",
+      "Name": "IRL",
+      "Status": "Available",
+      "ViewerCount": 88274,
+      "LookupMilliseconds": 112.7,
+      "ReadyMilliseconds": 366
+    },
+    {
+      "Id": "516575",
+      "Name": "VALORANT",
+      "Status": "Available",
+      "ViewerCount": 71865,
+      "LookupMilliseconds": 114.3,
+      "ReadyMilliseconds": 367.7
+    },
+    {
+      "Id": "21779",
+      "Name": "League of Legends",
+      "Status": "Available",
+      "ViewerCount": 70234,
+      "LookupMilliseconds": 117.7,
+      "ReadyMilliseconds": 480.9
+    },
+    {
+      "Id": "18122",
+      "Name": "World of Warcraft",
+      "Status": "Available",
+      "ViewerCount": 64717,
+      "LookupMilliseconds": 114.9,
+      "ReadyMilliseconds": 480.9
+    }
+  ],
+  "Logs": [
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.240s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.240s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.241s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.247s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.110s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.113s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.114s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.134s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.115s.",
+    "Loaded Twitch viewer counts for 1 category using 1 Twitch category request and 0 stream pages in 0.118s."
+  ]
+}

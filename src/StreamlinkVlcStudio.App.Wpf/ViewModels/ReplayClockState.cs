@@ -290,22 +290,33 @@ internal sealed class ReplayClockState
         }
     }
 
-    internal void ReanchorForPlaybackRateChange(
-        TimeSpan position,
-        TimeSpan duration,
+    internal void CommitPlaybackRateChange(
+        ReplaySessionInfo? replay,
+        ReplayClockSnapshot? clock,
         long seekGeneration,
         long sampledPlaybackStateVersion,
-        DateTimeOffset observedAtUtc)
+        DateTimeOffset observedAtUtc,
+        Action publishRate)
     {
         lock (replayClockAnchorGate)
         {
-            if (!isSampleCurrent(seekGeneration, sampledPlaybackStateVersion)) return;
-            replayClockAnchorAvailable = true;
-            replayClockAnchorOffset = ClampReplayOffset(position, duration);
-            replayClockAnchorObservedAtUtc = observedAtUtc;
-            replayClockAnchorSeekGeneration = seekGeneration;
-            replayClockAnchorAwaitingSeekConfirmation = false;
-            ResetReplayClockSampleTrackingCore();
+            if (isSampleCurrent(seekGeneration, sampledPlaybackStateVersion) && replay is { IsAvailable: true })
+            {
+                var duration = clock?.Duration ?? GetCurrentReplayDuration(replay);
+                // Estimate with the previously applied rate before publishing the new one.
+                // A missing clock must not apply the new rate to the anchor's entire age.
+                var position = clock?.Position ??
+                    (getStatus() == PlaybackStatus.Paused && pausedReplayClock is { } heldClock
+                        ? heldClock.Position
+                        : EstimateReplayClockFromAnchor(duration, observedAtUtc));
+                SetReplayClockAnchor(position, duration, seekGeneration, awaitingSeekConfirmation: false, observedAtUtc);
+                ResetReplayClockSampleTrackingCore();
+            }
+
+            // Publish the rate and its anchor together. Advancing the same generation used
+            // for pause/resume also invalidates old clock samples and queued seekbar updates.
+            publishRate();
+            Interlocked.Increment(ref replayClockPlaybackStateVersion);
         }
     }
 

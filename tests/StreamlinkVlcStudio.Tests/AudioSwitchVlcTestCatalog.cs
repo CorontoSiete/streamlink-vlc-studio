@@ -20,7 +20,8 @@ internal static class AudioSwitchVlcTestCatalog
             [
                 ("native VLC Windows audio output isolates mute and volume between players", NativeOutputIsolationAsync),
                 ("native VLC HLS playback rate transition preserves Windows loopback audio", NativeHlsOutputRateChangeAsync),
-                ("native VLC HTTP HLS playback rate transition preserves Windows loopback audio", NativeHttpHlsOutputRateChangeAsync)
+                ("native VLC HTTP HLS playback rate transition preserves Windows loopback audio", NativeHttpHlsOutputRateChangeAsync),
+                ("native VLC completed replay rate transition preserves Windows loopback audio", NativeCompletedReplayOutputRateChangeAsync)
             ]
             : [];
 
@@ -117,10 +118,14 @@ internal static class AudioSwitchVlcTestCatalog
 
     private static async Task AssertRateTransitionsPreserveOutputAsync(
         string inputDescription,
-        Func<Task<PcmFixture>> createFixture)
+        Func<Task<PcmFixture>> createFixture,
+        double maximumRequestMilliseconds = 500,
+        TimeSpan? observationDuration = null,
+        IReadOnlyList<(float InitialRate, float TargetRate)>? rateTransitions = null)
     {
         using var capture = await WasapiLoopbackCapture.StartAsync();
-        foreach (var (initialRate, targetRate) in PlaybackRateTransitions)
+        var outputFailures = new List<string>();
+        foreach (var (initialRate, targetRate) in rateTransitions ?? PlaybackRateTransitions)
         {
             var fixtureStarted = Stopwatch.GetTimestamp();
             using var fixture = await createFixture();
@@ -158,14 +163,16 @@ internal static class AudioSwitchVlcTestCatalog
             Assert.True(await fixture.Engine.TrySetPlaybackRateAsync(targetRate),
                 $"VLC must accept {inputDescription} rate {initialRate:0.##}x->{targetRate:0.##}x.");
             var rateRequestMs = Stopwatch.GetElapsedTime(changeStarted).TotalMilliseconds;
-            Assert.True(rateRequestMs <= 500,
-                $"{inputDescription} rate request {initialRate:0.##}x->{targetRate:0.##}x took {rateRequestMs:0.0} ms; speed input must not wait for HLS seek confirmation.");
-            await Task.Delay(1_000);
+            Assert.True(rateRequestMs <= maximumRequestMilliseconds,
+                $"{inputDescription} rate request {initialRate:0.##}x->{targetRate:0.##}x took {rateRequestMs:0.0} ms; maximum is {maximumRequestMilliseconds:0} ms.");
+            var outputObservation = observationDuration ?? TimeSpan.FromSeconds(1);
+            await Task.Delay(outputObservation);
             capture.EnsureHealthy();
 
             var packets = capture.GetPacketsSince(changeStarted);
-            Assert.True(packets.Length >= 80,
-                $"Expected at least 800 ms of Windows loopback samples for {inputDescription} {initialRate:0.##}x->{targetRate:0.##}x; observed {packets.Length} packets.");
+            var minimumPackets = (int)(outputObservation.TotalMilliseconds * 0.08);
+            Assert.True(packets.Length >= minimumPackets,
+                $"Expected at least {minimumPackets * 10} ms of Windows loopback samples for {inputDescription} {initialRate:0.##}x->{targetRate:0.##}x; observed {packets.Length} packets.");
             var longestLowRunMs = GetLongestLowOutputRunMilliseconds(packets, baselineRms);
             var firstAudio = packets.FirstOrDefault(packet => packet.Rms >= baselineRms * 0.5);
             var recoveryMs = firstAudio.Rms >= baselineRms * 0.5
@@ -175,13 +182,50 @@ internal static class AudioSwitchVlcTestCatalog
             Console.WriteLine(
                 $"Windows loopback {inputDescription} {initialRate:0.##}x->{targetRate:0.##}x: " +
                 $"request={rateRequestMs:0.0} ms, first audio={recoveryMs:0.0} ms, " +
-                $"longest low-output run={longestLowRunMs:0.0} ms, packets={packets.Length}.");
-            Assert.True(double.IsFinite(recoveryMs) && recoveryMs <= MaximumRateChangeLowOutputRunMilliseconds,
-                $"{inputDescription} rate change {initialRate:0.##}x->{targetRate:0.##}x took {recoveryMs:0.0} ms to restore audible output; maximum is {MaximumRateChangeLowOutputRunMilliseconds:0} ms.");
-            Assert.True(longestLowRunMs <= MaximumRateChangeLowOutputRunMilliseconds,
-                $"{inputDescription} rate change {initialRate:0.##}x->{targetRate:0.##}x left Windows output low for {longestLowRunMs:0.0} ms; maximum is {MaximumRateChangeLowOutputRunMilliseconds:0} ms.");
+                $"longest low-output run={longestLowRunMs:0.0} ms, packets={packets.Length}, " +
+                $"RMS before={baselineRms:0.000000}, after median={packets.Select(packet => packet.Rms).Order().ElementAt(packets.Length / 2):0.000000}, " +
+                $"tone before={baselineTone:0.000000}, after median={packets.Select(packet => packet.ToneMagnitude).Order().ElementAt(packets.Length / 2):0.000000}, " +
+                $"silent packets={packets.Count(packet => packet.IsSilent)}, mute={fixture.NativeMute}, volume={fixture.NativeVolume}.");
+            if (Environment.GetEnvironmentVariable("SVS_TEST_VLC_LOG_DIRECTORY") is { Length: > 0 } captureDirectory)
+            {
+                var filename = FormattableString.Invariant($"windows-rate-{inputDescription.Replace(' ', '-')}-{initialRate:0.##}-{targetRate:0.##}.csv");
+                File.WriteAllLines(Path.Combine(captureDirectory, filename),
+                    new[] { "elapsed_ms,frames,sample_rate,rms,tone_magnitude,silent" }.Concat(packets.Select(packet =>
+                        FormattableString.Invariant($"{(packet.Timestamp - changeStarted) * 1000d / Stopwatch.Frequency:0.000},{packet.Frames},{packet.SampleRate},{packet.Rms:R},{packet.ToneMagnitude:R},{packet.IsSilent}"))));
+            }
+            if (!double.IsFinite(recoveryMs) || recoveryMs > MaximumRateChangeLowOutputRunMilliseconds)
+                outputFailures.Add($"{inputDescription} rate change {initialRate:0.##}x->{targetRate:0.##}x took {recoveryMs:0.0} ms to restore audible output; maximum is {MaximumRateChangeLowOutputRunMilliseconds:0} ms.");
+            if (longestLowRunMs > MaximumRateChangeLowOutputRunMilliseconds)
+                outputFailures.Add($"{inputDescription} rate change {initialRate:0.##}x->{targetRate:0.##}x left Windows output low for {longestLowRunMs:0.0} ms; maximum is {MaximumRateChangeLowOutputRunMilliseconds:0} ms.");
         }
+        Assert.True(outputFailures.Count == 0, string.Join(Environment.NewLine, outputFailures));
     }
+
+    private static Task NativeCompletedReplayOutputRateChangeAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        var fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "playback-rate-replay-tone");
+        var mediaUri = new Uri("https://d2vi6trrdongqn.cloudfront.net/fixture/chunked/index.m3u8");
+        using var upstream = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            var path = Path.Combine(fixtureDirectory, Path.GetFileName(request.RequestUri!.AbsolutePath));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = path.EndsWith(".m3u8", StringComparison.Ordinal)
+                    ? new StringContent(File.ReadAllText(path))
+                    : new ByteArrayContent(File.ReadAllBytes(path))
+            };
+        }));
+        await using var gateway = new TwitchMutedVodPlaybackGateway(new MemoryLogger(), upstream, TestReplayUrlSecurity.PublicValidator);
+        await AssertRateTransitionsPreserveOutputAsync(
+            "completed FFmpeg HLS replay",
+            () => PcmFixture.CreateAsync(PlaybackAudioState.Audible, capturePcm: false,
+                mediaUri: mediaUri, completedReplayGateway: gateway),
+            // A completed replay may wait for both the preceding recovery and its
+            // own 1x preroll recovery. Each has the production five-second bound.
+            maximumRequestMilliseconds: 10_000,
+            observationDuration: TimeSpan.FromSeconds(3),
+            rateTransitions: [.. PlaybackRateTransitions, (2f, 0.5f), (2f, 0.75f)]);
+    });
 
     private static double GetLongestLowOutputRunMilliseconds(
         WasapiLoopbackCapture.AudioPacket[] packets, double baselineRms)
@@ -322,18 +366,20 @@ internal static class AudioSwitchVlcTestCatalog
         private readonly string path;
         private readonly bool ownsMediaFile;
         private readonly IntPtr player;
+        private readonly IntPtr videoWindow;
         private readonly ConcurrentQueue<PcmBlock> blocks = new();
         private readonly PlayCallback playCallback;
         private readonly SetupCallback setupCallback;
         private readonly CleanupCallback cleanupCallback;
         private int setupCount;
 
-        private PcmFixture(LibVlcPlaybackEngine engine, string path, IntPtr player, bool capturePcm, bool ownsMediaFile)
+        private PcmFixture(LibVlcPlaybackEngine engine, string path, IntPtr player, bool capturePcm, bool ownsMediaFile, IntPtr videoWindow = default)
         {
             Engine = engine;
             this.path = path;
             this.ownsMediaFile = ownsMediaFile;
             this.player = player;
+            this.videoWindow = videoWindow;
             playCallback = Capture;
             setupCallback = Setup;
             cleanupCallback = _ => { };
@@ -366,24 +412,39 @@ internal static class AudioSwitchVlcTestCatalog
             bool capturePcm = true,
             int amplitude = 8000,
             string? mediaPath = null,
-            Uri? mediaUri = null)
+            Uri? mediaUri = null,
+            IPlaybackMediaSourceGateway? completedReplayGateway = null)
         {
             var directory = Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!;
             Assert.True(File.Exists(Path.Combine(directory, "libvlc.dll")), "Configured libVLC is missing.");
             var path = mediaPath ?? Path.Combine(Path.GetTempPath(), $"svs-audio-{Guid.NewGuid():N}.wav");
             var ownsGeneratedMediaFile = mediaPath is null && mediaUri is null;
+            var completedReplay = completedReplayGateway is not null;
             if (mediaPath is null && mediaUri is null) WriteTone(path, amplitude);
             var sourceUri = mediaUri ?? new Uri(path);
-            var factory = new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings());
+            var factory = new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings(), completedReplayGateway);
             var engine = (LibVlcPlaybackEngine)await factory.CreateAsync(directory,
-                enableNativeOverlay: false, rendererMode: VideoRendererMode.Gdi);
+                enableNativeOverlay: completedReplay, rendererMode: VideoRendererMode.Gdi);
             if (Environment.GetEnvironmentVariable("SVS_TEST_VLC_LOG_DIRECTORY") is { Length: > 0 } logDirectory)
             {
                 Directory.CreateDirectory(logDirectory);
                 MultistreamVlcDiagnostics.Attach(engine, logDirectory);
             }
+            var videoWindow = IntPtr.Zero;
             try
             {
+                if (completedReplay)
+                {
+                    Assert.Equal(false, capturePcm);
+                    videoWindow = NativeWindowTest.CreateHiddenParentWindow();
+                    engine.SetVideoHandle(videoWindow);
+                    await engine.PlayFromAsync(sourceUri, TimeSpan.FromSeconds(5.25), 80, initialState);
+                    Assert.True(engine.PreservesReplayPositionOnResume, "The completed replay must use the real FFmpeg preroll filter.");
+                    Assert.True((bool)EngineType.GetField("usingAvformatReplay", PrivateInstance)!.GetValue(engine)!);
+                    var replayPlayer = (IntPtr)EngineType.GetField("player", PrivateInstance)!.GetValue(engine)!;
+                    return new PcmFixture(engine, path, replayPlayer, capturePcm, ownsGeneratedMediaFile, videoWindow);
+                }
+
                 // Install the native PCM observer between player creation and playback.
                 // Normal PlayAsync has no public interception point there. Audio requests
                 // and convergence still go through the real production engine below.
@@ -404,6 +465,7 @@ internal static class AudioSwitchVlcTestCatalog
             catch
             {
                 engine.Dispose();
+                if (videoWindow != IntPtr.Zero) NativeWindowTest.DestroyWindow(videoWindow);
                 if (ownsGeneratedMediaFile) File.Delete(path);
                 throw;
             }
@@ -479,6 +541,7 @@ internal static class AudioSwitchVlcTestCatalog
         public void Dispose()
         {
             Engine.Dispose();
+            if (videoWindow != IntPtr.Zero) NativeWindowTest.DestroyWindow(videoWindow);
             GC.KeepAlive(playCallback);
             GC.KeepAlive(setupCallback);
             GC.KeepAlive(cleanupCallback);

@@ -1,0 +1,27 @@
+--- a/src/input/es_out.c
++++ b/src/input/es_out.c
+@@ -673,7 +673,9 @@
+     if( p_sys->i_preroll_end >= 0 )
+         i_preroll_duration = __MAX( p_sys->i_preroll_end - i_stream_start, 0 );
+ 
+-    const vlc_tick_t i_buffering_duration = p_sys->i_pts_delay +
++    /* Decoder delay is in system time; preroll and extra buffering are in
++     * stream time. Convert the delay before comparing stream durations. */
++    const vlc_tick_t i_buffering_duration = p_sys->i_pts_delay * INPUT_RATE_DEFAULT / p_sys->i_rate +
+                                          i_preroll_duration +
+                                          p_sys->i_buffering_extra_stream - p_sys->i_buffering_extra_initial;
+ 
+@@ -731,8 +733,12 @@
+     const vlc_tick_t i_wakeup_delay = 10*1000; /* FIXME CLEANUP thread wake up time*/
+     const vlc_tick_t i_current_date = p_sys->b_paused ? p_sys->i_pause_date : mdate();
+ 
++    /* Rebase the stream buffering interval in system time at the input rate.
++     * ChangeSystemOrigin accounts for the PTS delay's rate offset, so the
++     * decoder delay remains in wall time when the preroll is released. */
+     input_clock_ChangeSystemOrigin( p_sys->p_pgrm->p_clock, true,
+-                                    i_current_date + i_wakeup_delay - i_buffering_duration );
++                                    i_current_date + i_wakeup_delay -
++                                    i_buffering_duration * p_sys->i_rate / INPUT_RATE_DEFAULT );
+ 
+     for( int i = 0; i < p_sys->i_es; i++ )
+     {

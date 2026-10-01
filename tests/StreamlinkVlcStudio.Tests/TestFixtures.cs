@@ -2318,12 +2318,14 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public TimeSpan? ResumeJumpsToPosition { get; set; }
     public TimeSpan? LastStartPosition { get; private set; }
     public int ResumeCount { get; private set; }
+    public int PauseCount { get; private set; }
     public bool PreservesReplayPositionOnResume { get; set; }
     public bool AudioTrackEnabled { get; private set; } = true;
     public bool IgnoreSetMutedUntilPlayed { get; init; }
     public bool IgnoreAudibleWhilePaused { get; init; }
     public int FailingSeekCount { get; set; }
     public Task PlayCompletion { get; init; } = Task.CompletedTask;
+    public Task PauseCompletion { get; init; } = Task.CompletedTask;
     public Func<int, Task>? PlayCompletionOverride { get; init; }
     public TaskCompletionSource PlayStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task SeekCompletion { get; init; } = Task.CompletedTask;
@@ -2380,10 +2382,11 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
         ApplyAudioState(volume, audioState);
     }
 
-    public Task PauseAsync(CancellationToken cancellationToken = default)
+    public async Task PauseAsync(CancellationToken cancellationToken = default)
     {
+        PauseCount++;
+        await PauseCompletion.WaitAsync(cancellationToken);
         Paused = true;
-        return Task.CompletedTask;
     }
 
     public Task ResumeAsync(CancellationToken cancellationToken = default)

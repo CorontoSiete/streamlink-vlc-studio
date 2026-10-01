@@ -40,13 +40,21 @@ internal sealed class PlaybackCleanupController(IAppLogger logger, Func<string> 
         _ = operation.ContinueWith(
             completed =>
             {
-                if (completed.Exception is not null)
+                try
                 {
-                    logger.Write(
-                        AppLogLevel.Warning,
-                        "Playback",
-                        $"Background playback cleanup failed for {displayName()}.",
-                        completed.Exception.GetBaseException());
+                    if (completed.Exception is not null)
+                    {
+                        logger.Write(
+                            AppLogLevel.Warning,
+                            "Playback",
+                            $"Background playback cleanup failed for {displayName()}.",
+                            completed.Exception.GetBaseException());
+                    }
+                }
+                catch
+                {
+                    // Error reporting must not strand a completed operation in the
+                    // shutdown queue or fault this unawaited continuation.
                 }
 
                 TaskCompletionSource? completedIdle = null;

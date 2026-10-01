@@ -80,6 +80,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     private int kickFollowImportBusy;
     private readonly ILiveNotificationService? liveNotificationService;
     private FollowedChannelsSettings? observedFollowedChannelsSettings;
+    private readonly Dictionary<string, int> offlineFollowedChannelOrder = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string>? previousLiveFollowedKeys;
     private readonly HashSet<PlatformKind> baselinedLivePlatforms = [];
     private readonly TimeSpan followedChannelsRefreshInterval;
@@ -250,11 +251,24 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
                 result.Streams.Select(LiveStreamCardData.FromFollowedStream), thumbnailCacheVersion);
             var liveKeys = result.Streams.Select(stream => stream.Target.StateKey)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var offlineChannels = (result.OfflineChannels ?? [])
+                .Where(channel => !liveKeys.Contains(channel.Target.StateKey))
+                .DistinctBy(channel => channel.Target.StateKey, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            offlineFollowedChannelOrder.Clear();
+            for (var index = 0; index < offlineChannels.Length; index++)
+                offlineFollowedChannelOrder.Add(offlineChannels[index].Target.StateKey, index);
+            var pinnedKeys = Settings.FollowedChannels.PinnedOfflineChannelKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
             PagedResultTracker.ApplyItems(OfflineFollowedChannels,
-                (result.OfflineChannels ?? []).Where(channel => !liveKeys.Contains(channel.Target.StateKey)),
+                offlineChannels.OrderByDescending(channel => pinnedKeys.Contains(channel.Target.StateKey)),
                 card => card.Target.StateKey, channel => channel.Target.StateKey,
-                channel => new OfflineFollowedChannelViewModel(channel, OpenOfflineChannelAsync, () => !disposed),
-                (card, channel) => card.Update(channel), reset: true);
+                channel => new OfflineFollowedChannelViewModel(channel, OpenOfflineChannelAsync, () => !disposed,
+                    ToggleOfflineChannelPin, pinnedKeys.Contains(channel.Target.StateKey)),
+                (card, channel) =>
+                {
+                    card.Update(channel);
+                    card.IsPinned = pinnedKeys.Contains(channel.Target.StateKey);
+                }, reset: true);
 
             ProcessFollowedChannelLiveNotifications(result);
 
@@ -343,6 +357,34 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             if (disposed || ex is OperationCanceledException) return;
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Error, "Followed", $"Failed to browse videos for {channel.Target.DisplayName}.", ex);
+        }
+    }
+
+    private void ToggleOfflineChannelPin(FollowedChannel channel)
+    {
+        if (disposed || !OfflineFollowedChannels.Any(card =>
+                string.Equals(card.Target.StateKey, channel.Target.StateKey, StringComparison.OrdinalIgnoreCase))) return;
+
+        var pinnedKeys = Settings.FollowedChannels.PinnedOfflineChannelKeys.ToList();
+        if (pinnedKeys.RemoveAll(key => string.Equals(key, channel.Target.StateKey, StringComparison.OrdinalIgnoreCase)) == 0)
+            pinnedKeys.Add(channel.Target.StateKey);
+        // Replace the list so autosave observes the edit and in-flight saves retain a stable snapshot.
+        Settings.FollowedChannels.PinnedOfflineChannelKeys = pinnedKeys;
+    }
+
+    private void ApplyOfflineChannelPins()
+    {
+        var pinnedKeys = Settings.FollowedChannels.PinnedOfflineChannelKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var card in OfflineFollowedChannels)
+            card.IsPinned = pinnedKeys.Contains(card.Target.StateKey);
+
+        var ordered = OfflineFollowedChannels.OrderByDescending(card => card.IsPinned)
+            .ThenBy(card => offlineFollowedChannelOrder.GetValueOrDefault(card.Target.StateKey, int.MaxValue))
+            .ToArray();
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            if (!ReferenceEquals(OfflineFollowedChannels[index], ordered[index]))
+                OfflineFollowedChannels.Move(OfflineFollowedChannels.IndexOf(ordered[index]), index);
         }
     }
 
@@ -614,13 +656,19 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         }
 
         ApplyLiveNotificationSetting();
+        ApplyOfflineChannelPins();
     }
 
     internal void FollowedChannelsSettingsOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (disposed) return;
         if (e.PropertyName == nameof(FollowedChannelsSettings.NotifyWhenLive))
         {
             ApplyLiveNotificationSetting();
+        }
+        else if (e.PropertyName == nameof(FollowedChannelsSettings.PinnedOfflineChannelKeys))
+        {
+            ApplyOfflineChannelPins();
         }
     }
 

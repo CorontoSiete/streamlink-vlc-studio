@@ -14,6 +14,10 @@ internal static class CodeReviewTestCatalog
         ("review: optional JSON reads share bounds decoding and timeout handling", OptionalJsonReadsAsync),
         ("review: update checks leave the checking state after timeout or cancellation", UpdateCheckCancellationAsync),
         ("review: playback releases its parking surface when engine disposal fails", PlaybackCleanupAfterDisposeFailureAsync),
+        ("review: playback cleanup drains when its error reporting fails", PlaybackCleanupReportingFailureAsync),
+        ("review: direct VOD resolution honors the custom HTTP environment", DirectVodHttpEnvironmentAsync),
+        ("review: chat links keep balanced delimiters while trimming long suffixes", ChatLinkDelimitersAsync),
+        ("review: replay seek commits retain their requested offset during clock refresh", ReplaySeekCommitOffsetAsync),
         ("review: portable command line parsing matches Windows for whitespace and quotes", PortableTokenizerMatchesWindows)
     ];
 
@@ -223,6 +227,113 @@ internal static class CodeReviewTestCatalog
         await new PlaybackResourceCoordinator(new MemoryLogger(), () => "test").StopAsync(
             engine, null, surface, CancellationToken.None);
         Assert.True(surface.Disposed);
+    }
+
+    private static async Task PlaybackCleanupReportingFailureAsync()
+    {
+        foreach (var failingDisplayName in new[] { false, true })
+        {
+            var logger = new MemoryLogger();
+            logger.EntryWritten += (_, _) => throw new InvalidOperationException("logger failed");
+            var cleanup = new PlaybackCleanupController(logger,
+                () => failingDisplayName ? throw new InvalidOperationException("display name failed") : "test");
+            var operation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            cleanup.Observe(operation.Task);
+            cleanup.Observe(operation.Task);
+            var idle = cleanup.IdleTask;
+            Assert.Equal(false, idle.IsCompleted);
+
+            operation.SetException(new IOException("cleanup failed"));
+            await idle.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var next = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            cleanup.Observe(next.Task);
+            Assert.Equal(false, cleanup.IdleTask.IsCompleted);
+            next.SetResult();
+            await cleanup.IdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private static Task DirectVodHttpEnvironmentAsync()
+    {
+        var root = CreateTemporaryDirectory();
+        var appData = Environment.GetEnvironmentVariable("APPDATA");
+        var request = new StreamTransportRequest(
+            StreamInputParser.Parse("https://www.twitch.tv/videos/12345", PlatformKind.Twitch),
+            "best", Environment.ProcessPath!, false, []);
+        try
+        {
+            Environment.SetEnvironmentVariable("APPDATA", root);
+            foreach (var variable in new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                         "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NETRC" })
+            {
+                var previous = Environment.GetEnvironmentVariable(variable);
+                try
+                {
+                    Environment.SetEnvironmentVariable(variable, "custom-streamlink-setting");
+                    Assert.Equal(false, DirectVodResolutionPolicy.CanUse(request));
+                }
+                finally
+                {
+                    Environment.SetEnvironmentVariable(variable, previous);
+                }
+            }
+            return Task.CompletedTask;
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("APPDATA", appData);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static Task ChatLinkDelimitersAsync()
+    {
+        const string address = "https://example.com/a(b)[c]{d}";
+        var suffix = string.Concat(Enumerable.Repeat(")]}", 2048));
+        var links = ChatLinkParser.FindLinks($"See {address}{suffix}.!").ToArray();
+        Assert.Equal(1, links.Length);
+        Assert.Equal(4, links[0].Start);
+        Assert.Equal(address.Length, links[0].Length);
+        Assert.Equal(address, links[0].Uri.OriginalString);
+        return Task.CompletedTask;
+    }
+
+    private static async Task ReplaySeekCommitOffsetAsync()
+    {
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var duration = TimeSpan.FromHours(1);
+        var replay = new ReplaySessionInfo(PlatformKind.Twitch, "streamer",
+            "https://www.twitch.tv/videos/123", "123", null, duration, true, "");
+        await using var tab = TestViewModels.CreateTab(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch), "best",
+            new FakeStreamlinkService(), playbackFactory, new FakeChatClientFactory(),
+            new MemoryLogger(), action => action(), replayResolver: new FakeReplayResolver(replay));
+        var settings = new AppSettings { StreamlinkPath = "streamlink.exe", VlcDirectory = @"C:\VLC" };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(() => tab.CanSeekReplay, TimeSpan.FromSeconds(2));
+
+        var offset = TimeSpan.FromMinutes(25);
+        tab.BeginReplaySeekPreview(offset.TotalSeconds);
+        Assert.True(tab.IsReplaySeekPreviewActive);
+        var clockRefreshed = false;
+        tab.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(tab.IsReplaySeekPreviewActive) && !tab.IsReplaySeekPreviewActive)
+            {
+                // Simulate a queued clock refresh when the preview stops protecting
+                // the slider. It must not replace the user's committed seek offset.
+                tab.ReplaySeekSliderValue = duration.TotalSeconds;
+                clockRefreshed = true;
+            }
+        };
+
+        await tab.CommitReplaySeekPreviewAsync(offset.TotalSeconds);
+        Assert.True(clockRefreshed);
+        Assert.True(tab.IsBehindLive);
+        Assert.Equal(offset, playbackFactory.Engine!.Position);
     }
 
     private static Task PortableTokenizerMatchesWindows()

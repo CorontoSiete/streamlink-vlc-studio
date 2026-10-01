@@ -21,6 +21,14 @@ internal static partial class OfflineFollowedChannelsTestCatalog
         ("offline followed channels: Kick cards browse videos without attempting live playback", () => OpenVideosAsync(PlatformKind.Kick)),
         ("offline followed channels: disposed cards cannot browse videos", DisposedCommandAsync),
         ("offline followed channels: shutdown ignores results from late providers", LateShutdownAsync),
+        ("offline followed channels: saved pin keys are validated and keep platform identities distinct", PinSettingsAsync),
+        ("offline followed channels: pinning and unpinning restore provider order without rebuilding cards", PinOrderingAsync),
+        ("offline followed channels: pinned refreshes reuse commands and update channel metadata", PinRefreshAsync),
+        ("offline followed channels: pins survive live transitions and ignore removed or disposed cards", PinTransitionsAsync),
+        ("offline followed channels: pins edited during a refresh use the latest saved preference", PinDuringRefreshAsync),
+        ("offline followed channels: replacing settings updates pin order and releases old settings", PinSettingsReplacementAsync),
+        ("offline followed channels: automatic pin saves and immediate shutdown edits survive restart", PinPersistenceAsync),
+        ("offline followed channels: pin buttons accept independent activation without browsing videos", PinButtonActivationAsync),
         ("offline followed channels: the expandable section renders below live cards at desktop and compact widths", LayoutAsync)
     ];
 

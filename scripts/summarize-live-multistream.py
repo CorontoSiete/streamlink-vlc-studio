@@ -4,17 +4,13 @@ import argparse
 import json
 from pathlib import Path
 from statistics import mean, median
-
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
+from measurement_helpers import format_percent, read_json, reduction, require, require_stream_values
 
 
 def load_run(directory, streams, trial, version, warmup, seconds):
     run_directory = directory / f"{streams}-{trial}-{version}"
     result_path = run_directory / "results.json"
-    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload = read_json(result_path)
     require(isinstance(payload, list) and len(payload) == 1,
             f"Expected one completed live cycle in {result_path}.")
     row = payload[0]
@@ -23,9 +19,8 @@ def load_run(directory, streams, trial, version, warmup, seconds):
             f"Wrong cycle or build label in {result_path}.")
     require(row["warmupSeconds"] == warmup and seconds <= row["measuredSeconds"] < seconds + 1,
             f"Unexpected warm-up or sample duration in {result_path}.")
-    require(len(row["channels"]) == streams and len(row["qualities"]) == streams and
-            len(row["dimensions"]) == streams and len(row["displayed"]) == streams,
-            f"A stream result is missing in {result_path}.")
+    require_stream_values(row, ("channels", "qualities", "dimensions", "displayed", "lost",
+                                "audioLost", "audioSelected", "chatMessages"), streams, result_path)
     require(all(quality == "best" for quality in row["qualities"]),
             f"A stream did not retain best quality in {result_path}.")
     require(all(dimension["width"] > 0 and dimension["height"] > 0 for dimension in row["dimensions"]),
@@ -62,7 +57,7 @@ def load_run(directory, streams, trial, version, warmup, seconds):
         sample_pids.append(tuple(sorted(process["Pid"] for process in processes)))
 
     cleanup_path = run_directory / "cycle-0-cleanup.json"
-    cleanup = json.loads(cleanup_path.read_text(encoding="utf-8"))
+    cleanup = read_json(cleanup_path)
     require(cleanup.get("allObservedChildrenExited") is True,
             f"Playback child cleanup did not pass in {cleanup_path}.")
 
@@ -98,10 +93,6 @@ def summarize(runs):
         "gpu_shared_mib", "private_mib", "working_set_mib", "minimum_displayed_fps",
     )
     return {key: median(run[key] for run in runs) for key in keys}
-
-
-def reduction(before, after):
-    return 100 * (1 - after / before) if before else None
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -163,6 +154,6 @@ print("| --- | ---: |")
 for key, label in (("cpu_cores", "CPU"), ("gpu_3d_percent", "GPU 3D"),
                    ("gpu_dedicated_mib", "Dedicated GPU memory"), ("gpu_shared_mib", "Shared GPU memory")):
     value = summary["reductions_percent"][key]
-    print(f"| {label} | {value:+.1f}% |")
+    print(f"| {label} | {format_percent(value)} |")
 print(f"\nValidated {args.trials * 2} live trials: best quality, consistent dimensions, zero lost video/audio, "
       "complete GPU counters, and all observed child processes exited.")

@@ -1467,6 +1467,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
+            if (stream.IsOffline)
+            {
+                await OpenChannelVodsAsync(stream.Platform, stream.Channel);
+                return;
+            }
+
             if (!stayOnHome)
             {
                 IsHomeSelected = false;
@@ -2562,7 +2568,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         if (SelectedTab is { } tab)
         {
-            await tab.PauseOrResumeAsync();
+            await tab.PauseOrResumeCommand.ExecuteAsync();
             if (disposed) return;
             if (ReferenceEquals(SelectedTab, tab))
                 StatusMessage = $"{tab.Target.DisplayName}: {tab.StatusText}";

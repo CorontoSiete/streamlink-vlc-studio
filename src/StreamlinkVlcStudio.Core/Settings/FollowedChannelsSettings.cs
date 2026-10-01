@@ -7,6 +7,7 @@ public sealed class FollowedChannelsSettings : NotifyPropertyChangedObject
 {
     private List<string> kickChannelSlugs = [];
     private List<string> kickImportedChannelSlugs = [];
+    private List<string> pinnedOfflineChannelKeys = [];
     private DateTimeOffset? kickFollowsImportedAtUtc;
     private bool notifyWhenLive = true;
 
@@ -32,6 +33,33 @@ public sealed class FollowedChannelsSettings : NotifyPropertyChangedObject
     {
         get => kickFollowsImportedAtUtc;
         set => SetProperty(ref kickFollowsImportedAtUtc, value);
+    }
+
+    public List<string> PinnedOfflineChannelKeys
+    {
+        get => pinnedOfflineChannelKeys;
+        set => SetProperty(ref pinnedOfflineChannelKeys, NormalizeChannelKeys(value));
+    }
+
+    private static List<string> NormalizeChannelKeys(IEnumerable<string>? values)
+    {
+        var keys = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            var separator = value.IndexOf(':');
+            if (separator <= 0 ||
+                !Enum.TryParse<PlatformKind>(value[..separator].Trim(), ignoreCase: true, out var platform) ||
+                !StreamInputParser.TryFromChannel(platform, value[(separator + 1)..], out var target))
+            {
+                continue;
+            }
+
+            if (seen.Add(target.StateKey)) keys.Add(target.StateKey);
+        }
+
+        return keys;
     }
 
     private static List<string> NormalizeChannelSlugs(IEnumerable<string>? values)

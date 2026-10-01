@@ -12,6 +12,8 @@ public interface IPlaybackEngine : IDisposable
     // Check the current input and unpause atomically. False leaves it paused.
     Task<bool> TryResumeReplayAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     // Change the requested playback rate when the active media supports it.
+    // Cancel before submission without changing the rate; return true if already submitted.
+    // Pending requests must not carry over to replacement media or an explicit seek.
     Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default) => Task.FromResult(false);
     string? NativeOverlayPipeName { get; }
     string? NativeOverlayPositionStatePath { get; }

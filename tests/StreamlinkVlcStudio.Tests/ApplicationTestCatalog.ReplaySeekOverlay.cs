@@ -110,12 +110,15 @@ internal static partial class ApplicationTestCatalog
         var firstChangeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finishFirstChange = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var session = await ReplayOverlayTestSession.CreateAsync(
-            playbackRateOverride: async (rate, cancellationToken) =>
+            playbackRateOverride: async (rate, _) =>
             {
                 if (rate == 1.25f)
                 {
                     firstChangeStarted.TrySetResult();
-                    await finishFirstChange.Task.WaitAsync(cancellationToken);
+                    // Keep an already-committed setter's acknowledgement pending.
+                    // New selections must coalesce while that setter finishes;
+                    // cancellable pre-submission waits have separate coverage.
+                    await finishFirstChange.Task;
                 }
 
                 return rate != 2f;
@@ -247,7 +250,7 @@ internal static partial class ApplicationTestCatalog
         var transportGrid = (Grid)overlay.FindName("ReplayTransportGrid");
         var actions = transportGrid.Children.OfType<StackPanel>().Single();
         Assert.Equal(1, Grid.GetRow(actions));
-        Assert.Equal(2, Grid.GetColumnSpan(actions));
+        Assert.Equal(transportGrid.ColumnDefinitions.Count, Grid.GetColumnSpan(actions));
         var compactSource = (System.Windows.Interop.HwndSource)PresentationSource.FromVisual(fixture.Chrome)!;
         var nativeBounds = NativeWindowTest.GetWindowBounds(compactSource.Handle);
         var chromeSize = fixture.Chrome.PointToScreen(new Point(fixture.Chrome.ActualWidth, fixture.Chrome.ActualHeight))
@@ -861,7 +864,8 @@ internal static partial class ApplicationTestCatalog
 
         public static async Task<ReplayOverlayTestSession> CreateAsync(
             ReplaySessionInfo? replayOverride = null,
-            Func<float, CancellationToken, Task<bool>>? playbackRateOverride = null)
+            Func<float, CancellationToken, Task<bool>>? playbackRateOverride = null,
+            Action<Action>? dispatchOverride = null)
         {
             // Keep the native clock consistent with replay metadata when the first
             // seek switches from live playback to the replay media.
@@ -886,7 +890,7 @@ internal static partial class ApplicationTestCatalog
                 playbackFactory,
                 new FakeChatClientFactory(),
                 new MemoryLogger(),
-                action => action(),
+                dispatchOverride ?? (action => action()),
                 replayResolver: new FakeReplayResolver(replay),
                 vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
             var settings = new AppSettings

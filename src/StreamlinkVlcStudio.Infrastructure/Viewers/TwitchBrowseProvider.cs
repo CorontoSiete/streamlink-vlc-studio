@@ -13,35 +13,22 @@ namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
 internal sealed class TwitchBrowseProvider : BrowseProviderRequests
 {
-    internal TwitchBrowseProvider(IAppLogger logger, HttpClient httpClient) : base(logger, httpClient) { }
+    internal TwitchBrowseProvider(IAppLogger logger, HttpClient httpClient) : base(logger, httpClient)
+    {
+        categoryViewerCounts = new TwitchCategoryViewerCountClient(httpClient);
+    }
     private const int MaxTwitchPages = 100;
     private readonly TwitchRateLimitCoordinator twitchRateLimits = new();
+    private readonly TwitchCategoryViewerCountClient categoryViewerCounts;
 
     internal async Task<BrowseResult<BrowseCategory>> GetTwitchCategoriesAsync(
         BrowseCategoryRequest request,
         ChatSettings settings,
         CancellationToken cancellationToken)
     {
-        var token = TwitchOAuthService.NormalizeOAuthToken(settings.TwitchOAuthToken);
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return BrowseResult<BrowseCategory>.NotConfigured(
-                "Twitch browse requires a Twitch OAuth token.");
-        }
-
-        var clientId = await TwitchClientIdResolver.ResolveAsync(
-            settings,
-            httpClient,
-            token,
-            logger,
-            "Browse",
-            "Could not resolve Twitch Client ID from the OAuth token.",
-            cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(clientId))
-        {
-            return BrowseResult<BrowseCategory>.NotConfigured(
-                "Twitch browse requires a Twitch Client ID that matches the OAuth token.");
-        }
+        var (token, clientId, credentialError) = await ResolveCredentialsAsync(settings, cancellationToken).ConfigureAwait(false);
+        if (credentialError is not null)
+            return BrowseResult<BrowseCategory>.NotConfigured(credentialError);
 
         var query = request.Query.Trim();
         var pageSize = Math.Clamp(request.PageSize <= 0 ? 50 : request.PageSize, 1, 100);
@@ -60,7 +47,7 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
                     new("after", request.Cursor.Trim())
                 ]);
 
-        using var response = await SendTwitchRequestAsync(url, token, clientId, cancellationToken).ConfigureAwait(false);
+        using var response = await twitchRateLimits.SendAsync(httpClient, url, token, clientId, logger, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
@@ -85,26 +72,9 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
         ChatSettings settings,
         CancellationToken cancellationToken)
     {
-        var token = TwitchOAuthService.NormalizeOAuthToken(settings.TwitchOAuthToken);
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return BrowseResult<BrowseLiveStream>.NotConfigured(
-                "Twitch browse requires a Twitch OAuth token.");
-        }
-
-        var clientId = await TwitchClientIdResolver.ResolveAsync(
-            settings,
-            httpClient,
-            token,
-            logger,
-            "Browse",
-            "Could not resolve Twitch Client ID from the OAuth token.",
-            cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(clientId))
-        {
-            return BrowseResult<BrowseLiveStream>.NotConfigured(
-                "Twitch browse requires a Twitch Client ID that matches the OAuth token.");
-        }
+        var (token, clientId, credentialError) = await ResolveCredentialsAsync(settings, cancellationToken).ConfigureAwait(false);
+        if (credentialError is not null)
+            return BrowseResult<BrowseLiveStream>.NotConfigured(credentialError);
 
         var categoryId = request.CategoryId.Trim();
         if (string.IsNullOrWhiteSpace(categoryId))
@@ -121,7 +91,7 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
                 new("after", request.Cursor.Trim())
             ]);
 
-        using var response = await SendTwitchRequestAsync(url, token, clientId, cancellationToken).ConfigureAwait(false);
+        using var response = await twitchRateLimits.SendAsync(httpClient, url, token, clientId, logger, cancellationToken).ConfigureAwait(false);
         var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
@@ -169,26 +139,9 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
         ChatSettings settings,
         CancellationToken cancellationToken)
     {
-        var token = TwitchOAuthService.NormalizeOAuthToken(settings.TwitchOAuthToken);
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return BrowseResult<BrowseCategoryViewerCount>.NotConfigured(
-                "Twitch browse requires a Twitch OAuth token.");
-        }
-
-        var clientId = await TwitchClientIdResolver.ResolveAsync(
-            settings,
-            httpClient,
-            token,
-            logger,
-            "Browse",
-            "Could not resolve Twitch Client ID from the OAuth token.",
-            cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(clientId))
-        {
-            return BrowseResult<BrowseCategoryViewerCount>.NotConfigured(
-                "Twitch browse requires a Twitch Client ID that matches the OAuth token.");
-        }
+        var (token, clientId, credentialError) = await ResolveCredentialsAsync(settings, cancellationToken).ConfigureAwait(false);
+        if (credentialError is not null)
+            return BrowseResult<BrowseCategoryViewerCount>.NotConfigured(credentialError);
 
         var categoryIds = request.CategoryIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
@@ -207,8 +160,28 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
         var stopwatch = Stopwatch.StartNew();
         var allViewerCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         var totalPageCount = 0;
-        foreach (var categoryIdBatch in categoryIds.Chunk(100))
+        var totalCategoryRequests = 0;
+        foreach (var categoryIdBatch in categoryIds.Chunk(TwitchCategoryViewerCountClient.MaximumBatchSize))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            totalCategoryRequests++;
+            try
+            {
+                var reportedCounts = await categoryViewerCounts.GetAsync(categoryIdBatch, cancellationToken).ConfigureAwait(false);
+                foreach (var count in reportedCounts)
+                {
+                    allViewerCounts[count.CategoryId] = count.ViewerCount;
+                }
+
+                continue;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                logger.Write(AppLogLevel.Warning, "Browse",
+                    "Twitch reported category totals could not be loaded; counting all live stream pages instead.", ex);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             var viewerCountsResult = await LoadTwitchCategoryViewerCountsAsync(
                 categoryIdBatch,
                 token,
@@ -235,12 +208,12 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
         logger.Write(
             AppLogLevel.Info,
             "Browse",
-            $"Loaded exact Twitch viewer counts for {counts.Length} {(counts.Length == 1 ? "category" : "categories")} using {totalPageCount} Twitch stream {(totalPageCount == 1 ? "page" : "pages")} in {stopwatch.Elapsed.TotalSeconds:0.0}s.");
+            $"Loaded Twitch viewer counts for {counts.Length} {(counts.Length == 1 ? "category" : "categories")} using {totalCategoryRequests} Twitch category {(totalCategoryRequests == 1 ? "request" : "requests")} and {totalPageCount} stream {(totalPageCount == 1 ? "page" : "pages")} in {stopwatch.Elapsed.TotalSeconds:0.000}s.");
         return new BrowseResult<BrowseCategoryViewerCount>(
             BrowseResultStatus.Available,
             counts,
             "",
-            $"Loaded exact Twitch viewer counts for {counts.Length} {(counts.Length == 1 ? "category" : "categories")}.");
+            $"Loaded Twitch viewer counts for {counts.Length} {(counts.Length == 1 ? "category" : "categories")}.");
     }
 
     private async Task<TwitchCategoryViewerCountsLoadResult> LoadTwitchCategoryViewerCountsAsync(
@@ -283,7 +256,7 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
                 "https://api.twitch.tv/helix/streams",
                 query);
 
-            using var response = await SendTwitchRequestAsync(url, token, clientId, cancellationToken).ConfigureAwait(false);
+            using var response = await twitchRateLimits.SendAsync(httpClient, url, token, clientId, logger, cancellationToken).ConfigureAwait(false);
             var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
@@ -354,15 +327,19 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
             null);
     }
 
-    private async Task<HttpResponseMessage> SendTwitchRequestAsync(
-        string url,
-        string token,
-        string clientId,
-        CancellationToken cancellationToken)
+    private async Task<(string Token, string ClientId, string? Error)> ResolveCredentialsAsync(
+        ChatSettings settings, CancellationToken cancellationToken)
     {
-        return await twitchRateLimits
-            .SendAsync(httpClient, url, token, clientId, logger, cancellationToken)
-            .ConfigureAwait(false);
+        var token = TwitchOAuthService.NormalizeOAuthToken(settings.TwitchOAuthToken);
+        if (string.IsNullOrWhiteSpace(token))
+            return ("", "", "Twitch browse requires a Twitch OAuth token.");
+
+        var clientId = await TwitchClientIdResolver.ResolveAsync(
+            settings, httpClient, token, logger, "Browse",
+            "Could not resolve Twitch Client ID from the OAuth token.", cancellationToken).ConfigureAwait(false);
+        return string.IsNullOrWhiteSpace(clientId)
+            ? (token, "", "Twitch browse requires a Twitch Client ID that matches the OAuth token.")
+            : (token, clientId, null);
     }
 
     private sealed record TwitchCategoryViewerCountsLoadResult(

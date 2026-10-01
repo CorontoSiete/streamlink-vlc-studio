@@ -492,7 +492,8 @@ public partial class MainWindow : Window
         {
             // Keep an older custom Back binding if it overlaps a new skip default.
             if (HotkeyBindingPolicy.Matches(hotkeys, AppHotkeyAction.GoBack, input)) return false;
-            return ReplaySkipHotkey.TryExecute(tab, hotkeys, input, focusedElement, isRepeat);
+            return ReplaySkipHotkey.TryExecute(tab, hotkeys, input, focusedElement, isRepeat) ||
+                PlaybackPauseHotkey.TryExecute(tab, hotkeys, input, focusedElement, isRepeat, viewModel.PauseSelectedCommand);
         }
 
         if (HotkeyBindingPolicy.ShouldSuppressForTextInput(hotkeys, volumeAction.Value, focusedElement))
@@ -2402,6 +2403,11 @@ public partial class MainWindow : Window
 
     private UIElement ResolveVolumeOsdTarget(StreamTabViewModel tab)
     {
+        if (tab.IsVodFinished && tab.VideoSurfacePresenterOwner?.Parent is UIElement { IsVisible: true } finishedScreen)
+        {
+            return finishedScreen;
+        }
+
         return videoSurfaces.TryGetValue(tab, out var surface) && surface.IsVisible
             ? surface
             : VideoViewport;

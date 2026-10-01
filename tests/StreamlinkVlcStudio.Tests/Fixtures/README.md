@@ -41,6 +41,17 @@ this through VLC's HLS demuxer from both a file and a loopback HTTP server, then
 measures Windows loopback output while changing speed. Keep `index.m3u8` and
 `tone.ts` together so the playlist's relative segment URL resolves in both cases.
 
+`playback-rate-replay-tone` is a completed 60-second H.264/AAC MPEG-TS replay
+with blue video and a continuous, low-amplitude 440 Hz tone. It exercises the
+production completed-replay transport, precise seek filter, video output, and
+Windows audio output together. The audio regression observes three seconds
+after each speed transition so buffered output cannot hide a later dropout.
+Generate it with:
+
+```text
+ffmpeg -f lavfi -i color=c=blue:s=64x64:r=2:d=60 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=60 -map 0:v -map 1:a -af volume=0.016 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 2 -sc_threshold 0 -c:a aac -b:a 32k -hls_time 10 -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments -hls_segment_filename playback-rate-replay-tone/segment%d.ts playback-rate-replay-tone/index.m3u8
+```
+
 `hover-preview-fmp4` contains twelve seconds of generated moving test patterns,
 160 x 90 at 30 fps, in two-second fragmented MP4 segments with a whole `init.mp4`.
 It exercises the hover preview's validated map, native HLS initialization, changing

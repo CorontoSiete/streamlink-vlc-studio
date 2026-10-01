@@ -27,7 +27,9 @@
     <None Update="Fixtures\replay-position-long-gop\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\replay-position-audio\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\playback-rate-tone\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\playback-rate-replay-tone\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\hover-preview-fmp4\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\profile-images\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import struct
 import time
+from measurement_helpers import require
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--media', required=True)
@@ -28,7 +29,7 @@ if not 1 <= a.seconds <= 300 or not 0 <= a.chat_hz <= 60 or not 0 <= a.warmup <=
 media_path = Path(a.media).resolve(strict=True)
 vlcdir = Path(a.vlc_directory).resolve(strict=True)
 pluginroot = Path(a.overlay_directory).resolve(strict=True)
-assert (pluginroot / 'build/libmyoverlay_plugin.dll').is_file()
+require((pluginroot / 'build/libmyoverlay_plugin.dll').is_file(), 'The native overlay plugin is missing.')
 os.environ['VLC_PLUGIN_PATH'] = str(pluginroot)
 dlldir = os.add_dll_directory(str(vlcdir))
 
@@ -39,7 +40,7 @@ def bind(lib, name, result, *args):
 
 # VLC uses MSVCRT, whose environment is separate from Python's UCRT environment.
 putenv = bind(c.CDLL('msvcrt'), '_putenv_s', c.c_int, c.c_char_p, c.c_char_p)
-assert putenv(b'VLC_PLUGIN_PATH', str(pluginroot).encode()) == 0
+require(putenv(b'VLC_PLUGIN_PATH', str(pluginroot).encode()) == 0, 'Could not configure the VLC plugin path.')
 vlc = c.CDLL(str(vlcdir / 'libvlc.dll'))
 core = c.CDLL(str(vlcdir / 'libvlccore.dll'))
 user = c.WinDLL('user32', use_last_error=True)
@@ -59,10 +60,10 @@ get_memory = bind(psapi, 'GetProcessMemoryInfo', w.BOOL, ptr, c.POINTER(MemoryCo
 def memory():
     counters = MemoryCounters()
     counters.cb = c.sizeof(counters)
-    assert get_memory(current_process, c.byref(counters), counters.cb)
+    require(get_memory(current_process, c.byref(counters), counters.cb), 'Could not read process memory counters.')
     return dict(private_bytes=counters.PrivateUsage, working_set_bytes=counters.WorkingSetSize)
 version = bind(vlc, 'libvlc_get_version', c.c_char_p)().decode()
-assert version.startswith('3.'), 'The checked variable ABI below requires VLC 3.'
+require(version.startswith('3.'), 'The checked variable ABI below requires VLC 3.')
 new = bind(vlc, 'libvlc_new', ptr, c.c_int, c.POINTER(c.c_char_p))
 release = bind(vlc, 'libvlc_release', None, ptr)
 media_new = bind(vlc, 'libvlc_media_new_path', ptr, ptr, c.c_char_p)
@@ -92,7 +93,7 @@ class Stats(c.Structure):
 get_stats = bind(vlc, 'libvlc_media_get_stats', c.c_int, ptr, c.POINTER(Stats))
 def stats(media):
     result = Stats()
-    assert get_stats(media, c.byref(result))
+    require(get_stats(media, c.byref(result)), 'Could not read VLC media statistics.')
     return {name: getattr(result, name) for name in ('decoded_video', 'displayed_pictures', 'lost_pictures')}
 
 # Alternating, partially transparent stripes exercise the real pipe and scaler.
@@ -114,7 +115,7 @@ def pump(seconds, animate=False):
             if a.chat_hz:
                 phase = 1 - phase
             for pipe in pipes:
-                assert os.write(pipe, frames[phase]) == len(frames[phase])
+                require(os.write(pipe, frames[phase]) == len(frames[phase]), 'A native chat frame was truncated.')
             next_frame += 1 / a.chat_hz if a.chat_hz else .080
         time.sleep(.002)
 
@@ -122,39 +123,64 @@ columns = 2 if a.count <= 4 else 4
 cell_width, cell_height = 1280 // columns, 720 // columns
 root = create_window(0, 'STATIC', 'Stream Studio CPU benchmark', 0x10CF0000, 50, 50,
                      1310, 50 + cell_height * ((a.count + columns - 1) // columns), None, None, None, None)
-assert root
+require(root, 'Could not create the benchmark window.')
 engines = []
+
+
+def release_engine(engine):
+    inst, media, player = engine
+    if player:
+        stop(player)
+        player_release(player)
+    if media:
+        media_release(media)
+    if inst:
+        release(inst)
+
+
+def create_engine(options):
+    opts = [value.encode() for value in options]
+    inst = new(len(opts), (c.c_char_p * len(opts))(*opts))
+    media = player = None
+    try:
+        require(inst, 'Could not create a VLC instance.')
+        media = media_new(inst, str(media_path).encode())
+        require(media, 'Could not create the VLC media.')
+        player = player_new(media)
+        require(player, 'Could not create the VLC player.')
+        return inst, media, player
+    except BaseException:
+        release_engine((inst, media, player))
+        raise
+
+
 try:
     for i in range(a.count):
         child = create_window(0, 'STATIC', '', 0x50000000, i % columns * cell_width,
                               i // columns * cell_height, cell_width, cell_height, root, None, None, None)
+        require(child, 'Could not create a benchmark video surface.')
         pipe_name = 'svs_cpu_' + str(os.getpid()) + '_' + str(i)
         options = ['--no-video-title-show', '--quiet', '--vout=studio_gdi', '--no-audio',
                    '--no-volume-save', '--avcodec-hw=' + a.hw, '--network-caching=500',
                    '--live-caching=300', '--drop-late-frames', '--skip-frames',
                    '--sub-source=myoverlay{pipe=' + pipe_name + ',show-placeholder=0}']
-        opts = [x.encode() for x in options]
-        inst = new(len(opts), (c.c_char_p * len(opts))(*opts))
-        assert inst
-        media = media_new(inst, str(media_path).encode())
-        assert media
-        player = player_new(media)
-        assert player
+        inst, media, player = create_engine(options)
         engines.append((inst, media, player))
         set_hwnd(player, child)
         for name, value in [('vout', 'studio_gdi'), ('avcodec-hw', a.hw)]:
-            assert set_checked(player, name.encode(), 0x40, c.cast(c.c_char_p(value.encode()), ptr)) == 0
-        assert play(player) == 0
+            require(set_checked(player, name.encode(), 0x40, c.cast(c.c_char_p(value.encode()), ptr)) == 0,
+                    f'Could not configure VLC {name}.')
+        require(play(player) == 0, 'Could not start VLC playback.')
     pump(4)
     for i in range(a.count):
         pipe = os.open(r'\\.\pipe\svs_cpu_' + str(os.getpid()) + '_' + str(i), os.O_WRONLY | os.O_BINARY)
         pipes.append(pipe)
-        assert os.write(pipe, frames[0]) == len(frames[0])
+        require(os.write(pipe, frames[0]) == len(frames[0]), 'The initial native chat frame was truncated.')
     pump(a.warmup, animate=True)
     sizes = []
     for _, _, player in engines:
         width, height = c.c_uint(), c.c_uint()
-        assert get_size(player, 0, c.byref(width), c.byref(height)) == 0
+        require(get_size(player, 0, c.byref(width), c.byref(height)) == 0, 'Could not read the decoded video size.')
         sizes.append([width.value, height.value])
     before = [stats(m) for _, m, _ in engines]
     memory_before = memory()
@@ -169,15 +195,12 @@ try:
                   memory_before=memory_before, memory_after=memory(),
                   continuing_video=continuing_video,
                   elapsed=elapsed, cpu_seconds=used, cpu_cores=used/elapsed, logical_cpus=os.cpu_count(), frames=counts)
-    Path(a.output).write_text(json.dumps(result, indent=2) + '\n')
+    Path(a.output).write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(result))
-    assert continuing_video, 'Video did not keep displaying; check frame counters and fixture duration in the output.'
+    require(continuing_video, 'Video did not keep displaying; check frame counters and fixture duration in the output.')
 finally:
     for pipe in pipes:
         os.close(pipe)
-    for inst, media, player in engines:
-        stop(player)
-        player_release(player)
-        media_release(media)
-        release(inst)
+    for engine in engines:
+        release_engine(engine)
     destroy_window(root)

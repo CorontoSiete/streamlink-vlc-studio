@@ -1,8 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
-using System.Windows.Media;
 using System.Windows.Threading;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
 using StreamlinkVlcStudio.Core.Settings;
@@ -22,6 +22,8 @@ public partial class VolumeOverlay : UserControl
     private const int MaxVolume = VolumeLimits.Max; // display ceiling shared with playback + settings
     internal const int WheelStep = 5;         // volume percent applied per mouse-wheel notch
     private static readonly TimeSpan DisplayDuration = TimeSpan.FromMilliseconds(1000);
+    private static readonly DependencyProperty ReplayBottomInsetProperty = DependencyProperty.Register(
+        "ReplayBottomInset", typeof(double), typeof(VolumeOverlay), new PropertyMetadata(0d, OnReplayBottomInsetChanged));
 
     private DispatcherTimer? hideTimer;
     private UIElement? lastTarget;
@@ -101,9 +103,7 @@ public partial class VolumeOverlay : UserControl
 
         var width = target.RenderSize.Width;
         var height = target.RenderSize.Height;
-        var replayInset = VisualTreeHelper.GetParent(target) is Panel panel
-            ? panel.Children.OfType<ReplaySeekOverlay>().Select(overlay => overlay.ReservedBottomHeight).DefaultIfEmpty(0).Max()
-            : 0;
+        var replayInset = (double)GetValue(ReplayBottomInsetProperty);
         var availableHeight = Math.Max(0, height - replayInset);
         if (availableHeight <= 0)
         {
@@ -145,6 +145,12 @@ public partial class VolumeOverlay : UserControl
         {
             subscribedTarget.SizeChanged += OnTargetSizeChanged;
             subscribedTarget.IsVisibleChanged += OnTargetVisibilityChanged;
+            BindingOperations.SetBinding(this, ReplayBottomInsetProperty, new Binding
+            {
+                Source = subscribedTarget,
+                Path = new PropertyPath("(0)", ReplaySeekOverlay.ReservedBottomHeightProperty),
+                Mode = BindingMode.OneWay
+            });
         }
     }
 
@@ -155,10 +161,17 @@ public partial class VolumeOverlay : UserControl
             subscribedTarget.SizeChanged -= OnTargetSizeChanged;
             subscribedTarget.IsVisibleChanged -= OnTargetVisibilityChanged;
             subscribedTarget = null;
+            BindingOperations.ClearBinding(this, ReplayBottomInsetProperty);
         }
     }
 
     private void OnTargetSizeChanged(object sender, SizeChangedEventArgs e) => UpdatePlacement();
+
+    private static void OnReplayBottomInsetChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var overlay = (VolumeOverlay)d;
+        if (overlay.Popup.IsOpen) overlay.UpdatePlacement();
+    }
 
     private void OnTargetVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
     {

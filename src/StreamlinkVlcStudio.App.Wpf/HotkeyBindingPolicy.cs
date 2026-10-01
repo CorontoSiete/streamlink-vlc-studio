@@ -17,7 +17,8 @@ internal enum AppHotkeyAction
     VolumeDown,
     GoBack,
     SkipBackward,
-    SkipForward
+    SkipForward,
+    TogglePause
 }
 
 internal static class HotkeyBindingPolicy
@@ -64,6 +65,12 @@ internal static class HotkeyBindingPolicy
 
     public static bool CanNavigateTabs(bool isFullscreen, bool isFullscreenModeActive, bool isSettingsOpen) =>
         isFullscreen ? isFullscreenModeActive : !isSettingsOpen;
+
+    public static bool HasConflictingBinding(HotkeySettings settings, AppHotkeyAction action, HotkeyGesture input)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return AllActions.Any(otherAction => otherAction != action && Matches(settings, otherAction, input));
+    }
 
     public static string GetEffectiveGesture(HotkeySettings settings, AppHotkeyAction action)
     {
@@ -121,6 +128,7 @@ internal static class HotkeyBindingPolicy
             AppHotkeyAction.GoBack => settings.GoBack,
             AppHotkeyAction.SkipBackward => settings.SkipBackward,
             AppHotkeyAction.SkipForward => settings.SkipForward,
+            AppHotkeyAction.TogglePause => settings.TogglePause,
             _ => throw new ArgumentOutOfRangeException(nameof(action))
         };
     }
@@ -163,6 +171,9 @@ internal static class HotkeyBindingPolicy
             case AppHotkeyAction.SkipForward:
                 settings.SkipForward = gesture;
                 break;
+            case AppHotkeyAction.TogglePause:
+                settings.TogglePause = gesture;
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(action));
         }
@@ -182,6 +193,7 @@ internal static class HotkeyBindingPolicy
             AppHotkeyAction.GoBack => HotkeySettings.DefaultGoBack,
             AppHotkeyAction.SkipBackward => HotkeySettings.DefaultSkipBackward,
             AppHotkeyAction.SkipForward => HotkeySettings.DefaultSkipForward,
+            AppHotkeyAction.TogglePause => HotkeySettings.DefaultTogglePause,
             _ => throw new ArgumentOutOfRangeException(nameof(action))
         };
     }
