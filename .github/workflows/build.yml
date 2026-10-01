@@ -110,7 +110,8 @@ jobs:
           # Also includes 1 VOD completion control test, 2 overlay readability tests, and 3 chat text-size tests.
           # Also includes 6 native search-popup dismissal tests.
           # Also includes 1 routed and physical streamer-tab title input test.
-          SVS_EXPECTED_MAX_SKIPS: "270"
+          # The validation runner also lacks VLC for the 2 optional native hover-preview tests.
+          SVS_EXPECTED_MAX_SKIPS: "271"
           SVS_TEST_TIMEOUT_SECONDS: "30"
           SVS_TEST_DRAIN_TIMEOUT_SECONDS: "2"
         run: dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore --no-build
