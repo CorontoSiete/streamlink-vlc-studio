@@ -434,7 +434,7 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
         }
     }
 
-    private static string Sanitize(string? value, int maximumCharacters)
+    internal static string Sanitize(string? value, int maximumCharacters)
     {
         var normalized = (value ?? "")
             .Replace("\r\n", "\\n", StringComparison.Ordinal)

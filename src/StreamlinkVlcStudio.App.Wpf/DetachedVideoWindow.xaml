@@ -4,7 +4,7 @@
         xmlns:controls="clr-namespace:StreamlinkVlcStudio.App.Wpf.Controls"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="{Binding WindowTitle}"
-         Icon="/StreamStudio;component/Assets/Twitch.ico"
+         Icon="/StreamStudio;component/Assets/Studio.ico"
          Width="520"
          Height="326.5"
         MinWidth="320"
@@ -203,7 +203,7 @@
                              Height="7"
                              Fill="{StaticResource DetachedAccentBrush}"
                              Margin="0,0,8,0" />
-                    <TextBlock Text="{Binding HeaderTitle}"
+                    <controls:EmojiTextBlock SourceText="{Binding HeaderTitle}"
                                FontSize="12"
                                FontWeight="SemiBold"
                                TextTrimming="CharacterEllipsis"
@@ -241,7 +241,7 @@
                     <Button Style="{StaticResource DetachedIconButton}"
                             Content="&#xE711;"
                             Click="CloseButton_Click"
-                            ToolTip="Close picture-in-picture" />
+                            ToolTip="Close picture-in-picture and all stream tabs" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -301,17 +301,15 @@
                                     </Style>
                                 </TextBlock.Style>
                             </TextBlock>
-                            <controls:VideoSurface x:Name="DetachedVideoSurface"
-                                                   Loaded="VideoSurface_Loaded"
-                                                   Unloaded="VideoSurface_Unloaded"
-                                                   SurfaceMouseLeftButtonPressed="VideoSurface_MouseLeftButtonPressed"
-                                                   MouseWheelScrolled="VideoSurface_MouseWheelScrolled"
-                                                   MouseLeftButtonDoubleClicked="VideoSurface_MouseLeftButtonDoubleClicked"
-                                                   HorizontalAlignment="Stretch"
-                                                   VerticalAlignment="Stretch"
-                                                   Tag="{Binding Tab}">
-                                <controls:VideoSurface.Style>
-                                    <Style TargetType="controls:VideoSurface">
+                            <controls:VideoSurfacePresenter x:Name="DetachedVideoSurface"
+                                                            Tab="{Binding Tab}"
+                                                            SurfaceLoaded="VideoSurface_Loaded"
+                                                            SurfaceUnloaded="VideoSurface_Unloaded"
+                                                            HorizontalAlignment="Stretch"
+                                                            VerticalAlignment="Stretch"
+                                                            Tag="{Binding Tab}">
+                                <controls:VideoSurfacePresenter.Style>
+                                    <Style TargetType="controls:VideoSurfacePresenter">
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding Tab.IsRecoveringLivePlayback}" Value="True">
                                                 <Setter Property="Visibility" Value="Hidden" />
@@ -321,14 +319,14 @@
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
-                                </controls:VideoSurface.Style>
-                            </controls:VideoSurface>
+                                </controls:VideoSurfacePresenter.Style>
+                            </controls:VideoSurfacePresenter>
                             <controls:ReplaySeekOverlay Width="0"
                                                         Height="0"
                                                         DataContext="{Binding Tab}">
                                 <controls:ReplaySeekOverlay.Style>
                                     <Style TargetType="controls:ReplaySeekOverlay">
-                                        <Setter Property="PlacementTarget" Value="{Binding ElementName=DetachedVideoSurface}" />
+                                        <Setter Property="PlacementTarget" Value="{Binding ElementName=DetachedVideoSurface, Path=Surface}" />
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsVodFinished}" Value="True">
                                                 <Setter Property="PlacementTarget" Value="{Binding ElementName=DetachedSurfaceHost}" />

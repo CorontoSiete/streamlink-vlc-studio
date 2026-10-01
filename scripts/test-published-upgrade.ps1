@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.7.0',
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.7.6',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.8.0',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.8.1',
     [ValidateSet('source', 'target')][string]$HelperSource = 'source',
     [string]$TargetReleaseDirectory
 )
@@ -61,11 +61,14 @@ try {
     Assert-InstalledVersion $sourceIdentity.VersionText
     Write-Host "PASS installed published $SourceTag."
 
-    $dataRoot = Join-Path $env:APPDATA 'StreamlinkVlcStudio'
-    New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
-    $sentinel = Join-Path $dataRoot 'upgrade-smoke-sentinel.txt'
-    $sentinelValue = [Guid]::NewGuid().ToString('D')
-    [IO.File]::WriteAllText($sentinel, $sentinelValue)
+    $sentinels = @(foreach ($dataDirectory in @('StreamStudio', 'StreamlinkVlcStudio')) {
+        $dataRoot = Join-Path $env:APPDATA $dataDirectory
+        New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+        $sentinel = Join-Path $dataRoot 'upgrade-smoke-sentinel.txt'
+        $sentinelValue = [Guid]::NewGuid().ToString('D')
+        [IO.File]::WriteAllText($sentinel, $sentinelValue)
+        [pscustomobject]@{ Path = $sentinel; Value = $sentinelValue }
+    })
 
     $operationId = [Guid]::NewGuid()
     $operation = Join-Path $updateRoot ('operations/' + $operationId.ToString('N'))
@@ -121,8 +124,11 @@ try {
     if (-not $helper.WaitForExit(600000)) { throw 'The published update helper timed out.' }
     if ($helper.ExitCode -ne 0) { throw "The published update helper returned $($helper.ExitCode)." }
     Assert-InstalledVersion $targetIdentity.VersionText
-    if (-not (Test-Path -LiteralPath $sentinel) -or [IO.File]::ReadAllText($sentinel) -cne $sentinelValue) {
-        throw 'The upgrade removed or changed existing user data.'
+    foreach ($sentinelRecord in $sentinels) {
+        if (-not (Test-Path -LiteralPath $sentinelRecord.Path) -or
+            [IO.File]::ReadAllText($sentinelRecord.Path) -cne $sentinelRecord.Value) {
+            throw "The upgrade removed or changed existing user data: $($sentinelRecord.Path)"
+        }
     }
     $restartDeadline = [DateTime]::UtcNow.AddSeconds(45)
     while (-not (Test-Path -LiteralPath $restartReportPath)) {

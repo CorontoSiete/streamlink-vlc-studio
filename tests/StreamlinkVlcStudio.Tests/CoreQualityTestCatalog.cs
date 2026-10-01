@@ -1,11 +1,5 @@
-using System.Text.Json;
-using StreamlinkVlcStudio.Core.Json;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Security;
-using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Time;
-using StreamlinkVlcStudio.Core.Twitch;
 
 internal static class CoreQualityTestCatalog
 {

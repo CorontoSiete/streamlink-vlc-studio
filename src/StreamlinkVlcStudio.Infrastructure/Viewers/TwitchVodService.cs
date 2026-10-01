@@ -18,6 +18,20 @@ namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
 public sealed class TwitchVodService : ITwitchVodService
 {
+    private const string VideoMetadataQuery = """
+        query StreamStudioVodMetadata($id: ID!) {
+          video(id: $id) {
+            id
+            title
+            lengthSeconds
+            createdAt
+            broadcastType
+            previewThumbnailURL(width: 440, height: 248)
+            game { name }
+            owner { id login displayName profileImageURL(width: 150) }
+          }
+        }
+        """;
     private static readonly HttpClient SharedHttpClient = HttpClientFactory.Create(TimeSpan.FromSeconds(20));
     private readonly IAppLogger logger;
     private readonly HttpClient httpClient;
@@ -31,6 +45,68 @@ public sealed class TwitchVodService : ITwitchVodService
     {
         this.logger = logger;
         this.httpClient = httpClient;
+    }
+
+    public async Task<TwitchVodItem?> GetVideoAsync(
+        string vodId,
+        CancellationToken cancellationToken = default)
+    {
+        vodId = (vodId ?? "").Trim();
+        if (vodId.Length == 0 || !vodId.All(char.IsAsciiDigit))
+        {
+            throw new ArgumentException("A numeric Twitch video ID is required.", nameof(vodId));
+        }
+
+        // Pasted public VOD links work without sign-in. Resolve the video itself,
+        // including its owner, rather than treating the video ID as a channel login.
+        var payload = JsonSerializer.Serialize(new { query = VideoMetadataQuery, variables = new { id = vodId } });
+        using var document = await new TwitchGraphQlTransport(httpClient).SendAsync(
+            payload,
+            TwitchGraphQlTransport.PublicClientId,
+            TwitchGraphQlTransport.CreateDeviceId(),
+            cancellationToken).ConfigureAwait(false);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("video", out var video))
+        {
+            throw new JsonException("Twitch did not return video metadata.");
+        }
+
+        if (video.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (video.ValueKind != JsonValueKind.Object ||
+            !TryGetNonEmptyString(video, "id", out var returnedId) ||
+            !string.Equals(returnedId, vodId, StringComparison.Ordinal) ||
+            !video.TryGetProperty("owner", out var owner) || owner.ValueKind != JsonValueKind.Object ||
+            !TryGetNonEmptyString(owner, "login", out var login) ||
+            !StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var channel) ||
+            !TryGetNonEmptyString(owner, "id", out var ownerId) || !ownerId.All(char.IsAsciiDigit))
+        {
+            throw new JsonException("Twitch did not return the requested video and its broadcaster.");
+        }
+
+        var lengthSeconds = TryGetInt32(video, "lengthSeconds");
+        return new TwitchVodItem(
+            vodId,
+            "",
+            ownerId,
+            channel.Channel,
+            FirstNonEmpty(GetOptionalString(owner, "displayName"), channel.Channel),
+            GetOptionalString(video, "title"),
+            "",
+            $"https://www.twitch.tv/videos/{vodId}",
+            GetOptionalString(video, "previewThumbnailURL"),
+            TryGetDateTimeOffset(video, "createdAt"),
+            null,
+            lengthSeconds is > 0 ? TimeSpan.FromSeconds(lengthSeconds.Value) : TimeSpan.Zero,
+            null,
+            ReadVideoType(GetOptionalString(video, "broadcastType")),
+            ProfileImageUrl: GetOptionalString(owner, "profileImageURL"),
+            CategoryName: TryReadNestedString(video, "game", "name"));
     }
 
     public async Task<TwitchVodSearchResult> SearchAsync(

@@ -1,16 +1,4 @@
-using System.Diagnostics;
-using System.Net;
 using System.Net.Sockets;
-using System.Reflection;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Http;
-using StreamlinkVlcStudio.Infrastructure.Replay;
 
 internal static class ChatSecurityTestCatalog
 {

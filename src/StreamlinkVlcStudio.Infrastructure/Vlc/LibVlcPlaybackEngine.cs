@@ -51,6 +51,8 @@ public sealed class LibVlcPlaybackEngineFactory : IPlaybackEngineFactory
 
 public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 {
+    private enum PlaybackRateWaitState { Ready, Pending, Unavailable }
+
     private const int NativeOverlayShowPlaceholder = 0;
     private static readonly TimeSpan VideoOutputRebindReadinessTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan VideoOutputRebindPollInterval = TimeSpan.FromMilliseconds(50);
@@ -93,6 +95,10 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private PlaybackMediaSource? currentMediaSource;
     private bool desiredPaused;
     private float requestedPlaybackRate = 1f;
+    private long lastPlaybackRateResynchronizationTimeMilliseconds = -1;
+    private long suppressPlaybackRateResynchronizationUntilMilliseconds = -1;
+    private long playbackRateResynchronizationStartedAt;
+    private bool playbackRateResynchronizationPending;
     private bool replayOutputPending;
     private bool preserveReplayPause;
     private bool usingAvformatReplay;
@@ -535,15 +541,20 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }, cancellationToken);
     }
 
-    public Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default)
+    public async Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default)
     {
         if (!float.IsFinite(rate) || rate <= 0f)
         {
-            return Task.FromResult(false);
+            return false;
         }
 
         ObjectDisposedException.ThrowIf(disposed, this);
-        return RunBlockingNativeAsync(() =>
+        if (!await WaitForPlaybackRateResynchronizationAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        return await RunBlockingNativeAsync(() =>
         {
             lock (nativeGate)
             {
@@ -553,10 +564,53 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                     return false;
                 }
 
+                var previousRate = requestedPlaybackRate;
                 if (player == IntPtr.Zero)
                 {
                     requestedPlaybackRate = rate;
                     return true;
+                }
+
+                if (previousRate == rate)
+                {
+                    return true;
+                }
+
+                var nativeTime = LibVlcNative.libvlc_media_player_get_time(player);
+                var length = LibVlcNative.libvlc_media_player_get_length(player);
+                var state = LibVlcNative.libvlc_media_player_get_state(player);
+                var canResynchronize = nativeTime >= 0 && length > 0 &&
+                    nativeTime < length - 1_000 &&
+                    !replayOutputPending &&
+                    (lastPlaybackRateResynchronizationTimeMilliseconds < 0 ||
+                        nativeTime >= lastPlaybackRateResynchronizationTimeMilliseconds - SeekConfirmationToleranceMilliseconds) &&
+                    (suppressPlaybackRateResynchronizationUntilMilliseconds < 0 ||
+                        nativeTime >= suppressPlaybackRateResynchronizationUntilMilliseconds) &&
+                    LibVlcNative.libvlc_media_player_is_seekable(player) != 0 &&
+                    state is LibVlcNative.MediaPlayerState.Playing or LibVlcNative.MediaPlayerState.Paused;
+                var playbackUri = originalMediaUri ?? currentMediaSource?.PlaybackUri ?? currentMediaUri;
+                var liveReplaySegmentDuration = currentMediaSource?.LiveReplaySegmentDuration ?? TimeSpan.Zero;
+                var resynchronizeHls = canResynchronize &&
+                    playbackUri is { } uri && HlsReplayTimeline.IsPlaylist(uri) &&
+                    (liveReplaySegmentDuration <= TimeSpan.Zero ||
+                        length - nativeTime > liveReplaySegmentDuration.TotalMilliseconds);
+
+                if (resynchronizeHls && rate < 1f)
+                {
+                    // A high-to-slow switch needs a 1x clock reset before entering
+                    // slow motion. Routine slowdowns can use the buffered input;
+                    // seeking it again can briefly starve audio.
+                    if (previousRate > 1f)
+                    {
+                        if (LibVlcNative.libvlc_media_player_set_rate(player, 1f) != 0)
+                        {
+                            logger.Write(AppLogLevel.Warning, "libVLC", "libVLC rejected playback rate 1x.");
+                            return false;
+                        }
+
+                        requestedPlaybackRate = 1f;
+                        TrySubmitPlaybackRateResynchronizationCore(nativeTime);
+                    }
                 }
 
                 if (LibVlcNative.libvlc_media_player_set_rate(player, rate) != 0)
@@ -566,9 +620,104 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                 }
 
                 requestedPlaybackRate = rate;
+                if (resynchronizeHls && rate >= 1f)
+                {
+                    // Flush audio queued at the old rate without waiting for a
+                    // position-confirmation poll before accepting another speed input.
+                    TrySubmitPlaybackRateResynchronizationCore(nativeTime);
+                }
+
                 return true;
             }
-        }, cancellationToken);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> WaitForPlaybackRateResynchronizationAsync(CancellationToken cancellationToken)
+    {
+        var deadline = Stopwatch.StartNew();
+        long lastObservedTime = -1;
+        long pendingTarget = -1;
+        var lastState = LibVlcNative.MediaPlayerState.NothingSpecial;
+        while (true)
+        {
+            var waitState = await RunBlockingNativeAsync(() =>
+            {
+                lock (nativeGate)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (disposed || player == IntPtr.Zero || !playbackRateResynchronizationPending)
+                        return PlaybackRateWaitState.Ready;
+                    var state = LibVlcNative.libvlc_media_player_get_state(player);
+                    lastState = state;
+                    if (state is LibVlcNative.MediaPlayerState.Stopped or
+                        LibVlcNative.MediaPlayerState.Ended or LibVlcNative.MediaPlayerState.Error)
+                        return PlaybackRateWaitState.Unavailable;
+                    if (state == LibVlcNative.MediaPlayerState.Paused)
+                    {
+                        playbackRateResynchronizationPending = false;
+                        return PlaybackRateWaitState.Ready;
+                    }
+
+                    var time = LibVlcNative.libvlc_media_player_get_time(player);
+                    lastObservedTime = time;
+                    pendingTarget = lastPlaybackRateResynchronizationTimeMilliseconds;
+                    if (Stopwatch.GetElapsedTime(playbackRateResynchronizationStartedAt) >= TimeSpan.FromMilliseconds(500) &&
+                        time >= lastPlaybackRateResynchronizationTimeMilliseconds + 250 &&
+                        time - lastPlaybackRateResynchronizationTimeMilliseconds < 10_000)
+                    {
+                        playbackRateResynchronizationPending = false;
+                        return PlaybackRateWaitState.Ready;
+                    }
+
+                    if (deadline.Elapsed >= TimeSpan.FromSeconds(2) &&
+                        Math.Abs(time - lastPlaybackRateResynchronizationTimeMilliseconds) <= 250)
+                    {
+                        // A growing playlist can stop at its published edge. Let the
+                        // user change speed there, but do not seek that stalled input
+                        // again until its playback clock actually advances.
+                        suppressPlaybackRateResynchronizationUntilMilliseconds =
+                            lastPlaybackRateResynchronizationTimeMilliseconds + 250;
+                        playbackRateResynchronizationPending = false;
+                        return PlaybackRateWaitState.Ready;
+                    }
+
+                    return PlaybackRateWaitState.Pending;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+            if (waitState == PlaybackRateWaitState.Ready) return true;
+            if (waitState == PlaybackRateWaitState.Unavailable) return false;
+            if (deadline.Elapsed >= TimeSpan.FromSeconds(5))
+            {
+                logger.Write(AppLogLevel.Warning, "libVLC",
+                    $"Playback speed change waited for the previous HLS position to recover and timed out: " +
+                    $"state={lastState}, timeMs={lastObservedTime}, targetMs={pendingTarget}.");
+                return false;
+            }
+
+            await Task.Delay(SeekPollInterval, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void TrySubmitPlaybackRateResynchronizationCore(long nativeTime)
+    {
+        try
+        {
+            LibVlcNative.libvlc_media_player_set_time(player, nativeTime);
+            // VLC's HLS clock reports zero while this seek is in flight. A rapid
+            // second rate change must not treat that reset as the user's position.
+            lastPlaybackRateResynchronizationTimeMilliseconds = nativeTime;
+            if (preserveReplayPause &&
+                LibVlcNative.libvlc_media_player_get_state(player) == LibVlcNative.MediaPlayerState.Playing)
+            {
+                playbackRateResynchronizationStartedAt = Stopwatch.GetTimestamp();
+                playbackRateResynchronizationPending = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "libVLC",
+                "Could not resynchronize audio after changing playback rate.", ex);
+        }
     }
 
     public async Task<bool> TryResumeReplayAsync(CancellationToken cancellationToken = default)
@@ -629,7 +778,12 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     {
         long requestedMilliseconds;
         lock (nativeGate)
+        {
+            lastPlaybackRateResynchronizationTimeMilliseconds = -1;
+            suppressPlaybackRateResynchronizationUntilMilliseconds = -1;
+            playbackRateResynchronizationPending = false;
             requestedMilliseconds = Math.Max(0, (long)Math.Round((position - (currentMediaSource?.TimelineOffset ?? TimeSpan.Zero)).TotalMilliseconds));
+        }
         var deadline = Stopwatch.StartNew();
         long? submittedTarget = seekAlreadySubmitted ? requestedMilliseconds : null;
         var lastState = LibVlcNative.MediaPlayerState.NothingSpecial;
@@ -1007,6 +1161,9 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         usingAvformatReplay = false;
         replayOpeningPosition = null;
         replayOutputPending = false;
+        lastPlaybackRateResynchronizationTimeMilliseconds = -1;
+        suppressPlaybackRateResynchronizationUntilMilliseconds = -1;
+        playbackRateResynchronizationPending = false;
         audioStateController.Invalidate();
         lastEnabledAudioTrackId = null;
         lastNativeMuteState = null;
@@ -1051,7 +1208,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
     private void CreatePlayerCore(Uri mediaUri, TimeSpan? startPosition = null)
     {
-        media = LibVlcNative.libvlc_media_new_location(instance, mediaUri.ToString());
+        media = LibVlcNative.libvlc_media_new_location(instance, mediaUri.AbsoluteUri);
         if (media == IntPtr.Zero)
         {
             throw new InvalidOperationException($"libVLC could not create media for {mediaUri}.");
@@ -1828,6 +1985,13 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             // "none" prevents VLC from falling back to that shared-session backend.
             "--aout=directsound,none",
             "--no-volume-save",
+            "--audio-time-stretch",
+            // Keep VLC 3.0.23's stock scaletempo window sizes. Shortening the stride
+            // to 12 ms made its 20% overlap only 2.4 ms, leaving too little audio
+            // for clean crossfades and the overlap search at non-1x playback rates.
+            "--scaletempo-stride=30",
+            "--scaletempo-overlap=0.2",
+            "--scaletempo-search=14",
             $"--avcodec-hw={LibVlcRendererSelection.GetHardwareDecodingOption(rendererMode, usesNativeOverlay)}",
             "--network-caching=500",
             "--live-caching=300",

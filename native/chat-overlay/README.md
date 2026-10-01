@@ -4,6 +4,8 @@ This directory contains the recovered source for the bundled VLC plugin and
 Twitch/Kick controller. The recovered plugin binary matched the previously
 pinned SHA-256 `34fddd30f9a6c163ed14e5992da6f7c8213c809ad60a66a856a017ed2d7a0318`.
 The shipped controller's stale keyboard-modifier fix is now expressed in source.
+When the overlay chat input is focused, Ctrl+V pastes Unicode clipboard text;
+line breaks become spaces and the existing 511-byte message limit applies.
 
 The controller now indexes emote codes, reuses unchanged static chat frames,
 allocates pixel buffers near the panel size, and releases cached DirectWrite

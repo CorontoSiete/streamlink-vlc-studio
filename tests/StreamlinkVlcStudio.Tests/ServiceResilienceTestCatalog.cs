@@ -1,12 +1,4 @@
-using System.Net;
-using System.Text.Json;
-using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Limits;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Replay;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
 
 internal static class ServiceResilienceTestCatalog
 {

@@ -1,5 +1,5 @@
 using StreamlinkVlcStudio.App.Wpf.Notifications;
-using StreamlinkVlcStudio.Core.Logging;
+using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 
@@ -25,6 +25,8 @@ internal sealed record MainViewModelDependencies
     public IReplayResolver? ReplayResolver { get; init; }
     public IVodChatProvider? VodChatProvider { get; init; }
     public IVodPlaybackHistory? VodPlaybackHistory { get; init; }
+    public IVodDownloadService? VodDownloadService { get; init; }
+    public Func<VodDownloadItem, bool>? ConfirmDeleteVodDownload { get; init; }
     public TimeSpan? RecentThumbnailRefreshInterval { get; init; }
     public TimeSpan? StreamSearchDebounceInterval { get; init; }
     public ITwitchVodService? TwitchVodService { get; init; }

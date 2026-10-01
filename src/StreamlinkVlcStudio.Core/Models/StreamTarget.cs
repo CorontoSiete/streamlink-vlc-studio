@@ -12,15 +12,16 @@ public sealed record StreamTarget(
     DateTimeOffset? MediaStartedAtUtc = null,
     string ChatRoomId = "",
     string CategoryName = "",
-    string ProfileImageUrl = "")
+    string ProfileImageUrl = "",
+    string LocalMediaPath = "")
 {
     public string DisplayName => IsExplicitVod && !string.IsNullOrWhiteSpace(DisplayTitle)
         ? $"{Platform}: {DisplayTitle.Trim()}"
         : $"{Platform}: {Channel}";
 
-    public string TabTitle => string.IsNullOrWhiteSpace(DisplayTitle)
+    public string TabTitle => (string.IsNullOrWhiteSpace(DisplayTitle)
         ? Channel
-        : DisplayTitle.Trim();
+        : DisplayTitle.Trim()) + (IsOfflineVod ? " (offline)" : "");
 
     public string StateKey => $"{Platform}:{Channel.Trim().ToLowerInvariant()}";
 
@@ -31,7 +32,8 @@ public sealed record StreamTarget(
             var mediaId = MediaId.Trim();
             if (!string.IsNullOrWhiteSpace(mediaId))
             {
-                return $"{Kind}:{Platform}:{mediaId.ToLowerInvariant()}";
+                return $"{Kind}:{Platform}:{mediaId.ToLowerInvariant()}" +
+                    (IsOfflineVod ? $":Offline:{LocalMediaPath.ToLowerInvariant()}" : "");
             }
 
             return $"{Kind}:{Platform}:{Channel.Trim().ToLowerInvariant()}";
@@ -43,6 +45,8 @@ public sealed record StreamTarget(
     public bool IsExplicitKickVod => Kind == StreamTargetKind.KickVod && Platform == PlatformKind.Kick;
 
     public bool IsExplicitVod => IsExplicitTwitchVod || IsExplicitKickVod;
+
+    public bool IsOfflineVod => IsExplicitVod && !string.IsNullOrWhiteSpace(LocalMediaPath);
 }
 
 public enum StreamTargetKind

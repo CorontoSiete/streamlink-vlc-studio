@@ -1,8 +1,3 @@
-using System.Net;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Twitch;
 
 internal static class TwitchPayloadValidationTestCatalog
 {

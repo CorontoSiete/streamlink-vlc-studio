@@ -82,6 +82,8 @@ public sealed partial class VideoSurface : HwndHost
 
     public VideoSurface()
     {
+        Loaded += (_, _) => RefreshNativeWindowRouting();
+        PresentationSource.AddSourceChangedHandler(this, OnPresentationSourceChanged);
         IsVisibleChanged += (_, _) =>
         {
             SyncNativeBounds();
@@ -113,9 +115,21 @@ public sealed partial class VideoSurface : HwndHost
 
         ResetNativeBoundsCache();
         SyncNativeBounds();
-        NativeMouseWheelTarget.RegisterWindow(handle, acceptsInactiveWheel: Window.GetWindow(this) is DetachedVideoWindow);
+        RefreshNativeWindowRouting();
         return new HandleRef(this, handle);
     }
+
+    internal bool IsHostTransferPending { get; set; }
+
+    internal void RefreshNativeWindowRouting()
+    {
+        if (handle != IntPtr.Zero)
+        {
+            NativeMouseWheelTarget.RegisterWindow(handle, acceptsInactiveWheel: Window.GetWindow(this) is DetachedVideoWindow);
+        }
+    }
+
+    private void OnPresentationSourceChanged(object sender, SourceChangedEventArgs e) => RefreshNativeWindowRouting();
 
     protected override void DestroyWindowCore(HandleRef hwnd)
     {

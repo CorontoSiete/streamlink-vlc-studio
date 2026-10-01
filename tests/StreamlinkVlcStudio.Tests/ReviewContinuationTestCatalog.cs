@@ -1,10 +1,3 @@
-using System.Net;
-using System.Text;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Core.Twitch;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
 
 internal static class ReviewContinuationTestCatalog
 {
@@ -147,6 +140,8 @@ internal static class ReviewContinuationTestCatalog
             var uri = request.RequestUri!;
             var body = uri.Host == "id.twitch.tv"
                 ? """{"client_id":"client","login":"viewer","user_id":"1","expires_in":3600,"scopes":["user:read:follows"]}"""
+                : uri.AbsolutePath == "/helix/channels/followed"
+                    ? """{"data":[],"pagination":{}}"""
                 : uri.AbsolutePath == "/helix/users"
                     ? $$"""{"data":[{"login":"channel","profile_image_url":"{{ProfileImage}}"}]}"""
                 : uri.AbsolutePath == "/public/v1/users"

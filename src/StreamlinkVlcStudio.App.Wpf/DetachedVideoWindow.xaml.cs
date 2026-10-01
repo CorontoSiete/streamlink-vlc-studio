@@ -221,6 +221,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     public double ContentAspectRatio => GetContentAspectRatio();
 
     public event EventHandler? ReattachRequested;
+    internal event EventHandler? CloseTabsRequested;
     public event Action<StreamTabViewModel>? TabActivated;
     public event EventHandler? RestorableBoundsChanged;
     public event EventHandler? VisibleTabsChanged;
@@ -301,7 +302,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     internal bool RemoveTabForTransfer(StreamTabViewModel tab)
     {
-        return RemoveTab(tab, clearVideoHandle: true);
+        tab.VideoSurfacePresenterOwner?.DetachSurfaceForTransfer();
+        return RemoveTab(tab, clearVideoHandle: false);
     }
 
     public bool RemoveTabForDisposal(StreamTabViewModel tab)
@@ -558,6 +560,12 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
+        if (CloseTabsRequested is { } closeTabsRequested)
+        {
+            closeTabsRequested.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
         Close();
     }
 
@@ -640,6 +648,9 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         surface.NativeMouseMoved += DetachedSurfaceOnNativeMouseMoved;
         surface.NativeMouseLeftButtonUp += DetachedSurfaceOnNativeMouseLeftButtonUp;
         surface.NativeMouseRightButtonDown += DetachedSurfaceOnNativeMouseRightButtonDown;
+        surface.SurfaceMouseLeftButtonPressed += VideoSurface_MouseLeftButtonPressed;
+        surface.MouseWheelScrolled += VideoSurface_MouseWheelScrolled;
+        surface.MouseLeftButtonDoubleClicked += VideoSurface_MouseLeftButtonDoubleClicked;
         surface.SyncNativeBounds();
         if (surface.Handle != IntPtr.Zero)
         {
@@ -663,7 +674,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         NotifyTabActivated((sender as FrameworkElement)?.Tag as StreamTabViewModel);
     }
 
-    private void VideoSurface_MouseWheelScrolled(object sender, VideoSurfaceMouseWheelEventArgs e)
+    private void VideoSurface_MouseWheelScrolled(object? sender, VideoSurfaceMouseWheelEventArgs e)
     {
         if (e.Delta == 0)
         {
@@ -743,6 +754,14 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!closeWithoutReattach && tabs.Count > 0)
+        {
+            // Move the existing HwndHost into the main window before this window's
+            // PresentationSource is destroyed, so VLC keeps the same output handle.
+            ReattachRequested?.Invoke(this, EventArgs.Empty);
+            closeWithoutReattach = true;
+        }
+
         // Notify the shell while the HWND is still valid. Waiting for Closed can leave the
         // taskbar's fullscreen registration attached to a destroyed handle.
         ClearTaskbarFullscreen();
@@ -800,6 +819,14 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private IntPtr WindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        // The HWND can deliver final non-client messages after WPF has started
+        // disconnecting this window's visuals. Let the normal window procedure handle
+        // those messages instead of hit-testing an already detached visual tree.
+        if (IsClosing)
+        {
+            return IntPtr.Zero;
+        }
+
         if (msg == WmNcCalcSize)
         {
             // The PiP already owns caption dragging and resize hit testing. Extend its
@@ -1959,7 +1986,10 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         surface.NativeMouseMoved -= DetachedSurfaceOnNativeMouseMoved;
         surface.NativeMouseLeftButtonUp -= DetachedSurfaceOnNativeMouseLeftButtonUp;
         surface.NativeMouseRightButtonDown -= DetachedSurfaceOnNativeMouseRightButtonDown;
-        if (clearVideoHandle)
+        surface.SurfaceMouseLeftButtonPressed -= VideoSurface_MouseLeftButtonPressed;
+        surface.MouseWheelScrolled -= VideoSurface_MouseWheelScrolled;
+        surface.MouseLeftButtonDoubleClicked -= VideoSurface_MouseLeftButtonDoubleClicked;
+        if (clearVideoHandle && !surface.IsHostTransferPending)
         {
             tab.ClearVideoHandle(surface.Handle);
         }

@@ -53,10 +53,11 @@ int poll( struct pollfd *fds, unsigned nfds, int timeout );
 
 #define HIDE_BUTTON_W       58u
 #define HIDE_BUTTON_H       22u
+#define HIDE_BUTTON_TEXT_SCALE 2u
 #define SHOW_BUTTON_W       96u
 #define SHOW_BUTTON_H       28u
-#define MOVE_HANDLE_W       68u
-#define MOVE_HANDLE_H       22u
+#define MOVE_HANDLE_W       HIDE_BUTTON_W
+#define MOVE_HANDLE_H       HIDE_BUTTON_H
 #define BUTTON_MARGIN       6
 #define BUTTON_MOVE_LIMIT   4
 #define SCROLLBAR_W         10u
@@ -246,6 +247,7 @@ static void DrawMoveHandleRect( uint8_t *pixels, int pitch,
                                 uint32_t bw, uint32_t bh,
                                 uint32_t video_h );
 static void MoveHandleRect( int32_t x, int32_t y,
+                            uint32_t footprint_w,
                             int32_t *out_x, int32_t *out_y,
                             uint32_t *out_w, uint32_t *out_h,
                             uint32_t video_h );
@@ -781,18 +783,6 @@ static void ToggleButtonRect( bool hidden, int32_t x, int32_t y,
     *out_y = y + (int32_t)margin;
 }
 
-static void MoveHandleRect( int32_t x, int32_t y,
-                            int32_t *out_x, int32_t *out_y,
-                            uint32_t *out_w, uint32_t *out_h,
-                            uint32_t video_h )
-{
-    const uint32_t margin = ScaleUiU( video_h, BUTTON_MARGIN );
-    *out_x = x + (int32_t)margin;
-    *out_y = y + (int32_t)margin;
-    *out_w = ScaleUiU( video_h, MOVE_HANDLE_W );
-    *out_h = ScaleUiU( video_h, MOVE_HANDLE_H );
-}
-
 static bool ScrollbarTrackRect( int32_t x, int32_t y, uint32_t w, uint32_t h,
                                 int32_t *out_x, int32_t *out_y,
                                 uint32_t *out_w, uint32_t *out_h,
@@ -1093,6 +1083,42 @@ static int Text5x7Width( const char *text, int scale )
     return chars * 5 * scale + (chars - 1) * scale;
 }
 
+static int MoveHandleTextScale( uint32_t video_h, uint32_t handle_w )
+{
+    const char *label = "MOVE";
+    const int scale = ScaleUiI( video_h, HIDE_BUTTON_TEXT_SCALE );
+
+    const uint32_t text_w = (uint32_t)Text5x7Width( label, 1 );
+    /* Match the HIDE label scale, reducing only when MOVE does not fit. */
+    const uint32_t fit_scale = handle_w / text_w;
+    if( fit_scale == 0u )
+        return 1;
+    return fit_scale < (uint32_t)scale ? (int)fit_scale : scale;
+}
+
+static void MoveHandleRect( int32_t x, int32_t y,
+                            uint32_t footprint_w,
+                            int32_t *out_x, int32_t *out_y,
+                            uint32_t *out_w, uint32_t *out_h,
+                            uint32_t video_h )
+{
+    const uint32_t margin = ScaleUiU( video_h, BUTTON_MARGIN );
+    const uint32_t hide_w = ScaleUiU( video_h, HIDE_BUTTON_W );
+    const uint64_t reserved_w = (uint64_t)hide_w + (uint64_t)margin * 2u;
+    const uint32_t available_w = footprint_w > reserved_w
+        ? footprint_w - (uint32_t)reserved_w
+        : 0u;
+    const uint32_t max_w = ScaleUiU( video_h, MOVE_HANDLE_W );
+    const uint32_t max_h = ScaleUiU( video_h, MOVE_HANDLE_H );
+    /* Preserve separation from HIDE if an unusually narrow frame cannot fit both. */
+    const uint32_t width = max_w < available_w ? max_w : available_w;
+
+    *out_x = x + (int32_t)margin;
+    *out_y = y + (int32_t)margin;
+    *out_w = width;
+    *out_h = max_h;
+}
+
 static void DrawText5x7( uint8_t *pixels, int pitch, uint32_t w, uint32_t h,
                          int x, int y, const char *text, int scale,
                          uint8_t r, uint8_t g, uint8_t b, uint8_t a )
@@ -1139,7 +1165,7 @@ static void DrawToggleButtonRect( uint8_t *pixels, int pitch,
                                   bool hidden, uint32_t video_h )
 {
     const char *label = hidden ? "SHOW" : "HIDE";
-    const int scale = ScaleUiI( video_h, 2 );
+    const int scale = ScaleUiI( video_h, HIDE_BUTTON_TEXT_SCALE );
     const int text_w = Text5x7Width( label, scale );
     const int text_h = 7 * scale;
     const int tx = bx + ( (int)bw - text_w ) / 2;
@@ -1162,7 +1188,7 @@ static void DrawMoveHandleRect( uint8_t *pixels, int pitch,
                                 uint32_t video_h )
 {
     const char *label = "MOVE";
-    const int scale = ScaleUiI( video_h, 2 );
+    const int scale = MoveHandleTextScale( video_h, bw );
     const int text_w = Text5x7Width( label, scale );
     const int text_h = 7 * scale;
     const int tx = bx + ( (int)bw - text_w ) / 2;
@@ -1476,15 +1502,18 @@ static subpicture_t *FrameSubpicture( filter_t *p_filter, vlc_tick_t date,
 
         int32_t mx = 0, my = 0;
         uint32_t mw = 0, mh = 0;
-        MoveHandleRect( x, y, &mx, &my, &mw, &mh, video_h );
-        subpicture_region_t *move_handle =
-            NewWritableRegion( mw, mh, mx, my, &pixels, &pitch );
-        if( move_handle == NULL ) goto failed;
-        if( move_handle != NULL )
+        MoveHandleRect( x, y, footprint_w, &mx, &my, &mw, &mh, video_h );
+        if( mw > 0 && mh > 0 )
         {
-            DrawMoveHandleRect( pixels, pitch, mw, mh, 0, 0, mw, mh,
-                                video_h );
-            AppendRegion( &tail, move_handle );
+            subpicture_region_t *move_handle =
+                NewWritableRegion( mw, mh, mx, my, &pixels, &pitch );
+            if( move_handle == NULL ) goto failed;
+            if( move_handle != NULL )
+            {
+                DrawMoveHandleRect( pixels, pitch, mw, mh, 0, 0, mw, mh,
+                                    video_h );
+                AppendRegion( &tail, move_handle );
+            }
         }
 
         int32_t rx = 0, ry = 0;
@@ -1684,7 +1713,7 @@ static int SubMouse( filter_t *p_filter,
                                             bx, by, bw, bh );
     int32_t move_x = 0, move_y = 0;
     uint32_t move_w = 0, move_h = 0;
-    MoveHandleRect( sys->x, sys->y, &move_x, &move_y,
+    MoveHandleRect( sys->x, sys->y, sys->w, &move_x, &move_y,
                     &move_w, &move_h, video_h );
     const bool b_over_move = !hidden && b_over_chat
         && PointInRect( p_new->i_x, p_new->i_y,
@@ -2147,7 +2176,7 @@ static subpicture_t *Placeholder( filter_t *p_filter, vlc_tick_t date,
         DrawToggleButton( pixels, pitch, W, H, false, video_h );
         int32_t mx = 0, my = 0;
         uint32_t mw = 0, mh = 0;
-        MoveHandleRect( x, y, &mx, &my, &mw, &mh, video_h );
+        MoveHandleRect( x, y, (uint32_t)W, &mx, &my, &mw, &mh, video_h );
         DrawMoveHandleRect( pixels, pitch, W, H,
                             mx - x, my - y, mw, mh, video_h );
         DrawResizeHandle( pixels, pitch, W, H, video_h );

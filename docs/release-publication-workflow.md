@@ -7,6 +7,12 @@ the release as a draft until all seven uploaded assets match the local release
 set. Normal users and the in-app updater receive the release only after this
 verification succeeds.
 
+The stable-release smoke test upgrades the published 1.8.0 installer using that
+release's own update helper. It verifies the new installed version, retained user
+data, the restarted application's managed updater, and quiet repair before the
+release is published. The manual upgrade workflow can still select older source
+versions and the target helper for clients predating the packaged-updater fix.
+
 ## Retry an interrupted release
 
 Rerun the failed protected workflow for the same stable tag and source commit.

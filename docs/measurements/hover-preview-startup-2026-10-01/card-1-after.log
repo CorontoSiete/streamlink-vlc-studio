@@ -1,0 +1,5 @@
+Live card 757 ms: Direct preview source ready in 646 ms (Twitch).
+Live card first visible frame: 1275 ms.
+Live Twitch card first visible frame 1275 ms after hover; rendered changing video; settings toggle cleared the image and stopped playback.
+PASS stream hover preview: real live video renders in the production card on hover
+All 1 tests passed; 0 skipped.

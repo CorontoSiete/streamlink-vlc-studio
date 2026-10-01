@@ -39,8 +39,10 @@ internal sealed class LivePreviewSourceResolver
             ? await ResolveTwitchAsync(request.Target.Channel, token).ConfigureAwait(false)
             : await ResolveKickAsync(request.Target.Channel, token).ConfigureAwait(false);
         var master = await ValidatedReplayHttpClient.ReadPlaylistAsync(httpClient, validator, masterUri, platform, token).ConfigureAwait(false);
-        var selected = TwitchVodVariantPlaylist.Select(master.Content, master.Uri, ["360p", "480p", "best"],
+        var selected = TwitchVodVariantPlaylist.Select(master.Content, master.Uri, request.Quality.Split(','),
             uri => LivePreviewPolicy.IsAllowedUri(uri, platform));
+        var firstPlaylist = true;
+        Uri? initializationUri = null;
         var initial = await ReadAsync(token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
         // The first validated playlist is handed to VLC locally, avoiding a duplicate
@@ -51,7 +53,14 @@ internal sealed class LivePreviewSourceResolver
         {
             var media = await ValidatedReplayHttpClient.ReadPlaylistAsync(httpClient, validator, selected, platform,
                 cancellationToken).ConfigureAwait(false);
-            return LivePreviewPlaylist.Rewrite(media.Content, media.Uri, platform);
+            var rewritten = LivePreviewPlaylist.Rewrite(media.Content, media.Uri, platform, out var map);
+            // VLC 3 retains one initialization section for its representation. A format
+            // or map change needs a new transport, before that refresh reaches VLC.
+            if (!firstPlaylist && map != initializationUri)
+                throw new InvalidDataException("The live preview initialization section changed.");
+            initializationUri = map;
+            firstPlaylist = false;
+            return rewritten;
         }
     }
 
@@ -64,8 +73,10 @@ internal sealed class LivePreviewSourceResolver
             variables = new { isLive = true, login = channel, isVod = false, vodID = "", playerType = "embed", platform = "site" },
             extensions = new { persistedQuery = new { version = 1, sha256Hash = "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9" } }
         });
+        // Keep Streamlink's anonymous playback identity. A fresh web device changes
+        // Twitch's token and can return a preroll that forces an unnecessary restart.
         using var document = await new TwitchGraphQlTransport(httpClient).SendAsync(payload,
-            TwitchGraphQlTransport.PublicClientId, TwitchGraphQlTransport.CreateDeviceId(), token).ConfigureAwait(false);
+            TwitchGraphQlTransport.PublicClientId, deviceId: null, token).ConfigureAwait(false);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             !data.TryGetProperty("streamPlaybackAccessToken", out var access) || access.ValueKind != JsonValueKind.Object ||

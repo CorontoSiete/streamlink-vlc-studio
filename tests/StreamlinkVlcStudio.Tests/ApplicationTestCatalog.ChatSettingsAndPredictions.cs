@@ -1700,6 +1700,19 @@ internal static partial class ApplicationTestCatalog
                 };
             }
 
+            if (request.RequestUri.AbsolutePath == "/helix/channels/followed")
+            {
+                Assert.Contains("user_id=141981764", request.RequestUri.Query);
+                Assert.Equal("twitch-token", request.Headers.Authorization?.Parameter);
+                Assert.SequenceEqual(["twitch-client-id"], request.Headers.GetValues("Client-Id"));
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {"data":[{"broadcaster_id":"123","broadcaster_login":"summit1g","broadcaster_name":"summit1g"}],"pagination":{}}
+                    """, Encoding.UTF8, "application/json")
+                };
+            }
+
             Assert.Equal("api.twitch.tv", request.RequestUri.Host);
             Assert.Equal("/helix/streams/followed", request.RequestUri.AbsolutePath);
             Assert.Contains("user_id=141981764", request.RequestUri.Query);
@@ -1748,6 +1761,8 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(LiveStreamCardSource.Followed, homeItem.Source);
         Assert.True(homeItem.HasProfileImage);
         Assert.Contains("440x248", stream.ThumbnailUrl);
+        Assert.Equal(0, result.OfflineChannels!.Count);
+        Assert.Equal(false, result.OfflineMessages!.Any(message => message.StartsWith("Twitch:", StringComparison.Ordinal)));
         Assert.True(result.Messages.Any(message => message.StartsWith("Kick:", StringComparison.Ordinal)));
     }),
     ("Twitch followed streams stop after excessive pagination", async () =>

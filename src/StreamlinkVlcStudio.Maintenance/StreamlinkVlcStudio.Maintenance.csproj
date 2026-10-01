@@ -19,7 +19,7 @@
     <AssemblyTitle>Stream Studio Maintenance</AssemblyTitle>
     <Product>Stream Studio</Product>
     <Description>Stream Studio maintenance helper</Description>
-    <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico</ApplicationIcon>
+    <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Studio.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

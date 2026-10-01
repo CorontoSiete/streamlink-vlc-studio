@@ -20,21 +20,21 @@ internal sealed class TwitchGraphQlTransport(HttpClient httpClient)
     internal async Task<JsonDocument> SendAsync(
         string payload,
         string clientId,
-        string deviceId,
+        string? deviceId,
         CancellationToken cancellationToken,
         string? oauthToken = null,
         string mediaType = "text/plain")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(payload);
         ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        if (deviceId is not null) ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
         request.Headers.Accept.ParseAdd("*/*");
         request.Headers.AcceptLanguage.ParseAdd("en-US");
         request.Headers.Referrer = new Uri("https://www.twitch.tv/");
         request.Headers.TryAddWithoutValidation("Client-Id", clientId.Trim());
-        request.Headers.TryAddWithoutValidation("X-Device-Id", deviceId.Trim());
+        if (deviceId is not null) request.Headers.TryAddWithoutValidation("X-Device-Id", deviceId.Trim());
         request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
         request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
         request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-site");

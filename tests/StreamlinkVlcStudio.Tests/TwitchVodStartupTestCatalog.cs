@@ -9,6 +9,7 @@ internal static class TwitchVodStartupTestCatalog
         ("VOD startup: custom arguments configs plugins and other targets keep Streamlink", ConfigurationAsync),
         ("VOD startup: denied token invalid JSON and provider errors fall back", TokenFailuresAsync),
         ("VOD startup: unavailable selected media falls back without lowering quality", MediaFailureAsync),
+        ("VOD startup: incomplete delta media falls back without caching it", DeltaMediaAsync),
         ("VOD startup: unsafe variant and redirect locations are rejected before fetching", UnsafeLocationsAsync),
         ("VOD startup: private provider DNS is rejected before fetching", PrivateDnsAsync),
         ("VOD startup: oversized playlist falls back through bounded reads", OversizedAsync),
@@ -168,6 +169,18 @@ internal static class TwitchVodStartupTestCatalog
         };
         await unavailable.Service.ResolveStreamUrlAsync(unavailable.Request);
         Assert.Equal(1, unavailable.FallbackCount);
+    }
+
+    private static async Task DeltaMediaAsync()
+    {
+        foreach (var tag in new[] { "#EXT-X-SKIP:SKIPPED-SEGMENTS=1", "#EXT-X-SKIP" })
+        {
+            using var fixture = new Fixture { MediaText = Media.Replace("#EXT-X-TARGETDURATION:10", tag + "\n#EXT-X-TARGETDURATION:10") };
+            var resolved = await fixture.Service.ResolveStreamUrlAsync(fixture.Request);
+            Assert.Equal(1, fixture.FallbackCount);
+            Assert.Equal("/fallback.m3u8", resolved.StreamUri.AbsolutePath);
+            Assert.True(fixture.Handoff.Take(new Uri("https://d123.cloudfront.net/vod/chunked/index.m3u8")) is null);
+        }
     }
 
     private static async Task UnsafeLocationsAsync()

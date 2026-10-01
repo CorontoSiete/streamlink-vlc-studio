@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -118,30 +117,6 @@ internal static class ProcessExtensions
             await owner.StopAsync(CleanupTimeout).ConfigureAwait(false);
             await ObserveOutputReadsAsync(standardOutputTask, standardErrorTask).ConfigureAwait(false);
             throw;
-        }
-    }
-
-    /// <summary>
-    /// Kills the process and its entire child tree (when still running) and waits for exit, swallowing
-    /// the benign races that occur when the process has already exited.
-    /// </summary>
-    internal static async Task KillProcessTreeAsync(Process process, TimeSpan? cleanupTimeout = null)
-    {
-        ArgumentNullException.ThrowIfNull(process);
-        var timeoutDuration = cleanupTimeout ?? CleanupTimeout;
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeoutDuration, TimeSpan.Zero);
-
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                using var timeout = new CancellationTokenSource(timeoutDuration);
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception or OperationCanceledException)
-        {
         }
     }
 

@@ -3,16 +3,9 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Buffers.Binary;
-using System.IO.Pipes;
-using System.Net.Http;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using StreamlinkVlcStudio.App.Wpf.Chat;
 using StreamlinkVlcStudio.App.Wpf.Controls;
-using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
@@ -20,10 +13,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Http;
-using StreamlinkVlcStudio.Infrastructure.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
-using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
@@ -37,9 +27,11 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private static readonly TimeSpan ReplayClockRefreshInterval = TimeSpan.FromMilliseconds(500);
     // Shared by near-live seek routing and the live-DVR playback-rate safety window.
     private static readonly TimeSpan ReplayLiveEdgeThreshold = TimeSpan.FromSeconds(15);
-    // Resume holds the exact paused timestamp even close to live; only a near-instant pause (still
-    // effectively at the live edge) skips the hold, to avoid a pointless reload into replay.
+    // Resume holds the paused timestamp when the DVR has published it. A near-instant
+    // pause stays at the live edge instead of opening replay for a negligible delay.
     private static readonly TimeSpan ResumeHoldLiveEdgeTolerance = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan PublishedReplayEdgeMargin = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan PublishedReplayProbeTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ReplaySeekStep = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ReplayClockSampleTolerance = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ReplayClockMaximumPlausibleDuration = TimeSpan.FromDays(14);
@@ -98,6 +90,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private readonly object replaySeekPreviewUiGate = new();
     private readonly SemaphoreSlim replayPlaybackTransitionGate = new(1, 1);
     private readonly SemaphoreSlim playbackRateChangeGate = new(1, 1);
+    private readonly object playbackRateSelectionGate = new();
     private TaskCompletionSource<IntPtr> videoHandleReady = CreateVideoHandleReadySource();
     private TaskCompletionSource videoSurfaceStateChanged = CreateVideoSurfaceStateChangedSource();
     private IStreamTransportSession? streamSession;
@@ -105,8 +98,11 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private IChatClient? chatClient;
     private ITwitchPredictionClient? twitchPredictionClient;
     private ChatSettings? chatSettings;
+    private long? manualLivePausedAtTimestamp;
     private AppSettings? currentSettings;
     private ParkingVideoSurface? parkingVideoSurface;
+    private VideoSurface? videoSurface;
+    internal VideoSurfacePresenter? VideoSurfacePresenterOwner { get; set; }
     private CancellationTokenSource? viewerCountPollingCancellation;
     private CancellationTokenSource? videoAspectRatioPollingCancellation;
     private CancellationTokenSource? replayClockPollingCancellation;
@@ -198,6 +194,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private double replaySeekSliderValue;
     private double replaySeekMaximum = 1;
     private int playbackRateIndex = DefaultPlaybackRateIndex;
+    private int selectedPlaybackRateIndex = DefaultPlaybackRateIndex;
     private long playbackRateChangeVersion;
     private string replayElapsedText = "0:00";
     private string replayDurationText = "0:00";
@@ -225,6 +222,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         var twitchLiveDvrPromotionPollInterval = dependencies.TwitchLiveDvrPromotionPollInterval;
 
         Target = target;
+        if (target.IsOfflineVod) isChatVisible = false;
         replayClock = new ReplayClockState(Target, () => Status, () => IsReplayMode,
             () => Volatile.Read(ref replaySeekOperationVersion), IsReplayClockSampleCurrent,
             () => ReplaySeekValue,
@@ -356,7 +354,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     public string DockedChatHeaderText => $"Chat in {Target.Channel}'s channel";
 
-    public string ChatModeText => Target.IsExplicitVod || IsReplayMode || IsBehindLive ? "REPLAY CHAT" : "LIVE CHAT";
+    public string ChatModeText => Target.IsOfflineVod ? "OFFLINE VOD" :
+        Target.IsExplicitVod || IsReplayMode || IsBehindLive ? "REPLAY CHAT" : "LIVE CHAT";
 
     public string ReplayChatStatusText => replayChatStatusText;
 
@@ -527,12 +526,17 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     public int PlaybackRateIndex
     {
-        get => Volatile.Read(ref playbackRateIndex);
+        get => Volatile.Read(ref selectedPlaybackRateIndex);
         set
         {
             if ((uint)value >= PlaybackRateValues.Length)
             {
                 dispatch(() => OnPropertyChanged(nameof(PlaybackRateIndex)));
+                return;
+            }
+
+            if (value == Volatile.Read(ref selectedPlaybackRateIndex))
+            {
                 return;
             }
 
@@ -549,7 +553,25 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         long? expectedSeekOperationVersion = null,
         long? expectedPlaybackStateVersion = null)
     {
-        var requestVersion = Interlocked.Increment(ref playbackRateChangeVersion);
+        long requestVersion;
+        bool selectionChanged;
+        lock (playbackRateSelectionGate)
+        {
+            requestVersion = Interlocked.Increment(ref playbackRateChangeVersion);
+            selectionChanged = Interlocked.Exchange(ref selectedPlaybackRateIndex, requestedIndex) != requestedIndex;
+        }
+
+        if (selectionChanged)
+        {
+            dispatch(() =>
+            {
+                if (!disposed && requestVersion == Volatile.Read(ref playbackRateChangeVersion))
+                {
+                    OnPropertyChanged(nameof(PlaybackRateIndex));
+                }
+            });
+        }
+
         var enteredGate = false;
         try
         {
@@ -563,56 +585,54 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             if (expectedSeekOperationVersion is { } expectedSeekVersion &&
                 !IsReplayClockSampleCurrent(expectedSeekVersion, expectedPlaybackStateVersion))
             {
+                RestorePlaybackRateSelection(requestVersion);
                 return;
             }
 
             var engine = playbackEngine;
             if (engine is null || !CanChangePlaybackRate)
             {
-                dispatch(() =>
-                {
-                    if (!disposed && requestVersion == Volatile.Read(ref playbackRateChangeVersion))
-                    {
-                        OnPropertyChanged(nameof(PlaybackRateIndex));
-                    }
-                });
+                RestorePlaybackRateSelection(requestVersion);
                 return;
             }
 
             var rate = PlaybackRateValues[requestedIndex];
             var applied = await engine.TrySetPlaybackRateAsync(rate, lifetimeCancellation.Token)
                 .ConfigureAwait(false);
-            if (applied && ReferenceEquals(engine, playbackEngine) && CanChangePlaybackRate)
+            var appliedToCurrentEngine = applied && ReferenceEquals(engine, playbackEngine) && CanChangePlaybackRate;
+            if (appliedToCurrentEngine)
             {
                 if (!IsReplaySeekInProgress && replaySession is { IsAvailable: true } replay)
                 {
                     var observedAtUtc = DateTimeOffset.UtcNow;
-                    var duration = GetCurrentReplayDuration(replay);
-                    var position = engine.TryGetPlaybackClock(out var currentClock)
-                        ? currentClock.Position
-                        : replayClock.EstimateReplayClockFromAnchor(duration, observedAtUtc);
-                    replayClock.ReanchorForPlaybackRateChange(
-                        position,
-                        duration,
-                        Volatile.Read(ref replaySeekOperationVersion),
-                        observedAtUtc);
+                    var seekVersion = Volatile.Read(ref replaySeekOperationVersion);
+                    var playbackStateVersion = replayClock.PlaybackStateVersion;
+                    // A rate resynchronization can temporarily make VLC report time zero.
+                    // Use the same clock validation as the seekbar before moving its anchor.
+                    var clock = ResolveReplayClock(replay, seekVersion, sampleBeganDuringSeek: false,
+                        sampledPlaybackStateVersion: playbackStateVersion);
+                    if (IsReplayClockSampleCurrent(seekVersion, playbackStateVersion))
+                    {
+                        replayClock.ReanchorForPlaybackRateChange(
+                            clock.Position, clock.Duration, seekVersion, playbackStateVersion, observedAtUtc);
+                    }
                 }
 
                 Interlocked.Exchange(ref playbackRateIndex, requestedIndex);
             }
+            else
+            {
+                logger.Write(AppLogLevel.Warning, "Playback",
+                    $"Could not change playback speed to {PlaybackRateOptionLabels[requestedIndex]} for {Target.DisplayName}.");
+                RestorePlaybackRateSelection(requestVersion);
+                return;
+            }
 
             dispatch(() =>
             {
-                if (disposed)
+                if (disposed || requestVersion != Volatile.Read(ref playbackRateChangeVersion))
                 {
                     return;
-                }
-
-                var isCurrentRequest = requestVersion == Volatile.Read(ref playbackRateChangeVersion);
-                if (isCurrentRequest && !applied)
-                {
-                    logger.Write(AppLogLevel.Warning, "Playback",
-                        $"Could not change playback speed to {PlaybackRateOptionLabels[requestedIndex]} for {Target.DisplayName}.");
                 }
 
                 OnPropertyChanged(nameof(PlaybackRateIndex));
@@ -624,13 +644,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         catch (Exception ex)
         {
             logger.Write(AppLogLevel.Warning, "Playback", $"Changing playback speed failed for {Target.DisplayName}.", ex);
-            dispatch(() =>
-            {
-                if (!disposed && requestVersion == Volatile.Read(ref playbackRateChangeVersion))
-                {
-                    OnPropertyChanged(nameof(PlaybackRateIndex));
-                }
-            });
+            RestorePlaybackRateSelection(requestVersion);
         }
         finally
         {
@@ -639,6 +653,27 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 playbackRateChangeGate.Release();
             }
         }
+    }
+
+    private void RestorePlaybackRateSelection(long requestVersion)
+    {
+        lock (playbackRateSelectionGate)
+        {
+            if (requestVersion != Volatile.Read(ref playbackRateChangeVersion))
+            {
+                return;
+            }
+
+            Interlocked.Exchange(ref selectedPlaybackRateIndex, Volatile.Read(ref playbackRateIndex));
+        }
+
+        dispatch(() =>
+        {
+            if (!disposed && requestVersion == Volatile.Read(ref playbackRateChangeVersion))
+            {
+                OnPropertyChanged(nameof(PlaybackRateIndex));
+            }
+        });
     }
 
     internal ReplaySeekPreviewSource? ReplayPreviewSource
@@ -848,7 +883,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     {
         if (value)
         {
-            TryReleaseNativeOverlayChatInputFocus();
+            _ = TryReleaseNativeOverlayChatInputFocusAsync();
         }
 
         if (!SetProperty(ref isDockedChatOverrideActive, value, nameof(IsDockedChatOverrideActive)))
@@ -867,7 +902,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     {
         if (value)
         {
-            TryReleaseNativeOverlayChatInputFocus();
+            _ = TryReleaseNativeOverlayChatInputFocusAsync();
         }
 
         if (overlayUnavailableDockFallback == value)
@@ -1068,7 +1103,18 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             ResetVideoAspectRatioPollingBackoff();
         }
 
-        playbackEngine?.SetVideoHandle(handle);
+        // New playback engines are bound explicitly when they are created. For an
+        // existing engine, avoid another libVLC set_hwnd call when a presenter reuses
+        // the same native surface in a different window.
+        if (handleChanged)
+        {
+            playbackEngine?.SetVideoHandle(handle);
+        }
+    }
+
+    internal VideoSurface GetOrCreateVideoSurface()
+    {
+        return videoSurface ??= new VideoSurface();
     }
 
     public void ClearVideoHandle(IntPtr expectedHandle)
@@ -1286,7 +1332,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             return false;
         }
 
-        var requestedNativeOverlay = ShouldRequestNativeOverlay(settings.Chat);
+        var requestedNativeOverlay = !Target.IsOfflineVod && ShouldRequestNativeOverlay(settings.Chat);
         if (playbackEngineNativeOverlayRequested != requestedNativeOverlay)
         {
             return true;
@@ -1373,7 +1419,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         CancelLivePlaybackRecovery();
 
-        if (string.IsNullOrWhiteSpace(settings.StreamlinkPath))
+        if (!Target.IsOfflineVod && string.IsNullOrWhiteSpace(settings.StreamlinkPath))
         {
             throw new InvalidOperationException("Configure the Streamlink executable path in Settings.");
         }
@@ -1451,83 +1497,87 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             ResetReplayState("Replay availability has not been checked yet.");
 
             Status = PlaybackStatus.Resolving;
-            var customArguments = CommandLineTokenizer.Tokenize(settings.CustomStreamlinkArguments);
-            switch (Target.Kind)
+            var customArguments = Target.IsOfflineVod ? [] : CommandLineTokenizer.Tokenize(settings.CustomStreamlinkArguments);
+            if (Target.IsOfflineVod) directPlaybackUri = GetOfflinePlaybackUri();
+            else
             {
-                case StreamTargetKind.Live:
-                    var effectiveLowLatency = settings.LowLatency && !preferStableLivePlayback;
-                    if (settings.LowLatency && !effectiveLowLatency)
-                    {
-                        logger.Write(
-                            AppLogLevel.Info,
-                            "Playback",
-                            $"Using stable multi-stream startup profile for {Target.DisplayName}; Streamlink low-latency flags are disabled for this start.");
-                    }
+                switch (Target.Kind)
+                {
+                    case StreamTargetKind.Live:
+                        var effectiveLowLatency = settings.LowLatency && !preferStableLivePlayback;
+                        if (settings.LowLatency && !effectiveLowLatency)
+                        {
+                            logger.Write(
+                                AppLogLevel.Info,
+                                "Playback",
+                                $"Using stable multi-stream startup profile for {Target.DisplayName}; Streamlink low-latency flags are disabled for this start.");
+                        }
 
-                    var liveRequest = new StreamTransportRequest(
-                        Target,
-                        Quality,
-                        settings.StreamlinkPath!,
-                        effectiveLowLatency,
-                        customArguments,
-                        IsMultiStream: optimizeForMultiStream);
-                    liveRecoveryRequest = liveRequest;
-                    streamStartCancellation = CancellationTokenSource.CreateLinkedTokenSource(startCancellationToken);
-                    pendingStreamSession = streamlinkService.StartExternalHttpAsync(liveRequest, streamStartCancellation.Token);
-                    pendingStreamSessionNeedsCleanup = true;
-                    break;
-                case StreamTargetKind.TwitchVod:
-                    var twitchVodRequest = new StreamTransportRequest(
-                        Target,
-                        Quality,
-                        settings.StreamlinkPath!,
-                        false,
-                        customArguments);
-                    try
-                    {
-                        var resolved = await streamlinkService.ResolveStreamUrlAsync(twitchVodRequest, startCancellationToken);
-                        directPlaybackUri = resolved.StreamUri;
-                    }
-                    catch (Exception streamlinkError) when (streamlinkError is not OperationCanceledException &&
-                        twitchSubOnlyVodResolver is not null)
-                    {
-                        logger.Write(
-                            AppLogLevel.Info,
-                            "Playback",
-                            $"Streamlink could not resolve {Target.Url} ({streamlinkError.Message}); trying the sub-only VOD fallback.");
+                        var liveRequest = new StreamTransportRequest(
+                            Target,
+                            Quality,
+                            settings.StreamlinkPath!,
+                            effectiveLowLatency,
+                            customArguments,
+                            IsMultiStream: optimizeForMultiStream);
+                        liveRecoveryRequest = liveRequest;
+                        streamStartCancellation = CancellationTokenSource.CreateLinkedTokenSource(startCancellationToken);
+                        pendingStreamSession = streamlinkService.StartExternalHttpAsync(liveRequest, streamStartCancellation.Token);
+                        pendingStreamSessionNeedsCleanup = true;
+                        break;
+                    case StreamTargetKind.TwitchVod:
+                        var twitchVodRequest = new StreamTransportRequest(
+                            Target,
+                            Quality,
+                            settings.StreamlinkPath!,
+                            false,
+                            customArguments);
                         try
                         {
-                            var bypass = await twitchSubOnlyVodResolver.ResolveAsync(
-                                new TwitchSubOnlyVodRequest(ResolveTwitchVodId(), Quality),
-                                startCancellationToken);
-                            subOnlyVodResolution = bypass;
-                            directPlaybackUri = bypass.PlaybackUri;
-                            AddSystemMessage($"Playing sub-only VOD via direct playlist ({bypass.QualityKey}).");
+                            var resolved = await streamlinkService.ResolveStreamUrlAsync(twitchVodRequest, startCancellationToken);
+                            directPlaybackUri = resolved.StreamUri;
                         }
-                        catch (Exception bypassError) when (bypassError is not OperationCanceledException)
+                        catch (Exception streamlinkError) when (streamlinkError is not OperationCanceledException &&
+                            twitchSubOnlyVodResolver is not null)
                         {
-                            throw new InvalidOperationException(
-                                $"Streamlink could not play the VOD: {streamlinkError.Message} Sub-only fallback also failed: {bypassError.Message}",
-                                bypassError);
+                            logger.Write(
+                                AppLogLevel.Info,
+                                "Playback",
+                                $"Streamlink could not resolve {Target.Url} ({streamlinkError.Message}); trying the sub-only VOD fallback.");
+                            try
+                            {
+                                var bypass = await twitchSubOnlyVodResolver.ResolveAsync(
+                                    new TwitchSubOnlyVodRequest(ResolveTwitchVodId(), Quality),
+                                    startCancellationToken);
+                                subOnlyVodResolution = bypass;
+                                directPlaybackUri = bypass.PlaybackUri;
+                                AddSystemMessage($"Playing sub-only VOD via direct playlist ({bypass.QualityKey}).");
+                            }
+                            catch (Exception bypassError) when (bypassError is not OperationCanceledException)
+                            {
+                                throw new InvalidOperationException(
+                                    $"Streamlink could not play the VOD: {streamlinkError.Message} Sub-only fallback also failed: {bypassError.Message}",
+                                    bypassError);
+                            }
                         }
-                    }
 
-                    break;
-                case StreamTargetKind.KickVod:
-                    var kickVodRequest = new StreamTransportRequest(
-                        Target,
-                        Quality,
-                        settings.StreamlinkPath!,
-                        false,
-                        customArguments);
-                    var kickResolved = await streamlinkService.ResolveStreamUrlAsync(kickVodRequest, startCancellationToken);
-                    directPlaybackUri = kickResolved.StreamUri;
-                    break;
-                default:
-                    throw new InvalidOperationException($"Unsupported stream target kind: {Target.Kind}.");
+                        break;
+                    case StreamTargetKind.KickVod:
+                        var kickVodRequest = new StreamTransportRequest(
+                            Target,
+                            Quality,
+                            settings.StreamlinkPath!,
+                            false,
+                            customArguments);
+                        var kickResolved = await streamlinkService.ResolveStreamUrlAsync(kickVodRequest, startCancellationToken);
+                        directPlaybackUri = kickResolved.StreamUri;
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unsupported stream target kind: {Target.Kind}.");
+                }
             }
 
-            var enableNativeOverlay = ShouldRequestNativeOverlay(settings.Chat);
+            var enableNativeOverlay = !Target.IsOfflineVod && ShouldRequestNativeOverlay(settings.Chat);
             var nativeOverlayPositionStatePath = enableNativeOverlay
                 ? BuildNativeOverlayPositionStatePath(Target)
                 : null;
@@ -1792,15 +1842,19 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 await ResumeWithHoldAsync(lifetimeCancellation.Token);
             }
 
+            if (Status == PlaybackStatus.Playing) manualLivePausedAtTimestamp = null;
             ApplyAudio();
         }
         else if (Status == PlaybackStatus.Playing)
         {
-            // A manual pause is deliberately position-preserving, including for a live tab.
+            // A manual pause captures a position to restore when replay has published it.
             // Automatic inactive-tab suspension uses the separate connection-stopping path below.
             livePlaybackConnectionSuspended = false;
             CapturePauseHold(allowLiveTransition: true);
             await playbackEngine.PauseAsync(lifetimeCancellation.Token);
+            manualLivePausedAtTimestamp = Target.Kind == StreamTargetKind.Live && !IsReplayMode
+                ? Stopwatch.GetTimestamp()
+                : null;
             Status = PlaybackStatus.Paused;
             PausedByTabSwitch = false;
             CaptureVodResumePosition();
@@ -2015,8 +2069,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             Volatile.Read(ref replaySeekOperationVersion),
             sampleBeganDuringSeek: IsReplaySeekInProgress).Position);
 
-        // Warm the replay/DVR playback URL while the frame is frozen so the unavoidable live -> replay
-        // reload on resume has no URL-resolution latency. Reuses any valid in-flight/successful resolution.
+        // Warm the replay/DVR playback URL while the frame is frozen so a live -> replay
+        // resume has no URL-resolution latency. Reuses any valid in-flight/successful resolution.
         if (currentSettings is { } settings)
         {
             QueueReplayPlaybackUrlResolution(replay, settings);
@@ -2030,6 +2084,14 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         if (playbackEngine is null)
         {
+            return;
+        }
+
+        if (await ShouldReconnectPausedLiveInputAsync(holdPosition, cancellationToken))
+        {
+            logger.Write(AppLogLevel.Info, "Playback",
+                $"Reconnecting {Target.DisplayName} at the live edge because its paused position is not confirmed in the published replay.");
+            await ResumeLivePlaybackConnectionAsync(cancellationToken);
             return;
         }
 
@@ -2071,6 +2133,78 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         Status = PlaybackStatus.Playing;
         replayClock.ClearResumeHold();
         PausedByTabSwitch = false;
+    }
+
+    private async Task<bool> ShouldReconnectPausedLiveInputAsync(
+        TimeSpan? holdPosition, CancellationToken cancellationToken)
+    {
+        if (Target.Kind != StreamTargetKind.Live || IsReplayMode || streamSession is null ||
+            manualLivePausedAtTimestamp is not { } pausedAt ||
+            Stopwatch.GetElapsedTime(pausedAt) <= ResumeHoldLiveEdgeTolerance)
+        {
+            return false;
+        }
+
+        if (holdPosition is not { } position ||
+            replaySession is not { IsAvailable: true } replay ||
+            !CanSeekReplay ||
+            !TryGetReadyReplayPlaybackUri(replay, out var replayUri))
+        {
+            return true;
+        }
+
+        if (!HlsReplayTimeline.IsPlaylist(replayUri)) return false;
+
+        // The wall-clock live position can outrun the published DVR playlist.
+        // Check its current edge because replay metadata may be older than the
+        // playlist, while opening beyond the playlist leaves VLC's gate black.
+        try
+        {
+            using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            probe.CancelAfter(PublishedReplayProbeTimeout);
+            var published = await HlsReplayTimeline.ReadPublishedDurationAsync(
+                replayUri, replay.Platform, probe.Token);
+            return published is not { } edge || position >= edge - PublishedReplayEdgeMargin;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Debug, "Playback",
+                $"Could not confirm the published replay edge for {Target.DisplayName}.", ex);
+            return true;
+        }
+    }
+
+    private bool TryGetReadyReplayPlaybackUri(ReplaySessionInfo replay, out Uri uri)
+    {
+        if (Target.IsOfflineVod)
+        {
+            uri = GetOfflinePlaybackUri();
+            return true;
+        }
+        if (TryCreateDirectReplayPlaybackUri(replay.ReplayUrl, out uri)) return true;
+        if (currentSettings is not { } settings)
+        {
+            uri = null!;
+            return false;
+        }
+
+        var key = CreateReplayPlaybackUrlKey(replay, settings);
+        lock (replayPlaybackUrlResolutionGate)
+        {
+            if (replayPlaybackUrlResolution is { } resolution &&
+                resolution.Key.Equals(key) && resolution.Task.IsCompletedSuccessfully)
+            {
+                uri = resolution.Task.Result.StreamUri;
+                return true;
+            }
+        }
+
+        uri = null!;
+        return false;
     }
 
     public async Task StopAsync()
@@ -3225,6 +3359,14 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             return;
         }
 
+        if (Target.IsOfflineVod)
+        {
+            ApplyExplicitVodReplaySession(new ReplaySessionInfo(Target.Platform, Target.Channel,
+                GetOfflinePlaybackUri().AbsoluteUri, Target.MediaId, Target.MediaStartedAtUtc,
+                Target.MediaDuration, true, ""));
+            return;
+        }
+
         if (Target.IsExplicitTwitchVod)
         {
             InitializeExplicitTwitchVodReplaySession(subOnlyVodResolution);
@@ -3786,6 +3928,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         ReplayPlaybackUrlKey key,
         CancellationToken cancellationToken)
     {
+        if (Target.IsOfflineVod)
+            return new StreamlinkResolvedUrl(GetOfflinePlaybackUri(), "Using downloaded VOD files.");
         if (key.Target.Platform == PlatformKind.Twitch &&
             TryCreateDirectReplayPlaybackUri(key.Target.Url, out var directReplayUri))
         {
@@ -4256,8 +4400,16 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void ResetPlaybackRate()
     {
-        Interlocked.Increment(ref playbackRateChangeVersion);
-        if (Interlocked.Exchange(ref playbackRateIndex, DefaultPlaybackRateIndex) == DefaultPlaybackRateIndex)
+        int appliedIndex;
+        int selectedIndex;
+        lock (playbackRateSelectionGate)
+        {
+            Interlocked.Increment(ref playbackRateChangeVersion);
+            appliedIndex = Interlocked.Exchange(ref playbackRateIndex, DefaultPlaybackRateIndex);
+            selectedIndex = Interlocked.Exchange(ref selectedPlaybackRateIndex, DefaultPlaybackRateIndex);
+        }
+
+        if (appliedIndex == DefaultPlaybackRateIndex && selectedIndex == DefaultPlaybackRateIndex)
         {
             return;
         }
@@ -4494,6 +4646,11 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     /// </summary>
     private void StartVodChat(ReplaySessionInfo replay, TimeSpan position)
     {
+        if (Target.IsOfflineVod)
+        {
+            QueueReplayChatStatus("Offline playback: chat is not included in the VOD download.");
+            return;
+        }
         if (currentSettings is not { } settings || !replay.IsAvailable)
         {
             return;
@@ -6005,7 +6162,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void ClearNativeReplayOverlayForEmptyReplayWindowInBackground() => nativeOverlay.ClearNativeReplayOverlayForEmptyReplayWindowInBackground();
 
-    public bool TryReleaseNativeOverlayChatInputFocus() => nativeOverlay.TryReleaseNativeOverlayChatInputFocus();
+    public Task<bool> TryReleaseNativeOverlayChatInputFocusAsync() => nativeOverlay.TryReleaseNativeOverlayChatInputFocusAsync();
 
     private void ApplyAudio()
     {
@@ -6074,7 +6231,16 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     internal static TimeSpan CalculateNativeReplayOverlayAnimationDelay(TimeSpan animationClock, TimeSpan? nextAnimationFrameDelay, TimeSpan currentAnimationClock) => NativeChatOverlayController.CalculateNativeReplayOverlayAnimationDelay(animationClock, nextAnimationFrameDelay, currentAnimationClock);
 
-    private bool ShouldUseNativeOverlayController(AppSettings settings) => nativeOverlay.ShouldUseNativeOverlayController(settings);
+    private bool ShouldUseNativeOverlayController(AppSettings settings) => !Target.IsOfflineVod && nativeOverlay.ShouldUseNativeOverlayController(settings);
+
+    private Uri GetOfflinePlaybackUri()
+    {
+        if (!Path.IsPathFullyQualified(Target.LocalMediaPath) ||
+            !Uri.TryCreate(Target.LocalMediaPath, UriKind.Absolute, out var uri) || !uri.IsFile || uri.IsUnc)
+            throw new InvalidDataException("Offline VOD playback requires a local media file, not a network URL or share.");
+        if (!File.Exists(uri.LocalPath)) throw new FileNotFoundException("The downloaded VOD files are missing. Download this VOD again.", uri.LocalPath);
+        return uri;
+    }
 
     private bool IsDockedChatModeActive => chatSettings?.Layout == ChatLayout.Docked || IsDockedChatOverrideActive;
 

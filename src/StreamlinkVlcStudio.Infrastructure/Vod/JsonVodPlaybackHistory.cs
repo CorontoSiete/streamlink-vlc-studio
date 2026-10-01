@@ -2,6 +2,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Io;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vod;
@@ -53,7 +54,7 @@ public sealed class JsonVodPlaybackHistory(string path, IAppLogger logger) : IVo
             TrimCore();
             version++;
         }
-        BookmarkChanged?.Invoke(target, bookmark);
+        SafeEventDispatcher.Invoke(BookmarkChanged, target, bookmark, logger, "VOD history", nameof(BookmarkChanged));
     }
 
     public async Task SaveAsync(CancellationToken cancellationToken = default)

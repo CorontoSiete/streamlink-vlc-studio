@@ -1,0 +1,14 @@
+Channel Twitch/summit1g; direct eligible True.
+250 ms: authorization, status 200, request 224 ms.
+378 ms: master, status 200, request 118 ms.
+Master qualities: 1080p60, 720p60, 480p30, 360p30, 160p30, audio_only
+696 ms: media, status 200, request 278 ms.
+Selected quality: 1080p60
+Media tags: #EXTM3U, #EXT-X-VERSION, #EXT-X-TARGETDURATION, #EXT-X-MEDIA-SEQUENCE, #EXT-X-TWITCH-LIVE-SEQUENCE, #EXT-X-TWITCH-ELAPSED-SECS, #EXT-X-TWITCH-TOTAL-SECS, #EXT-X-DATERANGE, #EXT-X-MAP, #EXT-X-PROGRAM-DATE-TIME, #EXTINF, #EXT-X-TWITCH-PREFETCH
+700 ms: Using Streamlink preview transport (InvalidDataException).
+704 ms: Streamlink starting
+2602 ms: Available streams: audio_only, 160p30 (worst), 360p30, 480p30, 720p60, 1080p60 (best)
+2605 ms: Streamlink transport ready
+2777 ms: Opening stream: 1080p60 (hls)
+First decoded frame: 3438 ms.
+{"Channel":"summit1g","firstFrameAt":3438,"frameCount":248,"changing":true,"longestGap":52,"observationMs":12024,"cleanupMs":82,"Fallbacks":1}

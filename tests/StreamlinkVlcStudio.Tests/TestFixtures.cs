@@ -1581,6 +1581,15 @@ internal sealed class FakeTwitchVodService : ITwitchVodService
         }
     }
 
+    public Task<TwitchVodItem?> GetVideoAsync(string vodId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            return Task.FromResult(currentResult.Videos.FirstOrDefault(video => video.Id == vodId));
+        }
+    }
+
     public Task<TwitchVodSearchResult> SearchAsync(
         TwitchVodSearchRequest request,
         AppSettings settings,
@@ -2288,6 +2297,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     private readonly List<Uri> playedUris = [];
     public event EventHandler? VideoOutputRebound;
     public event EventHandler? AudioStateReapplied;
+    public event Action<IntPtr>? VideoHandleChanged;
     public bool Played { get; private set; }
     public int PlayCount { get; private set; }
     public int StopCount { get; private set; }
@@ -2299,6 +2309,8 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public bool Muted { get; private set; }
     public bool Paused { get; private set; }
     public float PlaybackRate { get; private set; } = 1f;
+    public ConcurrentQueue<float> PlaybackRateRequests { get; } = new();
+    public Func<float, CancellationToken, Task<bool>>? PlaybackRateOverride { get; init; }
     public PlaybackAudioState AudioState { get; private set; } = PlaybackAudioState.Audible;
     public TimeSpan Position { get; private set; }
     public TimeSpan Duration { get; set; } = TimeSpan.FromHours(2);
@@ -2345,6 +2357,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     {
         VideoHandle = handle;
         videoHandleHistory.Add(handle);
+        VideoHandleChanged?.Invoke(handle);
     }
 
     public async Task PlayAsync(Uri mediaUri, int volume, PlaybackAudioState audioState, CancellationToken cancellationToken = default)
@@ -2463,11 +2476,17 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
         ApplyAudioState(volume, audioState);
     }
 
-    public Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default)
+    public async Task<bool> TrySetPlaybackRateAsync(float rate, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        PlaybackRateRequests.Enqueue(rate);
+        if (PlaybackRateOverride is { } changeRate && !await changeRate(rate, cancellationToken))
+        {
+            return false;
+        }
+
         PlaybackRate = rate;
-        return Task.FromResult(true);
+        return true;
     }
 
     public void SimulateAudioStateReapplied()

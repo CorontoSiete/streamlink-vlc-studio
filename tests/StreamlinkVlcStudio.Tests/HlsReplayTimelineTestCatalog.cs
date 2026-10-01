@@ -8,11 +8,22 @@ internal static class HlsReplayTimelineTestCatalog
         ("long VOD timeline leaves growing encrypted ranged and master playlists untouched", () => Run(Unsupported)),
         ("long VOD timeline rejects malformed segments and unsafe media URLs", () => Run(Invalid)),
         ("long VOD timeline owns and releases its temporary playlist and upstream lease", LeaseAsync),
-        ("long VOD timeline bounds stalled local playlist reads", LocalPlaylistTimeoutAsync)
+        ("long VOD timeline bounds stalled local playlist reads", LocalPlaylistTimeoutAsync),
+        ("growing replay published duration requires a complete zero-based media playlist", () => Run(PublishedDuration))
     ];
     private const string Header = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:10\n";
     private const string Body = "#EXTINF:10.001,\n0.ts\n#EXTINF:9.999,\n1.ts\n#EXTINF:10.000,\n2-muted.ts\n#EXTINF:10.000,\n3.ts\n#EXT-X-ENDLIST\n";
     private static Task Run(Action action) { action(); return Task.CompletedTask; }
+    private static void PublishedDuration()
+    {
+        var playlist = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n" +
+            "#EXTINF:10.001,\n0.ts\n#EXTINF:9.999,\n1.ts\n";
+        Assert.Equal(TimeSpan.FromSeconds(20), HlsReplayTimeline.ParsePublishedDuration(playlist));
+        Assert.True(HlsReplayTimeline.ParsePublishedDuration(playlist.Replace("SEQUENCE:0", "SEQUENCE:1")) is null);
+        Assert.True(HlsReplayTimeline.ParsePublishedDuration(playlist + "#EXTINF:10,\n") is null);
+        Assert.True(HlsReplayTimeline.ParsePublishedDuration(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nvariant.m3u8\n") is null);
+    }
     private static void Precision()
     {
         var result = HlsReplayTimeline.Rebase(Header + Body, PlaylistUri, TimeSpan.FromSeconds(25))!.Value;

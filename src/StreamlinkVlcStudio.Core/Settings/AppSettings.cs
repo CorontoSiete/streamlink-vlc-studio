@@ -22,6 +22,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private string customStreamlinkArguments = "";
     private ChatSettings chat = new();
     private ReplaySettings replay = new();
+    private DownloadSettings downloads = new();
     private HotkeySettings hotkeys = new();
     private FollowedChannelsSettings followedChannels = new();
     private UpdateSettings updates = new();
@@ -130,6 +131,12 @@ public sealed class AppSettings : NotifyPropertyChangedObject
         set => SetProperty(ref replay, value ?? new());
     }
 
+    public DownloadSettings Downloads
+    {
+        get => downloads;
+        set => SetProperty(ref downloads, value ?? new());
+    }
+
     public HotkeySettings Hotkeys
     {
         get => hotkeys;
@@ -176,13 +183,15 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     public Dictionary<string, int> StreamVolumes
     {
         get => streamVolumes;
-        set => SetProperty(ref streamVolumes, NormalizeStreamVolumes(value));
+        set => SetProperty(ref streamVolumes,
+            NormalizeStreamValues(value, static volume => Math.Clamp(volume, VolumeLimits.Min, VolumeLimits.Max)));
     }
 
     public Dictionary<string, double> StreamVlcOverlayFontSizes
     {
         get => streamVlcOverlayFontSizes;
-        set => SetProperty(ref streamVlcOverlayFontSizes, NormalizeStreamVlcOverlayFontSizes(value));
+        set => SetProperty(ref streamVlcOverlayFontSizes, NormalizeStreamValues(value,
+            static size => ChatSettings.NormalizeFontSize(size, ChatSettings.DefaultVlcOverlayFontSize), double.IsFinite));
     }
 
     public Dictionary<string, bool> StreamPictureInPictureTopBarVisibility
@@ -190,7 +199,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
         get => streamPictureInPictureTopBarVisibility;
         set => SetProperty(
             ref streamPictureInPictureTopBarVisibility,
-            NormalizeStreamPictureInPictureTopBarVisibility(value));
+            NormalizeStreamValues(value));
     }
 
     public PictureInPictureWindowLocation? PictureInPictureWindowLocation
@@ -199,9 +208,10 @@ public sealed class AppSettings : NotifyPropertyChangedObject
         set => SetProperty(ref pictureInPictureWindowLocation, NormalizePictureInPictureWindowLocation(value));
     }
 
-    private static Dictionary<string, int> NormalizeStreamVolumes(Dictionary<string, int>? values)
+    private static Dictionary<string, T> NormalizeStreamValues<T>(
+        IReadOnlyDictionary<string, T>? values, Func<T, T>? normalizeValue = null, Func<T, bool>? includeValue = null)
     {
-        var normalized = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
         if (values is null)
         {
             return normalized;
@@ -209,48 +219,9 @@ public sealed class AppSettings : NotifyPropertyChangedObject
 
         foreach (var entry in values)
         {
-            if (!string.IsNullOrWhiteSpace(entry.Key))
+            if (!string.IsNullOrWhiteSpace(entry.Key) && (includeValue is null || includeValue(entry.Value)))
             {
-                normalized[entry.Key.Trim()] = Math.Clamp(entry.Value, VolumeLimits.Min, VolumeLimits.Max);
-            }
-        }
-
-        return normalized;
-    }
-
-    private static Dictionary<string, double> NormalizeStreamVlcOverlayFontSizes(Dictionary<string, double>? values)
-    {
-        var normalized = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        if (values is null)
-        {
-            return normalized;
-        }
-
-        foreach (var entry in values)
-        {
-            if (!string.IsNullOrWhiteSpace(entry.Key) && double.IsFinite(entry.Value))
-            {
-                normalized[entry.Key.Trim()] = ChatSettings.NormalizeFontSize(entry.Value, ChatSettings.DefaultVlcOverlayFontSize);
-            }
-        }
-
-        return normalized;
-    }
-
-    private static Dictionary<string, bool> NormalizeStreamPictureInPictureTopBarVisibility(
-        IReadOnlyDictionary<string, bool>? values)
-    {
-        var normalized = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        if (values is null)
-        {
-            return normalized;
-        }
-
-        foreach (var entry in values)
-        {
-            if (!string.IsNullOrWhiteSpace(entry.Key))
-            {
-                normalized[entry.Key.Trim()] = entry.Value;
+                normalized[entry.Key.Trim()] = normalizeValue is null ? entry.Value : normalizeValue(entry.Value);
             }
         }
 

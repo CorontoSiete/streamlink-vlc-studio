@@ -327,6 +327,9 @@ internal static class PagedRefreshResourceTestCatalog
 
     private sealed class ControlledService : ITwitchVodService, IKickVodService, IBrowseService
     {
+        public Task<TwitchVodItem?> GetVideoAsync(string vodId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("This paging fixture does not expect a video lookup.");
+
         internal List<Pending> Requests { get; } = [];
         internal List<BrowseStreamRequest> StreamRequests { get; } = [];
         internal int ViewerCount { get; set; } = 10;

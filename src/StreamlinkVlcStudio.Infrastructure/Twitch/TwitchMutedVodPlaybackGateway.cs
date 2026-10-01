@@ -107,13 +107,15 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             var inspection = TwitchMutedVodPlaylist.Inspect(playlist);
             var preroll = preferFastReplay ? TwitchVodReplayPolicy.GetPreroll(playlist, libVlcVersion) : TimeSpan.Zero;
             var fastReplay = preroll > TimeSpan.Zero;
-            var liveReplay = TwitchVodReplayPolicy.UseLiveReplayDemuxer(playlist, libVlcVersion);
+            var liveReplaySegmentDuration = TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(playlist, libVlcVersion);
+            var liveReplay = liveReplaySegmentDuration > TimeSpan.Zero;
             if (liveReplay)
                 logger.Write(AppLogLevel.Debug, "Replay", "Using the live replay demuxer for a growing MPEG-TS playlist.");
             if (inspection.MutedSegments == 0 && !fastReplay)
             {
                 LogDirectPlayback(media, player, inspection);
-                return new PlaybackMediaSource(mediaUri, null, useLiveReplayDemuxer: liveReplay);
+                return new PlaybackMediaSource(mediaUri, null, useLiveReplayDemuxer: liveReplay,
+                    liveReplaySegmentDuration: liveReplaySegmentDuration);
             }
 
             // Reject a playlist the proxy could not serve now, while falling back is still possible.
@@ -127,7 +129,8 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             if (fastReplay)
                 logger.Write(AppLogLevel.Info, "VOD resume", "Using VLC's FFmpeg demuxer for a completed MPEG-TS replay through the validated local transport.");
             return new PlaybackMediaSource(session.PlaylistUri, session, useAvformatDemuxer: fastReplay,
-                replaySeekPreroll: preroll, useLiveReplayDemuxer: liveReplay);
+                replaySeekPreroll: preroll, useLiveReplayDemuxer: liveReplay,
+                liveReplaySegmentDuration: liveReplaySegmentDuration);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

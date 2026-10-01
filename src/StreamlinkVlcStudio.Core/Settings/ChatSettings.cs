@@ -1,5 +1,4 @@
 using StreamlinkVlcStudio.Core.Models;
-using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Core.Settings;
 

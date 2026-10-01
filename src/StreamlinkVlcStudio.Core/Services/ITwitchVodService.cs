@@ -5,6 +5,10 @@ namespace StreamlinkVlcStudio.Core.Services;
 
 public interface ITwitchVodService
 {
+    Task<TwitchVodItem?> GetVideoAsync(
+        string vodId,
+        CancellationToken cancellationToken = default);
+
     Task<TwitchVodSearchResult> SearchAsync(
         TwitchVodSearchRequest request,
         AppSettings settings,

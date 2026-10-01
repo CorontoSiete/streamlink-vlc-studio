@@ -10,12 +10,18 @@ internal static class AudioSwitchVlcTestCatalog
                 ("native VLC automatic mute preserves silent PCM and avoids decoder restarts", PreserveDecoderAsync),
                 ("native VLC starts background playback silently with its audio decoder ready", StartMutedAsync),
                 ("native VLC rapid switching leaves only the selected player audible", RapidSwitchAsync),
+                ("native VLC playback rate transition keeps PCM output continuous", PlaybackRatePcmAsync),
                 .. AudioOutputTests
             ];
 
     private static IReadOnlyList<(string Name, Func<Task> Run)> AudioOutputTests =>
         string.Equals(Environment.GetEnvironmentVariable("SVS_TEST_AUDIO_OUTPUT"), "true", StringComparison.OrdinalIgnoreCase)
-            ? [("native VLC Windows audio output isolates mute and volume between players", NativeOutputIsolationAsync)]
+            ?
+            [
+                ("native VLC Windows audio output isolates mute and volume between players", NativeOutputIsolationAsync),
+                ("native VLC HLS playback rate transition preserves Windows loopback audio", NativeHlsOutputRateChangeAsync),
+                ("native VLC HTTP HLS playback rate transition preserves Windows loopback audio", NativeHttpHlsOutputRateChangeAsync)
+            ]
             : [];
 
     private static async Task NativeOutputIsolationAsync()
@@ -52,6 +58,180 @@ internal static class AudioSwitchVlcTestCatalog
     {
         Assert.Equal(muted ? 1 : 0, fixture.NativeMute);
         Assert.Equal(volume, fixture.NativeVolume);
+    }
+
+    private static readonly (float InitialRate, float TargetRate)[] PlaybackRateTransitions =
+    [
+        (1f, 0.5f),
+        (1f, 0.75f),
+        (1f, 1.25f),
+        (1f, 1.5f),
+        (1f, 1.75f),
+        (1f, 2f),
+        (0.5f, 1f),
+        (1.5f, 1f),
+        (0.5f, 1.5f),
+        (1.5f, 0.5f)
+    ];
+
+    private const double MaximumRateChangeLowOutputRunMilliseconds = 100;
+
+    private static async Task NativeHlsOutputRateChangeAsync()
+    {
+        var fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "playback-rate-tone");
+        var playlistPath = Path.Combine(
+            fixtureDirectory, "index.m3u8");
+        Assert.True(File.Exists(playlistPath), $"Bundled HLS playback-rate fixture is missing: {playlistPath}");
+        var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"svs-rate-hls-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryDirectory);
+        var temporaryPlaylistPath = Path.Combine(temporaryDirectory, "index.m3u8");
+        var segmentUri = new Uri(Path.Combine(fixtureDirectory, "tone.ts")).AbsoluteUri;
+        File.WriteAllLines(temporaryPlaylistPath, File.ReadAllLines(playlistPath).Select(line =>
+            string.Equals(line, "tone.ts", StringComparison.Ordinal) ? segmentUri : line));
+
+        try
+        {
+            await AssertRateTransitionsPreserveOutputAsync(
+                "HLS VOD",
+                () => PcmFixture.CreateAsync(
+                    PlaybackAudioState.Audible, capturePcm: false, mediaPath: temporaryPlaylistPath));
+        }
+        finally
+        {
+            File.Delete(temporaryPlaylistPath);
+            Directory.Delete(temporaryDirectory);
+        }
+    }
+
+    private static async Task NativeHttpHlsOutputRateChangeAsync()
+    {
+        var fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "playback-rate-tone");
+        Assert.True(File.Exists(Path.Combine(fixtureDirectory, "index.m3u8")),
+            $"Bundled HLS playback-rate fixture is missing: {fixtureDirectory}");
+        using var source = LocalHlsHttpServer.Start(fixtureDirectory);
+        await AssertRateTransitionsPreserveOutputAsync(
+            "HTTP HLS VOD",
+            () => PcmFixture.CreateAsync(
+                PlaybackAudioState.Audible, capturePcm: false, mediaUri: source.MediaUri));
+    }
+
+    private static async Task AssertRateTransitionsPreserveOutputAsync(
+        string inputDescription,
+        Func<Task<PcmFixture>> createFixture)
+    {
+        using var capture = await WasapiLoopbackCapture.StartAsync();
+        foreach (var (initialRate, targetRate) in PlaybackRateTransitions)
+        {
+            var fixtureStarted = Stopwatch.GetTimestamp();
+            using var fixture = await createFixture();
+            await TestWait.UntilAsync(
+                () => fixture.PlaybackTimeMs > 0 &&
+                    capture.GetPacketsSince(fixtureStarted).Any(packet => packet.ToneMagnitude > 0.0001),
+                TimeSpan.FromSeconds(8));
+
+            Assert.True(fixture.PlaybackLengthMs > 0,
+                $"{inputDescription} must report a finite duration before audio resynchronization can be tested.");
+            Assert.True(fixture.IsSeekable,
+                $"{inputDescription} must be seekable before audio resynchronization can be tested.");
+
+            if (initialRate != 1f)
+            {
+                Assert.True(await fixture.Engine.TrySetPlaybackRateAsync(initialRate),
+                    $"VLC must accept {inputDescription} initial rate {initialRate:0.##}x.");
+                await Task.Delay(500);
+            }
+            else
+            {
+                await Task.Delay(250);
+            }
+
+            var baselineStart = Stopwatch.GetTimestamp();
+            var baseline = capture.GetPacketsBefore(baselineStart, TimeSpan.FromMilliseconds(250));
+            Assert.True(baseline.Length >= 10,
+                $"Expected Windows loopback PCM before {inputDescription} {initialRate:0.##}x->{targetRate:0.##}x; observed {baseline.Length} packets.");
+            var baselineTone = baseline.Select(packet => packet.ToneMagnitude).Order().ElementAt(baseline.Length / 2);
+            var baselineRms = baseline.Select(packet => packet.Rms).Order().ElementAt(baseline.Length / 2);
+            Assert.True(baselineTone > 0.0001 && baselineRms > 0.0001,
+                $"Expected a stable {inputDescription} tone before {initialRate:0.##}x->{targetRate:0.##}x; tone={baselineTone:0.000000}, RMS={baselineRms:0.000000}.");
+
+            var changeStarted = Stopwatch.GetTimestamp();
+            Assert.True(await fixture.Engine.TrySetPlaybackRateAsync(targetRate),
+                $"VLC must accept {inputDescription} rate {initialRate:0.##}x->{targetRate:0.##}x.");
+            var rateRequestMs = Stopwatch.GetElapsedTime(changeStarted).TotalMilliseconds;
+            Assert.True(rateRequestMs <= 500,
+                $"{inputDescription} rate request {initialRate:0.##}x->{targetRate:0.##}x took {rateRequestMs:0.0} ms; speed input must not wait for HLS seek confirmation.");
+            await Task.Delay(1_000);
+            capture.EnsureHealthy();
+
+            var packets = capture.GetPacketsSince(changeStarted);
+            Assert.True(packets.Length >= 80,
+                $"Expected at least 800 ms of Windows loopback samples for {inputDescription} {initialRate:0.##}x->{targetRate:0.##}x; observed {packets.Length} packets.");
+            var longestLowRunMs = GetLongestLowOutputRunMilliseconds(packets, baselineRms);
+            var firstAudio = packets.FirstOrDefault(packet => packet.Rms >= baselineRms * 0.5);
+            var recoveryMs = firstAudio.Rms >= baselineRms * 0.5
+                ? (firstAudio.Timestamp - changeStarted) * 1000d / Stopwatch.Frequency
+                : double.PositiveInfinity;
+
+            Console.WriteLine(
+                $"Windows loopback {inputDescription} {initialRate:0.##}x->{targetRate:0.##}x: " +
+                $"request={rateRequestMs:0.0} ms, first audio={recoveryMs:0.0} ms, " +
+                $"longest low-output run={longestLowRunMs:0.0} ms, packets={packets.Length}.");
+            Assert.True(double.IsFinite(recoveryMs) && recoveryMs <= MaximumRateChangeLowOutputRunMilliseconds,
+                $"{inputDescription} rate change {initialRate:0.##}x->{targetRate:0.##}x took {recoveryMs:0.0} ms to restore audible output; maximum is {MaximumRateChangeLowOutputRunMilliseconds:0} ms.");
+            Assert.True(longestLowRunMs <= MaximumRateChangeLowOutputRunMilliseconds,
+                $"{inputDescription} rate change {initialRate:0.##}x->{targetRate:0.##}x left Windows output low for {longestLowRunMs:0.0} ms; maximum is {MaximumRateChangeLowOutputRunMilliseconds:0} ms.");
+        }
+    }
+
+    private static double GetLongestLowOutputRunMilliseconds(
+        WasapiLoopbackCapture.AudioPacket[] packets, double baselineRms)
+    {
+        if (packets.Length == 0) return 0;
+        Array.Sort(packets, static (left, right) => left.Timestamp.CompareTo(right.Timestamp));
+        var longest = 0d;
+        long? runStart = null;
+        var runEnd = 0L;
+        var previousPacketEnd = 0L;
+        var gapTolerance = Stopwatch.Frequency / 40;
+        foreach (var packet in packets)
+        {
+            var packetEnd = packet.Timestamp +
+                (long)(packet.Frames * (double)Stopwatch.Frequency / packet.SampleRate);
+            if (previousPacketEnd > 0 && packet.Timestamp - previousPacketEnd > gapTolerance)
+            {
+                longest = Math.Max(longest,
+                    (packet.Timestamp - previousPacketEnd) * 1000d / Stopwatch.Frequency);
+            }
+
+            // A rate transition can briefly shift the tone's frequency while VLC
+            // rebuilds scaletempo. RMS measures an audible dropout without treating
+            // a pitch change as silence.
+            var isLow = packet.Rms < baselineRms * 0.5;
+            if (!isLow)
+            {
+                if (runStart is { } start)
+                {
+                    longest = Math.Max(longest, (runEnd - start) * 1000d / Stopwatch.Frequency);
+                    runStart = null;
+                }
+                previousPacketEnd = packetEnd;
+                continue;
+            }
+
+            if (runStart is null || packet.Timestamp - runEnd > gapTolerance)
+            {
+                if (runStart is { } start)
+                    longest = Math.Max(longest, (runEnd - start) * 1000d / Stopwatch.Frequency);
+                runStart = packet.Timestamp;
+            }
+
+            runEnd = packetEnd;
+            previousPacketEnd = packetEnd;
+        }
+
+        if (runStart is { } lastStart)
+            longest = Math.Max(longest, (runEnd - lastStart) * 1000d / Stopwatch.Frequency);
+        return longest;
     }
 
     private static async Task PreserveDecoderAsync()
@@ -110,11 +290,37 @@ internal static class AudioSwitchVlcTestCatalog
         Assert.Equal(secondSetups, second.SetupCount);
     }
 
+    private static async Task PlaybackRatePcmAsync()
+    {
+        using var fixture = await PcmFixture.CreateAsync(PlaybackAudioState.Audible);
+        await fixture.WaitForPcmAsync(nonzero: true);
+        await Task.Delay(300);
+
+        var changeStarted = Stopwatch.GetTimestamp();
+        Assert.True(await fixture.Engine.TrySetPlaybackRateAsync(1.5f), "VLC must accept the requested playback rate.");
+        await Task.Delay(500);
+
+        var blocks = fixture.GetBlocksSince(changeStarted);
+        Assert.True(blocks.Length >= 10, $"Expected paced PCM after the rate change; observed {blocks.Length} callback blocks.");
+        var baseline = fixture.GetBlocksBefore(changeStarted, TimeSpan.FromMilliseconds(200));
+        Assert.True(baseline.Length >= 2, $"Expected a stable pre-change PCM baseline; observed {baseline.Length} callback blocks.");
+
+        var baselineRms = baseline.Average(block => block.Rms);
+        var minRms = blocks.Min(block => block.Rms);
+        var zeroBlocks = blocks.Count(block => block.Peak == 0);
+        Console.WriteLine(
+            $"Playback-rate PCM: baseline blocks={baseline.Length}, before RMS={baselineRms:0.0}, after minimum RMS={minRms:0.0}, zero blocks={zeroBlocks}/{blocks.Length}, " +
+            $"block sizes={string.Join(',', blocks.Select(block => block.SampleFrames).Distinct().Order())} frames.");
+
+        Assert.True(!blocks.Any(block => block.Peak == 0), "The decoder must not emit a fully silent PCM block after the rate change.");
+    }
+
     private sealed class PcmFixture : IDisposable
     {
         private static readonly Type EngineType = typeof(LibVlcPlaybackEngine);
         private const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
         private readonly string path;
+        private readonly bool ownsMediaFile;
         private readonly IntPtr player;
         private readonly ConcurrentQueue<PcmBlock> blocks = new();
         private readonly PlayCallback playCallback;
@@ -122,10 +328,11 @@ internal static class AudioSwitchVlcTestCatalog
         private readonly CleanupCallback cleanupCallback;
         private int setupCount;
 
-        private PcmFixture(LibVlcPlaybackEngine engine, string path, IntPtr player, bool capturePcm)
+        private PcmFixture(LibVlcPlaybackEngine engine, string path, IntPtr player, bool capturePcm, bool ownsMediaFile)
         {
             Engine = engine;
             this.path = path;
+            this.ownsMediaFile = ownsMediaFile;
             this.player = player;
             playCallback = Capture;
             setupCallback = Setup;
@@ -141,17 +348,40 @@ internal static class AudioSwitchVlcTestCatalog
         internal int Track => NativeGetTrack(player);
         internal int NativeMute => NativeGetMute(player);
         internal int NativeVolume => NativeGetVolume(player);
+        internal long PlaybackTimeMs => LibVlcNative.libvlc_media_player_get_time(player);
+        internal long PlaybackLengthMs => LibVlcNative.libvlc_media_player_get_length(player);
+        internal bool IsSeekable => LibVlcNative.libvlc_media_player_is_seekable(player) != 0;
         internal int SetupCount => Volatile.Read(ref setupCount);
 
-        internal static async Task<PcmFixture> CreateAsync(PlaybackAudioState initialState, bool capturePcm = true, int amplitude = 8000)
+        internal PcmBlock[] GetBlocksSince(long timestamp) => blocks.Where(block => block.Timestamp >= timestamp).ToArray();
+
+        internal PcmBlock[] GetBlocksBefore(long timestamp, TimeSpan window)
+        {
+            var windowTicks = (long)(window.TotalSeconds * Stopwatch.Frequency);
+            return blocks.Where(block => block.Timestamp >= timestamp - windowTicks && block.Timestamp < timestamp).ToArray();
+        }
+
+        internal static async Task<PcmFixture> CreateAsync(
+            PlaybackAudioState initialState,
+            bool capturePcm = true,
+            int amplitude = 8000,
+            string? mediaPath = null,
+            Uri? mediaUri = null)
         {
             var directory = Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!;
             Assert.True(File.Exists(Path.Combine(directory, "libvlc.dll")), "Configured libVLC is missing.");
-            var path = Path.Combine(Path.GetTempPath(), $"svs-audio-{Guid.NewGuid():N}.wav");
-            WriteTone(path, amplitude);
+            var path = mediaPath ?? Path.Combine(Path.GetTempPath(), $"svs-audio-{Guid.NewGuid():N}.wav");
+            var ownsGeneratedMediaFile = mediaPath is null && mediaUri is null;
+            if (mediaPath is null && mediaUri is null) WriteTone(path, amplitude);
+            var sourceUri = mediaUri ?? new Uri(path);
             var factory = new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings());
             var engine = (LibVlcPlaybackEngine)await factory.CreateAsync(directory,
                 enableNativeOverlay: false, rendererMode: VideoRendererMode.Gdi);
+            if (Environment.GetEnvironmentVariable("SVS_TEST_VLC_LOG_DIRECTORY") is { Length: > 0 } logDirectory)
+            {
+                Directory.CreateDirectory(logDirectory);
+                MultistreamVlcDiagnostics.Attach(engine, logDirectory);
+            }
             try
             {
                 // Install the native PCM observer between player creation and playback.
@@ -159,9 +389,13 @@ internal static class AudioSwitchVlcTestCatalog
                 // and convergence still go through the real production engine below.
                 var controller = (LibVlcAudioStateController)EngineType.GetField("audioStateController", PrivateInstance)!.GetValue(engine)!;
                 controller.Update(80, initialState);
-                EngineType.GetMethod("CreatePlayerCore", PrivateInstance)!.Invoke(engine, [new Uri(path), null]);
+                EngineType.GetField("currentMediaSource", PrivateInstance)!.SetValue(engine,
+                    PlaybackMediaSource.Direct(sourceUri));
+                EngineType.GetField("currentMediaUri", PrivateInstance)!.SetValue(engine, sourceUri);
+                EngineType.GetField("originalMediaUri", PrivateInstance)!.SetValue(engine, sourceUri);
+                EngineType.GetMethod("CreatePlayerCore", PrivateInstance)!.Invoke(engine, [sourceUri, null]);
                 var player = (IntPtr)EngineType.GetField("player", PrivateInstance)!.GetValue(engine)!;
-                var fixture = new PcmFixture(engine, path, player, capturePcm);
+                var fixture = new PcmFixture(engine, path, player, capturePcm, ownsGeneratedMediaFile);
                 EngineType.GetMethod("ApplyAudioCore", PrivateInstance)!.Invoke(engine, null);
                 Assert.Equal(0, NativePlay(player));
                 engine.SetAudioState(80, initialState);
@@ -170,7 +404,7 @@ internal static class AudioSwitchVlcTestCatalog
             catch
             {
                 engine.Dispose();
-                File.Delete(path);
+                if (ownsGeneratedMediaFile) File.Delete(path);
                 throw;
             }
         }
@@ -208,7 +442,17 @@ internal static class AudioSwitchVlcTestCatalog
         {
             var samples = new short[checked((int)count * 2)];
             Marshal.Copy(data, samples, 0, samples.Length);
-            blocks.Enqueue(new PcmBlock(Stopwatch.GetTimestamp(), samples.Any(sample => sample != 0)));
+            long sumSquares = 0;
+            var peak = 0;
+            foreach (var sample in samples)
+            {
+                var magnitude = Math.Abs((int)sample);
+                peak = Math.Max(peak, magnitude);
+                sumSquares += (long)sample * sample;
+            }
+
+            var rms = samples.Length == 0 ? 0 : Math.Sqrt(sumSquares / (double)samples.Length);
+            blocks.Enqueue(new PcmBlock(Stopwatch.GetTimestamp(), checked((int)count), rms, peak));
         }
 
         private static void WriteTone(string path, int amplitude)
@@ -238,10 +482,13 @@ internal static class AudioSwitchVlcTestCatalog
             GC.KeepAlive(playCallback);
             GC.KeepAlive(setupCallback);
             GC.KeepAlive(cleanupCallback);
-            File.Delete(path);
+            if (ownsMediaFile) File.Delete(path);
         }
 
-        private readonly record struct PcmBlock(long Timestamp, bool Nonzero);
+        internal readonly record struct PcmBlock(long Timestamp, int SampleFrames, double Rms, int Peak)
+        {
+            internal bool Nonzero => Peak != 0;
+        }
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

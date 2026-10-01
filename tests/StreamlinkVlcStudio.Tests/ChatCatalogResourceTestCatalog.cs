@@ -1,4 +1,3 @@
-using System.Net.Http;
 using System.Windows.Threading;
 
 internal static class ChatCatalogResourceTestCatalog

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 using StreamlinkVlcStudio.Infrastructure.Replay;
@@ -20,6 +21,73 @@ internal static class HlsReplayTimeline
     private static readonly HttpClient Client = HttpClientFactory.Create(TimeSpan.FromSeconds(15), allowAutoRedirect: false);
 
     internal static bool IsPlaylist(Uri uri) => uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+
+    internal static async Task<TimeSpan?> ReadPublishedDurationAsync(
+        Uri uri, PlatformKind platform, CancellationToken cancellationToken)
+    {
+        if (!IsPlaylist(uri)) return null;
+        string content;
+        if (uri.IsFile)
+        {
+            var bytes = await BoundedByteReader.ReadFileAsync(uri.LocalPath, PayloadLimits.PlaylistBytes, cancellationToken)
+                .ConfigureAwait(false);
+            if (bytes is null) return null;
+            content = new UTF8Encoding(false, true).GetString(bytes);
+        }
+        else if (uri.IsLoopback)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var response = await BoundedHttpResponseSender.SendAsync(Client, request, cancellationToken)
+                .ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            content = await BoundedHttpContentReader.ReadPlaylistAsync(response.Content, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            (content, _) = await ValidatedReplayHttpClient.ReadPlaylistAsync(
+                Client, ReplayUrlSecurityValidator.Shared, uri, platform, cancellationToken).ConfigureAwait(false);
+        }
+
+        return ParsePublishedDuration(content);
+    }
+
+    internal static TimeSpan? ParsePublishedDuration(string content)
+    {
+        var lines = HlsPlaylistPolicy.SplitLines(content);
+        if (lines.Length == 0 || lines[0] != "#EXTM3U" ||
+            HlsPlaylistPolicy.HasSkippedSegments(lines) ||
+            lines.Any(line => line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))) return null;
+
+        decimal seconds = 0;
+        decimal? pending = null;
+        var segments = 0;
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("#EXT-X-MEDIA-SEQUENCE:", StringComparison.Ordinal) &&
+                (!long.TryParse(line[22..], NumberStyles.None, CultureInfo.InvariantCulture, out var sequence) || sequence != 0))
+                return null;
+            if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
+            {
+                if (pending.HasValue ||
+                    !decimal.TryParse(line[8..].Split(',')[0], NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture, out var duration) || duration is <= 0 or > 3600) return null;
+                pending = duration;
+            }
+            else if (line[0] != '#')
+            {
+                if (!pending.HasValue) return null;
+                seconds += pending.Value;
+                if (seconds > 14 * 24 * 60 * 60) return null;
+                pending = null;
+                segments++;
+            }
+        }
+
+        return segments > 0 && !pending.HasValue
+            ? TimeSpan.FromTicks((long)(seconds * TimeSpan.TicksPerSecond))
+            : null;
+    }
 
     internal static async Task<PlaybackMediaSource> PrepareAsync(
         PlaybackMediaSource source, TimeSpan position, CancellationToken cancellationToken,
@@ -59,7 +127,8 @@ internal static class HlsReplayTimeline
         {
             await File.WriteAllTextAsync(path, timeline.Value.Playlist, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
             return new PlaybackMediaSource(new Uri(path), new TimelineLease(path, source), timeline.Value.Offset,
-                source.UseAvformatDemuxer, source.ReplaySeekPreroll, source.UseLiveReplayDemuxer);
+                source.UseAvformatDemuxer, source.ReplaySeekPreroll, source.UseLiveReplayDemuxer,
+                source.LiveReplaySegmentDuration);
         }
         catch
         {
@@ -70,10 +139,11 @@ internal static class HlsReplayTimeline
 
     internal static (string Playlist, TimeSpan Offset)? Rebase(string content, Uri uri, TimeSpan position)
     {
-        var lines = content.Split('\n').Select(line => line.Trim().TrimStart('\uFEFF')).ToArray();
+        var lines = HlsPlaylistPolicy.SplitLines(content);
         // Growing playlists must retain their refresh URL; fMP4 and encrypted/byte-range
         // playlists have different initialization semantics and do not use this TS adapter.
         if (lines.FirstOrDefault() != "#EXTM3U" || !lines.Contains("#EXT-X-ENDLIST") ||
+            HlsPlaylistPolicy.HasSkippedSegments(lines) ||
             lines.Any(line => line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal) ||
                 line.StartsWith("#EXT-X-KEY:", StringComparison.Ordinal) ||
                 line.StartsWith("#EXT-X-MAP:", StringComparison.Ordinal) ||
@@ -101,7 +171,7 @@ internal static class HlsReplayTimeline
                 duration = TimeSpan.FromTicks(checked((long)(seconds * TimeSpan.TicksPerSecond)));
                 pendingStart = i;
             }
-            else if (line.Length > 0 && line[0] != '#')
+            else if (line[0] != '#')
             {
                 if (pendingStart < 0) throw new InvalidDataException("Replay playlist has an unpaired media segment.");
                 var segmentUri = new Uri(uri, line);

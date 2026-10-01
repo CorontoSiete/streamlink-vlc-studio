@@ -1,7 +1,3 @@
-using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
 
 internal static class VodChatLifecycleTestCatalog
 {

@@ -2,6 +2,7 @@ internal static partial class ApplicationTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> StudioRefinementTests { get; } =
     [
+        ("studio refinement: library pages omit redundant headings and subtitles in wide and compact layouts", LibraryPageHeadersRemovedAsync),
         ("studio refinement: library destinations do not inherit another page's scroll position", LibraryDestinationScrollAsync),
         ("studio refinement: returning to a library page restores its own position", LibraryReturnScrollAsync),
         ("studio refinement: replacing broadcasts resets only that page's saved position", LibraryReplacementScrollAsync),
@@ -9,6 +10,57 @@ internal static partial class ApplicationTestCatalog
         ("studio refinement: library cards remain painted after settings and palette changes", LibraryCardsAcrossThemesAsync),
         ("studio refinement: physical arrow keys navigate search results and Enter opens the focused result", SearchResultsKeyboardAsync)
     ];
+
+    private static Task LibraryPageHeadersRemovedAsync() => WithStudioPolishWindowAsync((window, main, _) =>
+    {
+        var viewer = (ScrollViewer)window.FindName("HomeContentScrollViewer");
+        var headingStyle = (Style)window.FindResource("StudioLibraryTitle");
+        var subtitleStyle = (Style)window.FindResource("StudioPageSubtitle");
+        var removedBindings = new HashSet<string>(StringComparer.Ordinal)
+        {
+            nameof(MainViewModel.BrowseCategoriesTitle),
+            nameof(MainViewModel.TwitchVodResultsTitle),
+            nameof(MainViewModel.DownloadsStatus)
+        };
+        var destinations = new (string Name, ICommand Command, string VisibilityPath)[]
+        {
+            ("following", main.ShowFollowedHomePageCommand, nameof(MainViewModel.IsFollowedHomePageVisible)),
+            ("discover", main.ShowBrowseHomePageCommand, nameof(MainViewModel.IsBrowseHomePageVisible)),
+            ("broadcasts", main.ShowTwitchVodsHomePageCommand, nameof(MainViewModel.IsTwitchVodsHomePageVisible)),
+            ("downloads", main.ShowDownloadsHomePageCommand, nameof(MainViewModel.IsDownloadsHomePageVisible)),
+            ("recent", main.ShowRecentHomePageCommand, nameof(MainViewModel.IsRecentHomePageVisible))
+        };
+        foreach (var size in new[] { new Size(1320, 820), new Size(700, 640), new Size(440, 640) })
+        {
+            foreach (var destination in destinations)
+            {
+                destination.Command.Execute(null);
+                LayoutStudioPolishWindow(window, size);
+                var page = FindVisualDescendants<FrameworkElement>(viewer).Single(element =>
+                    BindingOperations.GetBinding(element, UIElement.VisibilityProperty)?.Path?.Path == destination.VisibilityPath);
+                Assert.Equal(Visibility.Visible, page.Visibility);
+                foreach (var text in FindVisualDescendants<TextBlock>(page))
+                {
+                    Assert.True(!ReferenceEquals(text.Style, headingStyle) && !ReferenceEquals(text.Style, subtitleStyle),
+                        $"The {destination.Name} page still contains the removed heading '{text.Text}' at {size}.");
+                    Assert.True(destination.Name != "downloads" || text.Text != "Downloads" || text.FontSize != 26,
+                        $"The downloads page still contains its removed heading at {size}.");
+                    var bindingPath = BindingOperations.GetBinding(text, TextBlock.TextProperty)?.Path?.Path;
+                    Assert.True(bindingPath is null || !removedBindings.Contains(bindingPath),
+                        $"The {destination.Name} page still contains the removed subtitle binding '{bindingPath}' at {size}.");
+                }
+                if (destination.Name == "downloads")
+                {
+                    var buttons = FindVisualDescendants<Button>(page).ToArray();
+                    Assert.True(buttons.Any(button => ReferenceEquals(button.Command, main.OpenDownloadFolderCommand)));
+                    Assert.True(buttons.Any(button => ReferenceEquals(button.Command, main.DownloadVodUrlCommand)));
+                    Assert.True(buttons.Any(button => ReferenceEquals(button.Command, main.ShowDownloadsSettingsCommand)));
+                }
+                SaveResponsiveWindowImage(window, $"library-without-headers-{destination.Name}-{size.Width}");
+            }
+        }
+        return Task.CompletedTask;
+    });
 
     private static Task LibraryDestinationScrollAsync() => WithStudioPolishWindowAsync((window, main, _) =>
     {
@@ -140,6 +192,8 @@ internal static partial class ApplicationTestCatalog
         var handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
         var search = (TextBox)window.FindName("HomeStreamSearchTextBox");
         window.Topmost = true;
+        await NativeWindowTest.RequireForegroundAsync(handle, TimeSpan.FromSeconds(2),
+            "Search keyboard navigation requires the test window to own the click point");
         PumpResponsiveLayout(window);
         // Activate through the same physical click as a user. WPF's logical focus and
         // Window.Activate alone can leave another native window owning keyboard input.

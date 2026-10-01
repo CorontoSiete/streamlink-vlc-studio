@@ -1,14 +1,5 @@
-using System.Net;
-using System.Text;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Core.Twitch;
-using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
-using StreamlinkVlcStudio.Infrastructure.Processes;
 using StreamlinkVlcStudio.Infrastructure.Text;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
-using StreamlinkVlcStudio.Infrastructure.Vod;
 using StreamlinkVlcStudio.Maintenance;
 
 internal static class ReviewFollowupTestCatalog

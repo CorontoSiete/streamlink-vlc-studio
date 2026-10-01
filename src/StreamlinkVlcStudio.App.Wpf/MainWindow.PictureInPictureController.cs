@@ -1,41 +1,9 @@
-using System.Buffers.Binary;
 using System.Collections.Specialized;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.IO.Pipes;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Data;
-using System.Windows.Input;
 using System.Windows.Interop;
-using System.Windows.Media;
-using System.Windows.Shell;
-using System.Windows.Threading;
-using Microsoft.Win32;
-using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.App.Wpf.Controls;
-using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
-using StreamlinkVlcStudio.Core.Logging;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Logging;
-using StreamlinkVlcStudio.Infrastructure.Processes;
-using StreamlinkVlcStudio.Infrastructure.Replay;
-using StreamlinkVlcStudio.Infrastructure.Settings;
-using StreamlinkVlcStudio.Infrastructure.Streamlink;
-using StreamlinkVlcStudio.Infrastructure.Twitch;
-using StreamlinkVlcStudio.Infrastructure.Updates;
-using StreamlinkVlcStudio.Infrastructure.Vlc;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
-using StreamlinkVlcStudio.Infrastructure.Vod;
-using StreamlinkVlcStudio.App.Wpf.Themes;
-using StreamlinkVlcStudio.App.Wpf.Twitch;
 using static StreamlinkVlcStudio.App.Wpf.WindowInteropHelpers;
 
 namespace StreamlinkVlcStudio.App.Wpf;
@@ -264,6 +232,7 @@ public partial class MainWindow
             detachedWindow.RestorableBoundsChanged += (_, _) => RememberPictureInPictureWindowBounds(detachedWindow);
             detachedWindow.StateChanged += (_, _) => RememberPictureInPictureWindowBounds(detachedWindow);
             detachedWindow.Closing += async (_, _) => await RememberPictureInPictureWindowBoundsAsync(detachedWindow);
+            detachedWindow.CloseTabsRequested += (_, _) => CloseDetachedWindowTabs(detachedWindow);
             detachedWindow.ReattachRequested += (_, _) => ReattachDetachedWindow(detachedWindow);
             detachedWindow.VisibleTabsChanged += (_, _) => SyncPictureInPictureVisibleTabGroup(detachedWindow);
             detachedWindow.TopBarVisibilityChanged += DetachedWindowOnTopBarVisibilityChanged;
@@ -313,6 +282,14 @@ public partial class MainWindow
                 .Where(viewModel.Tabs.Contains)
                 .Distinct()
                 .ToArray();
+            foreach (var tab in detachedTabs)
+            {
+                // The main window may not realize its presenter until after Closing
+                // disconnects the PiP tree. Mark the current host transfer explicitly
+                // so that PiP teardown cannot bind VLC to a parking HWND in between.
+                tab.VideoSurfacePresenterOwner?.DetachSurfaceForTransfer();
+            }
+
             RemoveDetachedWindowMappings(detachedWindow);
             if (detachedTabs.Length == 0)
             {
@@ -320,10 +297,10 @@ public partial class MainWindow
             }
 
             ShowMainWindow();
-            viewModel.SetTabsDetached(detachedTabs, detached: false);
             viewModel.SelectedTab = detachedWindow.ActiveTab is { } activeTab && viewModel.Tabs.Contains(activeTab)
                 ? activeTab
                 : detachedTabs[0];
+            viewModel.SetTabsDetached(detachedTabs, detached: false);
             VideoViewport.UpdateLayout();
         }
 
@@ -748,6 +725,27 @@ public partial class MainWindow
             {
                 CloseDetachedWindow(window, reattach);
             }
+        }
+
+        internal void CloseDetachedWindowTabs(DetachedVideoWindow window)
+        {
+            if (viewModel is null)
+            {
+                CloseDetachedWindow(window, reattach: false);
+                return;
+            }
+
+            var tabs = window.Tabs
+                .Where(viewModel.Tabs.Contains)
+                .Distinct()
+                .ToArray();
+            if (tabs.Length == 0)
+            {
+                CloseDetachedWindow(window, reattach: false);
+                return;
+            }
+
+            viewModel.CloseTabs(tabs);
         }
 
         internal void CloseDetachedWindowForTab(StreamTabViewModel tab, bool reattach)

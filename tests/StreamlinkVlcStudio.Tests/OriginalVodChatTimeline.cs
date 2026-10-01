@@ -1,8 +1,6 @@
 // Frozen behavior oracle from the dirty-tree baseline on 2026-09-27.
 // Original source SHA-256: d5bacec6c02495f4ad13394829bc1b545ef2256128fce553596413dfd056d61b
 // Keep the algorithm unchanged; production uses circular storage.
-using System.Globalization;
-using StreamlinkVlcStudio.Core.Models;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 

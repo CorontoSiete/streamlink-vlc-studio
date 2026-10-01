@@ -101,7 +101,7 @@ internal sealed class KickWebsiteJsonReader
             }
 
             var body = await BoundedHttpContentReader
-                .ReadJsonAsync(response.Content, cancellationToken)
+                .ReadStringAsync(response.Content, GetMaximumBytes(payloadKind), cancellationToken)
                 .ConfigureAwait(false);
             if (TryNormalizePayload(body, payloadKind, out var normalizedBody))
             {
@@ -176,11 +176,8 @@ internal sealed class KickWebsiteJsonReader
         out string normalizedBody)
     {
         normalizedBody = (body ?? "").Trim();
-        var maximumBytes = payloadKind == KickWebsitePayloadKind.Json
-            ? PayloadLimits.HttpJsonBytes
-            : PayloadLimits.ProcessOutputBytes;
         if (normalizedBody.Length == 0 ||
-            Encoding.UTF8.GetByteCount(normalizedBody) > maximumBytes)
+            Encoding.UTF8.GetByteCount(normalizedBody) > GetMaximumBytes(payloadKind))
         {
             return false;
         }
@@ -200,6 +197,9 @@ internal sealed class KickWebsiteJsonReader
             return false;
         }
     }
+
+    private static int GetMaximumBytes(KickWebsitePayloadKind payloadKind) =>
+        payloadKind == KickWebsitePayloadKind.Json ? PayloadLimits.HttpJsonBytes : PayloadLimits.ProcessOutputBytes;
 }
 
 internal enum KickWebsitePayloadKind

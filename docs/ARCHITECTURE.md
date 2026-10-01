@@ -20,6 +20,7 @@ Tradeoffs considered:
   - Service contracts.
   - Followed live stream models.
   - Stream search and VOD browsing contracts.
+  - Offline VOD download requests, library state, and canonical Twitch/Kick VOD URL parsing.
   - Stream input parsing.
   - Advanced Streamlink argument tokenization.
   - Twitch IRC and Kick Pusher payload parsing.
@@ -35,6 +36,7 @@ Tradeoffs considered:
   - `vlc-overlay` plugin preparation for chat-on-video mode.
   - Followed live streams adapter for Twitch Helix and configured Kick channel slugs.
   - Twitch/Kick channel search adapter and Twitch/Kick VOD adapters.
+  - Persistent queued VOD downloads, complete HLS package materialization, and local package validation.
   - Twitch subscriber-only VOD/replay fallback resolver using public storyboard-derived CloudFront playlists.
   - Twitch muted-VOD repair: `TwitchMutedVodPlaybackGateway` inspects each Twitch VOD playlist before libVLC opens it and, only when it lists muted segments, plays it through the loopback `TwitchMutedVodRepairProxy` (see "Muted Twitch VOD Repair").
   - Twitch IRC adapter with anonymous read-only mode and OAuth send mode.
@@ -50,7 +52,7 @@ Tradeoffs considered:
   - Single-stream and paged multi-stream video layout for up to 16 streams per page.
   - Playback controls.
   - Settings drawer.
-  - Home page for stream search, live followed channels, platform VOD browsing, and recently watched streams.
+  - Home page for stream search, live and offline followed channels, platform VOD browsing, and recently watched streams.
   - Docked chat rendering.
   - Internal lifecycle controllers keep search cancellation/debounce, VOD and Browse pagination
     generations, recent-stream transient state, tab grouping, inactive-tab playback policy,
@@ -91,6 +93,8 @@ This keeps Streamlink responsible for platform stream resolution and HLS transpo
   - Reuses the Twitch OAuth token and Client ID from chat settings.
   - Requests `chat:read chat:edit user:read:follows channel:manage:predictions clips:edit` during Twitch authorization.
   - Validates the token and calls Twitch Helix `streams/followed` with pagination to load all live followed channels for the authorized user.
+  - Also pages Twitch Helix `channels/followed` with the same authorized user and `user:read:follows` scope. Offline cards are the complete follow list minus a successfully completed live snapshot; partial or failed pagination never establishes offline status. Follow-list failures are reported separately without discarding successful live results or resetting their notification baseline.
+  - Kick offline cards require an explicit offline channel response for an imported or manually configured follow. Missing, malformed, or failed channel responses are not classified as offline. Live and offline avatars share batched profile lookups, and offline cards browse the channel's platform VOD library instead of starting live playback.
 
 - Kick:
   - Uses Kick's public channel API with either a Kick user token or app token.
@@ -129,6 +133,17 @@ Clicking a home card opens the same `StreamTarget` flow used by manual stream in
 - Live tabs use the same storyboard-derived CloudFront fallback when seeking into a subscriber-only matching Twitch VOD and Streamlink cannot resolve it.
 - Kick VOD tabs play the returned HLS source directly in libVLC without Streamlink URL resolution. When the VOD item includes a start time, chat is replayed from Kick's public recent-messages endpoint, aligned to that start time.
 - Explicit VOD tabs disable live viewer polling, live chat sending, return-to-live behavior, and Recent-stream writes.
+
+## Offline VOD Downloads
+
+- `IVodDownloadService` owns the library and serialized download queue. `VodDownloadService` persists per-VOD records independently of settings, keeps connection options only in memory, and distinguishes completed packages from canceled, failed, and interrupted transfers.
+- Twitch uses configured Streamlink resolution and the existing subscriber-only resolver when needed. Only that trusted fallback can supply a local source playlist; its media references must still be approved provider HTTPS URLs. Kick page downloads resolve the channel ID from actual Next.js React Flight data, validate the matching website API response, and pass the recording playlist to Streamlink for quality selection. The configured Kick plugin remains a fallback when the website changes.
+- `OfflineHlsPlaylist` requires a closed media playlist, preserves sequence/discontinuity semantics, and rewrites every segment, initialization resource, and AES-128 key to local asset names. Byte ranges are materialized rather than concatenated. Unsupported DRM, missing segments, and unsafe external resources fail the entire job.
+- `HlsVodDownloader` streams up to four assets concurrently through bounded, redirect-validated HTTP. Clear muted Twitch segments receive the existing timestamp repair before storage. `OfflineVodPackage` records file sizes and a playlist hash; only fully written staging directories are atomically promoted to completed media.
+- `VodDownloadsViewModel` owns library cards and commands. Download quality does not alter active playback quality. Per-card operations exclude each other, and open offline tabs prevent deletion or replacement of their media.
+- A completed `StreamTarget` carries `LocalMediaPath` and remains an explicit platform VOD. Offline tabs have distinct tab identities but share platform/video resume history. Startup, seek, reload, and restore use the file URI directly, bypass Streamlink, and suppress live/replay chat and viewer connections.
+
+See [VOD downloads](vod-downloads.md) for storage and test commands.
 
 ## Muted Twitch VOD Repair
 

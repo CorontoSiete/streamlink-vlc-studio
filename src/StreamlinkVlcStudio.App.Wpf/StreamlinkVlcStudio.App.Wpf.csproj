@@ -18,7 +18,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <ApplicationIcon>Assets\Twitch.ico</ApplicationIcon>
+    <ApplicationIcon>Assets\Studio.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>StreamStudio</AssemblyName>
     <AssemblyTitle>Stream Studio</AssemblyTitle>
@@ -43,9 +43,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Remove="Assets\Studio.ico" />
     <None Remove="Assets\Twitch.ico" />
     <None Remove="Assets\TwitchBadges\**\*.*" />
     <None Remove="Assets\KickBadges\**\*.*" />
+    <Resource Include="Assets\Studio.ico" />
     <Resource Include="Assets\Twitch.ico" />
     <Resource Include="Assets\TwitchBadges\**\*.*" />
     <Resource Include="Assets\KickBadges\**\*.*" />

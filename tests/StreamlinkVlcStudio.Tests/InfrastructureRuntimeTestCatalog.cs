@@ -1,15 +1,7 @@
-using System.Net;
-using System.Text;
-using StreamlinkVlcStudio.Core.Logging;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 using StreamlinkVlcStudio.Infrastructure.Logging;
-using StreamlinkVlcStudio.Infrastructure.Replay;
 using StreamlinkVlcStudio.Infrastructure.Text;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
 
 internal static class InfrastructureRuntimeTestCatalog
 {

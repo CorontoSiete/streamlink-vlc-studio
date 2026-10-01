@@ -1,6 +1,4 @@
 using StreamlinkVlcStudio.Infrastructure.Logging;
-using StreamlinkVlcStudio.Infrastructure.Replay;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
 
 internal static partial class ApplicationTestCatalog
 {

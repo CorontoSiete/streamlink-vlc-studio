@@ -13,4 +13,6 @@ public interface IFollowedStreamsService
 public sealed record FollowedLiveStreamsResult(
     IReadOnlyList<FollowedLiveStream> Streams,
     IReadOnlyList<string> Messages,
-    IReadOnlyList<PlatformKind>? SucceededPlatforms = null);
+    IReadOnlyList<PlatformKind>? SucceededPlatforms = null,
+    IReadOnlyList<FollowedChannel>? OfflineChannels = null,
+    IReadOnlyList<string>? OfflineMessages = null);

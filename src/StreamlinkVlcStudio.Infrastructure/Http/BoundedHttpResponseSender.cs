@@ -11,22 +11,26 @@ internal static class BoundedHttpResponseSender
         HttpClient httpClient,
         HttpRequestMessage request,
         CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        bool useReadTimeout = false)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(request);
         // HttpClient.Timeout stops applying after headers arrive with ResponseHeadersRead.
         // Keep the same request budget alive until the caller disposes the response body.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout ?? httpClient.Timeout);
+        var timeoutDuration = timeout ?? httpClient.Timeout;
         HttpResponseMessage? response = null;
         try
         {
+            deadline.CancelAfter(timeoutDuration);
             response = await httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 deadline.Token).ConfigureAwait(false);
-            response.Content = new DeadlineHttpContent(response.Content, deadline);
+            if (useReadTimeout) deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+            response.Content = new DeadlineHttpContent(response.Content, deadline,
+                useReadTimeout ? timeoutDuration : null);
             return response;
         }
         catch

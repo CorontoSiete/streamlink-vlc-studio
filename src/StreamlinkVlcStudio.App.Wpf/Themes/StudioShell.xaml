@@ -24,12 +24,29 @@
         <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
     <Style x:Key="StudioStatusPill" TargetType="Border">
-        <Setter Property="Background" Value="{DynamicResource StudioSurface0Brush}" />
-        <Setter Property="CornerRadius" Value="14" />
-        <Setter Property="Padding" Value="12,6" />
-        <Setter Property="Margin" Value="16,0,0,0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Padding" Value="0,2" />
+        <Setter Property="Margin" Value="12,0,0,0" />
         <Setter Property="VerticalAlignment" Value="Top" />
     </Style>
+
+    <Style x:Key="StudioBrandMarkStyle" TargetType="Path">
+        <Setter Property="Width" Value="18" />
+        <Setter Property="Height" Value="18" />
+        <Setter Property="Stretch" Value="Uniform" />
+        <Setter Property="Fill" Value="{DynamicResource StudioAccentBrush}" />
+        <Setter Property="Data">
+            <Setter.Value>
+                <GeometryGroup>
+                    <RectangleGeometry Rect="0,6,4,12" RadiusX="1.5" RadiusY="1.5" />
+                    <RectangleGeometry Rect="7,0,4,24" RadiusX="1.5" RadiusY="1.5" />
+                    <RectangleGeometry Rect="14,4,4,16" RadiusX="1.5" RadiusY="1.5" />
+                </GeometryGroup>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="StudioEmptyStateGlyph" TargetType="Border">
         <Setter Property="Width" Value="64" />
         <Setter Property="Height" Value="64" />
@@ -40,10 +57,10 @@
         <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
     </Style>
     <Style x:Key="StudioCardPlayAffordance" TargetType="Border">
-        <Setter Property="Width" Value="44" />
-        <Setter Property="Height" Value="44" />
-        <Setter Property="CornerRadius" Value="22" />
-        <Setter Property="Background" Value="#D9101211" />
+        <Setter Property="Width" Value="48" />
+        <Setter Property="Height" Value="48" />
+        <Setter Property="CornerRadius" Value="24" />
+        <Setter Property="Background" Value="#E5171B20" />
         <Setter Property="BorderBrush" Value="#50FFFFFF" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="HorizontalAlignment" Value="Center" />
@@ -77,11 +94,11 @@
     <Style x:Key="StudioRailButton" TargetType="Button">
         <Setter Property="Height" Value="44" />
         <Setter Property="Margin" Value="0,0,0,4" />
-        <Setter Property="Padding" Value="14,0" />
+        <Setter Property="Padding" Value="12,0" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
-        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="{DynamicResource StudioTextSecondaryBrush}" />
+        <Setter Property="FontSize" Value="13" />
         <Setter Property="FontWeight" Value="Medium" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="FocusVisualStyle" Value="{StaticResource StudioFocusVisualStyle}" />
@@ -89,27 +106,49 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="RailChrome" Background="{TemplateBinding Background}" CornerRadius="10">
+                    <Border x:Name="RailChrome" Background="{TemplateBinding Background}" CornerRadius="9">
                         <Grid>
-                            <Border Width="3" Height="20" CornerRadius="0,2,2,0" HorizontalAlignment="Left"
+                            <Border x:Name="RailHover" Background="{DynamicResource StudioTextBrush}" CornerRadius="9" Opacity="0" IsHitTestVisible="False" />
+                            <Border x:Name="RailIndicator" Width="2" Height="18" CornerRadius="1" HorizontalAlignment="Left"
                                     Background="{TemplateBinding BorderBrush}" />
                             <Grid Margin="{TemplateBinding Padding}">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="30" />
+                                    <ColumnDefinition Width="32" />
                                     <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="{TemplateBinding Tag}" FontFamily="Segoe MDL2 Assets" FontSize="16" VerticalAlignment="Center" />
+                                <Path Style="{StaticResource StudioLineIcon}" Data="{TemplateBinding Tag}"
+                                      Stroke="{TemplateBinding Foreground}" HorizontalAlignment="Left" />
                                 <ContentPresenter Grid.Column="1" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                                <Border x:Name="RailBadge" Grid.Column="2" CornerRadius="6" Padding="6,2" Margin="6,0,0,0" MinWidth="22"
+                                        Background="{DynamicResource StudioSurface0Brush}" VerticalAlignment="Center" Visibility="Collapsed">
+                                    <TextBlock x:Name="RailBadgeText" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                </Border>
                             </Grid>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding Content, RelativeSource={RelativeSource Self}}" Value="Following" />
+                                <Condition Binding="{Binding HasLiveFollowedChannels}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter TargetName="RailBadge" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="RailBadgeText" Property="Text" Value="{Binding LiveFollowedChannels.Count}" />
+                        </MultiDataTrigger>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding Content, RelativeSource={RelativeSource Self}}" Value="Downloads" />
+                                <Condition Binding="{Binding HasVodDownloads}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter TargetName="RailBadge" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="RailBadgeText" Property="Text" Value="{Binding VodDownloads.Count}" />
+                        </MultiDataTrigger>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="RailChrome" Property="Background" Value="{DynamicResource StudioSurfaceHoverBrush}" />
-                            <Setter Property="Foreground" Value="{DynamicResource StudioTextBrush}" />
+                            <Setter TargetName="RailHover" Property="Opacity" Value="0.05" />
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="RailChrome" Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                            <Setter TargetName="RailHover" Property="Opacity" Value="0.09" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45" />
@@ -120,42 +159,57 @@
         </Setter>
     </Style>
     <Style x:Key="StudioRailLive" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
-        <Setter Property="Tag" Value="&#xE714;" />
+        <Setter Property="Tag" Value="{StaticResource StudioIconLive}" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding IsFollowedHomePageSelected}" Value="True">
                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                 <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
             </DataTrigger>
         </Style.Triggers>
     </Style>
     <Style x:Key="StudioRailBrowse" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
-        <Setter Property="Tag" Value="&#xE774;" />
+        <Setter Property="Tag" Value="{StaticResource StudioIconDiscover}" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding IsBrowseHomePageSelected}" Value="True">
                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                 <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
             </DataTrigger>
         </Style.Triggers>
     </Style>
     <Style x:Key="StudioRailVods" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
-        <Setter Property="Tag" Value="&#xE8B2;" />
+        <Setter Property="Tag" Value="{StaticResource StudioIconBroadcasts}" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding IsTwitchVodsHomePageSelected}" Value="True">
                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                 <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="StudioRailDownloads" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
+        <Setter Property="Tag" Value="{StaticResource StudioIconDownload}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsDownloadsHomePageSelected}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
             </DataTrigger>
         </Style.Triggers>
     </Style>
     <Style x:Key="StudioRailRecent" TargetType="Button" BasedOn="{StaticResource StudioRailButton}">
-        <Setter Property="Tag" Value="&#xE81C;" />
+        <Setter Property="Tag" Value="{StaticResource StudioIconRecent}" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding IsRecentHomePageSelected}" Value="True">
                 <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
                 <Setter Property="Foreground" Value="{DynamicResource StudioAccentTextBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
             </DataTrigger>
         </Style.Triggers>
     </Style>

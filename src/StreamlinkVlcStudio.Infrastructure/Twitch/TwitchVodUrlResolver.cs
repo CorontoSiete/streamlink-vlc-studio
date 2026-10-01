@@ -3,6 +3,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Twitch;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Replay;
 
@@ -71,8 +72,9 @@ internal sealed class TwitchVodUrlResolver
 
     private static string ValidateMediaPlaylist(string content, Uri uri)
     {
-        var lines = content.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0 || lines[0] != "#EXTM3U" || !TwitchMutedVodPlaylist.Inspect(content).IsMediaPlaylist)
+        var lines = HlsPlaylistPolicy.SplitLines(content);
+        if (lines.Length == 0 || lines[0] != "#EXTM3U" || HlsPlaylistPolicy.HasSkippedSegments(lines) ||
+            !TwitchMutedVodPlaylist.Inspect(content).IsMediaPlaylist)
             throw new InvalidDataException("Twitch did not return a playable media playlist.");
         var pendingSegment = false;
         var segments = 0;

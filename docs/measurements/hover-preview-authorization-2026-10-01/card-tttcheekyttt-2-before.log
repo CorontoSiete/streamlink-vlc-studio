@@ -1,0 +1,11 @@
+Live card 1020 ms: Using Streamlink preview transport (InvalidDataException).
+Live card 1023 ms: transport starting
+Live card 1671 ms: provider plugin ready
+Live card 3957 ms: provider qualities resolved
+Live card 3960 ms: transport ready
+Live card 4126 ms: VLC connected
+Live card 4126 ms: provider stream opening
+Live card first visible frame: 4758 ms.
+Live Twitch card first visible frame 4758 ms after hover; rendered changing video; settings toggle cleared the image and stopped playback.
+PASS stream hover preview: real live video renders in the production card on hover
+All 1 tests passed; 0 skipped.

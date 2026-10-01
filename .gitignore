@@ -12,9 +12,11 @@ obj/
 .codex-*/
 .vs/
 artifacts/
+/.artifacts/
 release/
 /publish*/
 *.user
+/vlc-help.txt
 *.suo
 __pycache__/
 *.py[cod]

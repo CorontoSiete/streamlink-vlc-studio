@@ -68,6 +68,7 @@ internal static partial class ApplicationTestCatalog
                 if (nativeOverlay) await AssertNativeOverlayComposedAsync(engine, surface, "resize-before");
                 var frames = 0;
                 var blankFrames = 0;
+                var whiteEdgeFrames = 0;
                 using var finished = new CancellationTokenSource();
                 var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 var sampling = Task.Run(async () =>
@@ -77,6 +78,7 @@ internal static partial class ApplicationTestCatalog
                     using (var initial = await capture.NextFrameAsync())
                     {
                         Assert.True(IsVideoVisible(initial), "The capture must contain bright video before resizing.");
+                        Assert.True(!HasWhiteVideoSide(initial), "The initial video has a white side edge.");
                         SaveReplayVlcArtifact(initial, mode, "resize-initial");
                     }
                     ready.SetResult();
@@ -88,6 +90,11 @@ internal static partial class ApplicationTestCatalog
                         {
                             blankFrames++;
                             if (blankFrames <= 3) SaveReplayVlcArtifact(frame, mode, $"resize-blank-{blankFrames}");
+                        }
+                        if (HasWhiteVideoSide(frame))
+                        {
+                            whiteEdgeFrames++;
+                            if (whiteEdgeFrames <= 3) SaveReplayVlcArtifact(frame, mode, $"resize-white-edge-{whiteEdgeFrames}");
                         }
                     }
                 });
@@ -150,9 +157,11 @@ internal static partial class ApplicationTestCatalog
                     finished.Cancel();
                     await sampling;
                 }
-                Console.WriteLine($"{mode} continuous resize: {frames} captured frames, {blankFrames} blank video frames.");
+                Console.WriteLine($"{mode} continuous resize: {frames} captured frames, {blankFrames} blank video frames, " +
+                    $"{whiteEdgeFrames} white side-edge frames.");
                 Assert.True(frames >= 30, $"Only {frames} frames were captured during resize.");
                 Assert.Equal(0, blankFrames);
+                Assert.Equal(0, whiteEdgeFrames);
                 Assert.True(engine.TryGetPlaybackClock(out var finalClock) && finalClock.Position > TimeSpan.FromSeconds(3),
                     "Playback must keep advancing while the window resizes.");
                 if (nativeOverlay) await AssertNativeOverlayComposedAsync(engine, surface, "resize-after");
@@ -173,6 +182,21 @@ internal static partial class ApplicationTestCatalog
                         if (Math.Max(pixel.R, Math.Max(pixel.G, pixel.B)) < 100) return false;
                     }
                 return true;
+            }
+
+            static bool HasWhiteVideoSide(System.Drawing.Bitmap frame)
+            {
+                // The host spans the full client width at these sampled heights.
+                foreach (var y in new[] { 300, 350, 400 })
+                {
+                    if (y >= frame.Height) continue;
+                    foreach (var x in new[] { 0, frame.Width - 1 })
+                    {
+                        var pixel = frame.GetPixel(x, y);
+                        if (pixel.R >= 240 && pixel.G >= 240 && pixel.B >= 240) return true;
+                    }
+                }
+                return false;
             }
 
         });

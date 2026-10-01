@@ -4513,9 +4513,10 @@ internal static partial class ApplicationTestCatalog
     }),
     ("studio theme exposes shared palette focus and disabled visuals", () =>
     {
-        return TestSta.RunAsync(() =>
+        return TestSta.RunOffscreenAsync(() =>
         {
             var window = new MainWindow();
+            RemoveMainWindowAutomaticStartup(window);
             Assert.True(window.Resources.MergedDictionaries.Any(dictionary =>
                 dictionary.Source?.OriginalString.Contains("Themes/StudioTheme.xaml", StringComparison.Ordinal) == true));
 
@@ -4523,13 +4524,13 @@ internal static partial class ApplicationTestCatalog
             // dictionary), so it resolves through the tree rather than out of window.Resources.
             // These three pin the default dark palette so an accidental recolour is caught.
             WpfVisualTest.AssertSolidBrushColor(
-                "#FF1C1C1E",
+                "#FF0F1115",
                 WpfVisualTest.PaletteBrush(window, "StudioBaseBrush"));
             WpfVisualTest.AssertSolidBrushColor(
-                "#FF4ADE80",
+                "#FF74E6BB",
                 WpfVisualTest.PaletteBrush(window, "StudioAccentBrush"));
             WpfVisualTest.AssertSolidBrushColor(
-                "#FF4ADE80",
+                "#FF74E6BB",
                 WpfVisualTest.PaletteBrush(window, "StudioFocusBrush"));
 
             var button = new System.Windows.Controls.Button
@@ -4550,6 +4551,8 @@ internal static partial class ApplicationTestCatalog
             WpfVisualTest.AssertSolidBrushColor(
                 WpfVisualTest.PaletteColor(window, "StudioTextMutedColor"),
                 button.Foreground);
+            window.Close();
+            return Task.CompletedTask;
         });
     }),
     ("combo box hover keeps the configured surface instead of platform highlight chrome", () =>
@@ -5592,7 +5595,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal("", input.Text);
                 Assert.Equal("", tab.OutgoingChatText);
 
-                Assert.True(tab.TryReleaseNativeOverlayChatInputFocus());
+                Assert.True(await tab.TryReleaseNativeOverlayChatInputFocusAsync());
                 NativeWindowTest.SendUnicodeText("direct release works");
                 await TestWait.UntilAsync(
                     () => input.Text == "direct release works" &&
@@ -5734,7 +5737,7 @@ internal static partial class ApplicationTestCatalog
             }
         });
     }),
-    ("native overlay chat clears stale shift state after shifted symbol input", () =>
+    ("native overlay chat handles shifted symbols and Ctrl+V paste", () =>
     {
         return TestSta.RunAsync(async () =>
         {
@@ -5825,6 +5828,57 @@ internal static partial class ApplicationTestCatalog
                     "native overlay did not capture the following slash");
 
                 Assert.Equal("?/", NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath));
+
+                var previousClipboardData = Clipboard.GetDataObject();
+                try
+                {
+                    const string clipboardText = " pasted café\nline";
+                    const string expectedInput = "?/ pasted café line";
+                    Clipboard.SetText(clipboardText);
+                    NativeWindowTest.SendVirtualKeySequence(
+                        (0x11, false), // Control
+                        (0x56, false), // V
+                        (0x56, true),
+                        (0x11, true));
+                    await TestWait.UntilAsync(
+                        () => NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath).Length > 2,
+                        TimeSpan.FromSeconds(2),
+                        "native overlay did not receive Ctrl+V");
+                    Assert.Equal(expectedInput, NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath));
+
+                    NativeWindowTest.SendVirtualKeySequence((0x56, false), (0x56, true));
+                    await TestWait.UntilAsync(
+                        () => NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath).Length > expectedInput.Length,
+                        TimeSpan.FromSeconds(2),
+                        "native overlay did not receive V after Control was released");
+                    var inputAfterControlRelease = expectedInput + "v";
+                    Assert.Equal(inputAfterControlRelease, NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath));
+
+                    Clipboard.SetText(new string('x', 600));
+                    NativeWindowTest.SendVirtualKeySequence(
+                        (0x11, false),
+                        (0x56, false),
+                        (0x56, true),
+                        (0x11, true));
+                    var availableBytes = 511 - Encoding.UTF8.GetByteCount(inputAfterControlRelease);
+                    var expectedFilledInput = inputAfterControlRelease + new string('x', availableBytes);
+                    await TestWait.UntilAsync(
+                        () => NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath).Length > inputAfterControlRelease.Length,
+                        TimeSpan.FromSeconds(2),
+                        "native overlay did not receive a long Ctrl+V paste");
+                    Assert.Equal(expectedFilledInput, NativeOverlayControllerTest.ReadInputText(overlayController, controllerPath));
+                }
+                finally
+                {
+                    if (previousClipboardData is null)
+                    {
+                        Clipboard.Clear();
+                    }
+                    else
+                    {
+                        Clipboard.SetDataObject(previousClipboardData, copy: true);
+                    }
+                }
             }
             finally
             {

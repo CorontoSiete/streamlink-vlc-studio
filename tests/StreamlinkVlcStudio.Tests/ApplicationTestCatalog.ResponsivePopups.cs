@@ -99,20 +99,25 @@ internal static partial class ApplicationTestCatalog
                         RecordResponsiveClippingFailure(failures, context + " result action", () =>
                             AssertResponsiveControlCompletelyReachable(window, button, popupBounds));
                         var resultText = FindVisualDescendants<TextBlock>(button)
-                            .Where(text => text.IsVisible &&
-                                (text.Text == result.DisplayName || text.Text == result.CategoryName ||
-                                 text.Text == result.StatusText || text.Text == result.StateText ||
-                                 (result.HasViewerCount && text.Text == result.ViewerCountText)))
+                            .Where(text =>
+                            {
+                                var value = ResponsiveSearchText(text);
+                                return text.IsVisible &&
+                                    (value == result.DisplayName || value == result.CategoryName ||
+                                     value == result.StatusText || value == result.StateText ||
+                                     (result.HasViewerCount && value == result.ViewerCountText));
+                            })
                             .ToArray();
                         Assert.Equal(result.HasViewerCount ? 5 : 4, resultText.Length);
                         foreach (var text in resultText)
                         {
-                            RecordResponsiveClippingFailure(failures, context + $" '{text.Text}'", () =>
+                            var value = ResponsiveSearchText(text);
+                            RecordResponsiveClippingFailure(failures, context + $" '{value}'", () =>
                             {
-                                if (text.Text == result.DisplayName || text.Text == result.CategoryName || text.Text == result.StatusText)
+                                if (value == result.DisplayName || value == result.CategoryName || value == result.StatusText)
                                 {
                                     Assert.True(text.ActualWidth >= 70,
-                                        $"Search text '{text.Text}' has only {text.ActualWidth:0.##} DIPs available.");
+                                        $"Search text '{value}' has only {text.ActualWidth:0.##} DIPs available.");
                                 }
                                 AssertResponsiveControlCompletelyReachable(window, text, popupBounds);
                             });
@@ -128,6 +133,9 @@ internal static partial class ApplicationTestCatalog
                 return Task.CompletedTask;
             }))
     ];
+
+    private static string ResponsiveSearchText(TextBlock text) =>
+        text is EmojiTextBlock emoji ? emoji.SourceText ?? "" : text.Text;
 
     private static IReadOnlyList<(int Width, int Height)> ResponsivePopupWindowSizes =>
     [

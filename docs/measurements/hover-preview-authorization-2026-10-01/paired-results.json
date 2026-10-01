@@ -1,0 +1,210 @@
+{
+  "measurement": "Physical hover to first visible bitmap in the production WPF card",
+  "observation_interval_ms": 100,
+  "runs": [
+    {
+      "channel": "tttcheekyttt",
+      "trial": 1,
+      "version": "before",
+      "started_utc": "2026-10-01T08:47:09.8063430+00:00",
+      "first_visible_ms": 5180,
+      "fallback_starts": 1,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-tttcheekyttt-1-before.log"
+    },
+    {
+      "channel": "tttcheekyttt",
+      "trial": 1,
+      "version": "after",
+      "started_utc": "2026-10-01T08:47:16.5324986+00:00",
+      "first_visible_ms": 1701,
+      "fallback_starts": 0,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-tttcheekyttt-1-after.log"
+    },
+    {
+      "channel": "termynater_",
+      "trial": 1,
+      "version": "before",
+      "started_utc": "2026-10-01T08:47:19.9620005+00:00",
+      "first_visible_ms": 4123,
+      "fallback_starts": 1,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-termynater_-1-before.log"
+    },
+    {
+      "channel": "termynater_",
+      "trial": 1,
+      "version": "after",
+      "started_utc": "2026-10-01T08:47:25.5319449+00:00",
+      "first_visible_ms": 1493,
+      "fallback_starts": 0,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-termynater_-1-after.log"
+    },
+    {
+      "channel": "tttcheekyttt",
+      "trial": 2,
+      "version": "after",
+      "started_utc": "2026-10-01T08:47:28.4502853+00:00",
+      "first_visible_ms": 1593,
+      "fallback_starts": 0,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-tttcheekyttt-2-after.log"
+    },
+    {
+      "channel": "tttcheekyttt",
+      "trial": 2,
+      "version": "before",
+      "started_utc": "2026-10-01T08:47:31.9589031+00:00",
+      "first_visible_ms": 4758,
+      "fallback_starts": 1,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-tttcheekyttt-2-before.log"
+    },
+    {
+      "channel": "termynater_",
+      "trial": 2,
+      "version": "after",
+      "started_utc": "2026-10-01T08:47:38.1639386+00:00",
+      "first_visible_ms": 1492,
+      "fallback_starts": 0,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-termynater_-2-after.log"
+    },
+    {
+      "channel": "termynater_",
+      "trial": 2,
+      "version": "before",
+      "started_utc": "2026-10-01T08:47:41.0837007+00:00",
+      "first_visible_ms": 3793,
+      "fallback_starts": 1,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-termynater_-2-before.log"
+    },
+    {
+      "channel": "tttcheekyttt",
+      "trial": 3,
+      "version": "before",
+      "started_utc": "2026-10-01T08:47:46.2886613+00:00",
+      "first_visible_ms": 4663,
+      "fallback_starts": 1,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-tttcheekyttt-3-before.log"
+    },
+    {
+      "channel": "tttcheekyttt",
+      "trial": 3,
+      "version": "after",
+      "started_utc": "2026-10-01T08:47:52.4114186+00:00",
+      "first_visible_ms": 1692,
+      "fallback_starts": 0,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-tttcheekyttt-3-after.log"
+    },
+    {
+      "channel": "termynater_",
+      "trial": 3,
+      "version": "before",
+      "started_utc": "2026-10-01T08:47:55.7887788+00:00",
+      "first_visible_ms": 4000,
+      "fallback_starts": 1,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-termynater_-3-before.log"
+    },
+    {
+      "channel": "termynater_",
+      "trial": 3,
+      "version": "after",
+      "started_utc": "2026-10-01T08:48:01.2334815+00:00",
+      "first_visible_ms": 1486,
+      "fallback_starts": 0,
+      "changing_video_and_cleanup_passed": true,
+      "log": "card-termynater_-3-after.log"
+    }
+  ],
+  "channels": {
+    "tttcheekyttt": {
+      "before_median_ms": 4758,
+      "after_median_ms": 1692,
+      "before_range_ms": [
+        4663,
+        5180
+      ],
+      "after_range_ms": [
+        1593,
+        1701
+      ],
+      "median_reduction_percent": 64.44,
+      "continuity": {
+        "Channel": "tttcheekyttt",
+        "firstFrameAt": 2110,
+        "frameCount": 641,
+        "changing": true,
+        "longestGap": 147,
+        "observationMs": 40007,
+        "cleanupMs": 74,
+        "Fallbacks": 0
+      }
+    },
+    "termynater_": {
+      "before_median_ms": 4000,
+      "after_median_ms": 1492,
+      "before_range_ms": [
+        3793,
+        4123
+      ],
+      "after_range_ms": [
+        1486,
+        1493
+      ],
+      "median_reduction_percent": 62.7,
+      "continuity": {
+        "Channel": "termynater_",
+        "firstFrameAt": 1535,
+        "frameCount": 628,
+        "changing": true,
+        "longestGap": 169,
+        "observationMs": 40015,
+        "cleanupMs": 74,
+        "Fallbacks": 0
+      }
+    }
+  },
+  "working_tree_git_revision": "933bb5f24c0aafaa336d7227defc6fddc4394ba1",
+  "versions": {
+    "dotnet_sdk": "10.0.302",
+    "streamlink": "8.4.0",
+    "installed_vlc": "3.0.23"
+  },
+  "sha256": {
+    "before": {
+      "StreamlinkVlcStudio.Infrastructure.dll": "bc5d0c0e579ca2acd181d91ce9d226bedd43e0076eef8cd95298efdc41dc7735",
+      "StreamStudio.dll": "623cfed4b0b7c53831599604a94e78e23a66b3791aae328ca240b3af40eef7a5",
+      "StreamlinkVlcStudio.Core.dll": "27ba3b554e8d6b1bba2dcdfecd4db78e51fd8495856f0a70914940893bbb2cae"
+    },
+    "after": {
+      "StreamlinkVlcStudio.Infrastructure.dll": "0455fd27c39d970f2260fec1aa0e7eaa29a97750b85d47b8a17ae14ab463c523",
+      "StreamStudio.dll": "1c57ef56c35ff1a2a95f707993cad36de18398e7a2f1d1c78194b68986019817",
+      "StreamlinkVlcStudio.Core.dll": "27ba3b554e8d6b1bba2dcdfecd4db78e51fd8495856f0a70914940893bbb2cae"
+    }
+  },
+  "settings_unchanged": true,
+  "verification": {
+    "focused": {
+      "passed": 38,
+      "skipped": 0,
+      "failures": 0,
+      "timeouts": 0
+    },
+    "headless_full_suite": {
+      "passed": 1486,
+      "skipped": 269,
+      "failures": 0,
+      "timeouts": 0
+    },
+    "release_build_warnings": 0,
+    "release_build_errors": 0,
+    "format_verify_exit_code": 0
+  }
+}

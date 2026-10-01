@@ -11,43 +11,46 @@ internal static class SafeEventDispatcher
         TEventArgs eventArgs,
         IAppLogger logger,
         string source,
-        string eventName)
-    {
-        if (handlers is null)
-        {
-            return;
-        }
-
-        foreach (var handler in handlers.GetInvocationList())
-        {
-            try
-            {
-                ((EventHandler<TEventArgs>)handler)(sender, eventArgs);
-            }
-            catch (Exception ex)
-            {
-                LogSubscriberFailure(logger, source, eventName, ex);
-            }
-        }
-    }
+        string eventName) =>
+        Invoke(handlers, (sender, eventArgs), static (handler, state) => handler(state.sender, state.eventArgs),
+            logger, source, eventName);
 
     public static void Invoke<T>(
         Action<T>? callback,
         T value,
         IAppLogger logger,
         string source,
-        string callbackName)
+        string callbackName) =>
+        Invoke(callback, value, static (handler, state) => handler(state), logger, source, callbackName);
+
+    public static void Invoke<TFirst, TSecond>(
+        Action<TFirst, TSecond>? callback,
+        TFirst first,
+        TSecond second,
+        IAppLogger logger,
+        string source,
+        string callbackName) =>
+        Invoke(callback, (first, second), static (handler, state) => handler(state.first, state.second),
+            logger, source, callbackName);
+
+    private static void Invoke<TDelegate, TState>(
+        TDelegate? callback,
+        TState state,
+        Action<TDelegate, TState> invoke,
+        IAppLogger logger,
+        string source,
+        string callbackName) where TDelegate : Delegate
     {
         if (callback is null)
         {
             return;
         }
 
-        foreach (var handler in callback.GetInvocationList())
+        foreach (var handler in Delegate.EnumerateInvocationList(callback))
         {
             try
             {
-                ((Action<T>)handler)(value);
+                invoke(handler, state);
             }
             catch (Exception ex)
             {
@@ -67,7 +70,7 @@ internal static class SafeEventDispatcher
             logger.Write(
                 AppLogLevel.Warning,
                 source,
-                $"The {eventName} subscriber threw; continuing network processing.",
+                $"The {eventName} subscriber threw; continuing event dispatch.",
                 exception);
         }
         catch

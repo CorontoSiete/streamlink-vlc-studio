@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Http;
 
@@ -959,7 +960,12 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             (stream, cancellationToken) => JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken),
             token);
 
-    private void SetState(AppUpdateState value) { state = value; StateChanged?.Invoke(this, new(value)); }
+    private void SetState(AppUpdateState value)
+    {
+        state = value;
+        SafeEventDispatcher.Invoke(StateChanged, this, new AppUpdateStateChangedEventArgs(value),
+            logger, "Updater", nameof(StateChanged));
+    }
     private static string GetUpdateRoot() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppIdentity.UpdateDirectoryName, "Updates");
 
     [DllImport("msi.dll", CharSet = CharSet.Unicode)] private static extern uint MsiEnumRelatedProducts(string upgradeCode, uint reserved, uint index, System.Text.StringBuilder productCode);

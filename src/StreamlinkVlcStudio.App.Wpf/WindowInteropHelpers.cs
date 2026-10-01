@@ -39,6 +39,15 @@ internal struct MonitorInfo
     public uint Flags;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal struct DwmMargins
+{
+    public int Left;
+    public int Right;
+    public int Top;
+    public int Bottom;
+}
+
 /// <summary>
 /// Win32 window/monitor interop and screen-geometry helpers shared by the main and detached
 /// video windows. Consolidates the structs, monitor lookups, hit tests, bounds checks, and DPI
@@ -47,6 +56,25 @@ internal struct MonitorInfo
 internal static partial class WindowInteropHelpers
 {
     internal const uint MonitorDefaultToNearest = 0x00000002;
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref DwmMargins margins);
+
+    /// <summary>
+    /// WindowChrome's nonzero glass thickness avoids its resize clipping regions, but
+    /// DWM's glass over an embedded native HWND exposes a white outer pixel. Remove
+    /// only the DWM extension after WindowChrome has initialized the window.
+    /// </summary>
+    public static bool TryRemoveDwmClientFrame(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var margins = new DwmMargins();
+        return DwmExtendFrameIntoClientArea(hwnd, ref margins) >= 0;
+    }
 
     [LibraryImport("user32")]
     private static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
@@ -121,11 +149,15 @@ internal static partial class WindowInteropHelpers
 
     /// <summary>
     /// True when the visible, sized element's on-screen bounds contain the screen-space point
-    /// (half-open: left/top inclusive, right/bottom exclusive).
+    /// (half-open: left/top inclusive, right/bottom exclusive). Disconnected visuals have no
+    /// screen-space bounds and return false.
     /// </summary>
     public static bool IsScreenPointOverElement(FrameworkElement element, double screenX, double screenY)
     {
-        if (!element.IsVisible || element.ActualWidth <= 0 || element.ActualHeight <= 0)
+        if (PresentationSource.FromVisual(element) is null ||
+            !element.IsVisible ||
+            element.ActualWidth <= 0 ||
+            element.ActualHeight <= 0)
         {
             return false;
         }

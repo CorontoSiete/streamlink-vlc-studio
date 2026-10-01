@@ -3,6 +3,10 @@ internal static partial class ApplicationTestCatalog
     internal static IReadOnlyList<(string Name, Func<Task> Run)> ReplaySeekOverlayTests { get; } =
     [
         ("replay seek overlay stays visible over controls and hides on stationary video pointer", ReplaySeekOverlayFollowsPointerActivityAsync),
+        ("replay seek overlay stays open through physical playback speed selection in a normal window", () => ReplaySeekOverlaySpeedSelectionAsync(false)),
+        ("replay seek overlay stays open through physical playback speed selection in a topmost window", () => ReplaySeekOverlaySpeedSelectionAsync(true)),
+        ("playback speed wheel keeps pending selections and applies the latest notch", ReplaySeekOverlayPendingSpeedSelectionAsync),
+        ("playback speed ignores a transient zero clock after seeking behind live", ReplaySeekOverlayRateChangeClockResetAsync),
         ("replay seek overlay stays visible while scrubbing and commits exactly once", ReplaySeekOverlayScrubCommitAsync),
         ("replay seek overlay cancels a drag when the selected stream changes", ReplaySeekOverlayTabSwitchCancelsScrubAsync),
         ("replay seek overlay cancels an interrupted thumb drag without seeking", ReplaySeekOverlayCancelledDragAsync),
@@ -15,8 +19,165 @@ internal static partial class ApplicationTestCatalog
         .. ReplaySeekOverlayPointerTests,
         .. ReplaySeekTrackTests,
         .. ReplaySeekHoverTests,
-        .. ReplaySeekOverlayVlcTests
+        .. ReplaySeekOverlayZOrderTests,
+        .. ReplaySeekOverlayVlcTests,
+        .. ReplaySeekOverlayKickLiveTests
     ];
+
+    private static Task ReplaySeekOverlaySpeedSelectionAsync(bool topmost) => TestSta.RunAsync(async () =>
+    {
+        if (!NativeWindowTest.TryGetCursorPosition(out var originalCursor))
+            throw new InteractiveDesktopTestSkippedException("Cannot preserve the cursor for playback speed input.");
+        await using var session = await ReplayOverlayTestSession.CreateAsync();
+        await session.Tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+        using var fixture = new ReplayOverlayTestHost(session.Tab);
+        var window = Window.GetWindow(fixture.Overlay)!;
+        window.Topmost = topmost;
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        window.Left = SystemParameters.WorkArea.Left + 24;
+        window.Top = SystemParameters.WorkArea.Top + 24;
+        window.Width = Math.Min(820, SystemParameters.WorkArea.Width - 48);
+        window.Height = Math.Min(520, SystemParameters.WorkArea.Height - 48);
+        fixture.FlushBindings();
+        var renderer = IntPtr.Zero;
+        try
+        {
+            await NativeWindowTest.RequireForegroundAsync(fixture.OwnerHandle, TimeSpan.FromSeconds(1),
+                "Playback speed input requires the test owner to be active");
+            fixture.Overlay.ProcessPointerSample(new Point(100, 100), true, Environment.TickCount64);
+            fixture.FlushBindings();
+            renderer = NativeWindowTest.CreateVisibleChildWindow(
+                fixture.Target.Handle, "StreamStudioVideoSurface");
+            fixture.FlushBindings();
+            var combo = (ComboBox)fixture.Overlay.FindName("PlaybackRateComboBox");
+            Assert.True(combo.IsEnabled && combo.IsVisible && fixture.Overlay.IsOverlayOpen);
+            foreach (var index in new[] { 4, 1, 5 })
+            {
+                await NativeWindowTest.RequireForegroundAsync(fixture.OwnerHandle, TimeSpan.FromSeconds(1),
+                    "Playback speed selection requires the test owner to be active");
+                var center = combo.PointToScreen(new Point(combo.ActualWidth / 2, combo.ActualHeight / 2));
+                Assert.Equal(fixture.NativeOverlayHandle, NativeWindowHitTester.Instance.WindowFromPoint(
+                    (int)Math.Round(center.X), (int)Math.Round(center.Y)));
+                NativeWindowTest.SetCursorPosition((int)Math.Round(center.X), (int)Math.Round(center.Y));
+                NativeWindowTest.SendLeftClick((int)Math.Round(center.X), (int)Math.Round(center.Y));
+                await TestWait.UntilAsync(() => combo.IsDropDownOpen, TimeSpan.FromSeconds(1));
+                fixture.FlushBindings();
+                var popup = (Popup)combo.Template.FindName("PART_Popup", combo);
+                var popupHandle = (PresentationSource.FromVisual(popup.Child) as System.Windows.Interop.HwndSource)?.Handle
+                    ?? IntPtr.Zero;
+                Assert.True(popupHandle != IntPtr.Zero);
+                var ownerBounds = NativeWindowTest.GetWindowBounds(fixture.OwnerHandle);
+                var popupBounds = NativeWindowTest.GetWindowBounds(popupHandle);
+                Assert.True(popupBounds.Top >= ownerBounds.Top && popupBounds.Bottom <= ownerBounds.Bottom,
+                    $"The playback speed list {popupBounds} must stay inside its owner {ownerBounds}.");
+                var item = (ComboBoxItem)combo.ItemContainerGenerator.ContainerFromIndex(index);
+                Assert.NotNull(item);
+                var choice = item.PointToScreen(new Point(item.ActualWidth / 2, item.ActualHeight / 2));
+                Assert.True(popupHandle == NativeWindowHitTester.Instance.WindowFromPoint(
+                    (int)Math.Round(choice.X), (int)Math.Round(choice.Y)),
+                    $"The speed popup {popupHandle} must receive its item click: " +
+                    NativeWindowTest.DescribeWindowAtPoint((int)Math.Round(choice.X), (int)Math.Round(choice.Y)));
+                NativeWindowTest.SetCursorPosition((int)Math.Round(choice.X), (int)Math.Round(choice.Y));
+                NativeWindowTest.SendLeftClick((int)Math.Round(choice.X), (int)Math.Round(choice.Y));
+                await TestWait.UntilAsync(() => !combo.IsDropDownOpen, TimeSpan.FromSeconds(1));
+                await TestWait.UntilAsync(() => session.Tab.PlaybackRateIndex == index, TimeSpan.FromSeconds(1));
+                fixture.FlushBindings();
+                Assert.True(window.IsActive && fixture.Overlay.IsOverlayOpen,
+                    "Changing speed must keep the player active and seek controls open.");
+                Assert.Equal(fixture.NativeOverlayHandle, NativeWindowHitTester.Instance.WindowFromPoint(
+                    (int)Math.Round(center.X), (int)Math.Round(center.Y)));
+            }
+
+            Keyboard.ClearFocus();
+            combo.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
+            {
+                RoutedEvent = UIElement.PreviewMouseWheelEvent
+            });
+            await TestWait.UntilAsync(() => session.Tab.PlaybackRateIndex == 6, TimeSpan.FromSeconds(1));
+            fixture.FlushBindings();
+            Assert.True(window.IsActive && fixture.Overlay.IsOverlayOpen,
+                "Scrolling playback speed must keep the player active and seek controls open.");
+        }
+        finally
+        {
+            if (renderer != IntPtr.Zero) NativeWindowTest.DestroyWindow(renderer);
+            NativeWindowTest.SetCursorPosition(originalCursor.X, originalCursor.Y);
+        }
+    });
+
+    private static Task ReplaySeekOverlayPendingSpeedSelectionAsync() => TestSta.RunAsync(async () =>
+    {
+        var firstChangeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishFirstChange = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var session = await ReplayOverlayTestSession.CreateAsync(
+            playbackRateOverride: async (rate, cancellationToken) =>
+            {
+                if (rate == 1.25f)
+                {
+                    firstChangeStarted.TrySetResult();
+                    await finishFirstChange.Task.WaitAsync(cancellationToken);
+                }
+
+                return rate != 2f;
+            });
+        await session.Tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+        using var fixture = new ReplayOverlayTestHost(session.Tab);
+        fixture.FlushBindings();
+        var combo = (ComboBox)fixture.Overlay.FindName("PlaybackRateComboBox");
+        Assert.True(combo.IsEnabled);
+
+        combo.SetCurrentValue(Selector.SelectedIndexProperty, 3);
+        await firstChangeStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(3, session.Tab.PlaybackRateIndex);
+
+        Keyboard.ClearFocus();
+        for (var index = 4; index <= 5; index++)
+        {
+            combo.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
+            {
+                RoutedEvent = UIElement.PreviewMouseWheelEvent
+            });
+            fixture.FlushBindings();
+            Assert.Equal(index, combo.SelectedIndex);
+            Assert.Equal(index, session.Tab.PlaybackRateIndex);
+        }
+
+        finishFirstChange.TrySetResult();
+        var engine = session.PlaybackFactory.Engine!;
+        await TestWait.UntilAsync(() => engine.PlaybackRate == 1.75f, TimeSpan.FromSeconds(1));
+        fixture.FlushBindings();
+        Assert.Equal(5, combo.SelectedIndex);
+        var requests = engine.PlaybackRateRequests.ToArray();
+        Assert.True(requests.SequenceEqual([1.25f, 1.75f]),
+            $"Only the first and final speed requests should reach VLC; observed {string.Join(", ", requests)}.");
+
+        combo.SetCurrentValue(Selector.SelectedIndexProperty, 6);
+        await TestWait.UntilAsync(() => engine.PlaybackRateRequests.Contains(2f), TimeSpan.FromSeconds(1));
+        await TestWait.UntilAsync(() => session.Tab.PlaybackRateIndex == 5, TimeSpan.FromSeconds(1));
+        fixture.FlushBindings();
+        Assert.Equal(5, combo.SelectedIndex);
+        Assert.Equal(1.75f, engine.PlaybackRate);
+    });
+
+    private static Task ReplaySeekOverlayRateChangeClockResetAsync() => TestSta.RunAsync(async () =>
+    {
+        await using var session = await ReplayOverlayTestSession.CreateAsync();
+        await session.Tab.SeekReplayAsync(TimeSpan.FromMinutes(10));
+        var engine = session.PlaybackFactory.Engine!;
+        engine.PlaybackClockOverride = source =>
+            (true, new PlaybackClock(TimeSpan.Zero, source.Duration, source.Seekable));
+
+        var appliedRate = typeof(StreamTabViewModel).GetField("playbackRateIndex",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        foreach (var index in new[] { 3, 6, 0, 5, 2 })
+        {
+            session.Tab.PlaybackRateIndex = index;
+            await TestWait.UntilAsync(() => (int)appliedRate.GetValue(session.Tab)! == index, TimeSpan.FromSeconds(1));
+            InvokeReplayClockUpdate(session.Tab);
+            Assert.True(session.Tab.ReplaySeekValue >= TimeSpan.FromMinutes(9).TotalSeconds,
+                $"A transient zero VLC clock moved the replay seekbar to {session.Tab.ReplaySeekValue:0.###}s after selecting rate index {index}.");
+        }
+    });
 
     private static Task ReplaySeekOverlayFollowsPointerActivityAsync() => TestSta.RunAsync(async () =>
     {
@@ -698,13 +859,16 @@ internal static partial class ApplicationTestCatalog
         public FakePlaybackEngineFactory PlaybackFactory { get; } = playbackFactory;
         public int SeekCount => PlaybackFactory.Engines.Sum(engine => engine.SeekCount);
 
-        public static async Task<ReplayOverlayTestSession> CreateAsync(ReplaySessionInfo? replayOverride = null)
+        public static async Task<ReplayOverlayTestSession> CreateAsync(
+            ReplaySessionInfo? replayOverride = null,
+            Func<float, CancellationToken, Task<bool>>? playbackRateOverride = null)
         {
             // Keep the native clock consistent with replay metadata when the first
             // seek switches from live playback to the replay media.
             var playbackFactory = new FakePlaybackEngineFactory(() => new FakePlaybackEngine
             {
-                Duration = TimeSpan.FromHours(1)
+                Duration = TimeSpan.FromHours(1),
+                PlaybackRateOverride = playbackRateOverride
             });
             var replay = replayOverride ?? new ReplaySessionInfo(
                 PlatformKind.Twitch,

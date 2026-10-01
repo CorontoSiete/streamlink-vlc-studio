@@ -10,6 +10,7 @@ internal static class OwnedProcessTestCatalog
         ("owned process: cancellation terminates a ready tree and drains output", CancellationAsync),
         ("owned process: timeout terminates children and grandchildren", TimeoutAsync),
         ("owned process: abrupt owner exit closes a non-inherited job", AbruptOwnerExitAsync),
+        ("owned process: PID readiness waits for publication and temporary file locks", PidReadinessAsync),
         ("owned process: failed transport startup terminates its tree", FailedTransportStartupAsync),
         ("owned process: failed creation releases handles", FailedCreationAsync),
         ("owned process: argument quoting environment working directory and encodings", ArgumentsAsync)
@@ -123,6 +124,24 @@ internal static class OwnedProcessTestCatalog
         await AssertExitedAsync(processes);
     }
 
+    private static async Task PidReadinessAsync()
+    {
+        await using var tree = new TestTree();
+        var path = Path.Combine(tree.Directory, "ready.pid");
+        var reading = OwnedProcessTestHost.ReadProcessIdAsync(path, TimeSpan.FromSeconds(3));
+        await using (var writer = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            await writer.WriteAsync(Encoding.UTF8.GetBytes(Environment.ProcessId.ToString(CultureInfo.InvariantCulture)));
+            await writer.FlushAsync();
+            await Task.Delay(40);
+            Assert.True(!reading.IsCompleted);
+        }
+        Assert.Equal(Environment.ProcessId, await reading);
+        await File.WriteAllTextAsync(path, "not a PID");
+        await Assert.ThrowsAsync<InvalidDataException>(() => OwnedProcessTestHost.ReadProcessIdAsync(path, TimeSpan.FromSeconds(1)));
+        await Assert.ThrowsAsync<TimeoutException>(() => OwnedProcessTestHost.ReadProcessIdAsync(path + ".missing", TimeSpan.FromMilliseconds(50)));
+    }
+
     private static Task FailedCreationAsync()
     {
         using var process = Process.GetCurrentProcess();
@@ -182,8 +201,8 @@ internal static class OwnedProcessTestCatalog
             foreach (var name in names)
             {
                 var path = Path.Combine(Directory, name + ".pid");
-                await TestWait.UntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(8));
-                var process = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(path), CultureInfo.InvariantCulture));
+                var processId = await OwnedProcessTestHost.ReadProcessIdAsync(path, TimeSpan.FromSeconds(8));
+                var process = Process.GetProcessById(processId);
                 _ = process.SafeHandle;
                 observed.Add(process);
                 result.Add(process);
@@ -214,6 +233,28 @@ internal static class OwnedProcessTestHost
 
     internal static ProcessStartInfo StartInfo(string mode, string directory) =>
         BoundedProcessRunner.CreateRedirectedStartInfo(Executable, ["--owned-process-fixture", mode, directory]);
+
+    internal static async Task<int> ReadProcessIdAsync(string path, TimeSpan timeout)
+    {
+        var started = Stopwatch.GetTimestamp();
+        IOException? lastException = null;
+        while (Stopwatch.GetElapsedTime(started) < timeout)
+        {
+            try
+            {
+                var text = await File.ReadAllTextAsync(path);
+                if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var processId) || processId <= 0)
+                    throw new InvalidDataException($"The process fixture published an invalid PID in '{path}'.");
+                return processId;
+            }
+            catch (IOException exception) when ((exception.HResult & 0xffff) is 2 or 3 or 32 or 33)
+            {
+                lastException = exception;
+            }
+            await Task.Delay(10);
+        }
+        throw new TimeoutException($"The process fixture did not publish a readable PID in '{path}'.", lastException);
+    }
 
     internal static async Task<int> RunAsync(string[] args)
     {

@@ -1,21 +1,16 @@
-using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
-using System.Windows.Media.Imaging;
 using System.Windows.Input;
 using System.Windows.Shapes;
 using System.Windows.Threading;
-using SkiaSharp;
-using SkiaSharp.HarfBuzz;
 using StreamlinkVlcStudio.App.Wpf.Chat;
 using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
-using IoMemoryStream = System.IO.MemoryStream;
 using WpfImage = System.Windows.Controls.Image;
 
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
@@ -52,14 +47,6 @@ public sealed class DockedChatMessageTextBlock : RichTextBox
     private static readonly Brush BadgeVerifiedBackgroundBrush = CreateFrozenBrush("#2E7BEA");
     private static readonly Brush BadgeOgBackgroundBrush = CreateFrozenBrush("#B7791F");
     private static readonly FontFamily ChatTextFontFamily = new("Global User Interface, Segoe UI, Segoe UI Emoji, Microsoft YaHei UI, Yu Gothic UI, Malgun Gothic, Nirmala UI, Leelawadee UI, Arial Unicode MS");
-    private static readonly FontFamily EmojiFallbackFontFamily = new("Segoe UI Emoji");
-    private static readonly Lazy<SKTypeface?> EmojiTypeface = new(CreateEmojiTypeface);
-    private static readonly object EmojiImageCacheLock = new();
-    private const int MaximumEmojiImageCacheEntries = 512;
-    private const long MaximumEmojiImageCacheBytes = 32L * 1024 * 1024;
-    private static readonly Dictionary<EmojiImageCacheKey, EmojiImageCacheEntry> EmojiImageCache = [];
-    private static readonly LinkedList<EmojiImageCacheKey> EmojiImageCacheLru = [];
-    private static long emojiImageCacheBytes;
     private static readonly Geometry BadgeCrownGeometry = CreateFrozenGeometry("M3,18 L21,18 L19,8 L15,12 L12,5 L9,12 L5,8 Z M5,20 H19 V22 H5 Z");
     private static readonly Geometry BadgeShieldGeometry = CreateFrozenGeometry("M12,2 L20,5.5 V11.5 C20,16.8 16.6,20.2 12,22 C7.4,20.2 4,16.8 4,11.5 V5.5 Z");
     private static readonly Geometry BadgeCameraGeometry = CreateFrozenGeometry("M4,6 H15 C16.1,6 17,6.9 17,8 V10.2 L22,7 V17 L17,13.8 V16 C17,17.1 16.1,18 15,18 H4 C2.9,18 2,17.1 2,16 V8 C2,6.9 2.9,6 4,6 Z");
@@ -1096,7 +1083,7 @@ public sealed class DockedChatMessageTextBlock : RichTextBox
             return;
         }
 
-        foreach (var segment in EnumerateTextRunSegments(text))
+        foreach (var segment in UnicodeEmojiRenderer.EnumerateTextRunSegments(text))
         {
             if (segment.UseEmojiImage)
             {
@@ -1116,7 +1103,7 @@ public sealed class DockedChatMessageTextBlock : RichTextBox
         };
         if (useEmojiFallbackFont)
         {
-            run.FontFamily = EmojiFallbackFontFamily;
+            run.FontFamily = UnicodeEmojiRenderer.FallbackFontFamily;
         }
 
         if (weight is not null)
@@ -1129,7 +1116,7 @@ public sealed class DockedChatMessageTextBlock : RichTextBox
 
     private void AppendEmojiImage(string text, Brush brush, FontWeight? weight)
     {
-        var source = GetEmojiImageSource(text, ChatFontSize);
+        var source = UnicodeEmojiRenderer.GetEmojiImageSource(text, ChatFontSize);
         if (source is null)
         {
             AppendPlainRun(text, brush, weight, useEmojiFallbackFont: true);
@@ -1165,362 +1152,15 @@ public sealed class DockedChatMessageTextBlock : RichTextBox
         });
     }
 
-    private static IEnumerable<TextRunSegment> EnumerateTextRunSegments(string text)
-    {
-        var enumerator = StringInfo.GetTextElementEnumerator(text);
-        var segmentText = new StringBuilder();
-
-        while (enumerator.MoveNext())
-        {
-            var textElement = enumerator.GetTextElement();
-            if (UsesEmojiImage(textElement))
-            {
-                if (segmentText.Length > 0)
-                {
-                    yield return new TextRunSegment(segmentText.ToString(), UseEmojiImage: false);
-                    segmentText.Clear();
-                }
-
-                // Render/cache one Unicode grapheme at a time. Adjacent emoji can have
-                // different shaping bounds, and caching their concatenation grows without reuse.
-                yield return new TextRunSegment(textElement, UseEmojiImage: true);
-                continue;
-            }
-
-            segmentText.Append(textElement);
-        }
-
-        if (segmentText.Length > 0)
-        {
-            yield return new TextRunSegment(segmentText.ToString(), UseEmojiImage: false);
-        }
-    }
-
-    private static bool UsesEmojiImage(string textElement)
-    {
-        var hasEmojiPresentationSelector = false;
-        var hasTextPresentationSelector = false;
-        var hasEmojiBase = false;
-        var hasEmojiSequenceRune = false;
-
-        foreach (var rune in textElement.EnumerateRunes())
-        {
-            if (rune.Value == 0xFE0F)
-            {
-                hasEmojiPresentationSelector = true;
-                continue;
-            }
-
-            if (rune.Value == 0xFE0E)
-            {
-                hasTextPresentationSelector = true;
-                continue;
-            }
-
-            hasEmojiSequenceRune |= IsEmojiSequenceRune(rune.Value);
-            hasEmojiBase |= IsEmojiBaseRune(rune.Value);
-        }
-
-        if (hasTextPresentationSelector)
-        {
-            return false;
-        }
-
-        if (hasEmojiPresentationSelector)
-        {
-            return true;
-        }
-
-        return hasEmojiBase || hasEmojiSequenceRune;
-    }
-
-    private static ImageSource? GetEmojiImageSource(string text, double chatFontSize)
-    {
-        var pixelSize = Math.Clamp((int)Math.Ceiling(chatFontSize * 2.4), 28, 96);
-        var key = new EmojiImageCacheKey(text, pixelSize);
-        lock (EmojiImageCacheLock)
-        {
-            if (EmojiImageCache.TryGetValue(key, out var cached))
-            {
-                TouchEmojiCacheEntryLocked(cached);
-                return cached.Image;
-            }
-        }
-
-        var rendered = RenderEmojiImageSource(text, pixelSize);
-        lock (EmojiImageCacheLock)
-        {
-            if (EmojiImageCache.TryGetValue(key, out var cached))
-            {
-                TouchEmojiCacheEntryLocked(cached);
-                return cached.Image;
-            }
-
-            AddEmojiCacheEntryLocked(key, rendered);
-            return rendered;
-        }
-    }
-
     internal static IReadOnlyList<(string Text, bool UseEmojiImage)> SegmentTextForTest(string text) =>
-        EnumerateTextRunSegments(text)
-            .Select(segment => (segment.Text, segment.UseEmojiImage))
-            .ToArray();
+        UnicodeEmojiRenderer.SegmentTextForTest(text);
 
-    internal static int EmojiImageCacheCountForTest
-    {
-        get
-        {
-            lock (EmojiImageCacheLock)
-            {
-                return EmojiImageCache.Count;
-            }
-        }
-    }
+    internal static int EmojiImageCacheCountForTest => UnicodeEmojiRenderer.EmojiImageCacheCountForTest;
 
-    internal static void AddEmojiImageCacheEntryForTest(string text, int pixelSize)
-    {
-        lock (EmojiImageCacheLock)
-        {
-            var key = new EmojiImageCacheKey(text, pixelSize);
-            if (!EmojiImageCache.ContainsKey(key))
-            {
-                AddEmojiCacheEntryLocked(key, image: null);
-            }
-        }
-    }
+    internal static void AddEmojiImageCacheEntryForTest(string text, int pixelSize) =>
+        UnicodeEmojiRenderer.AddEmojiImageCacheEntryForTest(text, pixelSize);
 
-    internal static void ClearEmojiImageCacheForTest()
-    {
-        lock (EmojiImageCacheLock)
-        {
-            EmojiImageCache.Clear();
-            EmojiImageCacheLru.Clear();
-            emojiImageCacheBytes = 0;
-        }
-    }
-
-    private static void AddEmojiCacheEntryLocked(EmojiImageCacheKey key, ImageSource? image)
-    {
-        var estimatedBytes = image is BitmapSource bitmap
-            ? Math.Max(0L, (long)bitmap.PixelWidth * bitmap.PixelHeight * 4)
-            : 0L;
-        var node = EmojiImageCacheLru.AddLast(key);
-        EmojiImageCache[key] = new EmojiImageCacheEntry(image, estimatedBytes, node);
-        emojiImageCacheBytes += estimatedBytes;
-        while (EmojiImageCache.Count > MaximumEmojiImageCacheEntries ||
-            emojiImageCacheBytes > MaximumEmojiImageCacheBytes)
-        {
-            var oldest = EmojiImageCacheLru.First;
-            if (oldest is null)
-            {
-                break;
-            }
-
-            EmojiImageCacheLru.RemoveFirst();
-            if (EmojiImageCache.Remove(oldest.Value, out var removed))
-            {
-                emojiImageCacheBytes -= removed.EstimatedBytes;
-            }
-        }
-    }
-
-    private static void TouchEmojiCacheEntryLocked(EmojiImageCacheEntry entry)
-    {
-        EmojiImageCacheLru.Remove(entry.LruNode);
-        EmojiImageCacheLru.AddLast(entry.LruNode);
-    }
-
-    private static ImageSource? RenderEmojiImageSource(string text, int pixelSize)
-    {
-        try
-        {
-            var typeface = EmojiTypeface.Value;
-            if (typeface is null)
-            {
-                return null;
-            }
-
-            // GDI+ treats Segoe UI Emoji as a monochrome outline font. Skia's HarfBuzz
-            // shaper understands the font's color glyph tables and also keeps ZWJ,
-            // skin-tone, flag, and keycap sequences as one rendered emoji.
-            var canvasWidth = pixelSize * 8;
-            var canvasHeight = pixelSize * 3;
-            using var font = new SKFont(typeface, pixelSize);
-            using var shaper = new SKShaper(typeface);
-            using var paint = new SKPaint
-            {
-                Color = SKColors.White,
-                IsAntialias = true
-            };
-            using var bitmap = new SKBitmap(
-                canvasWidth,
-                canvasHeight,
-                SKColorType.Rgba8888,
-                SKAlphaType.Premul);
-            using (var canvas = new SKCanvas(bitmap))
-            {
-                canvas.Clear(SKColors.Transparent);
-                canvas.DrawShapedText(
-                    shaper,
-                    text,
-                    pixelSize,
-                    pixelSize * 2,
-                    font,
-                    paint);
-            }
-
-            var bounds = GetVisibleBounds(bitmap);
-            if (bounds is not { } visibleBounds)
-            {
-                return null;
-            }
-
-            using var cropped = new SKBitmap(
-                visibleBounds.Width,
-                visibleBounds.Height,
-                SKColorType.Rgba8888,
-                SKAlphaType.Premul);
-            if (!bitmap.ExtractSubset(cropped, visibleBounds))
-            {
-                return null;
-            }
-
-            using var data = cropped.Encode(SKEncodedImageFormat.Png, 100);
-            using var stream = new IoMemoryStream();
-            data.SaveTo(stream);
-            stream.Position = 0;
-
-            var source = new BitmapImage();
-            source.BeginInit();
-            source.CacheOption = BitmapCacheOption.OnLoad;
-            source.StreamSource = stream;
-            source.EndInit();
-            if (source.CanFreeze)
-            {
-                source.Freeze();
-            }
-
-            return source;
-        }
-        catch (Exception ex) when (ex is ArgumentException or
-            InvalidOperationException or
-            DllNotFoundException or
-            EntryPointNotFoundException or
-            TypeInitializationException)
-        {
-            return null;
-        }
-    }
-
-    private static SKTypeface? CreateEmojiTypeface()
-    {
-        try
-        {
-            return SKTypeface.FromFamilyName("Segoe UI Emoji");
-        }
-        catch (Exception ex) when (ex is DllNotFoundException or
-            EntryPointNotFoundException or
-            TypeInitializationException)
-        {
-            return null;
-        }
-    }
-
-    private static SKRectI? GetVisibleBounds(SKBitmap bitmap)
-    {
-        var left = bitmap.Width;
-        var top = bitmap.Height;
-        var right = -1;
-        var bottom = -1;
-
-        for (var y = 0; y < bitmap.Height; y++)
-        {
-            for (var x = 0; x < bitmap.Width; x++)
-            {
-                if (bitmap.GetPixel(x, y).Alpha == 0)
-                {
-                    continue;
-                }
-
-                left = Math.Min(left, x);
-                top = Math.Min(top, y);
-                right = Math.Max(right, x);
-                bottom = Math.Max(bottom, y);
-            }
-        }
-
-        if (right < left || bottom < top)
-        {
-            return null;
-        }
-
-        const int padding = 1;
-        left = Math.Max(0, left - padding);
-        top = Math.Max(0, top - padding);
-        right = Math.Min(bitmap.Width - 1, right + padding);
-        bottom = Math.Min(bitmap.Height - 1, bottom + padding);
-        return new SKRectI(left, top, right + 1, bottom + 1);
-    }
-
-    private static bool IsEmojiSequenceRune(int scalar)
-    {
-        return scalar is
-            0x200D or // Zero-width joiner.
-            0x20E3 or // Combining enclosing keycap.
-            >= 0x1F3FB and <= 0x1F3FF; // Emoji skin tone modifiers.
-    }
-
-    private static bool IsEmojiBaseRune(int scalar)
-    {
-        return scalar is
-            >= 0x1F000 and <= 0x1FAFF or
-            0x231A or
-            0x231B or
-            >= 0x23E9 and <= 0x23EC or
-            0x23F0 or
-            0x23F3 or
-            0x25FD or
-            0x25FE or
-            0x2614 or
-            0x2615 or
-            >= 0x2648 and <= 0x2653 or
-            0x267F or
-            0x2693 or
-            0x26A1 or
-            0x26AA or
-            0x26AB or
-            0x26BD or
-            0x26BE or
-            0x26C4 or
-            0x26C5 or
-            0x26CE or
-            0x26D4 or
-            0x26EA or
-            0x26F2 or
-            0x26F3 or
-            0x26F5 or
-            0x26FA or
-            0x26FD or
-            0x2705 or
-            0x270A or
-            0x270B or
-            0x2728 or
-            0x274C or
-            0x274E or
-            >= 0x2753 and <= 0x2755 or
-            0x2757 or
-            >= 0x2795 and <= 0x2797 or
-            0x27B0 or
-            0x27BF or
-            0x2B1B or
-            0x2B1C or
-            0x2B50 or
-            0x2B55 or
-            0x3030 or
-            0x303D or
-            0x3297 or
-            0x3299;
-    }
+    internal static void ClearEmojiImageCacheForTest() => UnicodeEmojiRenderer.ClearEmojiImageCacheForTest();
 
     private static bool IsValidRange(ChatEmote emote, string text)
     {
@@ -1634,10 +1274,4 @@ public sealed class DockedChatMessageTextBlock : RichTextBox
     }
 
     private sealed record BadgeVisual(Geometry Geometry, Brush Background);
-    private sealed record TextRunSegment(string Text, bool UseEmojiImage);
-    private sealed record EmojiImageCacheKey(string Text, int PixelSize);
-    private sealed record EmojiImageCacheEntry(
-        ImageSource? Image,
-        long EstimatedBytes,
-        LinkedListNode<EmojiImageCacheKey> LruNode);
 }

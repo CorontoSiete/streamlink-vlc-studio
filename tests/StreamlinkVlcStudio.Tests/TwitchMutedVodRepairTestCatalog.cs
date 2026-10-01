@@ -1,4 +1,3 @@
-using System.Net.Http;
 
 /// <summary>
 /// Regression tests for Twitch VODs that froze about two seconds after playback started.

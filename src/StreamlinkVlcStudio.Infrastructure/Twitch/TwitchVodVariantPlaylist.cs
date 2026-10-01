@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Security;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 
@@ -14,7 +15,7 @@ internal static partial class TwitchVodVariantPlaylist
     // the same parser, its ordered quality fallbacks, and its own provider URL policy.
     internal static Uri Select(string content, Uri baseUri, IReadOnlyList<string> qualities, Func<Uri, bool> isAllowedUri)
     {
-        var lines = content.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var lines = HlsPlaylistPolicy.SplitLines(content);
         if (lines.Length == 0 || lines[0] != "#EXTM3U") throw Unsupported();
         var groups = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var line in lines.Where(line => line.StartsWith("#EXT-X-MEDIA:", StringComparison.Ordinal)))

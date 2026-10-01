@@ -1,7 +1,3 @@
-using StreamlinkVlcStudio.App.Wpf.ViewModels;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
 
 internal static class PagingRegressionTestCatalog
 {

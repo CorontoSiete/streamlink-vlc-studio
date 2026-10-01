@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using StreamlinkVlcStudio.Infrastructure.Io;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 
@@ -25,8 +26,8 @@ internal static class BundledVlcCoreRuntime
         if (!File.Exists(installedLibVlcPath))
             throw new FileNotFoundException("The selected libVLC library was not found.", installedLibVlcPath);
 
-        var installedCoreSha256 = HashFile(installedCorePath);
-        var installedLibVlcSha256 = HashFile(installedLibVlcPath);
+        var installedCoreSha256 = FileHash.GetSha256(installedCorePath);
+        var installedLibVlcSha256 = FileHash.GetSha256(installedLibVlcPath);
         if (!installedCoreSha256.Equals(ReferenceCoreSha256, StringComparison.OrdinalIgnoreCase) ||
             !installedLibVlcSha256.Equals(ReferenceLibVlcSha256, StringComparison.OrdinalIgnoreCase))
         {
@@ -55,7 +56,7 @@ internal static class BundledVlcCoreRuntime
             BundledCoreSha256);
         var output = Path.Combine(directory, "libvlccore.dll");
         Directory.CreateDirectory(directory);
-        if (File.Exists(output) && HashFile(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
+        if (File.Exists(output) && FileHash.GetSha256(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
             return output;
 
         var temporary = Path.Combine(directory, $"{Guid.NewGuid():N}.tmp");
@@ -64,7 +65,7 @@ internal static class BundledVlcCoreRuntime
             File.WriteAllBytes(temporary, bytes);
             try { File.Move(temporary, output, overwrite: true); }
             catch (IOException) when (File.Exists(output) &&
-                HashFile(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
+                FileHash.GetSha256(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
             {
                 // Another process extracted the same immutable build first.
             }
@@ -74,14 +75,9 @@ internal static class BundledVlcCoreRuntime
             File.Delete(temporary);
         }
 
-        if (!File.Exists(output) || !HashFile(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
+        if (!File.Exists(output) || !FileHash.GetSha256(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
             throw new IOException("The verified VLC address-wait core could not be extracted.");
         return output;
     }
 
-    private static string HashFile(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream));
-    }
 }

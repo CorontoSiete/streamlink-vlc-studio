@@ -1,42 +1,13 @@
-using System.Buffers.Binary;
-using System.Collections.Specialized;
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
-using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Data;
-using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Threading;
-using Microsoft.Win32;
-using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.App.Wpf.Controls;
-using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
-using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Logging;
-using StreamlinkVlcStudio.Infrastructure.Processes;
-using StreamlinkVlcStudio.Infrastructure.Replay;
-using StreamlinkVlcStudio.Infrastructure.Settings;
-using StreamlinkVlcStudio.Infrastructure.Streamlink;
-using StreamlinkVlcStudio.Infrastructure.Twitch;
-using StreamlinkVlcStudio.Infrastructure.Updates;
-using StreamlinkVlcStudio.Infrastructure.Vlc;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
-using StreamlinkVlcStudio.Infrastructure.Vod;
-using StreamlinkVlcStudio.App.Wpf.Themes;
-using StreamlinkVlcStudio.App.Wpf.Twitch;
-using static StreamlinkVlcStudio.App.Wpf.WindowInteropHelpers;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
@@ -162,9 +133,8 @@ public partial class MainWindow
             TopControlsRow.Height = new GridLength(0);
             fullscreen = true;
 
-            // The normal window's one-DIP DWM glass frame is still transparent when the
-            // window is borderless. Remove WindowChrome entirely while fullscreen so the
-            // monitor-edge pixels belong to the client/video surface, not the desktop below.
+            // Remove WindowChrome while fullscreen so its native border behavior cannot
+            // reserve monitor-edge pixels outside the client/video surface.
             if (previousWindowChrome is not null)
             {
                 WindowChrome.SetWindowChrome(window, null);
@@ -281,6 +251,7 @@ public partial class MainWindow
             // for the first unregistration request.
             ClearTaskbarFullscreen();
             UpdateResponsiveLayout();
+            window.QueueRemoveDwmClientFrame();
         }
 
         internal void MarkTaskbarFullscreen(bool force = false)

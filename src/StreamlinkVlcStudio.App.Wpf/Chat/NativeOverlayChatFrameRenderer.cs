@@ -1,6 +1,4 @@
 using System.Buffers.Binary;
-using System.Globalization;
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -18,9 +16,8 @@ internal static class NativeOverlayChatFrameRenderer
     private const int NativeOverlayHorizontalPadding = 8;
     private const int NativeOverlayBaseTopPadding = 8;
     private const int NativeOverlayMoveHandleMargin = 6;
-    private const int NativeOverlayMoveHandleHeight = 22;
-    private const int NativeOverlayTopPadding =
-        NativeOverlayBaseTopPadding + NativeOverlayMoveHandleMargin + NativeOverlayMoveHandleHeight;
+    private const int NativeOverlayHideButtonHeight = 22;
+    private const int NativeOverlayMoveHandleHeight = NativeOverlayHideButtonHeight;
     private const int NativeOverlayInputHeight = 30;
     private const int NativeOverlayInputGap = 6;
     private const int NativeOverlayBottomPadding = 8;
@@ -107,6 +104,15 @@ internal static class NativeOverlayChatFrameRenderer
             rendered.RenderedSelection);
     }
 
+    // Keep replay chat rows below the fixed-size MOVE button drawn by the plugin.
+    private static int GetNativeOverlayTopPadding(NativeReplayOverlayLayout layout)
+    {
+        var videoHeight = layout.VideoHeight;
+        return ScaleReferencePixels(videoHeight, NativeOverlayBaseTopPadding) +
+            ScaleReferencePixels(videoHeight, NativeOverlayMoveHandleMargin) +
+            ScaleReferencePixels(videoHeight, NativeOverlayMoveHandleHeight);
+    }
+
     private static RenderedChatMessages RenderMessages(
         IReadOnlyList<ChatMessage> messages,
         NativeReplayOverlayLayout layout,
@@ -118,7 +124,7 @@ internal static class NativeOverlayChatFrameRenderer
         var width = layout.FrameWidth;
         var height = layout.FrameHeight;
         var horizontalPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayHorizontalPadding);
-        var topPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayTopPadding);
+        var topPadding = GetNativeOverlayTopPadding(layout);
         var inputHeight = ScaleReferencePixels(layout.VideoHeight, NativeOverlayInputHeight);
         var inputGap = ScaleReferencePixels(layout.VideoHeight, NativeOverlayInputGap);
         var bottomPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayBottomPadding);
@@ -239,7 +245,7 @@ internal static class NativeOverlayChatFrameRenderer
         NativeReplayOverlayFrameRenderContext? renderContext = null)
     {
         var horizontalPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayHorizontalPadding);
-        var topPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayTopPadding);
+        var topPadding = GetNativeOverlayTopPadding(layout);
         var inputHeight = ScaleReferencePixels(layout.VideoHeight, NativeOverlayInputHeight);
         var inputGap = ScaleReferencePixels(layout.VideoHeight, NativeOverlayInputGap);
         var bottomPadding = ScaleReferencePixels(layout.VideoHeight, NativeOverlayBottomPadding);

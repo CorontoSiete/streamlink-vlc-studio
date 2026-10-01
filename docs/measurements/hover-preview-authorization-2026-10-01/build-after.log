@@ -1,0 +1,18 @@
+Using .NET SDK 10.0.302 at C:\Users\ComputerGuy\Documents\streamlink3\streamlink
+test2\streamlink-vlc-studio\.dotnet-sdk\dotnet.exe
+dotnet build StreamlinkVlcStudio.sln --configuration Release --no-restore -warnaserror
+  StreamlinkVlcStudio.Maintenance -> C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Maintenance\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamStudio.Maintenance.dll
+  StreamlinkVlcStudio.Bootstrapper -> C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Bootstrapper\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamStudio.Bootstrapper.dll
+  StreamlinkVlcStudio.Core -> C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Core\bin\Release\net10.0\StreamlinkVlcStudio.Core.dll
+  Verified 2 pinned native overlay inputs from C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay.
+  Verified bundled VLC 3.0.23 condition-wait core (6efb3c92094ddfe9aca032910a4fadf1a5ce53488488720ca84bba56722291a2).
+  StreamlinkVlcStudio.Infrastructure -> C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.Infrastructure\bin\Release\net10.0\StreamlinkVlcStudio.Infrastructure.dll
+  StreamlinkVlcStudio.App.Wpf -> C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\src\StreamlinkVlcStudio.App.Wpf\bin\Release\net10.0-windows10.0.19041.0\StreamStudio.dll
+  StreamlinkVlcStudio.Tests -> C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\bin\Release\net10.0-windows10.0.19041.0\StreamlinkVlcStudio.Tests.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:35.34
+Build completed successfully.

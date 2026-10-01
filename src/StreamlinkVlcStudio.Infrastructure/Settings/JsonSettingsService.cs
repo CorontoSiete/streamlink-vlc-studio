@@ -118,6 +118,8 @@ public sealed class JsonSettingsService : ISettingsService
             }
 
             var settings = root.Deserialize<AppSettings>(SerializerOptions) ?? new AppSettings();
+            if (!TryGetPropertyCaseInsensitive(root, nameof(AppSettings.Downloads), out _, out _))
+                settings.Downloads.Quality = settings.DefaultQuality;
             ApplySecrets(settings.Chat, secrets);
 
             if (hadLegacySecrets || protectedSecretsWereCorrupt)

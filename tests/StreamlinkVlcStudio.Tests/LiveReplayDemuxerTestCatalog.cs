@@ -14,6 +14,7 @@ internal static class LiveReplayDemuxerTestCatalog
     private static Task PolicyAsync()
     {
         Assert.True(TwitchVodReplayPolicy.UseLiveReplayDemuxer(Playlist, Vlc));
+        Assert.Equal(TimeSpan.FromSeconds(10), TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(Playlist, Vlc));
         Assert.Equal(TimeSpan.Zero, TwitchVodReplayPolicy.GetPreroll(Playlist, Vlc));
         foreach (var version in new Version?[] { null, new(3, 0, 12), new(3, 0, 24), new(4, 0, 0) })
             Assert.Equal(false, TwitchVodReplayPolicy.UseLiveReplayDemuxer(Playlist, version));
@@ -42,6 +43,7 @@ internal static class LiveReplayDemuxerTestCatalog
                 await using var gateway = new TwitchMutedVodPlaybackGateway(new MemoryLogger(), upstream, TestReplayUrlSecurity.PublicValidator);
                 using var source = await gateway.PrepareAsync(MediaUri, Vlc, CancellationToken.None, timestampedOpen);
                 Assert.True(source.UseLiveReplayDemuxer);
+                Assert.Equal(TimeSpan.FromSeconds(10), source.LiveReplaySegmentDuration);
                 Assert.Equal(false, source.UseAvformatDemuxer);
                 Assert.Equal(TimeSpan.Zero, source.ReplaySeekPreroll);
                 Assert.Equal(muted, source.PlaybackUri.IsLoopback);
@@ -66,6 +68,7 @@ internal static class LiveReplayDemuxerTestCatalog
             await using var gateway = new TwitchMutedVodPlaybackGateway(new MemoryLogger(), upstream, TestReplayUrlSecurity.PublicValidator);
             using var source = await gateway.PrepareAsync(MediaUri, Vlc, CancellationToken.None);
             Assert.Equal(false, source.UseLiveReplayDemuxer);
+            Assert.Equal(TimeSpan.Zero, source.LiveReplaySegmentDuration);
             Assert.Equal(MediaUri, source.PlaybackUri);
         }
     }

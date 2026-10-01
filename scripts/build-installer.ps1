@@ -391,7 +391,7 @@ try {
         throw "WiX source file was not found: $wixSource"
     }
 
-    $appIcon = Join-Path $repoRoot "src\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico"
+    $appIcon = Join-Path $repoRoot "src\StreamlinkVlcStudio.App.Wpf\Assets\Studio.ico"
     if (-not (Test-Path -LiteralPath $appIcon -PathType Leaf)) {
         throw "Application icon file was not found: $appIcon"
     }

@@ -246,6 +246,9 @@ internal static class HomeRefreshResourceTestCatalog
     {
         internal List<PendingRequest> Requests { get; } = [];
 
+        public Task<TwitchVodItem?> GetVideoAsync(string vodId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("This refresh fixture does not expect a video lookup.");
+
         public async Task<TwitchVodSearchResult> SearchAsync(TwitchVodSearchRequest request, AppSettings settings,
             CancellationToken cancellationToken = default)
         {

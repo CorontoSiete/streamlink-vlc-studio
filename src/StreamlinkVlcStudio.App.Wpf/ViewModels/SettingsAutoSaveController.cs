@@ -83,7 +83,7 @@ internal sealed class SettingsAutoSaveController : IAsyncDisposable
     private void ObserveSettings()
     {
         HashSet<INotifyPropertyChanged> current =
-        [settings, settings.Chat, settings.Replay, settings.Hotkeys, settings.FollowedChannels, settings.Updates];
+        [settings, settings.Chat, settings.Replay, settings.Downloads, settings.Hotkeys, settings.FollowedChannels, settings.Updates];
         foreach (var source in observed.Except(current).ToArray())
         {
             source.PropertyChanged -= SettingsChanged;

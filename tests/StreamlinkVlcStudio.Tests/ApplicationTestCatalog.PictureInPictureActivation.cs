@@ -7,6 +7,7 @@ internal static partial class ApplicationTestCatalog
         ("picture-in-picture activation preserves manual mute and never mute", PictureInPictureActivationMutePreferencesAsync),
         ("picture-in-picture active audio falls back when its tab closes", () => PictureInPictureActivationRemovedOwnerAsync(close: true)),
         ("picture-in-picture active audio falls back when its tab reattaches", () => PictureInPictureActivationRemovedOwnerAsync(close: false)),
+        ("picture-in-picture return to main window preserves the active playback host", PictureInPictureReturnPreservesPlaybackAsync),
         ("picture-in-picture native clicks activation and fullscreen preserve main audio surface multiview and Home", PictureInPictureActivationWindowWiringAsync)
     ];
 
@@ -326,6 +327,85 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal<StreamTabViewModel?>(null, fixture.Main.SelectedTab);
             Assert.SequenceEqual(homeMountedTabs, fixture.Main.VideoTabs);
             fixture.AssertAudioOwner(pip, main, peer);
+        }
+        finally
+        {
+            detached?.CloseForTabDisposal();
+            window.Close();
+        }
+    });
+
+    private static Task PictureInPictureReturnPreservesPlaybackAsync() => TestSta.RunAsync(async () =>
+    {
+        await using var fixture = new PictureInPictureActivationFixture();
+        var pip = fixture.AddTab("albralelie");
+        var main = fixture.AddTab("summit1g");
+        await fixture.StartSelectedAsync(pip);
+        await fixture.StartSelectedAsync(main);
+
+        var window = new MainWindow
+        {
+            DataContext = fixture.Main,
+            Left = 50,
+            Top = 60,
+            Width = 1100,
+            Height = 650
+        };
+        RemoveMainWindowAutomaticStartup(window);
+        SetMainWindowViewModel(window, fixture.Main);
+        DetachedVideoWindow? detached = null;
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        try
+        {
+            window.Show();
+            PumpPictureInPictureActivationLayout(window);
+            SetMainWindowHandle(window);
+            var detach = typeof(MainWindow).GetMethod("DetachTabToPictureInPicture", flags);
+            Assert.NotNull(detach);
+            detach!.Invoke(window, [pip.Tab, new Point(350, 250), false]);
+
+            var detachedWindows = (IDictionary<StreamTabViewModel, DetachedVideoWindow>)typeof(MainWindow)
+                .GetProperty("detachedWindows", flags)!.GetValue(window)!;
+            detached = detachedWindows[pip.Tab];
+            PumpPictureInPictureActivationLayout(window, detached);
+            Assert.Equal(true, pip.Tab.IsDetached);
+            Assert.Equal(PlaybackStatus.Playing, pip.Tab.Status);
+
+            var pipSurface = FindVisualDescendants<VideoSurface>(detached)
+                .Single(surface => ReferenceEquals(surface.Tag, pip.Tab));
+            var originalHandle = pipSurface.Handle;
+            Assert.True(originalHandle != IntPtr.Zero);
+            Assert.Equal(originalHandle, pip.Engine.VideoHandle);
+
+            // Return is the PiP dock button's Close() path. Running it from Home also
+            // verifies the main window remounts the active tab before PiP teardown.
+            fixture.Main.SelectHomeCommand.Execute(null);
+            await fixture.WaitForPolicyAsync();
+            PumpPictureInPictureActivationLayout(window, detached);
+            Assert.True(fixture.Main.IsHomeSelected);
+            Assert.Equal(PlaybackStatus.Playing, pip.Tab.Status);
+
+            var playCount = pip.Engine.PlayCount;
+            var stopCount = pip.Engine.StopCount;
+            var handleHistory = pip.Engine.VideoHandleHistory;
+            detached.Close();
+            PumpPictureInPictureActivationLayout(window);
+            await fixture.WaitForPolicyAsync();
+
+            Assert.Equal(false, pip.Tab.IsDetached);
+            Assert.Equal(pip.Tab, fixture.Main.SelectedTab);
+            Assert.Equal(false, fixture.Main.IsHomeSelected);
+            Assert.Equal(PlaybackStatus.Playing, pip.Tab.Status);
+            Assert.Equal(false, pip.Engine.Paused);
+            Assert.Equal(playCount, pip.Engine.PlayCount);
+            Assert.Equal(stopCount, pip.Engine.StopCount);
+            Assert.SequenceEqual(handleHistory, pip.Engine.VideoHandleHistory);
+
+            var returnedSurface = FindVisualDescendants<VideoSurface>(window)
+                .Single(surface => ReferenceEquals(surface.Tag, pip.Tab));
+            Assert.True(ReferenceEquals(pipSurface, returnedSurface));
+            Assert.Equal(originalHandle, returnedSurface.Handle);
+            Assert.Equal(originalHandle, pip.Engine.VideoHandle);
         }
         finally
         {

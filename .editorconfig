@@ -28,3 +28,5 @@ dotnet_diagnostic.CS0219.severity = warning
 dotnet_diagnostic.CS0168.severity = warning
 # Local function is declared but never used.
 dotnet_diagnostic.CS8321.severity = warning
+# Assignment is overwritten before its value is used.
+dotnet_diagnostic.IDE0059.severity = warning

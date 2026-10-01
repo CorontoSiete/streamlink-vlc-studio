@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Security;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.Infrastructure.Replay;
@@ -57,7 +58,9 @@ internal sealed partial record LiveSeekPlaylist(IReadOnlyList<LiveSeekSegment> S
 
     internal static LiveSeekPlaylist? Parse(string text, Uri uri, PlatformKind platform, DateTimeOffset? startedAt)
     {
-        if (!text.TrimStart().StartsWith("#EXTM3U", StringComparison.Ordinal) ||
+        var lines = HlsPlaylistPolicy.SplitLines(text);
+        if (lines.Length == 0 || lines[0] != "#EXTM3U" ||
+            HlsPlaylistPolicy.HasSkippedSegments(lines) ||
             !ProviderUriPolicy.IsApprovedReplayUri(uri, platform)) return null;
         var segments = new List<LiveSeekSegment>();
         double? position = null;
@@ -67,9 +70,8 @@ internal sealed partial record LiveSeekPlaylist(IReadOnlyList<LiveSeekSegment> S
         var gap = false;
         Uri? initializationUri = null;
         var initializationEncrypted = false;
-        foreach (var raw in text.Split('\n'))
+        foreach (var line in lines.Skip(1))
         {
-            var line = raw.Trim();
             if (line.StartsWith("#EXT-X-MEDIA-SEQUENCE:", StringComparison.Ordinal))
             {
                 if (!long.TryParse(line[22..], NumberStyles.None, CultureInfo.InvariantCulture, out sequence)) return null;

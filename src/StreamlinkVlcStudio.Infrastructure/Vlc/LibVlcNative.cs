@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using StreamlinkVlcStudio.Infrastructure.Io;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 
@@ -11,8 +12,6 @@ internal static partial class LibVlcNative
     private static string? configuredVlcDirectory;
     private static string? configuredLibVlcSha256;
     private static string? configuredCoreSha256;
-    private static string? configuredCorePath;
-    private static string? loadedCoreSha256;
     private static IntPtr libVlcHandle;
     private static IntPtr libVlcCoreHandle;
     private static string? coreSelectionDescription;
@@ -42,24 +41,6 @@ internal static partial class LibVlcNative
         }
     }
 
-    internal static string? ActiveCorePath
-    {
-        get
-        {
-            lock (InitializationGate)
-                return configuredCorePath;
-        }
-    }
-
-    internal static string? ActiveCoreSha256
-    {
-        get
-        {
-            lock (InitializationGate)
-                return loadedCoreSha256;
-        }
-    }
-
     internal static void ConfigureVlcDirectory(string vlcDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vlcDirectory);
@@ -70,8 +51,8 @@ internal static partial class LibVlcNative
             {
                 if (configuredVlcDirectory.Equals(fullDirectory, StringComparison.OrdinalIgnoreCase)) return;
 
-                var requestedLibVlcHash = HashFile(Path.Combine(fullDirectory, "libvlc.dll"));
-                var requestedCoreHash = HashFile(Path.Combine(fullDirectory, "libvlccore.dll"));
+                var requestedLibVlcHash = FileHash.GetSha256(Path.Combine(fullDirectory, "libvlc.dll"));
+                var requestedCoreHash = FileHash.GetSha256(Path.Combine(fullDirectory, "libvlccore.dll"));
                 if (configuredLibVlcSha256!.Equals(requestedLibVlcHash, StringComparison.OrdinalIgnoreCase) &&
                     configuredCoreSha256!.Equals(requestedCoreHash, StringComparison.OrdinalIgnoreCase)) return;
 
@@ -98,16 +79,19 @@ internal static partial class LibVlcNative
             {
                 coreHandle = NativeLibrary.Load(selection.Path);
                 vlcHandle = NativeLibrary.Load(libVlcPath);
+                // Finish fallible initialization before publishing either native handle.
+                // A failed hash read must not leave a freed handle in process-wide state.
+                var libVlcSha256 = FileHash.GetSha256(libVlcPath);
+                var coreSha256 = FileHash.GetSha256(Path.Combine(fullDirectory, "libvlccore.dll"));
+                var description = selection.IsBundledAddressWaitBuild
+                    ? $"Loaded verified VLC 3.0.23 address-wait core SHA-256 {selection.Sha256}."
+                    : $"Loaded the selected VLC core SHA-256 {selection.Sha256}; its DLL pair did not match the bundled 3.0.23 build.";
                 libVlcCoreHandle = coreHandle;
                 libVlcHandle = vlcHandle;
                 configuredVlcDirectory = fullDirectory;
-                configuredCorePath = selection.Path;
-                loadedCoreSha256 = selection.Sha256;
-                configuredLibVlcSha256 = HashFile(libVlcPath);
-                configuredCoreSha256 = HashFile(Path.Combine(fullDirectory, "libvlccore.dll"));
-                coreSelectionDescription = selection.IsBundledAddressWaitBuild
-                    ? $"Loaded verified VLC 3.0.23 address-wait core SHA-256 {selection.Sha256}."
-                    : $"Loaded the selected VLC core SHA-256 {selection.Sha256}; its DLL pair did not match the bundled 3.0.23 build.";
+                configuredLibVlcSha256 = libVlcSha256;
+                configuredCoreSha256 = coreSha256;
+                coreSelectionDescription = description;
             }
             catch
             {
@@ -145,12 +129,6 @@ internal static partial class LibVlcNative
         if (!paths.Contains(pluginDirectory, StringComparer.OrdinalIgnoreCase)) paths.Add(pluginDirectory);
         if (paths.Count > 0 && SetEnvironmentVariable("VLC_PLUGIN_PATH", string.Join(Path.PathSeparator, paths)) != 0)
             throw new InvalidOperationException("The VLC plugin path could not be configured for its bundled core.");
-    }
-
-    private static string HashFile(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
     }
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]

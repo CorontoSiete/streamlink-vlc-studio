@@ -1,0 +1,1768 @@
+Using .NET SDK 10.0.302 at C:\Users\ComputerGuy\Documents\streamlink3\streamlink
+test2\streamlink-vlc-studio\.dotnet-sdk\dotnet.exe
+Reusing existing Release output (-NoBuild); source changes are not rebuilt.
+Running all tests (headless-safe; maximum skips: 270).
+dotnet test tests\StreamlinkVlcStudio.Tests\StreamlinkVlcStudio.Tests.csproj --configuration Release --no-restore
+--no-build
+  PASS parses Twitch URL
+  PASS parses Kick URL
+  PASS parses scheme-less platform URLs
+  PASS new settings pause inactive tabs by default
+  PASS cancellation coordinator cancels stale work and drains active operations
+  PASS cancellation coordinator reports timer callback failures
+  PASS tab start releases its guard when UI dispatch rejects work
+  PASS stream search controller invalidates stale generations and drains cancellation
+  PASS VOD and Browse controller cancels replaceable operations
+  PASS recent stream controller isolates transient hints and status updates
+  PASS tab grouping controller removes closed tabs from every group
+  PASS inactive playback policy controller drains failures and rejects post-dispose requests
+  PASS main view model moves chat settings observation to a replacement instance
+  PASS stream tab disposal is idempotent and serialized
+  PASS VOD chat results normalize null message collections
+  PASS shared string helpers tolerate null params arrays
+  PASS normalizes shared image URLs and size templates
+  PASS OAuth expiry parsing is invariant and bounded
+  PASS creates Twitch live clips through the official Helix flow
+  PASS requires clips edit scope for Twitch clips
+  PASS reports the configured Twitch clip readiness window
+  PASS selected Twitch tab clips and missing Kick service stays disabled
+  PASS observes AsyncRelayCommand failures from WPF Execute
+  PASS Kick send confirmation rejects malformed or unconfirmed responses
+  PASS serializes Kick send with concurrent disconnect and disposal
+  PASS cancels and drains in-flight Twitch prediction disposal
+  PASS isolates throwing chat prediction and EventSub subscribers
+  PASS stops and disposes canceled chat startup before returning
+  PASS detects browser Twitch stream URL
+  PASS ignores browser Twitch non-channel URL
+  PASS ignores browser @-prefixed Twitch non-channel URL
+  PASS parses Twitch VOD URL as a VOD target
+  PASS home search opens a pasted Twitch VOD URL as a playable VOD result
+  PASS sub-only VOD storyboard location parses host and special id
+  PASS sub-only VOD storyboard location rejects invalid input
+  PASS sub-only VOD variant URL shapes follow broadcast type
+  PASS sub-only VOD quality selection maps app qualities
+  PASS sub-only VOD playlist rewrite mutes and absolutizes
+  PASS sub-only VOD resolver builds direct playlist from storyboard metadata
+  PASS sub-only VOD resolver selects the requested quality among valid variants
+  PASS sub-only VOD resolver uses the upload URL shape for old uploads
+  PASS sub-only VOD resolver reports a missing video
+  PASS sub-only VOD resolver errors when no variants exist
+  PASS sub-only VOD resolver treats a timed out variant probe as unavailable
+  PASS sub-only VOD resolver surfaces the API message on GraphQL failure
+  PASS sub-only VOD resolver rejects a non-numeric VOD id
+  PASS Twitch VOD playback falls back to the sub-only resolver when Streamlink fails
+  PASS sub-only Twitch VOD fallback initializes replay chat from resolver metadata
+  PASS Kick VOD playback does not use the sub-only resolver
+  PASS sub-only VOD fallback error includes Streamlink and fallback messages
+  PASS sub-only VOD fallback is not used for cancellations
+  PASS low-level mouse hook ignores mouse move without active drag
+  PASS low-level mouse hook falls through when UI routing is busy
+  PASS low-level mouse hook preserves drag input while UI routing is busy
+  PASS uses default platform for bare channel
+  PASS formats docked chat header for selected channel
+  PASS tab strip shows stream category when available
+  PASS tab strip follows a mid-stream category change from the live channel poll
+  PASS creates Twitch and Kick candidates for bare channel
+  PASS creates one candidate for platform URL
+  PASS treats Twitch-invalid bare names as Kick candidates
+  PASS rejects unsupported URLs
+  PASS rejects platform URLs that point to known non-channel pages
+  PASS rejects bare platform routes and dot segments as channels
+  PASS tokenizes custom Streamlink arguments
+  PASS preserves Windows paths in custom Streamlink arguments
+  PASS supports escaped quotes in custom Streamlink arguments
+  PASS preserves empty quoted custom Streamlink arguments
+  PASS accepts unclosed quotes like CommandLineToArgvW
+  PASS stream playback startup does not wait for unavailable streams
+  PASS stream playback startup uses bounded buffering and H264 for Twitch low latency
+  PASS multi-stream playback uses a smaller buffer without changing quality
+  PASS streamlink direct URL arguments place URL and quality last
+  PASS streamlink playback arguments do not inject proxy options
+  PASS streamlink direct URL arguments do not inject proxy options
+  PASS stream probes require an absolute HTTP URL
+  PASS streamlink external HTTP URLs accept output without a trailing slash
+  PASS stable live playback startup disables low latency flags for a tab
+  PASS live chat burst batches UI drain with 100-message cap and dedup
+  PASS video aspect polling backs off after stable samples and resets on change
+  PASS renderer settings default to window capture compatibility and allow explicit Direct3D11
+  PASS shared LibVLC runtime leases release only after the last reference
+  PASS shared LibVLC runtime keys include all compatibility options
+  PASS libVLC overlay options stay on an isolated runtime
+  PASS libVLC overlay plugin path keeps bundled and installed VLC modules discoverable
+  PASS playback factory receives the selected renderer without changing stream quality
+  PASS libVLC options keep native overlay settings scoped to sub-source
+  PASS libVLC instance creation does not use unsupported string-array marshalling
+  PASS libVLC CRT environment values use UTF-8 marshalling
+  PASS libVLC recreates active video output when its host surface changes
+  PASS libVLC engine constructs with an installed native library
+  PASS browse service loads Twitch top categories quickly and exact viewer totals separately
+  PASS browse Twitch category viewer counts stop after excessive pagination
+  PASS browse service maps Twitch category search and exact viewer totals separately preserving order
+  PASS browse service caches Twitch client ID resolved from OAuth token for category counts
+  PASS browse service maps Twitch category streams to playable targets
+  PASS browse service reports Twitch auth failures
+  PASS browse service reports Twitch category viewer count auth failures
+  PASS browse service reports Twitch category viewer count rate limits without partial counts
+  PASS browse service retries Twitch category viewer count rate limits before failing
+  PASS browse service maps Kick categories from categories endpoint cursor tags thumbnail and viewer count
+  PASS browse service discovers Kick top live categories missing from the first category page
+  PASS browse service returns loaded Kick category page without prefetching later pages
+  PASS browse service maps Kick category search with cursor tags thumbnail and detail viewer counts
+  PASS browse service keeps Kick categories when detail omits viewer count
+  PASS browse service keeps Kick categories when detail returns not found
+  PASS browse service still reports Kick category detail auth failures
+  PASS browse service maps Kick category livestreams
+  PASS browse service missing credentials avoids network calls
+  PASS browse home segment selection loads categories and deselects live vods and recent
+  PASS browse Twitch categories render before exact viewer counts finish
+  PASS browse Twitch top category viewer count loads before lower categories
+  PASS browse Twitch category viewer counts request one exact category per scheduled job
+  PASS browse load more queues new exact viewer counts without restarting active count load
+  PASS browse category click cancels background exact viewer count loading
+  PASS browse platform toggle from channel page returns to categories and loads selected categories
+  PASS browse selected platform click from channel page returns to preserved categories
+  PASS browse back command from channel page returns to preserved categories
+  PASS browse category search debounces to latest query
+  PASS browse category click loads category streams
+  PASS browse segment from channel page returns to preserved categories and clears channel results
+  PASS browse Kick load more sends cursor and appends without duplicating categories
+  PASS browse refresh and load more target the visible browse subpage
+  PASS browse stream open uses live playback path and can keep Home selected
+  PASS parses Twitch VOD durations
+  PASS rejects non-finite and overflowing Twitch replay durations
+  PASS matches Twitch VOD by stream id before start time
+  PASS matches Twitch VOD by nearest start time when stream id is missing
+  PASS does not match Twitch VOD by time when stream id is different
+  PASS parses Twitch DVR total seconds from playlist
+  PASS resolves Twitch replay from GraphQL archive preview HLS after Helix miss
+  PASS resolves Twitch current live DVR after Helix and GraphQL miss
+  PASS fails Twitch current DVR probing closed for mismatched and invalid playlists
+  PASS reads Kick live stream failure states
+  PASS reads Kick website live stream metadata
+  PASS extracts Kick private replay candidates
+  PASS extracts current Kick videos API source and video uuid
+  PASS reads Kick videos API duration as milliseconds
+  PASS rejects non-finite and overflowing Kick replay durations
+  PASS does not recover mismatched Kick replay URLs from valid JSON
+  PASS applies nested Kick video duration to replay candidates
+  PASS keeps Kick replay seekable when the reported start time is in the future
+  PASS maps Twitch VOD Downloader GraphQL replay chat messages by offset
+  PASS sends Twitch VOD chat GraphQL offsets as integers
+  SKIP animated emote image cache evicts by count and decoded memory: interactive desktop unavailable
+  SKIP animated emote image cache version reloads the same URL independently: interactive desktop unavailable
+  SKIP animated emote image cache versions isolate an older in-flight load: interactive desktop unavailable
+  SKIP failed stale image load does not evict its cache replacement: interactive desktop unavailable
+  SKIP failed image cache expires and reloads the same thumbnail URL: interactive desktop unavailable
+  SKIP native replay overlay pins visible emotes until the frame is replaced: interactive desktop unavailable
+  PASS seeking replay switches tab to VOD playback and disables chat sending
+  PASS sub-only live replay falls back to the direct VOD playlist
+  PASS sub-only live replay normalizes a direct CloudFront DVR URL
+  PASS replay seekbar waits for required pre-resolved playback URL
+  PASS Twitch direct HLS replay URL skips Streamlink URL resolution
+  PASS Kick direct HLS replay URL resolves through Streamlink for seek playback
+  PASS failed replay URL prefetch allows on-demand retry during first seek
+  PASS stale replay URL prefetch cannot enable current replay seek
+  PASS stopping playback cancels pending replay URL prefetch
+  PASS subsequent live replay seek reuses already-playing replay media
+  PASS first live replay seek does not wait for old Streamlink transport disposal
+  PASS live replay in-place seek failure reloads replay media
+  PASS seeking Twitch replay backward renders the earlier chat window
+  PASS replay chat stays at seek target when VLC clock is unavailable or invalid after seek
+  PASS stale old VLC clock after backward replay seek cannot overwrite new chat window
+  PASS current-live DVR captured chat ignores stale old clock after backward seek
+  PASS toast thumbnail reads enforce the streaming byte limit
+  PASS live notification delivery gate invalidates queued work when disabled
+  SKIP native replay overlay renderer emits transparent blank frame for empty messages: interactive desktop unavailable
+  SKIP native replay overlay renderer honors saved reference size above old cap: interactive desktop unavailable
+  PASS native replay overlay renderer keeps live content metrics for width-only resize
+  PASS native replay overlay renderer keeps live content metrics when width and height grow
+  PASS native replay overlay renderer keeps live content metrics for height-only resize
+  SKIP native replay overlay renderer uses live typography colors and spacing: interactive desktop unavailable
+  SKIP native replay overlay renders Unicode emoji as colored images: interactive desktop unavailable
+  SKIP native replay overlay renderer uses live badge and emote dimensions: interactive desktop unavailable
+  PASS native replay overlay renderer scales live metrics only with video resolution
+  SKIP native replay overlay renderer supports every live font size: interactive desktop unavailable
+  SKIP native replay overlay renderer wraps whole tokens and excludes a clipped oldest message: interactive desktop unavailable
+  SKIP native replay overlay renderer caps newest-first measurement at 256 messages: interactive desktop unavailable
+  SKIP native replay overlay renderer selects newest intermediate and oldest full pages: interactive desktop unavailable
+  PASS native replay overlay scrollbar state matches the VLC live-overlay protocol
+  SKIP native replay overlay renderer advances cached animated emote frames by animation clock: interactive desktop unavailable
+  SKIP native replay overlay animates Twitch VOD emotes parsed from replay metadata: interactive desktop unavailable
+  SKIP native replay overlay renderer does not request animation loop for static emotes: interactive desktop unavailable
+  PASS native replay overlay animation schedules from the frame deadline
+  PASS native replay overlay refreshes animation time across chat frame invalidations
+  PASS native replay overlay scheduler renders on background STA thread
+  PASS native replay overlay scheduler coalesces rapid updates to latest frame
+  PASS native replay overlay write gate keeps only latest pending frame
+  PASS native replay overlay write gate discards pending frame after invalidation
+  PASS native replay overlay write gate cancels an active transient frame after invalidation
+  PASS native replay overlay write gate ignores its own cancellation as a write failure
+  PASS native replay overlay write gate keeps critical clear through normal invalidation
+  PASS native replay overlay write gate lets loaded chat supersede a blocked critical clear
+  PASS native replay overlay write gate lets loaded chat supersede a blocked blank frame
+  PASS native replay overlay write gate supersedes a persistent clear during retry delay
+  PASS native replay overlay write gate drops stale critical blank retry after newer frame
+  PASS native replay overlay write gate retries critical frame after pipe failure
+  PASS native replay overlay write gate retries latest current frame after timeout
+  PASS native replay overlay write gate cancels obsolete latest-frame retry after session change
+  PASS native replay overlay write gate parks bounded retries and replays latest state on reconnect
+  PASS native replay overlay critical queue coalesces semantic state and caps bytes
+  PASS native replay overlay write gate uses bounded exponential retry delays
+  SKIP native VLC replay overlay sends app-rendered frame: interactive desktop unavailable
+  SKIP native replay transition stops the live overlay controller before replay playback: interactive desktop unavailable
+  SKIP sub-only Twitch VOD native overlay replaces a blocked startup clear with loaded chat: interactive desktop unavailable
+  SKIP Twitch behind-live native replay overlay scrolls anchors and resets after seek: interactive desktop unavailable
+  SKIP Kick explicit VOD native replay overlay scrolls and resets after seek: interactive desktop unavailable
+  SKIP explicit Twitch VOD native overlay blanks when replay chat is unavailable: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay renders replay chat unavailable status: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay renders loaded replay chat without manual invalidation: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay resize event keeps replay chat text stable for width-only resize: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay ignores stale seekbar handoff resize before lower-height replay frame: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay resends loaded replay chat during startup warmup: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay refreshes replay frame when video size becomes available: interactive desktop unavailable
+  SKIP explicit Kick VOD native overlay retries loaded replay chat until pipe is ready: interactive desktop unavailable
+  SKIP explicit Kick VOD seek writes native blank frame while replay chat load is delayed: interactive desktop unavailable
+  SKIP explicit Twitch VOD native overlay blanks while replay chat load is pending: interactive desktop unavailable
+  SKIP explicit Twitch VOD native overlay blanks when replay chat loads empty: interactive desktop unavailable
+  SKIP native VLC replay overlay advances animated emotes after seekback without changing visible chat: interactive desktop unavailable
+  SKIP native VLC replay overlay coalesces seek blank when captured chat is immediately visible: interactive desktop unavailable
+  SKIP native VLC replay overlay retries blank frame after empty Kick seekback write failure: interactive desktop unavailable
+  SKIP Kick native replay overlay recovers after empty seekback window: interactive desktop unavailable
+  PASS native VLC replay overlay event host decodes wheel and thumb scroll events
+  PASS native VLC replay overlay resize event saves normalized reference size above old cap
+  PASS native VLC replay overlay resize event waits until replay frame is established
+  PASS native VLC replay overlay resize event clamps to live-equivalent reference size
+  PASS native VLC replay overlay ignores undersized resize event without overwriting saved size
+  PASS native VLC replay overlay resize events coalesce burst to final size
+  PASS native VLC replay overlay contains resize timer callback failures
+  PASS native VLC replay overlay event host retries when event pipe instance is busy
+  SKIP native VLC replay overlay resize burst after seekback writes latest frame and keeps host alive: interactive desktop unavailable
+  SKIP native VLC replay overlay refreshes when replay badge catalog resolves: interactive desktop unavailable
+  SKIP native VLC replay overlay event host stops when returning live: interactive desktop unavailable
+  PASS current-live DVR seek displays captured Twitch chat without VOD comments warning
+  PASS current-live DVR seek before first captured Twitch chat stays quiet
+  SKIP current-live DVR native overlay blanks when seeking before first captured Twitch chat: interactive desktop unavailable
+  SKIP current-live DVR native overlay blanks first empty seek before replay seek completes: interactive desktop unavailable
+  PASS current-live DVR captures behind-live messages without appending outside replay window
+  PASS Kick live startup does not wait for replay availability lookup
+  PASS Kick seekback uses chat received before replay lookup completed
+  PASS Kick seekback waits for in-flight replay availability lookup
+  PASS replay duration ignores impossible stream start timestamp
+  PASS Kick seekback displays captured chat and keeps chat connected read-only
+  PASS Kick seekback clock advance retains reached chat and loads timestamp chat
+  PASS Kick seekback stagnant playback clock keeps chat progressing from anchor
+  PASS Kick seekback captured chat ignores stale old clock after backward seek
+  PASS Kick seekback captures behind-live messages without appending outside replay window
+  PASS current-live DVR promotion polling swaps to real VOD replay chat
+  PASS replay step buttons seek thirty seconds and return to live at the edge
+  PASS resuming after pausing while behind live holds the rewound position
+  PASS inactive live suspension stops only the player connection and resumes at the live edge
+  PASS inactive live resume does not resolve replay media and reports reconnect failures
+  PASS inactive behind-live replay suspension keeps the deliberate replay position
+  PASS resuming an instant live-edge pause stays at the live edge
+  PASS paused replay clock stays frozen while the engine clock keeps advancing
+  PASS replay seek preview movement does not mutate committed clock until commit
+  PASS replay keyboard slider commit seeks from final slider value
+  PASS replay seek preview is not overwritten by replay clock polling
+  PASS parses Twitch IRC PRIVMSG
+  PASS parses Twitch IRC tmi sent timestamp
+  PASS parses Twitch moderator and Prime badges
+  PASS parses Twitch IRC emotes tag
+  PASS parses Twitch IRC static subscriber emote with canonical CDN URL
+  PASS emote candidates prefer high-resolution animated CDN representations
+  PASS 7TV emote candidates prefer the 3x CDN representation
+  PASS parses Twitch IRC multilingual message and Unicode emote offsets
+  PASS unescapes Twitch IRC literal backslashes in tags
+  PASS drops invalid and trailing Twitch IRC tag escape backslashes
+  PASS rejects lines that only mention Twitch PRIVMSG outside the command
+  PASS parses Kick Pusher chat message
+  PASS parses Kick Pusher server timestamps
+  PASS isolates throwing Streamlink log subscribers
+  PASS Kick chat client disposal is idempotent
+  PASS Twitch chat client disposal is idempotent
+  PASS maps Kick recent chat backfill messages
+  PASS VOD chat timeline only releases messages playback has reached
+  PASS VOD chat timeline rewinds its cursor so a backward seek replays chat
+  PASS VOD chat timeline ignores duplicates and messages already behind the cursor
+  PASS VOD chat timeline drops the oldest surplus instead of letting chat lag the video
+  PASS VOD chat timeline evicts the oldest messages once capped
+  PASS VOD chat pump walks forward and stops once the look-ahead is covered
+  PASS VOD chat pump stops asking once a session reports it cannot serve chat
+  PASS VOD chat seeking inside fetched chat republishes it without refetching
+  PASS VOD chat keeps captured chat when the session is promoted to a published VOD
+  PASS VOD chat captures live messages received before the replay session is known
+  PASS VOD chat reports a captured message as due only once playback reaches it
+  PASS Twitch VOD chat frontier always advances past the offset it asked for
+  PASS Kick VOD chat cursors are Unix microsecond timestamps
+  PASS limits Kick initial recent chat backfill to the newest messages
+  PASS builds Kick recent chat cursor page URL
+  PASS reads Kick channel id separately from chatroom id
+  PASS reads Kick broadcaster envelope metadata
+  PASS parses Kick Pusher escaped multilingual chat message
+  PASS parses Kick sender badge objects with image urls
+  PASS parses Kick badge nested image urls
+  PASS parses Kick badges_v2 image urls and sort order
+  PASS merges duplicate Kick badge metadata without discarding richer fields
+  PASS prefers richer Kick badge titles when duplicate metadata arrives later
+  PASS bundled Kick badge manifest includes VLC overlay role badge images
+  PASS bundled badge assets extract Twitch and Kick image files from app resources
+  PASS parses Kick gifted subscription badges as gift badges
+  PASS parses Kick emote markers
+  PASS ignores malformed Kick Pusher frames
+  PASS quality option displays its label
+  PASS round trips JSON settings
+  PASS legacy Streamlink proxy settings are dropped on save
+  PASS legacy JSON settings keep Windows toast notifications enabled
+  PASS picture-in-picture top bar settings normalize keys case-insensitively
+  PASS chat font size settings clamp invalid values
+  PASS dock width settings clamp invalid values
+  PASS canceled JSON settings save leaves previous settings file intact
+  PASS malformed JSON settings are preserved and defaults are loaded
+  PASS main view model unsubscribes logger on dispose
+  PASS clear Twitch token command reports settings save failures
+  PASS resolves quoted Streamlink environment path
+  PASS resolves VLC directory from root or plugin environment path
+  PASS recent streams are normalized newest first and unique per channel
+  PASS validates Twitch OAuth token scopes
+  PASS creates Twitch prediction through Helix with documented JSON body
+  PASS resolves Twitch prediction through Helix with winning outcome body
+  PASS validates Twitch prediction documented limits before Helix calls
+  PASS maps Twitch prediction API error messages
+  PASS parses Twitch prediction EventSub payloads and ignores duplicate message IDs
+  PASS ignores malformed Twitch prediction EventSub payloads
+  PASS parses Twitch prediction EventSub welcome and reconnect sessions
+  PASS Twitch prediction cards only show open predictions without changing raw chat
+  PASS Twitch prediction active ID replaces stale prediction card
+  PASS Twitch prediction start command requires manage access
+  PASS explains Twitch Client ID is not an OAuth token
+  PASS gets Twitch viewer count from Helix streams
+  PASS reports an empty Twitch category when the channel has none set
+  PASS treats empty Twitch streams response as offline
+  PASS gets Kick viewer count from channel stream data
+  PASS reports an empty Kick category when the channel has none set
+  PASS treats Kick null stream data as offline
+  PASS gets Twitch stream metadata thumbnail from Helix streams
+  PASS gets Kick stream metadata thumbnail from channel data
+  PASS gets Twitch followed live streams
+  PASS Twitch followed streams stop after excessive pagination
+  PASS searches Twitch VODs with Helix user resolution and pagination
+  PASS classifies subscriber-only Twitch VODs from anonymous playback tokens
+  PASS keeps Twitch VOD access unknown when playback metadata cannot be verified
+  PASS uses Twitch VOD type filters and omits type for all
+  PASS reports Twitch VOD auth and channel-not-found states
+  PASS searches Twitch channels with Helix live and offline mapping
+  PASS searches Kick channels with curl fallback ranking and dedupe
+  PASS short stream search skips channel discovery and probes exact candidates
+  PASS exact stream URL skips channel discovery and retains Streamlink probing
+  PASS parses Kick VODs with curl fallback metadata and duration
+  PASS fills Kick VOD profile image from channel metadata when VOD rows omit it
+  PASS gets configured Kick followed live streams
+  PASS skips invalid configured Kick followed channel slugs
+  PASS uses Kick top-level thumbnail when stream thumbnail is absent
+  PASS decodes Kick WebP thumbnails
+  SKIP decodes animated emote frames: interactive desktop unavailable
+  PASS sends tab chat through connected chat client
+  PASS sends multilingual chat without splitting Unicode text elements
+  PASS docked chat suppresses a matching server echo after local send
+  PASS docked chat deduplicates source ids without collapsing repeated text
+  SKIP docked chat renders badges as badge elements instead of labels: interactive desktop unavailable
+  PASS docked chat catalog resolves bundled Kick role badges to bundled image files
+  PASS Kick subscriber badge catalog uses Kick month thresholds
+  PASS Twitch subscriber badge catalog prefers channel badges over global stars
+  PASS Twitch Helix global badge catalog resolves badges newer than the bundle
+  SKIP docked chat renders Kick gift badge as gift icon: interactive desktop unavailable
+  SKIP docked chat renders known Kick badge icons without inventing unknown ones: interactive desktop unavailable
+  SKIP docked chat renders icon fallbacks for unresolved Twitch badges: interactive desktop unavailable
+  SKIP docked chat keeps Twitch subscriber badge visible while channel image is unresolved: interactive desktop unavailable
+  SKIP docked chat uses parsed Twitch emote image URLs: interactive desktop unavailable
+  PASS parsed emote catalog notifications are not raised synchronously during render
+  SKIP docked chat renders Unicode emoji as emoji text instead of emote images: interactive desktop unavailable
+  PASS caps tab chat messages at newest 100
+  PASS waits for video surface before starting playback
+  PASS stale video surface unload cannot clear a newer rehosted video handle
+  PASS starts Streamlink resolution before video surface is ready
+  PASS stream start uses parking video surface after expected surface is removed
+  PASS enables native overlay engine for Kick playback
+  PASS uses stable per-stream native overlay position path
+  PASS VLC plugin overlay starts without diagnostic placeholder
+  PASS overlay mode falls back to docked chat when native overlay is unavailable
+  PASS audible VLC audio convergence keeps retrying after accepted calls
+  PASS bundled VLC overlay directory is selected when configured path is missing
+  PASS valid configured VLC overlay directory wins over bundled directory
+  PASS embedded VLC overlay bundle extracts to a valid overlay directory
+  PASS VLC overlay plugin runtime recopies same-length DLL by hash and invalidates stale cache
+  PASS playback restart compares resolved VLC overlay directory
+  PASS release package zip includes runtime payload and user documentation
+  PASS release package refuses recursive staging inside published files
+  PASS installer resolves the nested release zip in a GitHub Actions artifact
+  PASS installer excludes setup assets and confines temporary download paths
+  PASS MSI installer rejects unsafe output file names
+  PASS uninstaller script creates x64 NativeAOT maintenance executable
+  PASS MSI installer requires a complete release payload
+  PASS native overlay updates ignore unstarted overlay process handles
+  PASS libVLC options use non-DXGI video output with hardware decode
+  PASS reuses cached Kick overlay channel info for launch keys
+  PASS VLC plugin overlay text size setting does not rebuild playback
+  PASS VLC plugin overlay text size is remembered per stream
+  PASS tab switching mutes inactive streams and leaves selected stream audible
+  PASS tab strip selection restores selected tab audio
+  PASS tab switch resume reapplies selected tab audio after playback resumes
+  PASS inactive playback policy coalesces rapid requests to latest visibility
+  PASS tab switching soft mutes previous selected stream before new selected audio
+  PASS tab switching reapplies soft mute to already inactive tabs
+  PASS late inactive tab audio reapply restores selected tab audio
+  PASS delayed inactive engine audio convergence restores selected tab audio
+  PASS rapid tab switching leaves exactly one audible stream
+  PASS selecting detached picture-in-picture tab follows selected-tab audio ownership
+  PASS multi-stream grid shows the selected page of up to 16 video tabs
+  PASS multi-stream ten-up uses equal-size no-crop tiles
+  PASS multi-stream requested six eight ten and twelve counts use equal-size no-crop grids
+  SKIP main multi-stream native left click selects clicked stream for audio: interactive desktop unavailable
+  SKIP fullscreen button targets multi-view when current video view has multiple streams: interactive desktop unavailable
+  SKIP main fullscreen stays below other windows and restores prior topmost state: interactive desktop unavailable
+  SKIP main theatre fullscreen marks shell taskbar fullscreen state until exit: interactive desktop unavailable
+  SKIP main theatre fullscreen restores shell state after taskbar recreation: interactive desktop unavailable
+  SKIP main theatre fullscreen retries transient shell cleanup failure: interactive desktop unavailable
+  SKIP closing main theatre fullscreen clears shell taskbar state while its window is valid: interactive desktop unavailable
+  PASS video fullscreen preserves multi-view layout while hiding chat chrome
+  PASS stream-only fullscreen still collapses multi-view to selected stream
+  SKIP main multi-stream polling drag reorder advances without native mouse move messages: interactive desktop unavailable
+  PASS multi-stream drag reorder moves the stream to the dropped grid position
+  PASS tab strip reorder moves the far-right tab to the far-left position
+  PASS tab strip reorder inserts before and after the target item
+  PASS tab strip reorder moves a grouped tab strip item as a block
+  PASS tab strip reorder rejects invalid and no-op requests
+  PASS dragging an unmerged tab over another tab creates explicit multiview
+  PASS dragging a merged tab group over a single tab merges the whole group
+  PASS dragging a merged tab group over another merged tab group merges both groups
+  SKIP normal tab strip drag reorders over target tab without merging: interactive desktop unavailable
+  SKIP dragging a top tab outside the tab strip detaches to picture-in-picture: interactive desktop unavailable
+  SKIP ctrl tab strip drop over another tab creates explicit multiview: interactive desktop unavailable
+  SKIP ctrl tab strip drag still merges when Ctrl is released before mouse-up: interactive desktop unavailable
+  SKIP ctrl tab strip drag completes merge with last hovered tab when release misses tab item: interactive desktop unavailable
+  SKIP ctrl tab strip drag clears remembered merge target over blank tab strip space: interactive desktop unavailable
+  SKIP ctrl tab strip routed mouse drag merges when Ctrl is released before mouse-up: interactive desktop unavailable
+  SKIP ctrl tab strip drag ignores low-level main-window hook activity before routed mouse-up: interactive desktop unavailable
+  SKIP ctrl tab strip drop of a merged group over a single tab merges the whole group: interactive desktop unavailable
+  SKIP ctrl tab strip drop of a merged group over another merged group merges both groups: interactive desktop unavailable
+  SKIP ctrl tab strip drag merges with the release tab after crossing intermediate tabs: interactive desktop unavailable
+  PASS detached selected tab leaves main video host until it is reattached
+  PASS multi-stream layout skips detached tabs on the selected page
+  PASS multi-stream tab strip merges current video page without blocking tab switching
+  PASS ordinary multi-stream tab drag targets one tab unless explicitly grouped
+  PASS detaching ordinary multi-stream tab leaves other page tabs docked
+  PASS registered picture-in-picture group stays merged after multi-stream detach
+  SKIP home view hides main video surface without clearing playback handle: interactive desktop unavailable
+  SKIP home selected during unresolved stream start keeps playback on hidden main surface: interactive desktop unavailable
+  PASS multi-stream mode toggle keeps live video surfaces mounted and updates current layout
+  PASS multi-stream visible tabs keep playing when inactive tab pausing is enabled
+  PASS multi-stream off-grid policy pauses and resumes without changing requested quality
+  PASS manual mute stays per tab across selection changes
+  PASS volume changes are remembered per stream
+  PASS successful playback is remembered as a recent stream
+  PASS recent stream thumbnails refresh while recent page is selected
+  PASS recent stream live indicator uses platform offline metadata
+  PASS recent stream delete removes channel from settings and view model
+  PASS home recent stream background open keeps home selected
+  PASS home followed stream background open keeps home selected
+  PASS home followed settings discard invalid Kick slugs before refresh
+  PASS home followed refresh advances thumbnail cache version for an unchanged live channel
+  PASS home followed failed refresh preserves the displayed thumbnail cache version
+  PASS home followed live toast baselines each platform's first successful refresh
+  PASS home followed live toast announces each offline-to-live transition only when enabled
+  PASS home followed refresh loads on initialize and repeats automatically
+  PASS home followed automatic refresh advances thumbnail cache version for an unchanged live channel
+  PASS home followed automatic refresh continues when a stream tab is selected
+  PASS home followed automatic refresh skips overlapping slow ticks
+  PASS home followed automatic refresh stops after dispose
+  PASS home Twitch VOD search runs automatically and filter changes reset results
+  PASS automatic Twitch VOD search debounces typing to the latest query
+  PASS opening two Twitch VODs from the same streamer creates distinct tabs without recents
+  PASS explicit Twitch VOD tab initializes replay metadata and disables live-only behavior
+  PASS explicit Kick VOD tab without webhook cache reports replay chat unavailable after startup
+  PASS explicit Kick VOD tab without start time reports replay chat unavailable
+  PASS explicit Kick VOD tab loads replay chat when start time is available
+  PASS Kick VOD with missing duration leaves replay seekbar disabled
+  PASS home search service partial query shows live and offline channel matches
+  PASS home search ignores stale discovery after the query changes
+  PASS home search shows results before viewer counts finish then refreshes their order
+  PASS home search ignores stale viewer-count enrichment after the query changes
+  PASS home search service live result opens playback
+  PASS background Home playback clears search after inactive policy pauses the tab
+  PASS offline Twitch search result opens Twitch VOD search
+  PASS offline Kick search result opens Kick VOD search
+  PASS opening Kick VOD resolves HLS tab without recents
+  PASS home search command requires a nonblank streamer query
+  PASS home search automatically probes after streamer query changes
+  PASS home search result uses platform metadata thumbnail
+  PASS home search result leaves thumbnail empty when metadata is unavailable
+  PASS home search dropdown can be dismissed and reopened without losing verified results
+  PASS home search shows both playable bare streamer results without guessing a platform
+  PASS home search probes Twitch and Kick before showing a bare streamer result
+  PASS home search probes a platform URL before showing it as a result
+  PASS late-starting inactive tab pauses and stays muted without muting selected stream
+  PASS direct stream open applies available category metadata to the tab
+  PASS direct streams open another tab while first playback is still starting
+  PASS direct streams start independently while first stream transport is unresolved
+  PASS direct stream starts are throttled after two concurrent startups
+  PASS duplicate direct stream reuses tab while first playback is still starting
+  PASS docked chat keeps native VLC overlay hidden and uses tab chat
+  PASS docked chat toggle hides panel without disconnecting chat
+  SKIP dock width drag updates docked chat setting without chat or playback restart: interactive desktop unavailable
+  PASS multi-stream docked chat toggle only affects selected docked panel
+  PASS docked chat toggle restores chat disabled from overlay layout
+  PASS chat layout hidden flag follows settings layout
+  PASS home held middle-button autoscroll tracks cursor distance and clamps
+  SKIP middle-click home stream item button resolves and executes stay-on-home command: interactive desktop unavailable
+  SKIP middle-click home stream resolver ignores non-stream and non-open buttons: interactive desktop unavailable
+  SKIP middle-click home stream resolver does not execute running command: interactive desktop unavailable
+  PASS mouse button four is the default back hotkey and other mouse buttons are not
+  SKIP Twitch and Kick category clicks open stream pages at the top: interactive desktop unavailable
+  PASS home content scroll bottom helper treats bottom and threshold as loadable
+  PASS home content scroll bottom helper ignores positions far from bottom
+  PASS home content scroll bottom helper treats non-scrollable content as loadable
+  PASS home content scroll bottom helper rejects invalid numeric input
+  PASS home content padding converter keeps a compact side gutter when card gap is disabled
+  SKIP rounded clip border masks configured corners and follows resize: interactive desktop unavailable
+  SKIP live browse and VOD cards use rounded thumbnail clips and compact side gutters: interactive desktop unavailable
+  SKIP Twitch VOD cards show subscriber-only and unknown access tags: interactive desktop unavailable
+  SKIP home card wrap panel preserves fixed right gap mode: interactive desktop unavailable
+  SKIP home card wrap panel fills rows when right gap mode is off: interactive desktop unavailable
+  SKIP video viewport chrome uses true black behind VLC: interactive desktop unavailable
+  PASS picture-in-picture resizing keeps the video area aspect-correct
+  PASS picture-in-picture movement stays inside the monitor work area
+  PASS picture-in-picture movement remains responsive after pushing against a screen edge
+  SKIP detached native sizing hook constrains the proposed window rectangle: interactive desktop unavailable
+  SKIP detached picture-in-picture moving hook follows the cursor across monitors and stays on screen: interactive desktop unavailable
+  SKIP detached picture-in-picture owns caption dragging instead of entering the Windows move loop: interactive desktop unavailable
+  SKIP video surface grid panel partitions odd viewport sizes without center gaps: interactive desktop unavailable
+  SKIP video surface grid panel keeps six-up tiles equal-sized and aspect-correct: interactive desktop unavailable
+  SKIP video surface grid panel invalidates layout when a child grid placement changes: interactive desktop unavailable
+  SKIP video surface grid panel reports a finite desired size under unbounded measure: interactive desktop unavailable
+  SKIP video surface grid panel keeps aspect-ratio unused width away from the center split: interactive desktop unavailable
+  SKIP video surface grid panel keeps aspect-ratio unused height away from the center split: interactive desktop unavailable
+  SKIP video surface grid panel keeps 3x4 aspect-ratio rows contiguous: interactive desktop unavailable
+  SKIP video surface native host avoids system-colored static background: interactive desktop unavailable
+  SKIP video surface native bounds sync sizes containers and preserves renderer-owned child layout: interactive desktop unavailable
+  SKIP video surface native repair reparents owned popup renderer windows: interactive desktop unavailable
+  SKIP video surface native host raises parent drag mouse events without child subclassing: interactive desktop unavailable
+  SKIP detached window activation requests tab selection: interactive desktop unavailable
+  SKIP detached picture-in-picture windows show in the taskbar: interactive desktop unavailable
+  SKIP detached picture-in-picture stays visible when main window is minimized: interactive desktop unavailable
+  SKIP detached window accepts additional tabs into existing multi-stream grid: interactive desktop unavailable
+  SKIP detaching explicit multi-stream group to picture-in-picture keeps tabs merged: interactive desktop unavailable
+  SKIP detaching separate multi-stream tabs creates separate picture-in-picture windows: interactive desktop unavailable
+  SKIP picture-in-picture VLC plugin chat follows three-stream multiview visibility: interactive desktop unavailable
+  SKIP dragging main tab onto picture-in-picture tab adds it to existing window: interactive desktop unavailable
+  SKIP reordering a picture-in-picture tab keeps its detached window open: interactive desktop unavailable
+  SKIP ctrl releasing dragged tab over picture-in-picture tab uses tab-strip drop target: interactive desktop unavailable
+  SKIP picture-in-picture top bar button hides chrome and video menu restores it: interactive desktop unavailable
+  SKIP picture-in-picture fullscreen exit preserves hidden top bar and resizing: interactive desktop unavailable
+  SKIP picture-in-picture top bar saves only the active stream immediately: interactive desktop unavailable
+  PASS picture-in-picture drag candidate waits for threshold and cancels on mouse-up
+  SKIP picture-in-picture low-level drag candidate starts and cancels application-owned movement: interactive desktop unavailable
+  SKIP detached multi-stream wheel adjusts only hovered stream volume: interactive desktop unavailable
+  SKIP detached multi-stream native left click activates clicked stream: interactive desktop unavailable
+  SKIP occluded picture-in-picture window ignores screen clicks landing on the window above it: interactive desktop unavailable
+  SKIP detached multi-stream double click fullscreens only clicked stream and restores grid: interactive desktop unavailable
+  SKIP detached multi-stream fullscreen keeps inactive VLC surfaces mounted: interactive desktop unavailable
+  SKIP detached window captures actual resized bounds: interactive desktop unavailable
+  SKIP detached stream double click fullscreen hides PiP chrome and uses full monitor bounds: interactive desktop unavailable
+  SKIP detached fullscreen button enters single-stream fullscreen with full monitor bounds: interactive desktop unavailable
+  SKIP detached fullscreen stays below other windows and restores prior topmost state: interactive desktop unavailable
+  SKIP detached fullscreen marks shell taskbar fullscreen state until exit: interactive desktop unavailable
+  SKIP closing fullscreen detached window clears shell taskbar fullscreen state: interactive desktop unavailable
+  SKIP detached fullscreen button preserves multi-stream picture-in-picture grid: interactive desktop unavailable
+  SKIP saved detached multiview fullscreen restores all picture-in-picture streams: interactive desktop unavailable
+  SKIP detached maximized PiP uses work area and removes resize border so title bar is not clipped: interactive desktop unavailable
+  SKIP detached stream low-level double click fallback fullscreens PiP stream: interactive desktop unavailable
+  SKIP detached multi-stream low-level click is not counted once per mapped tab: interactive desktop unavailable
+  SKIP detached multi-stream fullscreen exit restores remembered PiP placement: interactive desktop unavailable
+  SKIP detached window closed bounds are aspect-fitted for the next picture-in-picture window: interactive desktop unavailable
+  SKIP detached window resize updates remembered picture-in-picture bounds before close: interactive desktop unavailable
+  SKIP detached maximized window remembers fullscreen screen and restores native fullscreen there: interactive desktop unavailable
+  SKIP top control toggle buttons share selected visuals: interactive desktop unavailable
+  PASS studio theme exposes shared palette focus and disabled visuals
+  SKIP combo box hover keeps the configured surface instead of platform highlight chrome: interactive desktop unavailable
+  SKIP switching the theme repaints the picture-in-picture window seekbar and volume overlay: interactive desktop unavailable
+  SKIP volume overlay releases its popup target when its window unloads: interactive desktop unavailable
+  SKIP home navigation selection follows the active palette: interactive desktop unavailable
+  SKIP stream tab chrome distinguishes selected and idle states: interactive desktop unavailable
+  SKIP settings hub collapses native workspace and switches categories: interactive desktop unavailable
+  SKIP settings expose and save the Windows toast notification toggle: interactive desktop unavailable
+  SKIP top controls bar owns playback controls with an overlaid seekbar: interactive desktop unavailable
+  PASS switching settings from VLC plugin overlay to docked rebuilds playback without native overlay
+  PASS toggling VLC plugin chat visibility keeps playback running with native overlay loaded
+  PASS theatre docked chat override keeps VLC plugin playback running
+  SKIP theatre mode applies docked chat without changing overlay layout setting: interactive desktop unavailable
+  SKIP inactive window first click focuses docked chat input and accepts typing: interactive desktop unavailable
+  SKIP theatre chat input stays above the taskbar and accepts physical typing: interactive desktop unavailable
+  SKIP docked and theatre chat release native overlay keyboard capture before typing: interactive desktop unavailable
+  SKIP native overlay chat handles shifted symbols and Ctrl+V paste: interactive desktop unavailable
+  SKIP native video double click exits theatre mode when the first click activates the window: interactive desktop unavailable
+  PASS multi-stream VLC plugin chat leaves two visible grid chats enabled
+  PASS multi-view VLC plugin chat keeps two merged chats enabled
+  PASS multi-view VLC plugin chat clears three native overlays without waiting one by one
+  PASS multi-view VLC plugin chat disables all selected merged chats when three streams play
+  PASS multi-view VLC plugin chat restores policy-hidden chats when merged group drops below three
+  PASS multi-view VLC plugin chat restore leaves manually hidden chat disabled
+  PASS hiding VLC plugin overlay sends transparent frame to native overlay pipe
+  PASS stream fullscreen hides docked chat UI without stopping chat
+  PASS does not fall back to legacy Kick chat when native overlay controller is unavailable
+  PASS native VLC overlay chat waits until playback is resolved
+  PASS closing selected tab does not wait for stalled playback shutdown
+  PASS disposing tab gives up on stalled playback shutdown
+  PASS selects adjacent tabs with wraparound
+  PASS tab navigation key policy allows left and right in windowed viewer mode
+  SKIP tab navigation key policy preserves fullscreen, editing, modifier, and settings gates: interactive desktop unavailable
+  PASS main window shortcuts policy accepts only exact ctrl s for replay seekbar
+  PASS main window shortcuts replay seekbar toggle uses command path
+  PASS closing inactive tab does not select it first
+  PASS removing selected tab clears its visual selection
+  SKIP title-bar exit button closes tabs and hides to tray: interactive desktop unavailable
+  PASS platform route and Twitch playlist URI policies are canonical
+  PASS Windows command line tokenizer handles quote runs and rejects nulls
+  PASS duration conversion rejects the rounded Int64 overflow boundary
+  PASS Core shared values are canonical and immutable
+  PASS test runner applies targeted budgets to slow integration smoke tests
+  PASS test runner reports tests not started after a noncooperative timeout
+  PASS test runner rejects overflowing timeout configuration
+  PASS Twitch client ID validation survives waiter cancellation
+  PASS Kick token provider clears orphaned work and does not cache near-expiry tokens
+  PASS loopback OAuth receiver rejects unrelated requests and continues after malformed callbacks
+  PASS Twitch prediction EventSub start and disposal are synchronized
+  PASS Kick chat recognizes exact pings and bounds backfill disconnect cleanup
+  PASS signed updater verifies release and reuses its 24-hour cache
+  PASS updater trust roots match the release signing key
+  PASS signed updater rejects tampering newer protocols and asset mismatch
+  PASS update snoozing is version-specific and expires after 24 hours
+  PASS completed updater cleanup removes staged operation files
+  PASS updater retains and revalidates installers after failed or canceled installation
+  PASS signed updater refreshes malformed cached release assets
+  PASS updater cleans up stalled transfers and distinguishes user cancellation
+  PASS updater keeps downloading while slow transfers make progress
+  PASS signed updater restores verified downloads across restarts
+  PASS signed updater rejects staged package and metadata tampering
+  PASS signed updater recovers from missing truncated and invalid staged packages
+  PASS signed updater removes failed and canceled downloads
+  PASS signed updater refreshes future-dated cache after clock rollback
+  PASS signed updater refuses current-version downloads
+  PASS signed updater rejects modified helpers before starting a process
+  PASS updater skips malformed completion records and reports failed installs
+  PASS automatic updater continues after failures and throughout long sessions
+  PASS automatic updater survives unrelated completion cancellation
+  PASS automatic updater honors disabled and busy states without restarting
+  PASS update UI cancels downloads and disables conflicting actions
+  PASS update UI only closes after the helper actually starts
+  PASS update helper maps real installer completion codes
+  PASS signed updater keeps a prepared installer after a failed or canceled refresh
+  PASS signed updater preserves prepared trust when a newer refresh is canceled
+  PASS automatic updater retries preparation failures without installing
+  PASS automatic update downloads are opt-in and preserve settings
+  PASS automatic updater only downloads eligible managed releases
+  PASS automatic updater prepares downloads without restarting
+  PASS automatic updater cancellation pauses that version for the session
+  PASS automatic updater stops downloading when preferences are disabled
+  PASS update UI retries failed downloads without another release check
+  PASS update UI keeps snoozed prepared updates hidden until manual action
+  PASS AsyncRelayCommand admits only one concurrent execution
+  PASS native overlay capability probing is asynchronous, bounded, and cancellable
+  PASS PiP hit testing rejects occluded windows and accepts owned descendants
+  PASS shared HTTP client creation applies bounded timeout and defaults
+  PASS bounded process runner drains output and returns timeout data
+  PASS bounded process runner drains and truncates large stdout and stderr
+  PASS bounded process output retains deterministic head and tail
+  PASS bounded byte reader enforces HTTP and stream limits
+  PASS bounded byte reader handles files and cancellation
+  PASS bounded HTTP text rejects oversized and invalid payloads
+  PASS bounded websocket reader validates frames encoding and aggregate size
+  PASS Kick websocket handshake requires exact acknowledgements
+  PASS Twitch IRC lines handshakes and outbound messages are bounded
+  PASS image decode admission enforces dimensions pixels frames and memory
+  PASS settings secrets use a versioned DPAPI current-user envelope
+  PASS legacy plaintext settings secrets migrate atomically
+  PASS corrupt protected settings preserve nonsecrets and require reconnect
+  PASS replay URL security rejects spoofed hosts and nonpublic addresses
+  PASS replay HTTP redirects remain on validated public provider hosts
+  PASS file logger redacts normalizes and rotates bounded files
+  PASS file logger bounds its queue and shutdown wait
+  PASS Kick token provider shares acquisition and isolates waiter cancellation
+  PASS live channel snapshots share requests for five seconds
+  PASS viewer count and metadata reuse one live channel snapshot
+  PASS catalog coordinator retries isolates callbacks and remains bounded
+  PASS chat emotes remain scoped by platform channel and code
+  PASS emoji runs use grapheme clusters and a bounded LRU cache
+  PASS toast thumbnail storage prunes entry and byte limits
+  PASS provider playlists and storyboards reject URI spoofing
+  PASS Kick event content badges and channel slugs use exact validation
+  PASS executable PATH parsing rejects relative and malformed entries
+  PASS VLC plugin cache manifest invalidates every identity input
+  PASS infrastructure runtime: bounded HTTP sender does not prebuffer response bodies
+  PASS infrastructure runtime: Kick website JSON shares bounded curl fallback
+  PASS infrastructure runtime: GraphQL errors share batched and response message parsing
+  PASS infrastructure runtime: failed file logger completes flushes and stops admission
+  PASS infrastructure runtime: live snapshot TTL begins when loading completes
+  PASS infrastructure runtime: browse retry delays clamp and timestamp math saturates
+  PASS infrastructure runtime: bounded stream lines drain oversized records
+  PASS infrastructure runtime: Twitch replay chat stays anonymous
+  PASS infrastructure runtime: replay chat rejects overflowing offsets
+  PASS infrastructure runtime: external input and lifecycle boundaries are enforced
+  PASS live recovery detects terminal states and video stalls without mistaking static scenes or pauses
+  PASS live recovery replaces an ended background session and preserves audio preferences
+  PASS live recovery backs off failed attempts and requires actual output
+  PASS live recovery respects manual and inactive pauses and stopped tabs
+  PASS live recovery leaves replay playback alone
+  PASS live recovery stop cancels an in-flight attempt and disposes a late transport
+  PASS live recovery close cancels an in-flight attempt and disposes a late transport
+  PASS live recovery manual pause cancels recovery and resume retries the missing connection
+  PASS VOD resume: Twitch close and fresh application restore the final clock and chat
+  PASS VOD resume: Kick close and fresh application restore despite a refreshed URL
+  PASS VOD resume: stop and quality reload preserve position
+  PASS VOD resume: checkpoints persist while the VOD stays open
+  PASS VOD resume: pause saves the actual clock without adding paused time
+  PASS VOD resume: backward seeks and an intentional restart replace older progress
+  PASS VOD resume: previews and failed seeks cannot replace confirmed progress
+  PASS VOD resume: invalid and buffering clocks cannot overwrite a bookmark
+  PASS VOD resume: failed restore keeps the bookmark and stops playback
+  PASS VOD resume: closing during startup keeps the old bookmark
+  PASS VOD resume: closing during a seek keeps the last confirmed position
+  PASS VOD resume: immediate reopen cannot be overwritten by detached cleanup
+  PASS VOD resume: application shutdown saves all final VOD clocks
+  PASS VOD resume: missing metadata and disabled replay still record progress
+  PASS VOD resume: only confirmed end of media restarts a completed VOD
+  PASS VOD resume: history separates video IDs and platforms and excludes live
+  PASS VOD resume: corrupt history is preserved and invalid entries are ignored
+  PASS VOD resume: concurrent saves preserve every VOD and bound history size
+  PASS VOD resume: failed disk writes retain progress for retry
+  PASS VOD resume: unreadable history cannot be overwritten by a fresh start
+  PASS VOD resume: near-end progress is preserved despite stale duration metadata
+  PASS VOD downloads: accept Twitch and both Kick VOD ID formats, never live streams or clips
+  PASS VOD downloads: reject incomplete, missing, master, DRM, and unsafe media
+  PASS VOD downloads: preserve sequence, discontinuities, and muted segment repair markers
+  PASS VOD downloads: never guess an implicit byte range on a different resource
+  PASS VOD downloads: download every Twitch segment and reopen the library without internet
+  PASS VOD downloads: download every Kick segment and reopen the library without internet
+  PASS VOD downloads: materialize byte ranges, initialization data, and AES keys locally
+  PASS VOD downloads: resolve relative media against the final redirected playlist URL
+  PASS VOD downloads: reject unapproved segment hosts before fetching media
+  PASS VOD downloads: retry transient segment errors without skipping any segment
+  PASS VOD downloads: failed segments cannot produce a completed offline VOD
+  PASS VOD downloads: reject ignored range requests, error pages, and truncated media
+  PASS VOD downloads: deduplicate queued VODs and preserve quality and authentication options
+  PASS VOD downloads: cancel active and queued work and delete partial data
+  PASS VOD downloads: retry Kick with a refreshed page URL and current credentials
+  PASS VOD downloads: shutdown interrupts work and restart never marks partial data complete
+  PASS VOD downloads: recover fully committed media after an interrupted metadata update
+  PASS VOD downloads: missing or truncated completed media disables offline playback
+  PASS VOD downloads: tampered playlists and escaping inventories cannot access external resources
+  PASS VOD downloads: corrupt records are preserved rather than overwritten
+  PASS VOD downloads: deletion touches only the requested download directory
+  PASS VOD downloads: offline Twitch startup, seeking, reload, and resume never call online services
+  PASS VOD downloads: offline Kick startup, seeking, reload, and resume never call online services
+  PASS VOD downloads: offline tabs are separate from online tabs but share VOD history
+  PASS VOD downloads: offline playback rejects network shares and missing files without resolving online
+  PASS VOD downloads: decode real Next.js channel metadata without guessing channel IDs
+  PASS VOD downloads: current Kick VOD pages work with an older Streamlink Kick plugin
+  PASS VOD downloads: reject mismatched Kick metadata and unsafe recording URLs
+  PASS VOD downloads: fall back to the configured Kick plugin if the website format changes
+  PASS VOD downloads: repair muted Twitch transport packets before saving them locally
+  PASS VOD downloads: retry Kick HTML with curl when managed HTTP returns a challenge page
+  PASS VOD downloads: playback, deletion, and retry actions cannot race on the same VOD
+  PASS VOD downloads: redirected or missing Videos folders cannot put the offline library on a network share
+  PASS VOD downloads: download preferences persist independently and migrate the legacy quality
+  PASS VOD downloads: bandwidth limits are shared by concurrent media transfers
+  PASS VOD downloads: bandwidth changes and cancellation take effect during active transfers
+  PASS VOD downloads: bandwidth reservations are cancelable and unlimited mode releases waiting readers
+  PASS VOD downloads: changing folders preserves completed, active, and queued downloads across restart
+  PASS VOD downloads: retries keep their original folder and invalid destinations preserve the library
+  PASS VOD downloads: failed resolutions cannot persist configured credentials or signed URL tokens
+  PASS VOD downloads: Twitch subscriber-only fallback playlists still download all remote media locally
+  PASS VOD downloads: local Twitch fallback playlists cannot reference local files or incomplete media
+  PASS VOD downloads: normal Streamlink resolution cannot authorize arbitrary local playlist reads
+  PASS VOD downloads: Kick metadata and storage errors cannot be hidden by plugin fallback
+  PASS VOD downloads: delta playlists cannot become complete offline videos
+  PASS VOD downloads: validate channel IDs across every Flight record
+  PASS VOD downloads: encryption key names do not inherit muted segment markers
+  PASS VOD downloads: shutdown releases every canceled and replaced queued job
+  PASS VOD download profile images: offline targets retain the broadcaster's saved avatar
+  PASS VOD download profile images: Twitch avatars are cached and restored without internet
+  PASS VOD download profile images: Kick avatars are cached and restored without internet
+  PASS VOD download profile images: existing Twitch downloads retain their avatar without redownloading video
+  PASS VOD download profile images: existing Kick downloads retain their avatar without redownloading video
+  PASS VOD download profile images: unavailable avatars do not fail completed video
+  PASS VOD download profile images: unsafe avatar URLs are rejected before fetching
+  PASS VOD download profile images: redirects stay on approved public provider endpoints
+  PASS VOD download profile images: canceling avatar work cancels the download and retry restores it
+  PASS VOD download profile images: missing optional avatar files retain saved metadata and playable video
+  PASS VOD download profile images: refreshed Kick metadata supplies the cached avatar
+  PASS VOD downloads: download settings persist quality, bandwidth, and folders in wide and compact dark layouts
+  PASS VOD downloads: download settings persist quality, bandwidth, and folders in wide and compact light layouts
+  PASS VOD downloads: download settings shortcut only appears on past broadcasts and downloads pages
+  PASS VOD downloads: replacing download settings updates the shared limit and releases old preferences
+  PASS VOD downloads: library rail paints only the selected destination's accent indicator across all themes
+  PASS VOD downloads: library navigation, quality, URL entry, offline actions, and compact UI render
+  PASS VOD downloads: Twitch cards track real progress, cancellation, retry, offline playback, and deletion
+  PASS VOD downloads: Kick cards track real progress, cancellation, retry, offline playback, and deletion
+  PASS VOD downloads: cards restore completed downloads after an offline restart
+  PASS VOD download profile images: real Twitch tab avatars render after an offline restart
+  PASS VOD download profile images: real Kick tab avatars render after an offline restart
+  PASS VOD downloads: card percentages never imply completion before files are committed
+  PASS VOD downloads: card status matches platform and selected quality and follows URL downloads
+  PASS VOD downloads: on-card buttons render all states and preserve playback hit targets in dark theme
+  PASS VOD downloads: on-card buttons render all states and preserve playback hit targets in light theme
+  PASS VOD history regression: a rewatch before loading keeps saved watched status
+  PASS VOD history regression: loading rejects an older pending playback sample
+  PASS VOD history regression: stationary samples reject stale progress after restart
+  PASS VOD history regression: a pause during clock sampling cannot advance the bookmark
+  PASS long VOD timeline preserves duration precision sequences and preroll
+  PASS long VOD timeline preserves discontinuities and muted segment URLs
+  PASS long VOD timeline leaves growing encrypted ranged and master playlists untouched
+  PASS long VOD timeline rejects malformed segments and unsafe media URLs
+  PASS long VOD timeline owns and releases its temporary playlist and upstream lease
+  PASS long VOD timeline bounds stalled local playlist reads
+  PASS growing replay published duration requires a complete zero-based media playlist
+  PASS HLS delta playlists: published duration rejects omitted segments
+  PASS HLS delta playlists: long replay rebasing requires all segment metadata
+  PASS HLS delta playlists: seek previews reject incomplete timelines
+  PASS HLS delta playlists: direct live previews require a complete manifest
+  PASS HLS delta playlists: DVR discovery rejects omitted segments
+  PASS HLS playlists: DVR discovery requires an exact header
+  PASS HLS playlists: seek previews require an exact header
+  PASS live first seek: direct replay preparation runs behind live playback and cancels on stop
+  PASS live first seek: resolved replay preparation runs behind live playback and cancels on stop
+  PASS live replay demuxer: only tested VLC and unencrypted TS EVENT playlists opt in
+  PASS live replay demuxer: direct and repaired growing replays retain source ownership
+  PASS live replay demuxer: unsupported and failed inspections retain installed VLC modules
+  PASS VOD fast resume: policy bounds decoder preroll to validated completed TS playlists
+  PASS VOD fast resume: local transport preserves ordinary bytes and repairs only muted segments
+  PASS VOD fast resume: source inspection preserves legacy playback unless requested
+  PASS VOD fast resume: source inspection rejects unsafe URLs before enabling FFmpeg
+  PASS VOD fast resume: revoked sessions interrupt pending player reads
+  PASS VOD fast resume: long timeline retains demux and preroll ownership
+  PASS VOD startup: validates only the requested quality after playback authorization
+  PASS VOD startup: quality ranking matches Streamlink and excludes audio
+  PASS VOD startup: legacy VIDEO groups preserve source and exact quality
+  PASS VOD startup: ambiguous master formats require the existing resolver
+  PASS VOD startup: custom arguments configs plugins and other targets keep Streamlink
+  PASS VOD startup: denied token invalid JSON and provider errors fall back
+  PASS VOD startup: unavailable selected media falls back without lowering quality
+  PASS VOD startup: incomplete delta media falls back without caching it
+  PASS VOD startup: unsafe variant and redirect locations are rejected before fetching
+  PASS VOD startup: private provider DNS is rejected before fetching
+  PASS VOD startup: oversized playlist falls back through bounded reads
+  PASS VOD startup: cancellation stops resolution without starting fallback
+  PASS VOD startup: direct resolution has a bounded fallback budget
+  PASS VOD startup: repeated opens get fresh authorization and playlists
+  PASS VOD startup: playback consumes the validated playlist without a second CDN read
+  PASS VOD startup: growing playlists and cancelled opens retain fresh reads
+  PASS VOD startup: playlist handoff expires and bounds retained memory
+  PASS VOD startup: fallback failures retain the subscriber-only fallback contract
+  PASS VOD finished: Twitch reaches the finished screen and can seek back
+  PASS VOD finished: Kick reaches the finished screen and can seek back
+  PASS VOD finished: completion works without history, duration metadata or replay
+  PASS VOD finished: paused, buffering, stopped and failed playback are not completion
+  PASS VOD finished: live playback is excluded
+  PASS VOD finished: queued completion cannot replace a seek or restart
+  PASS VOD finished: end reached before seek submission still completes
+  PASS VOD finished: failed in-place seek restores playing state
+  PASS VOD finished: failed in-place seek restores paused state
+  PASS VOD finished: cancelled in-place seek restores playback state
+  PASS VOD chat routing: Twitch Docked restart and visibility preserve archived messages
+  PASS VOD chat routing: Twitch Overlay restart and visibility preserve archived messages
+  PASS VOD chat routing: Kick Docked restart and visibility preserve archived messages
+  PASS VOD chat routing: Kick Overlay restart and visibility preserve archived messages
+  PASS VOD chat routing: unresolved archive cannot select the live overlay
+  PASS VOD chat routing: Twitch native overlay preserves archive frames after chat restart
+  PASS VOD chat routing: Kick native overlay preserves archive frames after chat restart
+  PASS VOD finished: main and detached video templates show completion and restore video
+  SKIP VOD finished: seek controls remain usable over the finished screen: interactive desktop unavailable
+  PASS VOD watch progress: Twitch cards restore saved completion and paged progress
+  PASS VOD watch progress: Kick cards restore saved completion and paged progress
+  PASS VOD watch progress: playback and backward seeks update existing cards until confirmed completion
+  PASS VOD watch progress: watched status survives rewatching and restarting without losing resume
+  PASS VOD watch progress: unreadable history does not prevent browsing
+  PASS VOD watched completion: Twitch EOF saves despite a missing final clock
+  PASS VOD watched completion: Kick EOF saves despite a missing final clock
+  PASS VOD watched completion: successful end seek needs no intermediate bookmark
+  PASS VOD watched completion: startup EOF completes a restored bookmark
+  PASS VOD watched completion: decoder duration works without browse metadata or replay
+  PASS VOD watched completion: accepted EOF survives an unavailable second health read
+  PASS VOD watched completion: a queued EOF cannot mark a newer seek watched
+  PASS VOD watched completion: a queued EOF cannot mark restarted playback watched
+  PASS VOD watched completion: a queued EOF cannot mark stopped playback watched
+  PASS VOD watched completion: a seek during health sampling invalidates EOF
+  PASS VOD watched completion: near-end clocks and non-EOF states remain unwatched
+  PASS VOD watch progress: thumbnail badges and bars render and update in dark theme
+  PASS VOD watch progress: thumbnail badges and bars render and update in light theme
+  SKIP overlay readability keeps chosen font when constrained to the source canvas: interactive desktop unavailable
+  PASS overlay readability accepts scale events only for the active replay session
+  SKIP overlay readability replay pipeline refreshes cached messages after source resolution changes: interactive desktop unavailable
+  SKIP chat text size is available in overlay settings without a selected stream: interactive desktop unavailable
+  SKIP chat text size follows the selected stream and saves overlay defaults and overrides: interactive desktop unavailable
+  SKIP chat text size rerenders replay pixels without blanking chat or rebuilding playback: interactive desktop unavailable
+  PASS signed updater refreshes cached release metadata when retrying a failed download
+  PASS signed updater preserves available download retry and notification actions after failed refresh
+  PASS signed updater retry rejects invalid replacement metadata and preserves prior trust
+  PASS update UI checks for newer releases independently of download and install actions
+  PASS update UI blocks manual refresh while busy and recovers after failed checks
+  PASS update UI serializes manual actions while saving snooze preferences
+  PASS updater release protocol and installed path remain compatible with 1.7.0
+  PASS updater cleans obsolete packages and expired cache at startup without a network check
+  PASS updater removes superseded packages only after the replacement is verified
+  PASS updater cleanup removes read-only cache files
+  PASS updater cleanup removes unlocked siblings and retries locked leftovers
+  PASS updater cleanup expires verified packages even when directory timestamps are refreshed
+  PASS updater expires prepared packages during a long-running session and recovers offline
+  PASS updater rejects expired and future-dated prepared packages before launch
+  PASS updater cleanup isolates unsafe cache areas and preserves junction targets
+  PASS updater reports completion when its result is locked against deletion
+  PASS updater reports successful installation despite unsafe operation cleanup
+  PASS update helper defers relaunch for reboot and recovers after canceled setup
+  PASS update helper reopens the app when completion persistence stays locked
+  PASS update helper retries a transient completion write lock before relaunch
+  SKIP replay seek overlay stays visible over controls and hides on stationary video pointer: interactive desktop unavailable
+  SKIP replay seek overlay stays open through physical playback speed selection in a normal window: interactive desktop unavailable
+  SKIP replay seek overlay stays open through physical playback speed selection in a topmost window: interactive desktop unavailable
+  SKIP playback speed wheel keeps pending selections and applies the latest notch: interactive desktop unavailable
+  SKIP playback speed ignores a transient zero clock after seeking behind live: interactive desktop unavailable
+  SKIP replay seek overlay stays visible while scrubbing and commits exactly once: interactive desktop unavailable
+  SKIP replay seek overlay cancels a drag when the selected stream changes: interactive desktop unavailable
+  SKIP replay seek overlay cancels an interrupted thumb drag without seeking: interactive desktop unavailable
+  SKIP replay seek overlay closes and cancels preview when disabled or unloaded: interactive desktop unavailable
+  SKIP replay seek overlay retargets between video surfaces and releases the previous host: interactive desktop unavailable
+  SKIP replay seek overlay protects keyboard seeking and mouse capture from idle dismissal: interactive desktop unavailable
+  SKIP replay seek overlay is a transparent video child that moves synchronously and stays above renderer children: interactive desktop unavailable
+  SKIP replay seek overlay owns native input while volume popup remains routable: interactive desktop unavailable
+  SKIP replay seek overlay polls real movement over native renderer children: interactive desktop unavailable
+  SKIP replay seek overlay physical clicks land exactly under the pointer across layouts: interactive desktop unavailable
+  SKIP replay seek overlay physical track and thumb drags preserve exact pointer position: interactive desktop unavailable
+  SKIP replay seek overlay pointer moves stay exact before pending layout runs: interactive desktop unavailable
+  PASS replay seek overlay maps pointer positions independently of pending thumb layout
+  PASS replay seek overlay track respects ranges directions and unavailable geometry
+  SKIP replay seek overlay hover maps time without changing playback and clamps preview edges: interactive desktop unavailable
+  SKIP replay seek overlay hover rejects late thumbnails and closes across lifecycle changes: interactive desktop unavailable
+  SKIP replay seek overlay hover stays stable during native placement refreshes: interactive desktop unavailable
+  SKIP replay seek overlay hover stays visible while replacing a thumbnail: interactive desktop unavailable
+  PASS replay seek overlay hover storyboard selects sprite cells and rejects unsafe metadata
+  PASS replay seek overlay hover loads bounded provider storyboards and rejects unsafe images
+  PASS replay seek overlay hover decodes thumbnail sprites into frozen images
+  PASS replay seek overlay live hover maps DVR segments and rejects ambiguous timelines
+  PASS replay seek overlay live hover caches frames and refreshes growing playlists
+  PASS replay seek overlay live hover retries failures and cancels obsolete decoding
+  PASS replay seek overlay live hover reads observed fragmented MP4 timelines and initialization changes
+  PASS replay seek overlay live hover downloads and caches matching MP4 initialization sections
+  SKIP replay seek overlay live hover uses current DVR without seeking playback: interactive desktop unavailable
+  PASS replay seek overlay Kick VOD preview reuses resolved media through seek and restart
+  PASS replay seek overlay Kick VOD preview loads and caches the hovered segment
+  SKIP replay seek overlay Kick VOD preview displays a frame without seeking playback: interactive desktop unavailable
+  SKIP replay seek overlay repairs existing renderer z-order while the pointer is stationary: interactive desktop unavailable
+  SKIP replay seek overlay repairs existing renderer z-order on repeated reveal activity: interactive desktop unavailable
+  SKIP replay seek overlay repairs native renderer reorder without pointer polling or activity: interactive desktop unavailable
+  SKIP Back hotkey routes native video and records mouse input in settings: interactive desktop unavailable
+  SKIP responsive window native resize keeps WPF and video HWND inside the client: interactive desktop unavailable
+  SKIP responsive window native minimum tracking permits arbitrarily small main windows: interactive desktop unavailable
+  SKIP responsive home and settings keep search navigation and controls reachable after resizing: interactive desktop unavailable
+  SKIP responsive compact tabs select and close the same tab after shrink and grow: interactive desktop unavailable
+  SKIP responsive docked chat leaves video visible and chat input reachable while shrinking and growing: interactive desktop unavailable
+  SKIP responsive home cards shrink within narrow available widths in both gap modes: interactive desktop unavailable
+  SKIP responsive clipping VOD platform and filter buttons remain completely reachable: interactive desktop unavailable
+  SKIP responsive clipping browse category and stream controls remain completely reachable: interactive desktop unavailable
+  SKIP responsive clipping update banner text and actions remain reachable in narrow and short windows: interactive desktop unavailable
+  SKIP responsive clipping home search keeps channel text state badges and result actions reachable: interactive desktop unavailable
+  PASS responsive scrollbars keep tracks and thumbs inside short viewports on both axes
+  PASS responsive scrollbar page buttons scroll the correct content axis
+  SKIP responsive clipping settings controls remain completely reachable in every category: interactive desktop unavailable
+  SKIP responsive clipping home and window actions fit narrow and short wide windows: interactive desktop unavailable
+  SKIP responsive clipping playback and window actions fit narrow and short wide windows: interactive desktop unavailable
+  SKIP responsive clipping docked chat send label remains fully visible: interactive desktop unavailable
+  PASS studio shell: navigation, account entry, settings and palettes render offscreen
+  PASS studio polish: changing settings categories reveals the controls in wide and compact layouts
+  PASS studio polish: settings autosave failures show an inline error that clears after recovery
+  PASS studio polish: pending and canceled saves report their state and permit retry
+  PASS studio polish: search closes when leaving Home and retains results for an explicit reopen
+  PASS studio polish: Escape dismisses search without clearing the query or results
+  PASS studio polish: clearing search removes results and cancels a pending search
+  PASS studio polish: card previews preserve their aspect ratio and every row remains reachable
+  PASS settings autosave: edits across every category and stream overlay sizes survive reload
+  PASS settings autosave: rapid edits share one write containing the final values
+  PASS settings autosave: replacing settings groups observes the replacements and releases old groups
+  PASS settings autosave: edits during a write are serialized and flushed before shutdown
+  PASS settings autosave: leaving settings and shutting down flush pending edits
+  PASS studio refinement: library pages omit redundant headings and subtitles in wide and compact layouts
+  PASS studio refinement: library destinations do not inherit another page's scroll position
+  PASS studio refinement: returning to a library page restores its own position
+  PASS studio refinement: replacing broadcasts resets only that page's saved position
+  PASS studio refinement: every visible row paints when live cards arrive
+  SKIP studio refinement: library cards remain painted after settings and palette changes: interactive desktop unavailable
+  SKIP studio refinement: physical arrow keys navigate search results and Enter opens the focused result: interactive desktop unavailable
+  SKIP search popup dismissal: switching windows closes the native popup and retains results: interactive desktop unavailable
+  SKIP search popup dismissal: a search finishing after switching windows cannot reopen the popup: interactive desktop unavailable
+  SKIP search popup dismissal: switching windows cancels a pending automatic search: interactive desktop unavailable
+  SKIP search popup dismissal: an automatic search queued before switching windows stays canceled: interactive desktop unavailable
+  SKIP search popup dismissal: minimizing the owner closes the native popup: interactive desktop unavailable
+  SKIP search popup dismissal: hiding the owner closes the native popup: interactive desktop unavailable
+  PASS studio experience: toolbar accents follow palette changes and stream card menus preserve background opening
+  PASS studio experience: picture-in-picture title chrome follows every palette
+  PASS studio experience: download URL errors are visible, clear on editing and do not overwrite newer input
+  PASS studio experience: Enter queues a download once and the empty library updates immediately
+  PASS studio design: page context, artwork and library commands remain usable across window sizes and palettes
+  PASS studio design: text and thumbnail duration labels retain readable contrast in dark and light themes
+  SKIP tab switching never exposes a video HWND at intermediate bounds: interactive desktop unavailable
+  SKIP tab switching preserves video bounds for different aspect ratios: interactive desktop unavailable
+  SKIP tab input: routed and physical title clicks select streams and preserve close controls: interactive desktop unavailable
+  PASS tab input: middle-click resolves nested title text to its stream card
+  PASS tab input: middle-click resolves inline emoji content to its stream card
+  PASS tab input: unattached content and nonvisual sources safely have no stream command
+  PASS tab input: rich text content retains text-input focus protection
+  SKIP resize flashing never moves video across the title bar during native sizing: interactive desktop unavailable
+  SKIP volume popup remains inside a tiny video while its window resizes: interactive desktop unavailable
+  SKIP main stream fullscreen covers all monitor edges without showing the window underneath: interactive desktop unavailable
+  PASS picture-in-picture resize border scales all edges and corner arms on negative monitors
+  PASS picture-in-picture resize border rejects exterior and invalid geometry
+  SKIP picture-in-picture resize leaves no bright line at the window edges: interactive desktop unavailable
+  SKIP picture-in-picture resize native hit tests cover all edges with either chrome setting: interactive desktop unavailable
+  SKIP picture-in-picture resize native video cursor matches every edge and corner: interactive desktop unavailable
+  SKIP picture-in-picture resize native clicks and renderer fallback outrank dragging and fullscreen: interactive desktop unavailable
+  SKIP picture-in-picture resize disables in fullscreen maximized and fixed states and restores: interactive desktop unavailable
+  SKIP picture-in-picture resize physical drags change bounds from every edge and corner: interactive desktop unavailable
+  PASS picture-in-picture activation keeps main audio without transient mute
+  PASS picture-in-picture audio preserves main playback and follows main tab changes
+  PASS picture-in-picture activation preserves manual mute and never mute
+  PASS picture-in-picture active audio falls back when its tab closes
+  PASS picture-in-picture active audio falls back when its tab reattaches
+  SKIP picture-in-picture return to main window preserves the active playback host: interactive desktop unavailable
+  SKIP picture-in-picture native clicks activation and fullscreen preserve main audio surface multiview and Home: interactive desktop unavailable
+  SKIP picture-in-picture context menu preserves physical right clicks over a native child while the dispatcher is busy: interactive desktop unavailable
+  SKIP picture-in-picture context menu restores the top bar from the visible native replay seek overlay: interactive desktop unavailable
+  SKIP picture-in-picture context menu toggles the top bar from the bottom resize border: interactive desktop unavailable
+  SKIP picture-in-picture context menu restores the top bar from an empty multiview cell: interactive desktop unavailable
+  SKIP picture-in-picture context menu restores the top bar through the visible volume indicator: interactive desktop unavailable
+  SKIP picture-in-picture context menu does not reopen its owner when right clicking inside its own popup: interactive desktop unavailable
+  SKIP picture-in-picture context menu activates from a foreign foreground process and physically toggles the top bar: interactive desktop unavailable
+  PASS PiP context menu dispatch preserves every captured click while the UI is busy
+  PASS PiP context menu dispatch retains the owner and coordinates captured at the press
+  PASS PiP context menu dispatch suppresses input while its callback is still executing
+  PASS PiP context menu dispatch leaves foreign right clicks untouched
+  PASS PiP context menu dispatch suppresses only the matching owned release after pointer movement
+  PASS PiP context menu dispatch passes through after dispatcher shutdown starts
+  SKIP PiP context-menu capture retains its native descendant owner and original screen point: interactive desktop unavailable
+  SKIP PiP context-menu capture excludes popups and retains opted-in aliases across OSD expiry: interactive desktop unavailable
+  SKIP PiP context-menu capture invalidates callbacks when an HWND registration changes: interactive desktop unavailable
+  SKIP PiP context-menu capture ignores unregistered and disabled roots: interactive desktop unavailable
+  SKIP PiP context-menu capture never claims a foreign process HWND: interactive desktop unavailable
+  PASS never mute clears manual mute and rejects subsequent mute requests
+  PASS never mute isolates protected tabs across selection and Home
+  PASS never mute disabling restores inactive playback without restoring manual mute
+  PASS never mute resumes an automatically paused tab
+  PASS never mute preserves a manually paused tab
+  PASS never mute remains audible throughout background reload
+  PASS never mute supersedes a queued inactive pause during startup
+  PASS never mute supersedes suspended resource policy at late startup
+  PASS never mute prevents stale automatic pause restoration after overlay restart
+  PASS never mute preserves manual pause restoration after overlay restart
+  PASS never mute toolbar toggle follows selected tab and Home
+  PASS never mute tab indicators update realized tabs and compact choices
+  PASS never mute group indicators follow inactive members and rebuilt groups
+  PASS Bootstrapper entry point leaves COM apartment selection to WiX
+  PASS Bootstrapper read-only version run bindings are one-way
+  PASS Bootstrapper defaults uninstall data cleanup on
+  PASS Bootstrapper related removals preserve user data and notification registration
+  PASS Bootstrapper prevents closing during setup preparation
+  PASS Bootstrapper downgrade refusal terminates passive setup
+  PASS Bootstrapper expands executable paths before using them
+  PASS Bootstrapper distinguishes installed, outdated, and missing dependencies
+  PASS Bootstrapper cancellation never interrupts rollback
+  PASS Bootstrapper retry detects again before offering installation actions
+  PASS Bootstrapper retry is unavailable for downgrades or cleanup warnings
+  PASS Bootstrapper reboot-required completion does not offer app launch
+  PASS Bootstrapper cancellation during preparation prevents planning
+  PASS Bootstrapper cancellation before queued apply prevents elevation
+  PASS Bootstrapper quiet apply uses a real hidden window handle
+  PASS Bootstrapper installs VLC from EXE package instead of MSI
+  PASS Scripted installer installs VLC without msiexec
+  PASS Maintenance paths reject traversal and constrain personal-data roots
+  PASS Maintenance uninstall purges current-user leftovers by default
+  PASS Maintenance staged uninstall preserves the selected personal-data policy
+  PASS Maintenance temporary stage cleans itself after exit and preserves unknown files
+  PASS Maintenance temporary cleanup rejects paths outside its stage
+  PASS Personal-data cleanup removes only selected product roots
+  PASS Personal-data cleanup tolerates the active maintenance log
+  PASS ZIP cleanup removes modified managed files and preserves unknown files
+  PASS ZIP cleanup removes empty managed ancestors and preserves unrelated directories
+  PASS ZIP cleanup preserves retry ownership while a managed file is locked
+  PASS ZIP cleanup preserves all retry files when a control file denies deletion
+  PASS ZIP cleanup cancels pending control-file deletion when a later file is mapped
+  PASS ZIP cleanup preserves personal data until application removal succeeds
+  PASS Maintenance cleanup retries attribute preparation failures
+  PASS Personal-data cleanup removes read-only directories and continues past locked files
+  PASS ZIP cleanup rejects corrupt ownership state before deletion
+  PASS ZIP cleanup treats malformed JSON types as invalid state and preserves retry files
+  PASS ZIP cleanup rejects duplicate paths with different directory separators
+  PASS chat UI catalog notification bursts coalesce before entering the dispatcher
+  PASS chat UI catalog refresh yields to pending input
+  PASS chat UI unloaded rows ignore pending catalog refreshes
+  PASS chat UI historical messages with conflicting emotes do not create a catalog feedback loop
+  PASS chat UI old messages cannot replace newer learned emotes when views are recreated
+  PASS chat UI duplicate emote codes in one message notify only on first admission
+  PASS chat UI concurrent views of old messages preserve the newer learned emote
+  PASS Twitch VOD repeated emotes use canonical image ids instead of occurrence ids
+  PASS Twitch VOD emote identities retain legacy and modern CDN id formats
+  PASS Twitch VOD malformed emote identities preserve visible text without broken image URLs
+  PASS Kick identity snapshots remain serializable during concurrent updates
+  PASS Live chat supervisor retries forever resets after stability and drains
+  PASS Async command releases its gate when predicates and events throw
+  PASS Clipboard service retries contention three times without surfacing UI failures
+  PASS Overlay scheduler timeout shuts down a dispatcher that starts later
+  PASS Native overlay codec bounds the complete encoded message
+  PASS Native overlay write loop isolates callbacks and logger failures
+  PASS Stale native overlay resize callback cannot replace a newer session
+  PASS Native overlay probe single-flights transient failures and keys definitive results by identity
+  PASS Stream input channel try parser rejects invalid input without throwing
+  PASS VLC audio requests publish atomic immutable snapshots
+  PASS Hotkey gestures accept arbitrary keys and require exact modifiers
+  PASS Hotkey policy falls back swaps duplicates and protects text input
+  PASS Hotkey settings expose stable defaults and reset every binding
+  PASS Hotkey recorder captures without native input and preserves two-way binding
+  PASS Configured hotkeys route through main window preview input
+  PASS Setup wizard footer actions follow entered account credentials
+  PASS Setup wizard Kick step requires client secret before footer connects
+  PASS Update command reports status and requests shutdown after launch
+  PASS Update command keeps app open when updater reports latest version
+  PASS Installer OS gates allow 64-bit Windows 10 and 11 without build-specific blocks
+  PASS review: atomic writes preserve the destination on cancellation and failure
+  PASS review: settings accept a UTF-8 BOM without discarding saved preferences
+  PASS review: duplicate settings properties recover without crashing
+  PASS review: HTTP text removes UTF-8 BOM with and without a charset
+  PASS review: HTTP response body reads retain the request timeout
+  PASS review: HTTP response reads honor both caller cancellation tokens
+  PASS review: optional JSON reads share bounds decoding and timeout handling
+  PASS review: update checks leave the checking state after timeout or cancellation
+  PASS review: playback releases its parking surface when engine disposal fails
+  PASS review: portable command line parsing matches Windows for whitespace and quotes
+  PASS repository audit: throttled Twitch downloads outlive the HTTP request timeout
+  PASS repository audit: throttled Kick downloads outlive the HTTP request timeout
+  PASS repository audit: throttled muted Twitch downloads outlive the HTTP request timeout
+  PASS repository audit: slow consumers and progressing transfers keep their network read budget
+  PASS repository audit: stalled HTTP reads still time out in streaming and copy modes
+  PASS repository audit: read timeouts preserve both cancellation tokens and infinite timeouts
+  PASS repository audit: HTTP response copies cancel blocked writes with either caller token
+  PASS repository audit: canceled media reads refund unused bandwidth reservations
+  PASS repository audit: download observers cannot block other observers
+  PASS repository audit: bookmark observers cannot interrupt history updates
+  PASS repository audit: update observers cannot interrupt update checks
+  PASS repository audit: shared event dispatch avoids per-notification allocations
+  PASS repository audit: VOD quality normalization preserves download deduplication
+  PASS comprehensive review: BOM playlists retain their published duration
+  PASS comprehensive review: BOM playlists preserve live previews and variant selection
+  PASS comprehensive review: muted downloads retry stalled HTTP reads
+  PASS comprehensive review: VOD downloads retry transient timeout exceptions
+  PASS comprehensive review: muted repair preserves independent source cancellation
+  PASS comprehensive review: muted repair proxy keeps progressing transfers alive
+  PASS comprehensive review: muted repair proxy reports stalled upstream reads
+  PASS HTTP lifecycle: Kick HTML reads use the HTML budget and retain JSON bounds
+  PASS HTTP lifecycle: replay validation honors cancellation before and after DNS
+  PASS review followup: canceled processes are never started
+  PASS review followup: invalid process timeout is rejected before startup
+  PASS review followup: buffered text lines honor cancellation
+  PASS review followup: buffered IRC lines honor cancellation
+  PASS review followup: failed live snapshots are retried immediately
+  PASS review followup: canceled live snapshots do not start requests
+  PASS review followup: canceled Kick token resolution has no side effects
+  PASS review followup: canceled Twitch token resolution has no side effects
+  PASS review followup: local HTTP rejects malformed names and targets
+  PASS review followup: playlist URI rewriting respects quoted metadata
+  PASS review followup: playlist URI rewriting rejects duplicate attributes
+  PASS review followup: maintenance containment accepts drive and share roots
+  PASS review followup: maintenance rejects padded device file names
+  PASS review followup: VOD chat rejects overflowing ranges before network access
+  PASS review followup: Twitch chat frontier arithmetic does not overflow
+  PASS repository review: Kick cache keeps changed credentials isolated
+  PASS repository review: Kick refresh preserves credentials edited during acquisition
+  PASS repository review: Kick refresh reaches every shared waiter
+  PASS repository review: canceled Kick waiters can recover refreshed credentials
+  PASS repository review: active tab starts can finish after disposal
+  PASS repository review: queued tab starts cannot run after disposal
+  PASS repository review: cancellation wins a concurrently released operation slot
+  PASS repository review: optional catalogs tolerate unsupported charsets
+  PASS repository review: updater disposal preserves in-flight errors
+  PASS repository review: canceled direct Kick token requests have no side effects
+  PASS repository review: canceled Kick UI callbacks do not mutate credentials
+  PASS repository review: delayed Kick UI callbacks preserve edited credentials
+  PASS repository review: timed-out Kick UI callbacks do not mutate credentials
+  PASS repository review: direct Kick refresh reads a snapshot and preserves account edits
+  PASS repository review: background credential changes dispatch UI notifications
+  PASS repository review: repeated overlay frame acknowledgments retain a pending resize
+  PASS Kick user refresh: ordinary and forced requests share rotation
+  PASS Kick user refresh: one canceled waiter leaves other tabs active
+  PASS Kick user refresh: disconnected accounts reject delayed credentials
+  PASS Kick user refresh: replacement accounts reject delayed credentials
+  PASS Kick user refresh: inactive unexpired tokens force rotation
+  PASS Kick user refresh: a canceled sole waiter can recover the rotated refresh token
+  PASS paging review: Twitch VOD pages deduplicate overlapping videos
+  PASS paging review: Kick VOD pages deduplicate overlapping videos
+  PASS paging review: Twitch VOD cursor cycles stop and refresh restarts paging
+  PASS paging review: Kick VOD cursor cycles stop and refresh restarts paging
+  PASS paging review: browse categories reject repeated cursors
+  PASS paging review: browse streams reject cursor cycles
+  PASS VOD chat lifecycle: a provider timeout is retried
+  PASS VOD chat lifecycle: a stale completed page cannot stop a seek
+  PASS VOD chat lifecycle: a stale unsupported result cannot undo promotion
+  PASS VOD chat lifecycle: seeking into evicted history refetches messages
+  PASS VOD chat lifecycle: seeking inside retained history reuses messages
+  PASS VOD chat lifecycle: unsupported history preserves captured messages after eviction
+  PASS VOD chat lifecycle: disposal drains a stopped fetch
+  PASS VOD chat lifecycle: disposal drains a replaced fetch
+  PASS VOD chat lifecycle: concurrent disposal shares completion
+  PASS growing VOD chat: Twitch seekback continues after the current last page
+  PASS growing VOD chat: empty last pages retry without skipping unpublished messages
+  PASS growing VOD chat: finished archives stop polling and retain backward seeking
+  PASS growing VOD chat: seeking outside coverage cancels the tail cooldown
+  PASS growing VOD chat: a stale last page cannot delay a newer seek
+  PASS growing VOD chat: live capture continues during the tail cooldown
+  PASS DVR chat seek transition: incoming live chat waits for its replay position
+  PASS DVR chat seek transition: archive seeks also suppress incoming live chat
+  PASS DVR chat seek transition: captured target messages resume after the seek
+  PASS DVR chat seek transition: seekbar explains unavailable historical chat
+  PASS DVR chat status: unavailable history is visible and clears at captured messages
+  PASS DVR chat status: queued notices cannot overwrite a newer seek
+  PASS DVR chat status: native overlay renders the notice and resumes captured chat
+  PASS DVR chat status: docked header displays and wraps the notice
+  PASS Kick recent history: overlapping pages emit each message once
+  PASS Kick recent history: changing cursors cannot loop over duplicate messages
+  PASS Kick recent history: disposal cancels the startup request
+  PASS Kick recent history: a retired request cannot block replacement history
+  PASS Kick recent history: cancellation stops message delivery
+  PASS app lifecycle: exiting an instance does not signal another instance
+  PASS Extra hotkey defaults normalize reset and notify settings bindings
+  PASS Extra hotkeys match configured gestures and exchange conflicting bindings
+  PASS Extra hotkeys preserve typing and arrow navigation in text editors
+  PASS Extra hotkeys persist across a settings service reload
+  PASS Extra hotkeys default safely when loading older settings
+  PASS Mouse wheel dispatch preserves every queued delta while the UI is busy
+  PASS Mouse wheel dispatch forwards unhandled input exactly once in order
+  PASS Mouse wheel dispatch leaves foreign windows untouched
+  PASS Mouse wheel dispatch leaves zero delta input untouched
+  PASS Mouse wheel dispatch passes through after dispatcher shutdown starts
+  PASS Mouse wheel dispatch suppresses input while its UI route is still executing
+  SKIP volume wheel routes by its screen point without VLC geometry or cursor queries: interactive desktop unavailable
+  SKIP volume wheel busy dispatcher preserves normal WPF scrolling and context menu input exactly once: interactive desktop unavailable
+  SKIP volume wheel busy dispatcher leaves replay seek overlay input to its native child: interactive desktop unavailable
+  SKIP Native wheel capture follows video surface ownership and inactive routing policy: interactive desktop unavailable
+  SKIP Native wheel fallback preserves the captured packet and unregisters cleanly: interactive desktop unavailable
+  SKIP Native wheel capture never takes input from a foreign process: interactive desktop unavailable
+  PASS Playback hotkeys dispatch defaults and remapped keys through main window input
+  PASS Playback hotkeys preserve existing tab bindings when new defaults overlap
+  PASS Playback hotkeys repeat volume clamp bounds and preserve wheel targeting
+  PASS Playback hotkeys preserve text editing recording and settings navigation
+  PASS Playback hotkey settings record swap and reset the new bindings
+  PASS Playback toolbar grid button and back hotkey execute their commands
+  PASS Back hotkey mouse and keyboard remapping restores history without repeating
+  PASS Back hotkey recording captures side buttons swaps conflicts and protects input
+  PASS Back hotkey mouse gestures parse exact modifiers and stay distinct from keys
+  PASS skip hotkeys: defaults survive older settings and independent amounts save reload and reset
+  PASS skip hotkeys: numpad arrows stay distinct from the arrow cluster with Num Lock off
+  PASS skip hotkeys: selected VOD uses the current clock custom amounts and both boundaries
+  PASS skip hotkeys: live replay rewinds and returns to live at the forward boundary
+  PASS skip hotkeys: input guards remapping recording and existing navigation remain intact
+  PASS skip hotkeys: opposite directions cannot queue stale seeks while playback is busy
+  PASS skip hotkeys: settings sliders record swap reset and save through the real bindings
+  PASS skip hotkeys: detached player and replay overlay dispatch the configured shortcuts
+  SKIP skip hotkeys: physical numpad input seeks with Num Lock on and off and records correctly: interactive desktop unavailable
+  SKIP skip hotkeys: physical right click opens the slider and dragging updates only its direction: interactive desktop unavailable
+  PASS window sharing renderer binding rejects unverified VLC ABIs before native calls
+  PASS home navigation closes every settings category and preserves the selected Home page
+  PASS home navigation from settings preserves playing streams and visit order
+  PASS home navigation button closes settings and records one destination at wide and compact sizes
+  PASS back navigation restores the same playing stream from settings without restarting
+  PASS back navigation follows Home pages and stream tabs in visit order
+  PASS back navigation ignores repeated selections and disables when history is exhausted
+  PASS back navigation skips closed streams and survives closing all tabs in settings
+  PASS back navigation restores browse categories after platform changes
+  PASS back navigation can reload categories after canceling an asynchronous platform restore
+  SKIP browse scroll restores Twitch categories at 0 through Back: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 360 through Back: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 0 through Browse: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 360 through Browse: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 0 through Categories: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 360 through Categories: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 0 through Platform: interactive desktop unavailable
+  SKIP browse scroll restores Twitch categories at 360 through Platform: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 0 through Back: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 360 through Back: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 0 through Browse: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 360 through Browse: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 0 through Categories: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 360 through Categories: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 0 through Platform: interactive desktop unavailable
+  SKIP browse scroll restores Kick categories at 360 through Platform: interactive desktop unavailable
+  SKIP browse scroll handles Twitch rapid navigation: interactive desktop unavailable
+  SKIP browse scroll handles Twitch delayed streams: interactive desktop unavailable
+  SKIP browse scroll handles Twitch canceled streams: interactive desktop unavailable
+  SKIP browse scroll handles Twitch pagination: interactive desktop unavailable
+  SKIP browse scroll handles Twitch new list: interactive desktop unavailable
+  SKIP browse scroll handles Twitch resize: interactive desktop unavailable
+  SKIP browse scroll handles Kick rapid navigation: interactive desktop unavailable
+  SKIP browse scroll handles Kick delayed streams: interactive desktop unavailable
+  SKIP browse scroll handles Kick canceled streams: interactive desktop unavailable
+  SKIP browse scroll handles Kick pagination: interactive desktop unavailable
+  SKIP browse scroll handles Kick new list: interactive desktop unavailable
+  SKIP browse scroll handles Kick resize: interactive desktop unavailable
+  PASS Animated emote decoder composes partial GIF frames and both disposal modes
+  PASS Animated emote decoder composes partial WebP frames with transparency and background disposal
+  PASS Native Twitch and Kick replay overlays preserve all pixels in decoded GIF emote frames
+  PASS Native Twitch and Kick replay overlays preserve all pixels in decoded WebP emote frames
+  PASS resource usage pixel conversion exactly preserves every alpha and channel value
+  PASS resource usage cached replay frames preserve pixels through animation scrolling and layout changes
+  SKIP resource usage hidden emotes stop automatic animation and resume when shown: interactive desktop unavailable
+  PASS owned process: stop after launcher exit kills children and grandchildren
+  PASS owned process: independent sessions and unrelated processes survive another stop
+  PASS owned process: probe completion closes descendants holding output pipes
+  PASS owned process: cancellation terminates a ready tree and drains output
+  PASS owned process: timeout terminates children and grandchildren
+  PASS owned process: abrupt owner exit closes a non-inherited job
+  PASS owned process: PID readiness waits for publication and temporary file locks
+  PASS owned process: failed transport startup terminates its tree
+  PASS owned process: failed creation releases handles
+  PASS owned process: argument quoting environment working directory and encodings
+  PASS multistream resources: timeline matches the original through wraparound late arrivals and seeks
+  PASS multistream resources: evicted and cleared chat references are released
+  PASS multistream resources: tab diagnostics retain 300 lines with one queued delivery
+  PASS multistream resources: diagnostic batches yield and stop on disposal
+  PASS multistream resources: rejected diagnostic delivery can retry
+  SKIP multistream UI resources: hidden docked chat releases rows and restores current history: interactive desktop unavailable
+  SKIP multistream UI resources: unchanged layout does not resize native renderer children: interactive desktop unavailable
+  PASS workflow resources: Enter shares an active automatic search and still permits refresh
+  PASS workflow resources: changed queries cancel shared search without accepting stale results
+  PASS workflow resources: changing quality starts a new search instead of sharing old probes
+  PASS workflow resources: viewer counts preserve search rows and commands while reordering
+  PASS workflow resources: Recent reuses fresh live and offline results without rebuilding cards
+  PASS workflow resources: Recent checks new channels without refreshing fresh channels
+  PASS workflow resources: Recent retries unavailable metadata on the next visit
+  PASS workflow resources: metadata freshness expires and deletion removes cached freshness
+  PASS workflow resources: Recent checks at most four distinct channels concurrently
+  PASS workflow resources: shutdown cancels Recent requests before admitting queued channels
+  PASS stream open workflow: new playback starts before optional metadata completes
+  PASS stream open workflow: late metadata preserves Home navigation
+  PASS stream open workflow: a new background tab keeps Home selected while metadata loads
+  PASS stream open workflow: late metadata preserves the latest selected tab and quality
+  PASS stream open workflow: closing a tab cancels its optional metadata
+  PASS stream open workflow: a closed tab ignores metadata even when its provider ignores cancellation
+  PASS stream open workflow: metadata failure does not prevent playback
+  PASS stream open workflow: late opening metadata preserves the current live category
+  PASS stream open workflow: late opening metadata preserves a cleared live category
+  PASS stream open workflow: late metadata preserves Recent watch order
+  PASS stream open workflow: late metadata does not restore a deleted Recent card
+  PASS stream open workflow: existing tabs bypass slow metadata requests
+  PASS stream open workflow: reopening a manually paused live stream preserves playback
+  PASS stream open workflow: reopening a manually paused VOD preserves playback
+  PASS stream open workflow: background opening preserves manual pause and Home
+  PASS stream open workflow: reopening an automatically paused tab lets selection resume it
+  PASS stream open workflow: overlapping metadata completions still share one tab and startup
+  PASS stream open workflow: a late startup preserves the next search
+  PASS stream open workflow: editing away and back still preserves the new search
+  PASS stream open workflow: successful startup clears its unchanged search
+  PASS stream open workflow: metadata delays cannot transfer ownership of a newer search
+  PASS stream open workflow: reopening a playing tab clears its search without restarting
+  PASS stream open workflow: reopening a stopped tab starts it and clears its search
+  PASS stream open workflow: failed startup preserves its search for retry
+  PASS start watch workflow: Twitch playback and chat do not wait for replay discovery
+  PASS start watch workflow: hiding a playing tab cancels pending replay discovery and suspends video
+  PASS start watch workflow: Stop cancels an active transport resolution
+  PASS start watch workflow: Stop cancels a player waiting for its first frame
+  PASS start watch workflow: Stop removes a queued start before it allocates resources
+  PASS start watch workflow: a stopped queued tab can be started again exactly once
+  PASS start watch workflow: Stop before dispatch prevents a delayed start
+  PASS start watch workflow: a cancelled direct start creates no transport or player
+  PASS start watch workflow: Stop releases the player while a cancelled transport completes late
+  PASS start watch workflow: close releases the player and disposes a late transport exactly once
+  PASS start watch workflow: late replay UI callbacks cannot revive a stopped tab
+  PASS start watch workflow: late replay failure callbacks cannot overwrite a stopped tab
+  PASS start watch workflow: resumed live playback does not wait for replay discovery
+  PASS start watch workflow: rapid Stop and Play before dispatch only starts the latest request
+  Suspended live tab: 0 dispatcher callbacks during 2.2 seconds.
+  PASS start watch resources: suspended live tabs schedule no health callbacks and resume monitoring
+  Recent fixture: 50 cards, 5 refreshes, 0 collection notifications, 0 thumbnail notifications.
+  PASS recent refresh resources: repeated status refreshes retain cards commands and thumbnails
+  PASS recent refresh resources: fast channels update before slow channels with one settings save
+  PASS recent refresh resources: deletion preserves completed previews while settings wait for the batch
+  PASS recent refresh resources: provider failures retain metadata and status-only refreshes avoid saves
+  PASS recent refresh resources: reconciliation preserves order identity and platform distinctions
+  PASS recent refresh resources: changed settings notify retained rows and commands use current metadata
+  PASS recent refresh resources: deleting during refresh retains survivors and rejects deleted results
+  PASS recent refresh resources: refresh preserves a newer watch time and user-selected quality
+  PASS recent refresh resources: shutdown rejects late responses and does not start queued channels
+  PASS home refresh resources: unchanged followed cards retain identity and refresh thumbnails
+  PASS home refresh resources: followed changes update surviving cards and commands
+  PASS home refresh resources: Twitch VOD Enter joins active search and permits later refresh
+  PASS home refresh resources: Kick VOD Enter joins active search and permits later refresh
+  PASS home refresh resources: VOD query filter and platform changes reject stale results
+  PASS home refresh resources: VOD refresh supersedes pagination
+  PASS home refresh resources: Browse refresh joins active categories and permits later refresh
+  PASS home refresh resources: Browse query and platform changes reject stale results
+  PASS home refresh resources: Browse refresh supersedes pagination
+  PASS home refresh resources: shutdown cancels searches and prevents new requests
+  PASS browse stream resources: Refresh joins an initial load and later refreshes again
+  PASS browse stream resources: unchanged refreshes retain cards and commands without collection changes
+  PASS browse stream resources: refresh reconciles ordering identities and current metadata
+  PASS browse stream resources: unavailable refresh retains usable results and pagination
+  PASS browse stream resources: thrown refresh retains usable results and pagination
+  PASS browse stream resources: failed Load More can retry the same cursor
+  PASS browse stream resources: Refresh supersedes pagination and rejects a late page
+  PASS browse stream resources: successful empty refresh removes stale cards
+  PASS browse stream resources: refresh resets completed cursor history
+  PASS browse stream resources: changing categories rejects late results and loading flags
+  PASS browse stream resources: changing platforms cancels the old stream load
+  PASS browse stream resources: shutdown cancels loading and retained commands start no work
+  PASS stream hover preview: disabled and VOD targets start no work
+  PASS stream hover preview: setting persists both values and upgrades default off
+  PASS stream hover preview: leaving during the hover delay starts no work
+  PASS stream hover preview: request preserves platform and custom transport settings
+  PASS stream hover preview: replacing rapid hovers waits for cleanup and rejects stale frames
+  PASS stream hover preview: disabling cancels startup and clears buffered video
+  PASS stream hover preview: failures preserve fallback and allow another hover
+  PASS stream hover preview: shutdown awaits cleanup and refuses future work
+  PASS stream hover preview: only live cards are eligible
+  PASS stream hover preview: frame mailbox stays bounded
+  PASS stream hover preview: missing VLC releases the opened transport
+  PASS stream hover preview: canceled transport arrival is disposed before decoding
+  Native hover preview: 74 frames, red-to-green transition, transport disposed.
+  PASS stream hover preview: native VLC presents changing video and releases transport
+  PASS stream hover preview: direct Twitch authorizes and requests only the selected quality
+  PASS stream hover preview: direct Kick authorizes and requests only the selected quality
+  PASS stream hover preview: preview quality fallbacks preserve their order
+  PASS stream hover preview: custom arguments configs and plugins retain Streamlink
+  PASS stream hover preview: unsafe redirects DNS and oversized responses never open native playback
+  PASS stream hover preview: ad encrypted and unsupported playlists require Streamlink
+  PASS stream hover preview: local playlist rejects unrelated requests and refreshes after handoff
+  PASS stream hover preview: cancellation interrupts a pending playlist refresh and closes its listener
+  PASS stream hover preview: late direct resolution is disposed without starting fallback
+  PASS stream hover preview: failed direct startup preserves the exact fallback request
+  PASS stream hover preview: first-frame deadline stops direct playback before fallback
+  PASS stream hover preview: successful direct video outlives its startup deadline
+  PASS stream hover preview: a later ad stops direct video before Streamlink replacement
+  PASS stream hover preview: anonymous Twitch TS avoids restarting device-bound prerolls
+  PASS stream hover preview: anonymous Twitch MP4 avoids restarting device-bound prerolls
+  PASS stream hover preview: authorization failures retain the exact Streamlink fallback
+  PASS stream hover preview: web GraphQL callers retain their explicit device and OAuth identity
+  PASS stream hover preview: frame-rate quality names keep the selected preview small
+  PASS stream hover preview: fragmented MP4 maps and segments are validated and refreshed
+  PASS stream hover preview: malformed unsafe ranged and missing MP4 maps retain fallback
+  PASS stream hover preview: initialization and container changes stop playlist reloads
+  PASS stream hover preview: a later fragmented MP4 ad stops before Streamlink replacement
+  Native fragmented MP4 hover preview: first frame 162 ms, 35 changing frames across segments; no fallback, decoder and listener closed.
+  PASS stream hover preview: native VLC decodes fragmented MP4 initialization and changing segments
+  PASS stream hover preview: settings toggle and live card template bind to the shared controller
+  SKIP stream hover preview: physical hover click leave hide and disable control the player: interactive desktop unavailable
+  PASS paged refresh resources: TwitchVod retains cards and commands across unchanged refreshes
+  PASS paged refresh resources: TwitchVod updates metadata ordering and commands in place
+  PASS paged refresh resources: TwitchVod unavailable refresh retains results and pagination
+  PASS paged refresh resources: TwitchVod thrown refresh retains results and pagination
+  PASS paged refresh resources: TwitchVod failed page retries without consuming its cursor
+  PASS paged refresh resources: TwitchVod successful empty refresh clears results and cursor
+  PASS paged refresh resources: TwitchVod refresh supersedes a late page and resets cursor history
+  PASS paged refresh resources: TwitchVod changing query clears results and rejects late refresh
+  PASS paged refresh resources: KickVod retains cards and commands across unchanged refreshes
+  PASS paged refresh resources: KickVod updates metadata ordering and commands in place
+  PASS paged refresh resources: KickVod unavailable refresh retains results and pagination
+  PASS paged refresh resources: KickVod thrown refresh retains results and pagination
+  PASS paged refresh resources: KickVod failed page retries without consuming its cursor
+  PASS paged refresh resources: KickVod successful empty refresh clears results and cursor
+  PASS paged refresh resources: KickVod refresh supersedes a late page and resets cursor history
+  PASS paged refresh resources: KickVod changing query clears results and rejects late refresh
+  PASS paged refresh resources: Categories retains cards and commands across unchanged refreshes
+  PASS paged refresh resources: Categories updates metadata ordering and commands in place
+  PASS paged refresh resources: Categories unavailable refresh retains results and pagination
+  PASS paged refresh resources: Categories thrown refresh retains results and pagination
+  PASS paged refresh resources: Categories failed page retries without consuming its cursor
+  PASS paged refresh resources: Categories successful empty refresh clears results and cursor
+  PASS paged refresh resources: Categories refresh supersedes a late page and resets cursor history
+  PASS paged refresh resources: Categories changing query clears results and rejects late refresh
+  PASS paged refresh resources: category navigation during refresh rejects late results
+  PASS paged refresh resources: category refresh reloads viewer counts on retained cards
+  PASS paged refresh resources: overlapping category pages retain enriched counts without requerying
+  PASS paged refresh resources: unchanged Kick category refresh preserves sorted cards without moves
+  PASS background workflow resources: manual Followed refresh shares startup work and allows later refresh
+  PASS background workflow resources: synchronous Followed callbacks share the published operation
+  PASS background workflow resources: changed Followed settings replace queued work and reject old results
+  PASS background workflow resources: account changes require a new Followed request
+  PASS background workflow resources: failed Followed refresh preserves cards and permits retry
+  PASS background workflow resources: shutdown cancels shared Followed work and prevents restart
+  PASS background workflow resources: a log burst uses one UI callback and preserves the latest 250 lines
+  PASS background workflow resources: concurrent log producers share one pending UI callback
+  PASS background workflow resources: log arrivals during delivery are drained in order
+  PASS background workflow resources: failed log dispatch permits the next delivery
+  PASS background workflow resources: rejected log dispatch permits the next delivery
+  PASS background workflow resources: queued log callbacks do not update a disposed view model
+  Catalog fixture: 1 UI callbacks; 100/100 unrelated rows retained.
+  PASS chat catalog resources: learning an emote preserves unrelated rows
+  PASS chat catalog resources: concurrent changes retain every affected channel
+  PASS chat catalog resources: global updates stay within their platform
+  PASS chat catalog resources: scope overflow refreshes all decorations
+  PASS chat catalog resources: changes during delivery get another notification
+  PASS chat catalog resources: failing subscribers do not suppress changes
+  PASS chat catalog resources: Twitch badges follow room identity
+  PASS chat catalog resources: reused rows follow their current channel
+  PASS chat catalog resources: unrelated overlays retain their render version
+  PASS chat catalog resources: learned emote eviction refreshes its original channel
+  PASS chat catalog resources: channel emote eviction remains scoped
+  PASS chat catalog resources: channel badge eviction remains scoped
+  PASS muted segment sanitizer strips the invalid clock reference and timestamp Twitch writes every two seconds
+  PASS muted segment sanitizer leaves valid clock references and timestamps untouched
+  PASS muted segment sanitizer keeps later adaptation and PES header fields when removing sentinels
+  PASS muted segment sanitizer strips both timestamps when only the decode timestamp is invalid
+  PASS muted segment sanitizer ignores malformed packets and copies trailing partial data verbatim
+  PASS muted VOD playlist detection only matches muted media segments
+  PASS muted VOD playlist inspection reports growth master playlists and unsupported containers
+  PASS muted VOD playlist rewrite proxies muted segments and absolutizes everything else
+  PASS muted VOD playlist rewrite rejects unapproved playlist and media URIs
+  PASS muted segment repair copy realigns packets across arbitrary read boundaries
+  PASS muted segment repair copy enforces its byte limit and idle timeout
+  PASS muted VOD repair proxy serves a rewritten playlist and repaired muted segments
+  PASS muted VOD repair proxy refreshes growing playlists and keeps segment URLs stable
+  PASS muted VOD repair proxy rejects unknown tokens segments methods and released sessions
+  PASS muted VOD repair proxy reports upstream failures as bad gateway
+  PASS muted VOD repair proxy logs interrupted upstream segments and muted segments without repairs
+  PASS muted VOD repair proxy restarts its listener after the accept loop ends
+  PASS muted VOD gateway repairs invalid timestamps regardless of libVLC version
+  PASS libVLC version text parses release and development builds
+  PASS muted VOD gateway leaves live transports other providers and clean VODs untouched
+  PASS muted VOD gateway routes muted Twitch VODs through the repair proxy
+  PASS muted VOD gateway repairs sub-only fallback playlists stored on disk
+  PASS muted VOD gateway fails open when the playlist probe fails
+  PASS muted VOD gateway propagates caller cancellation
+  PASS libVLC engine releases a prepared media lease when playback cannot start
+  PASS libVLC engine plays the original media when the gateway fails
+  PASS playlist redirects: sub-only VOD media and attributes use the final location
+  PASS playlist redirects: muted repair uses the initial response location
+  PASS playlist redirects: muted repair refresh follows a changed response location
+  PASS Twitch bonuses follow open streams across pause stop restart and collection reset
+  PASS Twitch bonuses share duplicate channels and exclude Kick VOD and replay
+  PASS Twitch bonuses stop on disable and observe replacement settings
+  PASS Twitch bonuses cancel pending page creation when a tab closes
+  PASS Twitch bonuses cancel pending checks during shutdown
+  PASS Twitch bonuses require website sign-in and close pages before sign-out
+  PASS Twitch bonuses close all chat pages when the website session expires
+  PASS Twitch bonuses recover failed page startup through bounded retry
+  PASS Twitch bonuses persist the toggle and default existing settings to enabled
+  PASS Twitch bonuses validate channel paths and website navigation
+  PASS Twitch bonuses block streaming resources without blocking chat assets
+  PASS Twitch bonuses show independent sign-in status without open streams
+  PASS Twitch bonuses count confirmed claims once per channel and persist across restart
+  PASS Twitch bonuses report failed history saves and retry without losing counts
+  PASS Twitch bonuses reject unsuccessful mismatched and malformed claim responses
+  PASS Twitch bonuses normalize saved history and preserve existing settings
+  PASS Twitch bonuses settings bind sign-in and per-channel counts
+  PASS stream search finds iiTzTimmy from a partial name without sign-in
+  PASS stream search keeps relevant offline substring matches within the result limit
+  PASS stream search falls back to Helix for rejected malformed and empty website results
+  PASS stream search retains Kick discovery and exact probing when Twitch website search fails
+  PASS stream search cancellation stops website discovery without starting Helix or probes
+  PASS VOD link metadata: lookup resolves the requested video and avatar without sign-in
+  PASS VOD link metadata: lookup rejects malformed or mismatched video identities
+  PASS VOD link metadata: cancellation stops the video request
+  PASS VOD link metadata: automatic search opens the real title and paints the tab avatar
+  PASS VOD link metadata: a deleted video is unavailable
+  PASS VOD link metadata: a failed lookup reports missing metadata while preserving playback
+  PASS VOD link metadata: a superseded lookup cannot replace the next video
+  PASS VOD link metadata: reopening a VOD repairs its placeholder title and avatar
+  PASS VOD link metadata: reopening a VOD preserves a manually renamed tab
+  PASS VOD link metadata: failed refresh preserves an existing resolved title and avatar
+  PASS live payload: unidentified rows cannot replace the requested channel
+  PASS live payload: malformed channel rows are unavailable rather than offline
+  PASS live payload: missing and invalid Twitch counts are unavailable
+  PASS live payload: negative viewer counts are unavailable on both platforms
+  PASS live payload: malformed Kick streams are distinct from offline streams
+  PASS live payload: valid empty and unrelated results remain offline
+  PASS live payload: zero viewers preserve live metadata on both platforms
+  PASS settings recovery reports the preserved corrupt file and clears stale warnings
+  PASS settings recovery identifies the original file when a backup cannot be moved
+  PASS test runner never treats a failed child process as an interactive skip
+  PASS test runner rejects successful exits without the requested test result
+  PASS test runner rejects conflicting or duplicate child results
+  PASS notification identity: punctuation distinguishes Kick channels
+  PASS notification identity: long channel names remain distinct
+  PASS notification identity: channel casing is normalized and platforms remain separate
+  PASS Kick follow import: reads all pages including offline channels and deduplicates
+  PASS Kick follow import: rejects malformed partial and looping lists
+  PASS Kick follow import: bounds pagination and observes cancellation
+  PASS Kick follow import: settings survive save reload and preserve manual entries
+  PASS Kick follow import: polling combines imported and manual channels in bounded batches
+  PASS Kick follow import: known empty follows need no API credentials
+  PASS Kick follow import: import and reimport save and refresh without overwriting manual channels
+  PASS Kick follow import: canceled failed and unsaved imports keep previous follows
+  PASS Kick follow import: shutdown cancels detection and rejects late results
+  PASS Kick follow import: browser authenticates paginates and handles expired sessions
+  PASS Kick follow import: browser origin rules reject lookalikes and external navigation
+  PASS Kick clips: verifies both website publication contracts and public links
+  PASS Kick clips: rejects unconfirmed mismatched malformed and oversized responses
+  PASS Kick clips: rejects foreign origins routes and invalid targets
+  PASS Kick clips: exposes authentication cooldown and server failures without publishing
+  PASS Kick clips: selected tab routes to Kick and opens only the confirmed result
+  PASS Kick clips: cancellation failures and browser launch failures remain truthful
+  PASS Kick clips: shutdown cancels and ignores late publication
+  PASS Kick clips: real browser dispatches mounted editor and observes ordered publication
+  PASS Kick clips: background service stays hidden and muted and publishes once
+  PASS Kick clips: background sign-in and HTTP failures never report success
+  PASS Kick clips: cancellation closes the hidden browser including late creation
+  PASS Kick clips: real browser retains preview media while follow import blocks it
+  PASS review continuation: malformed followed responses cannot establish offline status
+  PASS review continuation: malformed followed rows preserve valid streams without declaring success
+  PASS review continuation: malformed later followed pages retain earlier results
+  PASS review continuation: malformed followed pagination cannot establish a complete result
+  PASS review continuation: Kick followed results exclude unrequested channels
+  PASS review continuation: followed streams deduplicate overlapping pages
+  PASS review continuation: valid empty and offline followed responses remain successful
+  PASS review continuation: VOD filename rewriting preserves keys queries and metadata
+  PASS service resilience: malformed optional VOD labels preserve videos
+  PASS service resilience: optional VOD label read failures preserve videos
+  PASS service resilience: optional VOD label body limits preserve videos
+  PASS service resilience: canceling optional VOD labels still cancels the search
+  PASS service resilience: Twitch VOD lookup selects the requested channel
+  PASS service resilience: Twitch VOD lookup rejects unidentified channels
+  PASS service resilience: Kick replay selects an identified matching channel
+  PASS service resilience: Kick website replay rejects unidentified channels
+  PASS service resilience: Kick chat requires a matching channel and positive broadcaster ID
+  PASS service resilience: native overlay tolerates concurrent stop requests
+  PASS profile image lookup: Twitch preserves batching, authentication and case-insensitive logins
+  PASS profile image lookup: Kick preserves batching, authentication and image normalization
+  PASS profile image lookup: malformed optional rows do not hide valid images
+  PASS profile image lookup: empty identities do not send requests
+  PASS profile image lookup: errors, limits and cancellation propagate
+  PASS replay chat resilience: malformed Twitch envelopes remain retryable
+  PASS replay chat resilience: valid empty Twitch pages retain completion semantics
+  PASS replay chat resilience: malformed Kick envelopes are not empty history
+  PASS replay chat resilience: valid empty Kick envelopes remain usable
+  PASS replay chat resilience: malformed Kick cursors cannot terminate pagination
+  PASS replay chat resilience: failed later Kick pages retry the original range
+  PASS replay chat resilience: repeated Kick cursors do not skip missing history
+  PASS replay chat resilience: repeated Kick messages stop changing-cursor requests
+  PASS replay chat resilience: overlapping Kick pages retain new messages
+  PASS replay chat resilience: Kick page budget does not claim complete coverage
+  PASS replay chat resilience: Kick cancellation remains cancellation
+  PASS replay chat resilience: Kick cursors preserve microsecond boundaries
+  PASS pause continuity: Twitch replay resumes in place with confirmed preservation
+  PASS pause continuity: Kick replay resumes in place with confirmed preservation
+  PASS pause continuity: hidden replay resumes in place with confirmed preservation
+  PASS pause continuity: loss of input preservation falls back to exact restoration
+  PASS pause seekbar: Twitch VOD accepts the real clock after a long pause
+  PASS pause seekbar: Kick VOD accepts the real clock after a long pause
+  PASS pause seekbar: unavailable VLC clock excludes paused time
+  PASS pause seekbar: hidden VOD excludes paused time
+  PASS pause seekbar: live clock freezes at the pause request
+  PASS pause seekbar: live resume reconnects when the held time is beyond published DVR
+  PASS pause seekbar: live resume holds its position when DVR catches up despite stale metadata
+  PASS pause seekbar: live resume reconnects after a long pause without replay
+  PASS pause seekbar: behind-live clock freezes at the pause request
+  PASS pause seekbar: repeated pauses capture a fresh position without an intervening poll
+  PASS pause seekbar: queued pre-pause UI samples are discarded
+  PASS pause seekbar: in-flight pre-pause VLC samples cannot replace the resumed anchor
+  PASS pause seekbar: the first available VLC sample after resume initializes the clock
+  PASS pause seekbar: failed resume restoration stops the restarted replay and reports the error
+  PASS pause seekbar: behind-live resume opens at the held position without unpausing old media
+  PASS pause seekbar: hidden behind-live resume opens at the held position without unpausing old media
+  PASS pause seekbar: VOD seeking and skipping preserve pause
+  PASS pause seekbar: replay seeking and skipping preserve pause
+  PASS pause seekbar: replay replacement preserves pause and resumes at the new position
+  PASS pause seekbar: near-live seeks stay paused until explicit Return to Live
+  PASS pause seekbar: a failed in-place seek preserves the frozen clock and resume position
+  PASS replay seek chat timing: late pages respect a seek on an empty timeline
+  PASS replay seek chat timing: a seek beyond cached chat retains late pages for backward seeking
+  PASS replay seek chat timing: clearing a session resets its seek boundary
+  PASS polling lifecycle: replacement retains the old token until its request finishes
+  PASS polling lifecycle: late replaced requests cannot overwrite current viewers
+  PASS polling lifecycle: queued viewer updates are ignored after polling stops
+  PASS polling lifecycle: viewer metadata applies in one dispatcher callback
+  PASS Twitch payload validation: EventSub rejects non-object roots
+  PASS Twitch payload validation: EventSub rejects malformed metadata
+  PASS Twitch payload validation: invalid notifications do not suppress valid retries
+  PASS Twitch payload validation: invalid control messages do not suppress valid retries
+  PASS Twitch payload validation: prediction lookup selects the requested user
+  PASS Twitch payload validation: prediction lookup rejects unusable users
+  PASS Twitch payload validation: clip creation selects the requested broadcaster
+  PASS Twitch payload validation: unresolved clip broadcaster prevents creation
+  PASS Twitch payload validation: empty prediction rows do not hide usable rows
+  PASS timeout recovery: Twitch credential validation remains retryable
+  PASS timeout recovery: shared Kick acquisition reports timeout without canceling waiters
+  PASS timeout recovery: Kick refresh retains the current token
+  PASS timeout recovery: Kick refresh preserves caller cancellation
+  PASS timeout recovery: Kick replay falls back to website metadata
+  PASS timeout recovery: Kick replay preserves caller cancellation
+  PASS timeout recovery: Twitch archive timeout falls back to live DVR
+  PASS timeout recovery: Twitch archive preserves caller cancellation
+  PASS timeout recovery: optional prediction lookup does not cancel chat
+  PASS timeout recovery: optional predictions preserve caller cancellation
+  PASS timeout recovery: VOD chat reports a retryable failed page
+  PASS timeout recovery: VOD chat preserves caller cancellation
+  PASS seek preview resilience: metadata deadlines use retry backoff
+  PASS seek preview resilience: sprite deadlines use retry backoff
+  PASS seek preview resilience: metadata cancellation allows immediate retry
+  PASS seek preview resilience: sprite cancellation allows immediate retry
+  PASS seek preview resilience: malformed GraphQL metadata avoids sprite requests
+  PASS seek preview resilience: underflowing storyboard intervals are rejected
+  PASS replay promotion race: promotion during a queued seek retains the seek and VOD chat
+  PASS replay promotion race: a seek adopts the VOD promoted before its transition
+  PASS replay promotion race: queued promotion remains cancellable
+  PASS command lifetime: malformed executable paths do not prevent discovery
+  PASS command lifetime: shutdown cancels pending clip creation
+  PASS command lifetime: late clip results do not open a browser after shutdown
+  PASS command lifetime: disposed view models reject new commands
+  PASS command lifetime: canceled Twitch authorization stops before setup
+  PASS command lifetime: canceled Kick authorization stops before setup
+  PASS command lifetime: stop survives selection changes
+  PASS command lifetime: pause survives selection changes
+  PASS command lifetime: optional Kick username lookup survives deadlines
+  PASS command lifetime: Kick username lookup respects caller cancellation
+  PASS command lifetime: Kick username lookup keeps supported payloads
+  PASS chat send lifetime: edits survive a pending send
+  PASS chat send lifetime: a retyped draft survives a pending send
+  PASS chat send lifetime: edits survive a credential retry
+  PASS chat send lifetime: a retyped draft survives a credential retry
+  PASS chat send lifetime: shutdown cancels sending without a late echo
+  PASS chat send lifetime: sending waits for the published client to connect
+  PASS chat send lifetime: pending connection rechecks replay state
+  PASS chat send lifetime: replay transition prevents credential retry
+  PASS chat send lifetime: credential retry rechecks replay after connecting
+  PASS chat send lifetime: late send failures do not reconnect a disposed tab
+  PASS chat catalog lifecycle: Twitch badges accept shared credential prefixes
+  PASS chat catalog lifecycle: equivalent credentials reuse loaded badges
+  PASS chat catalog lifecycle: eviction finishes before a scope can reload
+  PASS offline followed channels: Twitch loads every follow page and excludes all live channels
+  PASS offline followed channels: Twitch batches avatars across live and offline channels
+  PASS offline followed channels: a follow-list error does not hide live streams or alter notification health
+  PASS offline followed channels: malformed follows cannot produce offline cards
+  PASS offline followed channels: incomplete live pages cannot classify Twitch channels as offline
+  PASS offline followed channels: repeated follow cursors and excessive pagination stop safely
+  PASS offline followed channels: optional avatar failures do not hide offline channels
+  PASS offline followed channels: cancellation during follow-list loading propagates
+  PASS offline followed channels: Kick imports and manual follows share channel and avatar batches
+  PASS offline followed channels: Kick never treats missing or malformed channels as offline
+  PASS offline followed channels: matching channel names on different platforms remain distinct
+  PASS offline followed channels: refresh moves channels between live and offline and removes unfollows
+  PASS offline followed channels: unchanged refreshes reuse cards and commands while metadata updates
+  PASS offline followed channels: refresh loading and failure states remain truthful
+  PASS offline followed channels: superseded credential refreshes cannot overwrite offline cards
+  PASS offline followed channels: Twitch cards browse videos without attempting live playback
+  PASS offline followed channels: Kick cards browse videos without attempting live playback
+  PASS offline followed channels: disposed cards cannot browse videos
+  PASS offline followed channels: shutdown ignores results from late providers
+  PASS offline followed channels: the expandable section renders below live cards at desktop and compact widths
+  PASS emoji titles: Twitch and Kick VOD cards render color glyphs
+  PASS emoji titles: pasted Twitch VOD search title and summary render color glyphs
+  PASS emoji titles: followed and browse live cards render color glyphs
+  PASS emoji titles: graphemes and presentation selectors retain original text
+  PASS emoji titles: title bindings survive updates nulls and recycled data contexts
+  PASS emoji titles: inherited fonts and monitor DPI refresh cached images
+  PASS emoji titles: native wrapping and ellipsis stay inside title bounds
+  PASS emoji titles: long card titles cannot paint emoji over metadata
+  PASS emoji titles: trimmed emoji do not cover the ellipsis and return after resizing
+  PASS emoji titles: downloaded VOD titles use color glyphs
+  PASS emoji titles: regular compact and picture-in-picture tab titles use color glyphs
+  PASS emoji titles: full stream details tooltips render color glyphs
+  PASS native input focus: Past broadcasts remains responsive with six unavailable overlays
+  PASS native input focus: connected nonreading pipe respects the complete write deadline
+  PASS native input focus: chat shutdown yields before waiting for an unavailable pipe
+  PASS native input focus: a late pipe receives the unchanged release packet
+  PASS native input focus: repeated requests coalesce without suppressing a new player
+  PASS native input focus: disposal drains pending releases and rejects new requests
+  All 1486 tests passed; 269 skipped.
+Test completed successfully.

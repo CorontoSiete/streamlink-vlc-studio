@@ -1127,6 +1127,13 @@ static int scale_reference_px(int value) {
     return (int)scaled;
 }
 
+/* Reserve the fixed MOVE button size used by the native overlay plugin. */
+static int chat_top_clearance(void) {
+    return scale_reference_px(8) +
+        scale_reference_px(MOVE_HANDLE_MARGIN) +
+        scale_reference_px(MOVE_HANDLE_H);
+}
+
 static int unscale_source_px(int value) {
     if (value <= 0) return 1;
     int video_h = current_video_height();
@@ -2470,7 +2477,10 @@ static void input_append_utf8_sanitized(const char *text) {
 
 static void input_append_utf16_sanitized(const wchar_t *text, int wchar_count) {
     if (!text || wchar_count <= 0) return;
-    char utf8[512];
+    if (wchar_count > MAX_MSG_TEXT) wchar_count = MAX_MSG_TEXT;
+    /* A UTF-16 code unit needs at most three UTF-8 bytes (surrogate pairs
+     * need four bytes for two units). Leave room for the terminator. */
+    char utf8[MAX_MSG_TEXT * 3 + 1];
     int n = WideCharToMultiByte(CP_UTF8, 0, text, wchar_count,
                                 utf8, (int)sizeof(utf8) - 1,
                                 NULL, NULL);
@@ -6329,8 +6339,10 @@ static void paste_clipboard_text(void) {
     if (h) {
         const wchar_t *w = (const wchar_t *)GlobalLock(h);
         if (w) {
-            size_t len = wcslen(w);
-            if (len > 512) len = 512;
+            size_t limit = GlobalSize(h) / sizeof(wchar_t);
+            if (limit > MAX_MSG_TEXT) limit = MAX_MSG_TEXT;
+            size_t len = 0;
+            while (len < limit && w[len] != L'\0') len++;
             input_append_utf16_sanitized(w, (int)len);
             GlobalUnlock(h);
         }
@@ -6472,13 +6484,12 @@ static bool input_handle_virtual_key(DWORD vk, DWORD scan_code, DWORD flags) {
     }
 
     /*
-     * Do not consume Shift itself.  WH_KEYBOARD_LL runs before Windows updates
-     * the asynchronous keyboard state; swallowing Shift here means ToUnicode
-     * sees the following shifted key (for example OEM_2) as unshifted, so '?'
-     * is inserted as '/'.  The character key is still consumed below, keeping
-     * overlay input isolated while allowing Windows to track the modifier.
+     * WH_KEYBOARD_LL runs before Windows updates asynchronous keyboard state.
+     * Let modifier keydowns through so the next key sees Shift in ToUnicode
+     * and Control in the Ctrl+V check.  Character keys remain captured here.
      */
-    if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) {
+    if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT
+        || vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) {
         return false;
     }
 
@@ -6508,8 +6519,7 @@ static bool input_handle_virtual_key(DWORD vk, DWORD scan_code, DWORD flags) {
         input_append_utf8_sanitized(" ");
         return true;
     }
-    if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL
-        || vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU
+    if (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU
         || vk == VK_CAPITAL) {
         return true;
     }
@@ -9940,8 +9950,7 @@ static void release_layout_runs(layout_run_t *runs, int n)
 static int visible_message_limit(renderer_t *r)
 {
     const int padding = scale_reference_px(8);
-    const int top_clearance = scale_reference_px(
-        8 + MOVE_HANDLE_MARGIN + MOVE_HANDLE_H);
+    const int top_clearance = chat_top_clearance();
     const int line_gap = scale_reference_px(LINE_GAP_PX);
     const int input_h = scale_reference_px(CHAT_INPUT_H);
     const int input_gap = scale_reference_px(CHAT_INPUT_GAP);
@@ -10007,8 +10016,7 @@ static void render_chat(renderer_t *r) {
     r->empty_frame_ready = false;
     clear_frame(r);
     const int padding = scale_reference_px(8);
-    const int top_clearance = scale_reference_px(
-        8 + MOVE_HANDLE_MARGIN + MOVE_HANDLE_H);
+    const int top_clearance = chat_top_clearance();
     const int input_h = scale_reference_px(CHAT_INPUT_H);
     const int input_gap = scale_reference_px(CHAT_INPUT_GAP);
     const int emote_render_h = scale_reference_px(EMOTE_RENDER_H);

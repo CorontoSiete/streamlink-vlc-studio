@@ -103,7 +103,7 @@ internal static class StreamHoverPreviewTestCatalog
         var session = controller.Begin(Target("second", PlatformKind.Kick))!;
         await WaitAsync(() => session.State == StreamHoverPreviewState.Playing);
         Assert.Equal(PlatformKind.Kick, captured!.Target.Platform);
-        Assert.Equal("360p,480p,best", captured.Quality);
+        Assert.Equal("360p,360p30,360p60,480p,480p30,480p60,best", captured.Quality);
         Assert.Equal("streamlink.exe", captured.StreamlinkPath);
         Assert.Equal(false, captured.LowLatency);
         Assert.Equal(true, captured.IsMultiStream);
@@ -257,7 +257,7 @@ internal static class StreamHoverPreviewTestCatalog
         var count = 0;
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var run = Task.Run(() => new LibVlcLivePreview(service).RunAsync(
-            new(Target(), "360p,480p,best", "fixture", false, []), vlc, frame =>
+            new(Target(), LibVlcLivePreview.QualityPreference, "fixture", false, []), vlc, frame =>
             {
                 Interlocked.Increment(ref count);
                 Assert.Equal(320, frame.Width);
@@ -285,7 +285,7 @@ internal static class StreamHoverPreviewTestCatalog
     {
         using var cancellation = new CancellationTokenSource();
         var service = new FixtureTransport(new Uri("http://127.0.0.1:1/unused"), cancel ? cancellation.Cancel : null);
-        var run = new LibVlcLivePreview(service).RunAsync(new(Target(), "360p,480p,best", "fixture", false, []),
+        var run = new LibVlcLivePreview(service).RunAsync(new(Target(), LibVlcLivePreview.QualityPreference, "fixture", false, []),
             Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), _ => throw new InvalidOperationException("No frames expected"), cancellation.Token);
         if (cancel) await Assert.ThrowsAsync<OperationCanceledException>(() => run);
         else await Assert.ThrowsAsync<FileNotFoundException>(() => run);
@@ -316,7 +316,7 @@ internal static class StreamHoverPreviewTestCatalog
         };
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var run = Task.Run(() => new LibVlcLivePreview(new StreamlinkService(logger), logger).RunAsync(
-            new(target, "360p,480p,best", settings.StreamlinkPath ?? ExecutableResolver.FindStreamlink()!, settings.LowLatency,
+            new(target, LibVlcLivePreview.QualityPreference, settings.StreamlinkPath ?? ExecutableResolver.FindStreamlink()!, settings.LowLatency,
                 CommandLineTokenizer.Tokenize(settings.CustomStreamlinkArguments), true),
             settings.VlcDirectory ?? ExecutableResolver.FindVlcDirectory()!, frame =>
             {

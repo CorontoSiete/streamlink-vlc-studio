@@ -1,4 +1,3 @@
-using System.Windows.Interop;
 using System.Windows.Threading;
 
 internal static partial class ApplicationTestCatalog

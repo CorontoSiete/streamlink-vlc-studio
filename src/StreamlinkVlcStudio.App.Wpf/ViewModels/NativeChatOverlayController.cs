@@ -3,10 +3,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Net.Http;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -16,10 +14,8 @@ using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
@@ -44,6 +40,8 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
     private readonly Func<AppSettings, bool> ShouldKeepChatClientForVodChatCapture;
     private readonly CancellationTokenSource lifetimeCancellation;
     private readonly ClipboardService clipboardService = new();
+    private readonly object nativeOverlayInputFocusGate = new();
+    private readonly Dictionary<string, Task<bool>> nativeOverlayInputFocusReleases = new(StringComparer.Ordinal);
     private bool disposed;
     private Task? disposalTask;
     private int nativeReplayOverlayTextSelectionAvailable;
@@ -124,7 +122,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         if (disposalTask is not null) return new(disposalTask);
-        disposed = true;
+        lock (nativeOverlayInputFocusGate) disposed = true;
         lifetimeCancellation.Cancel();
         AnimatedEmoteImage.ImageCacheEntryCompleted -= OnAnimatedEmoteImageCacheEntryCompleted;
         DockedChatBadgeCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
@@ -176,6 +174,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         finally
         {
+            await DrainNativeOverlayInputFocusReleasesAsync().ConfigureAwait(false);
             await nativeReplayOverlayFrameWriteGate.DisposeAsync();
             lifetimeCancellation.Dispose();
         }
@@ -861,7 +860,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
     internal async Task StopNativeOverlayChatAsync(bool clearOverlay = false)
     {
         await StopNativeOverlayStartupAsync().ConfigureAwait(false);
-        TryReleaseNativeOverlayChatInputFocus();
+        await TryReleaseNativeOverlayChatInputFocusAsync(allowDuringDisposal: true).ConfigureAwait(false);
 
         DetachedNativeOverlayChat? detached;
         await nativeOverlayProcessGate.WaitAsync();
@@ -1257,7 +1256,10 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         return (false, lastException);
     }
 
-    public bool TryReleaseNativeOverlayChatInputFocus()
+    public Task<bool> TryReleaseNativeOverlayChatInputFocusAsync() =>
+        TryReleaseNativeOverlayChatInputFocusAsync(allowDuringDisposal: false);
+
+    private Task<bool> TryReleaseNativeOverlayChatInputFocusAsync(bool allowDuringDisposal)
     {
         var process = nativeOverlayProcess;
         var pipeName = nativeOverlayPipeName;
@@ -1278,52 +1280,106 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             (process is not null && !IsProcessRunning(process)) ||
             (process is null && playbackEngine?.UsesNativeOverlay != true))
         {
-            return false;
+            return Task.FromResult(false);
         }
 
-        return TryWriteNativeOverlayEventSynchronously(
-            $"{pipeName}_events",
-            NativeOverlayProtocolCodec.BuildEventMessage(
-                NativeOverlayProtocolCodec.ChatInputFocusEventType,
-                0),
-            NativeOverlayInputFocusReleaseTimeout);
+        var eventPipeName = $"{pipeName}_events";
+        lock (nativeOverlayInputFocusGate)
+        {
+            if (disposed && !allowDuringDisposal) return Task.FromResult(false);
+            if (nativeOverlayInputFocusReleases.TryGetValue(eventPipeName, out var pending) && !pending.IsCompleted)
+            {
+                return pending;
+            }
+
+            // Focus and mouse events can arrive together. Share the in-flight release for this
+            // player, but never let a release for an old player suppress a newly bound pipe.
+            var release = TryWriteNativeOverlayEventAsync(
+                eventPipeName,
+                NativeOverlayProtocolCodec.BuildEventMessage(NativeOverlayProtocolCodec.ChatInputFocusEventType, 0),
+                NativeOverlayInputFocusReleaseTimeout);
+            nativeOverlayInputFocusReleases[eventPipeName] = release;
+            _ = ObserveNativeOverlayInputFocusReleaseAsync(eventPipeName, release);
+            return release;
+        }
     }
 
-    internal static bool TryWriteNativeOverlayEventSynchronously(
+    private async Task ObserveNativeOverlayInputFocusReleaseAsync(string pipeName, Task<bool> release)
+    {
+        try
+        {
+            await release.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native overlay keyboard focus release failed.", ex);
+        }
+        finally
+        {
+            lock (nativeOverlayInputFocusGate)
+            {
+                if (nativeOverlayInputFocusReleases.TryGetValue(pipeName, out var pending) && ReferenceEquals(pending, release))
+                {
+                    nativeOverlayInputFocusReleases.Remove(pipeName);
+                }
+            }
+        }
+    }
+
+    private async Task DrainNativeOverlayInputFocusReleasesAsync()
+    {
+        Task<bool>[] pending;
+        lock (nativeOverlayInputFocusGate) pending = nativeOverlayInputFocusReleases.Values.ToArray();
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Each release observes and logs its failure; cleanup still drains every operation.
+        }
+    }
+
+    internal static async Task<bool> TryWriteNativeOverlayEventAsync(
         string pipeName,
         byte[] message,
-        TimeSpan timeout)
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
     {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (DateTimeOffset.UtcNow < deadline)
+        if (timeout <= TimeSpan.Zero || cancellationToken.IsCancellationRequested) return false;
+        var startedAt = Stopwatch.GetTimestamp();
+        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        operationCancellation.CancelAfter(timeout);
+        try
         {
-            try
+            while (!operationCancellation.IsCancellationRequested)
             {
-                using var pipe = new NamedPipeClientStream(
-                    ".",
-                    pipeName,
-                    PipeDirection.Out,
-                    PipeOptions.None);
-                var remaining = Math.Max(1, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds);
-                var connectTimeout = (int)Math.Clamp(
-                    NativeOverlayPipeConnectTimeout.TotalMilliseconds,
-                    1,
-                    remaining);
-                pipe.Connect(connectTimeout);
-                pipe.Write(message, 0, message.Length);
-                pipe.Flush();
-                return true;
-            }
-            catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
-            {
-                var remainingDelay = deadline - DateTimeOffset.UtcNow;
-                if (remainingDelay <= TimeSpan.Zero)
+                var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+                if (remaining <= TimeSpan.Zero) break;
+                try
                 {
-                    break;
+                    await using var pipe = new NamedPipeClientStream(
+                        ".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous);
+                    var connectTimeout = (int)Math.Clamp(NativeOverlayPipeConnectTimeout.TotalMilliseconds,
+                        1, Math.Max(1, remaining.TotalMilliseconds));
+                    // The same deadline covers connecting AND writing. A connected overlay that
+                    // stops reading must not leave an uncancellable write behind after shutdown.
+                    await pipe.ConnectAsync(connectTimeout, operationCancellation.Token).ConfigureAwait(false);
+                    await pipe.WriteAsync(message, operationCancellation.Token).ConfigureAwait(false);
+                    await pipe.FlushAsync(operationCancellation.Token).ConfigureAwait(false);
+                    return true;
                 }
-
-                Thread.Sleep((int)Math.Clamp(remainingDelay.TotalMilliseconds, 1, 10));
+                catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException)
+                {
+                    remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+                    if (remaining <= TimeSpan.Zero) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(10, remaining.TotalMilliseconds)),
+                        operationCancellation.Token).ConfigureAwait(false);
+                }
             }
+        }
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
+        {
         }
 
         return false;
@@ -1866,14 +1922,12 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                 messages);
         }
 
-        var videoHeight = 0;
         if (engine.TryGetVideoSize(out var detectedVideoWidth, out var detectedVideoHeight) && detectedVideoHeight > 0)
         {
-            videoHeight = detectedVideoHeight;
             RecordNativeReplayOverlayVideoSize(detectedVideoWidth, detectedVideoHeight);
         }
 
-        videoHeight = GetNativeReplayOverlayVideoHeight();
+        var videoHeight = GetNativeReplayOverlayVideoHeight();
         var sourceSize = GetNativeReplayOverlaySourceSize();
         var overlayFontSize = currentSettings is null
             ? settings.VlcOverlayFontSize

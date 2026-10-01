@@ -21,8 +21,118 @@ internal static partial class ApplicationTestCatalog
                 ("window sharing GDI request uses the actual WinGDI output", () => WindowSharingRendererAsync(false, VideoRendererMode.Gdi)),
                 ("window sharing native overlay remains visible across GDI output rebinds", () => WindowSharingRendererAsync(true, VideoRendererMode.Automatic)),
                 ("window sharing explicit Direct3D11 still selects its actual output", () => WindowSharingRendererAsync(false, VideoRendererMode.Direct3D11)),
+                ("window sharing PiP return keeps VLC playback on its original host", PictureInPictureReturnVlcAsync),
                 ("window sharing retains chrome and video across Home resize and rebind", WindowSharingCaptureAsync)
             ];
+
+    private static Task PictureInPictureReturnVlcAsync() => TestSta.RunAsync(async () =>
+    {
+        await using var fixture = new PictureInPictureActivationFixture();
+        var pip = fixture.AddTab("albralelie");
+        var main = fixture.AddTab("summit1g");
+        await fixture.StartSelectedAsync(pip);
+        await fixture.StartSelectedAsync(main);
+
+        var window = new MainWindow
+        {
+            DataContext = fixture.Main,
+            Left = 50,
+            Top = 60,
+            Width = 1100,
+            Height = 650
+        };
+        RemoveMainWindowAutomaticStartup(window);
+        SetMainWindowViewModel(window, fixture.Main);
+        DetachedVideoWindow? detached = null;
+        LibVlcPlaybackEngine? nativeEngine = null;
+        EventHandler? reboundHandler = null;
+        Action<IntPtr>? handleChangedHandler = null;
+        var reboundCount = 0;
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        try
+        {
+            window.Show();
+            PumpPictureInPictureActivationLayout(window);
+            SetMainWindowHandle(window);
+            var detach = typeof(MainWindow).GetMethod("DetachTabToPictureInPicture", flags);
+            Assert.NotNull(detach);
+            detach!.Invoke(window, [pip.Tab, new Point(350, 250), false]);
+
+            var detachedWindows = (IDictionary<StreamTabViewModel, DetachedVideoWindow>)typeof(MainWindow)
+                .GetProperty("detachedWindows", flags)!.GetValue(window)!;
+            detached = detachedWindows[pip.Tab];
+            PumpPictureInPictureActivationLayout(window, detached);
+            var pipSurface = FindVisualDescendants<VideoSurface>(detached)
+                .Single(surface => ReferenceEquals(surface.Tag, pip.Tab));
+            var originalHandle = pipSurface.Handle;
+            Assert.True(originalHandle != IntPtr.Zero);
+            Assert.Equal(originalHandle, pip.Engine.VideoHandle);
+
+            var factory = new LibVlcPlaybackEngineFactory(new MemoryLogger(), new ChatSettings());
+            nativeEngine = (LibVlcPlaybackEngine)await factory.CreateAsync(
+                Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")!,
+                enableNativeOverlay: false,
+                rendererMode: VideoRendererMode.Gdi);
+            nativeEngine.SetVideoHandle(originalHandle);
+            reboundHandler = (_, _) => Interlocked.Increment(ref reboundCount);
+            nativeEngine.VideoOutputRebound += reboundHandler;
+            await nativeEngine.PlayAsync(new Uri(Path.GetFullPath(
+                Environment.GetEnvironmentVariable("SVS_TEST_VLC_MEDIA")!)), 0, PlaybackAudioState.HardMuted);
+            await TestWait.UntilAsync(
+                () => nativeEngine.TryGetPlaybackClock(out var clock) && clock.Position > TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromSeconds(8));
+
+            // Mirror StreamTabViewModel's SetVideoHandle forwarding to libVLC. This lets
+            // the test observe any parking-HWND transition as a real VLC output rebind.
+            handleChangedHandler = nativeEngine.SetVideoHandle;
+            pip.Engine.VideoHandleChanged += handleChangedHandler;
+
+            fixture.Main.SelectHomeCommand.Execute(null);
+            await fixture.WaitForPolicyAsync();
+            PumpPictureInPictureActivationLayout(window, detached);
+            Assert.True(fixture.Main.IsHomeSelected);
+            Assert.Equal(PlaybackStatus.Playing, pip.Tab.Status);
+            Assert.True(nativeEngine.TryGetPlaybackClock(out var beforeReturn));
+
+            detached.Close();
+            PumpPictureInPictureActivationLayout(window);
+            await fixture.WaitForPolicyAsync();
+
+            Assert.Equal(false, pip.Tab.IsDetached);
+            Assert.Equal(pip.Tab, fixture.Main.SelectedTab);
+            Assert.Equal(false, fixture.Main.IsHomeSelected);
+            Assert.Equal(originalHandle, pip.Engine.VideoHandle);
+            Assert.Equal(originalHandle, FindVisualDescendants<VideoSurface>(window)
+                .Single(surface => ReferenceEquals(surface.Tag, pip.Tab)).Handle);
+            Assert.Equal(0, Volatile.Read(ref reboundCount));
+            await TestWait.UntilAsync(
+                () => nativeEngine.TryGetPlaybackClock(out var clock) &&
+                    clock.Position > beforeReturn.Position + TimeSpan.FromMilliseconds(300),
+                TimeSpan.FromSeconds(5));
+            Assert.Equal(0, Volatile.Read(ref reboundCount));
+        }
+        finally
+        {
+            if (nativeEngine is not null)
+            {
+                if (reboundHandler is not null)
+                {
+                    nativeEngine.VideoOutputRebound -= reboundHandler;
+                }
+
+                if (handleChangedHandler is not null)
+                {
+                    pip.Engine.VideoHandleChanged -= handleChangedHandler;
+                }
+
+                await nativeEngine.StopAsync();
+                nativeEngine.Dispose();
+            }
+
+            detached?.CloseForTabDisposal();
+            window.Close();
+        }
+    });
 
     private static Task WindowSharingRendererAsync(bool nativeOverlay, VideoRendererMode mode) =>
         WithResponsiveWindowAsync(withVideo: true, async (window, _) =>

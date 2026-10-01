@@ -36,6 +36,7 @@ function New-PublicationScenario {
         Releases = @(); Assets = @(); Calls = [Collections.Generic.List[object]]::new()
         RemoteCommit = $commit; FailApi = $false; FailUpload = $false; FailPublish = $false
         AfterUpload = ''; LaterPage = $false; Notes = ''; AssetReads = 0; ListResponse = ''
+        LockNotes = $false; NotesLock = $null; NotesPath = ''
     }
 }
 
@@ -86,6 +87,11 @@ function gh {
         'create' {
             Assert-Publication ($arguments -contains '--draft' -and $arguments -contains '--verify-tag') 'Release was created publicly or without tag verification.'
             $publicationScenario.Notes = [IO.File]::ReadAllText((Get-FakeOption $arguments '--notes-file'))
+            if ($publicationScenario.LockNotes) {
+                $publicationScenario.NotesPath = Get-FakeOption $arguments '--notes-file'
+                $publicationScenario.NotesLock = [IO.File]::Open($publicationScenario.NotesPath,
+                    [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            }
             $publicationScenario.Releases += [pscustomobject]@{
                 id = 42; tag_name = $tag; draft = $true; prerelease = $false
                 target_commitish = Get-FakeOption $arguments '--target'; body = $publicationScenario.Notes
@@ -166,6 +172,29 @@ try {
     Assert-Publication (-not $publicationScenario.Releases[0].draft -and $publicationScenario.Assets.Count -eq 7) 'Complete release was not published.'
     Assert-Publication ($publicationScenario.Notes.Contains('`Setup.exe`; preserve $literal')) 'Release note literals were altered.'
     Write-Host 'PASS publication: signed local set, private staging, remote verification, literal release notes'
+
+    foreach ($failUpload in @($false, $true)) {
+        $publicationScenario = New-PublicationScenario
+        $publicationScenario.LockNotes = $true
+        $publicationScenario.FailUpload = $failUpload
+        $savedWarningPreference = $WarningPreference
+        try {
+            $WarningPreference = 'Stop'
+            if ($failUpload) {
+                Assert-PublicationFailure { Invoke-Publication } 'exit code 19'
+                Assert-Publication $publicationScenario.Releases[0].draft 'Cleanup hid the failed upload state.'
+            } else {
+                Invoke-Publication
+                Assert-Publication (-not $publicationScenario.Releases[0].draft) 'Cleanup changed publication success.'
+            }
+            Assert-Publication (Test-Path -LiteralPath $publicationScenario.NotesPath) 'Locked notes fixture did not prevent cleanup.'
+        } finally {
+            $WarningPreference = $savedWarningPreference
+            if ($null -ne $publicationScenario.NotesLock) { $publicationScenario.NotesLock.Dispose() }
+            if ($publicationScenario.NotesPath) { [IO.File]::Delete($publicationScenario.NotesPath) }
+        }
+    }
+    Write-Host 'PASS publication: locked temporary notes preserve success and the original upload error'
 
     $publicationScenario = New-PublicationScenario
     $publicationScenario.FailUpload = $true

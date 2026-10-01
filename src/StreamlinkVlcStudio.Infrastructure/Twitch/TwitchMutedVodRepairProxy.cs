@@ -542,7 +542,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
                     segmentUri,
                     PlatformKind.Twitch,
                     static requestUri => new HttpRequestMessage(HttpMethod.Get, requestUri),
-                    upstreamTimeout.Token)
+                    upstreamTimeout.Token, useReadTimeout: true)
                 .ConfigureAwait(false);
             try
             {
@@ -594,7 +594,8 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
                         $"Found nothing to repair in the muted segment {segment}. If playback freezes there, Twitch changed how muted segments are written.");
                 }
             }
-            catch (Exception ex) when (ex is InvalidDataException or TimeoutException or TwitchMutedSegmentSourceException)
+            catch (Exception ex) when (ex is InvalidDataException or TimeoutException or TwitchMutedSegmentSourceException ||
+                ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
             {
                 // The response has started, so the only remaining signal is closing the connection.
                 // A player that simply went away surfaces as a plain IOException and is not logged.

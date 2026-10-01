@@ -1,0 +1,8 @@
+Channel Twitch/summit1g; direct eligible True.
+230 ms: authorization, status 200, request 209 ms.
+395 ms: master, status 200, request 121 ms.
+Master qualities: 720p60, 480p30, 360p30, 160p30, audio_only, 1080p60
+702 ms: media, status 200, request 268 ms.
+Selected quality: 1080p60
+Media tags: #EXTM3U, #EXT-X-VERSION, #EXT-X-TARGETDURATION, #EXT-X-MEDIA-SEQUENCE, #EXT-X-TWITCH-LIVE-SEQUENCE, #EXT-X-TWITCH-ELAPSED-SECS, #EXT-X-TWITCH-TOTAL-SECS, #EXT-X-DATERANGE, #EXT-X-MAP, #EXT-X-PROGRAM-DATE-TIME, #EXTINF, #EXT-X-TWITCH-PREFETCH
+Direct failure: InvalidDataException; top frame LivePreviewPlaylist.Rewrite.

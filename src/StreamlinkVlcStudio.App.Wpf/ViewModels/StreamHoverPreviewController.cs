@@ -56,7 +56,7 @@ public sealed class StreamHoverPreviewController : IAsyncDisposable
                     await previous.ConfigureAwait(false);
                     session.Token.ThrowIfCancellationRequested();
                     session.SetState(StreamHoverPreviewState.Loading);
-                    var request = new StreamTransportRequest(target, "360p,480p,best", path, lowLatency,
+                    var request = new StreamTransportRequest(target, LibVlcLivePreview.QualityPreference, path, lowLatency,
                         CommandLineTokenizer.Tokenize(arguments), IsMultiStream: true);
                     await play(request, vlcDirectory, session.Present, session.Token).ConfigureAwait(false);
                     session.SetState(StreamHoverPreviewState.Unavailable);

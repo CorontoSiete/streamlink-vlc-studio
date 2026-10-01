@@ -9,10 +9,25 @@ VODs, offline channels, and unknown Recent statuses do not start previews.
 A 100 ms delay avoids opening streams while passing across cards. One shared
 controller serializes previews, including transport cleanup. For ordinary Twitch
 and Kick broadcasts, the preview authorizes playback directly and fetches only
-the selected `360p,480p,best` quality. This avoids launching Python on each hover
+the selected quality: 360p, including its 30/60 fps names, then 480p and its 30/60
+fps names, then best. This avoids launching Python on each hover
 and Twitch's checks of every quality. A local playlist endpoint hands the initial
 validated playlist to VLC and validates subsequent reloads; video segments travel
 directly from the provider to VLC. No neighboring cards are opened or prefetched.
+
+Twitch previews use Streamlink's anonymous playback authorization identity.
+Generating a fresh web device ID on each hover caused `tttcheekyttt` and
+`termynater_` to return pre-roll segments and restart through Streamlink.
+[The authorization diagnosis and repeated measurements](stream-hover-preview-authorization-2026-10-01.md)
+record the fix and the faster visible startup on both channels.
+
+The direct path accepts MPEG-TS and fragmented MP4 with a validated, whole MP4
+initialization file. Both initialization and segment URLs retain the provider
+URL checks. Ranged maps, encrypted media, and a change of initialization file or
+container during playback retain Streamlink fallback. This handles streams such
+as `summit1g`, whose MP4 format and `360p30` name previously caused a slow fallback
+at 1080p. [The diagnosis and repeated measurements](stream-hover-preview-startup-2026-10-01.md)
+record that fix.
 
 Custom Streamlink arguments, authentication/config files, plugins, proxy settings,
 and unsupported playlists retain the existing Streamlink HTTP transport. Failed
@@ -25,7 +40,7 @@ listener and stops decoding before another transport starts.
 
 An isolated VLC player disables audio and chat and presents 320 x 180 pixels at
 up to 30 frames per second.
-The 500 ms network cache and quality preference are unchanged. Native HLS uses
+The network cache remains 500 ms. Native HLS uses
 VLC's low-latency mode for Twitch when enabled; Kick retains conservative buffering.
 Its requested live distance derives from the existing transport's segment policy
 and the playlist's target duration, subject to VLC's minimum buffer.
@@ -47,7 +62,7 @@ watch-history entry, or main-player audio change is created.
 ## Verification
 
 - Release solution build with warnings treated as errors: zero warnings/errors.
-- 28 focused checks cover persistence, disabled/offline states, debounce,
+- 38 focused checks cover persistence, disabled/offline states, debounce,
   transport options, canceled/late startup, stale frames, rapid replacement,
   failure recovery, missing VLC, bounded frames, shutdown, XAML bindings, and
   physical hover/click/leave/hide/disable/unload behavior.
@@ -60,8 +75,12 @@ watch-history entry, or main-player audio change is created.
 - Direct-source regressions cover selected-quality requests, ordered fallbacks,
   configuration compatibility, bounded responses, URL validation, playlist reloads,
   initial and later ads, first-frame deadlines, late cancellation, and cleanup.
+- Fragmented MP4 checks cover initialization URL rewriting, unsafe/malformed/ranged
+  maps, changing initialization and containers, later ads, and actual native VLC
+  decoding of moving fixture video across fragment boundaries.
 - Before/after live timings and full validation are recorded in
-  [the startup measurement report](stream-hover-preview-startup-2026-09-27.md).
+  [the MP4 startup report](stream-hover-preview-startup-2026-10-01.md) and
+  [the authorization startup report](stream-hover-preview-authorization-2026-10-01.md).
 
 Run focused checks with the SDK selected by `global.json`:
 
@@ -76,4 +95,4 @@ network tests. Live checks report transport readiness, first-frame timing, frame
 gaps, and cleanup time without printing signed media URLs or authentication arguments.
 Set `SVS_TEST_HOVER_DURATION_SECONDS=40` for a longer continuity check. Live-card
 PNGs are under `.tmp/hover-preview-*`; current latency and regression logs are
-under `.tmp/hover-preview-startup-2026-09-27/`.
+under `docs/measurements/hover-preview-startup-2026-10-01/`.

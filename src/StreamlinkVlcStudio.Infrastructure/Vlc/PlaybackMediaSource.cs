@@ -27,7 +27,8 @@ internal sealed class PlaybackMediaSource : IDisposable
     private IDisposable? lease;
 
     internal PlaybackMediaSource(Uri playbackUri, IDisposable? lease, TimeSpan timelineOffset = default,
-        bool useAvformatDemuxer = false, TimeSpan replaySeekPreroll = default, bool useLiveReplayDemuxer = false)
+        bool useAvformatDemuxer = false, TimeSpan replaySeekPreroll = default, bool useLiveReplayDemuxer = false,
+        TimeSpan liveReplaySegmentDuration = default)
     {
         PlaybackUri = playbackUri ?? throw new ArgumentNullException(nameof(playbackUri));
         this.lease = lease;
@@ -35,6 +36,7 @@ internal sealed class PlaybackMediaSource : IDisposable
         UseAvformatDemuxer = useAvformatDemuxer;
         ReplaySeekPreroll = replaySeekPreroll;
         UseLiveReplayDemuxer = useLiveReplayDemuxer;
+        LiveReplaySegmentDuration = liveReplaySegmentDuration;
     }
 
     internal Uri PlaybackUri { get; }
@@ -45,6 +47,7 @@ internal sealed class PlaybackMediaSource : IDisposable
     internal TimeSpan ReplaySeekPreroll { get; }
     // Only validated, unencrypted MPEG-TS EVENT playlists on VLC 3.0.23 opt in.
     internal bool UseLiveReplayDemuxer { get; }
+    internal TimeSpan LiveReplaySegmentDuration { get; }
 
     /// <summary>A source that plays <paramref name="mediaUri"/> exactly as given.</summary>
     internal static PlaybackMediaSource Direct(Uri mediaUri) => new(mediaUri, lease: null);

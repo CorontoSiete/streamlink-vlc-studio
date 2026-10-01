@@ -1,0 +1,8 @@
+FAIL stream hover preview: fragmented MP4 maps and segments are validated and refreshed: System.IO.InvalidDataException: The live playlist requires Streamlink transport.
+   at StreamlinkVlcStudio.Infrastructure.Previews.LivePreviewPlaylist.Rewrite(String content, Uri origin, PlatformKind platform)
+   at StreamlinkVlcStudio.Infrastructure.Previews.LivePreviewSourceResolver.<>c__DisplayClass6_0.<<OpenAsync>g__ReadAsync|1>d.MoveNext()
+--- End of stack trace from previous location ---
+   at StreamlinkVlcStudio.Infrastructure.Previews.LivePreviewSourceResolver.OpenAsync(StreamTransportRequest request, CancellationToken token)
+   at StreamHoverPreviewSourceTestCatalog.FragmentedMp4Async() in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\StreamHoverPreviewSourceTestCatalog.Formats.cs:line 55
+   at DependencyFreeTestRunner.RunAsync(IReadOnlyList`1 tests) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\DependencyFreeTestRunner.cs:line 92
+0 passed, 1 failed, 0 timed out, 0 skipped, 0 not run out of 1 selected tests.

@@ -95,7 +95,7 @@ internal static class TwitchMutedSegmentRepairCopier
 
             return new TwitchMutedSegmentRepairResult(bytesCopied, repairs);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (idle.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw new TimeoutException(
                 $"The muted segment transfer made no progress for {idleTimeout.TotalSeconds:0.#} seconds.");

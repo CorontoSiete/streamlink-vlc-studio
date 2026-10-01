@@ -294,10 +294,12 @@ internal sealed class ReplayClockState
         TimeSpan position,
         TimeSpan duration,
         long seekGeneration,
+        long sampledPlaybackStateVersion,
         DateTimeOffset observedAtUtc)
     {
         lock (replayClockAnchorGate)
         {
+            if (!isSampleCurrent(seekGeneration, sampledPlaybackStateVersion)) return;
             replayClockAnchorAvailable = true;
             replayClockAnchorOffset = ClampReplayOffset(position, duration);
             replayClockAnchorObservedAtUtc = observedAtUtc;

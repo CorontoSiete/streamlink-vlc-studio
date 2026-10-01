@@ -1,0 +1,16 @@
+full-control-before.log
+All 1476 tests passed; 269 skipped.
+
+full-tests-final.log
+FAIL resuming after pausing while behind live holds the rewound position: System.InvalidOperationException: Expected true.
+at ApplicationTestCatalog.<>c.<<-cctor>b__719_405>d.MoveNext() in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\ApplicationTestCatalog.ReplayAndLiveChat.cs:line 1745
+1481 passed, 1 failed, 0 timed out, 269 skipped, 0 not run out of 1751 selected tests.
+
+full-tests-repeat.log
+FAIL resuming after pausing while behind live holds the rewound position: System.InvalidOperationException: Expected true.
+at ApplicationTestCatalog.<>c.<<-cctor>b__719_405>d.MoveNext() in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\ApplicationTestCatalog.ReplayAndLiveChat.cs:line 1745
+1481 passed, 1 failed, 0 timed out, 269 skipped, 0 not run out of 1751 selected tests.
+
+rewind-stress-before.log
+FAIL original test on iteration 53: System.InvalidOperationException: Expected true.
+at ApplicationTestCatalog.<>c.<<-cctor>b__719_405>d.MoveNext() in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\ApplicationTestCatalog.ReplayAndLiveChat.cs:line 1745

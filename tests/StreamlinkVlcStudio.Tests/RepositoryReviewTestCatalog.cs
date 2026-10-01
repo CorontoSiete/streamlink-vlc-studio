@@ -1,4 +1,3 @@
-using System.Net;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Threading;
 

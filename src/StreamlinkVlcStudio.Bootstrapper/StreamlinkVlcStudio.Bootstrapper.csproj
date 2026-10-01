@@ -14,7 +14,7 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico</ApplicationIcon>
+    <ApplicationIcon>..\StreamlinkVlcStudio.App.Wpf\Assets\Studio.ico</ApplicationIcon>
     <AssemblyName>StreamStudio.Bootstrapper</AssemblyName>
     <AssemblyTitle>Stream Studio Setup</AssemblyTitle>
     <Product>Stream Studio</Product>
@@ -27,6 +27,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Resource Include="..\StreamlinkVlcStudio.App.Wpf\Assets\Studio.ico"
+              Link="Assets\Studio.ico" />
     <Resource Include="..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico"
               Link="Assets\Twitch.ico" />
     <!-- Share bounded process handling without adding the application's native payload to Setup. -->

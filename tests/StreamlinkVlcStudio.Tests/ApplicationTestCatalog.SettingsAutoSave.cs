@@ -53,6 +53,13 @@ internal static partial class ApplicationTestCatalog
                 main.SelectedVlcOverlayFontSize = 31;
                 Assert.Equal("720p", settings.DefaultQuality);
 
+                main.SelectedSettingsCategory = SettingsCategory.Downloads;
+                LayoutStudioPolishWindow(window, new Size(1320, 820));
+                ((ComboBox)window.FindName("VodDownloadQualityComboBox")).SetCurrentValue(ComboBox.SelectedValueProperty, "480p");
+                var bandwidth = (TextBox)window.FindName("VodDownloadBandwidthLimitTextBox");
+                bandwidth.SetCurrentValue(TextBox.TextProperty, "1.25");
+                bandwidth.GetBindingExpression(TextBox.TextProperty)!.UpdateSource();
+
                 main.SelectedSettingsCategory = SettingsCategory.Accounts;
                 LayoutStudioPolishWindow(window, new Size(1320, 820));
                 var token = FindVisualDescendants<PasswordBox>((FrameworkElement)window.FindName("AccountsSettingsPage"))
@@ -64,6 +71,8 @@ internal static partial class ApplicationTestCatalog
                 var reloaded = await new JsonSettingsService(service.SettingsPath).LoadAsync();
                 Assert.Equal(WindowCloseBehavior.MinimizeToTray, reloaded.CloseBehavior);
                 Assert.Equal("720p", reloaded.DefaultQuality);
+                Assert.Equal("480p", reloaded.Downloads.Quality);
+                Assert.Equal(1.25, reloaded.Downloads.BandwidthLimitMegabytesPerSecond);
                 Assert.Equal(false, reloaded.Replay.Enabled);
                 Assert.Equal(false, reloaded.FollowedChannels.NotifyWhenLive);
                 Assert.SequenceEqual(new[] { "fixture", "anotherfixture" }, reloaded.FollowedChannels.KickChannelSlugs);
@@ -105,6 +114,7 @@ internal static partial class ApplicationTestCatalog
         var settings = new AppSettings();
         var oldChat = settings.Chat;
         var oldReplay = settings.Replay;
+        var oldDownloads = settings.Downloads;
         var oldHotkeys = settings.Hotkeys;
         var oldFollowed = settings.FollowedChannels;
         var oldUpdates = settings.Updates;
@@ -112,6 +122,7 @@ internal static partial class ApplicationTestCatalog
         await using var main = CreateAutoSaveMain(settings, service);
         settings.Chat = new ChatSettings { ConnectAutomatically = false };
         settings.Replay = new ReplaySettings();
+        settings.Downloads = new DownloadSettings();
         settings.Hotkeys = new HotkeySettings();
         settings.FollowedChannels = new FollowedChannelsSettings();
         settings.Updates = new UpdateSettings();
@@ -119,6 +130,8 @@ internal static partial class ApplicationTestCatalog
 
         oldChat.FontSize = 32;
         oldReplay.Enabled = false;
+        oldDownloads.Quality = "worst";
+        oldDownloads.BandwidthLimitMegabytesPerSecond = 2;
         oldHotkeys.GoBack = "Ctrl+B";
         oldFollowed.NotifyWhenLive = false;
         oldUpdates.AutomaticChecksEnabled = false;
@@ -127,6 +140,8 @@ internal static partial class ApplicationTestCatalog
 
         settings.Chat.FontSize = 24;
         settings.Replay.Enabled = false;
+        settings.Downloads.Quality = "720p";
+        settings.Downloads.BandwidthLimitMegabytesPerSecond = 0.5;
         settings.Hotkeys.GoBack = "Ctrl+B";
         settings.FollowedChannels.NotifyWhenLive = false;
         settings.Updates.AutomaticChecksEnabled = false;
@@ -134,6 +149,8 @@ internal static partial class ApplicationTestCatalog
         var saved = service.Snapshots[1];
         Assert.Equal(24d, saved.Chat.FontSize);
         Assert.Equal(false, saved.Replay.Enabled);
+        Assert.Equal("720p", saved.Downloads.Quality);
+        Assert.Equal(0.5, saved.Downloads.BandwidthLimitMegabytesPerSecond);
         Assert.Equal("Ctrl+B", saved.Hotkeys.GoBack);
         Assert.Equal(false, saved.FollowedChannels.NotifyWhenLive);
         Assert.Equal(false, saved.Updates.AutomaticChecksEnabled);

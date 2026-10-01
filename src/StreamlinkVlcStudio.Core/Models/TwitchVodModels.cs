@@ -43,4 +43,5 @@ public sealed record TwitchVodItem(
     int? ViewCount,
     TwitchVodTypeFilter Type,
     TwitchVodAccessKind AccessKind = TwitchVodAccessKind.Unknown,
-    string ProfileImageUrl = "");
+    string ProfileImageUrl = "",
+    string CategoryName = "");

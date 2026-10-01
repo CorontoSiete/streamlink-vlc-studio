@@ -11,6 +11,7 @@ public sealed record LivePreviewFrame(int Width, int Height, byte[] Pixels);
 /// <summary>A silent video-only player that never creates a native window or a playback tab.</summary>
 public sealed class LibVlcLivePreview
 {
+    internal const string QualityPreference = "360p,360p30,360p60,480p,480p30,480p60,best";
     internal const int Width = 320;
     internal const int Height = 180;
     private readonly IStreamlinkService streamlink;

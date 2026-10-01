@@ -71,7 +71,13 @@ public partial class ReplaySeekOverlay : UserControl
         {
             if (keyboardSeeking) CancelSeek();
         };
-        PlaybackRateComboBox.DropDownOpened += (_, _) => Reveal(Environment.TickCount64);
+        PlaybackRateComboBox.Loaded += (_, _) => PlacePlaybackRateDropDown();
+        PlaybackRateComboBox.DropDownOpened += (_, _) =>
+        {
+            PlacePlaybackRateDropDown();
+            Reveal(Environment.TickCount64);
+        };
+        PlaybackRateComboBox.PreviewMouseWheel += OnPlaybackRateComboBoxPreviewMouseWheel;
         PlaybackRateComboBox.DropDownClosed += (_, _) =>
         {
             if (OverlayHost.IsOpen) lastActivity = Environment.TickCount64;
@@ -112,6 +118,58 @@ public partial class ReplaySeekOverlay : UserControl
             else if (e.Key == Key.Escape) { HideImmediately(); e.Handled = true; }
             else Reveal(Environment.TickCount64);
         };
+    }
+
+    private void OnPlaybackRateComboBoxPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Delta == 0)
+        {
+            return;
+        }
+
+        Reveal(Environment.TickCount64);
+
+        if (!PlaybackRateComboBox.IsEnabled)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        // WPF handles wheel selection itself when the ComboBox has focus, and its
+        // dropdown scrolls through its items while open. Only supply the missing
+        // hover behavior for the closed, unfocused selector.
+        if (PlaybackRateComboBox.IsKeyboardFocusWithin || PlaybackRateComboBox.IsDropDownOpen)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        var itemCount = PlaybackRateComboBox.Items.Count;
+        if (itemCount == 0)
+        {
+            return;
+        }
+
+        var selectedIndex = PlaybackRateComboBox.SelectedIndex;
+        var nextIndex = selectedIndex + (e.Delta < 0 ? 1 : -1);
+        if ((uint)nextIndex < (uint)itemCount)
+        {
+            PlaybackRateComboBox.SetCurrentValue(Selector.SelectedIndexProperty, nextIndex);
+        }
+    }
+
+    private void PlacePlaybackRateDropDown()
+    {
+        // The seek controls sit along the bottom of the video. A downward popup
+        // extends outside the player and can fall behind another desktop window;
+        // clicking it then deactivates the player and closes the seek controls.
+        if (PlaybackRateComboBox.Template.FindName("PART_Popup", PlaybackRateComboBox) is Popup popup)
+        {
+            popup.Placement = PlacementMode.Top;
+            // During WPF's fade-in the layered popup can pass an immediate click
+            // through to the video, closing the list without selecting a rate.
+            popup.PopupAnimation = PopupAnimation.None;
+        }
     }
 
     public FrameworkElement? PlacementTarget
@@ -257,6 +315,7 @@ public partial class ReplaySeekOverlay : UserControl
 
     private void OnPointerTick(object? sender, EventArgs e)
     {
+        UpdateOpenPlacement();
         if (!GetCursorPos(out var point)) return;
         var position = new Point(point.X, point.Y);
         var target = GetPointerSampleTarget(position);
@@ -313,7 +372,11 @@ public partial class ReplaySeekOverlay : UserControl
     {
         if (!CanDisplay) return;
         lastActivity = now;
-        if (OverlayHost.IsOpen && !fading) return;
+        if (OverlayHost.IsOpen && !fading)
+        {
+            UpdatePlacement();
+            return;
+        }
         animationVersion++;
         fading = false;
         OverlayChrome.IsHitTestVisible = true;

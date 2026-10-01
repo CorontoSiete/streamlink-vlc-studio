@@ -18,10 +18,13 @@ internal static partial class ApplicationTestCatalog
             ("live first seek: cold input opens near the available edge", () => PreparedReplayNearEdgeAsync(false, prepared: false)),
             ("live first seek: playback continues after waiting for appended segments", LiveReplayContinuationAsync),
             ("live first seek: skip backward button reaches the newest available segment", () => PreparedReplayTabAsync(nearEdge: true)),
+            ("live replay speed changes retain the seeked position", () => LiveReplayPlaybackRateAsync(false)),
+            ("live replay speed changes remain available at the published edge", LiveReplayNearEdgePlaybackRateAsync),
             .. string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_LIVE_FIRST_SEEK_URI")) ? [] :
                 new (string, Func<Task>)[] {
                     ("live first seek: actual broadcast startup and subsequent seeks", () => LiveFirstSeekAsync(true)),
-                    ("live first seek: actual broadcast skip backward near the available edge", () => PreparedReplayNearEdgeAsync(true)) }
+                    ("live first seek: actual broadcast skip backward near the available edge", () => PreparedReplayNearEdgeAsync(true)),
+                    ("live replay speed changes retain the seeked position on an actual broadcast", () => LiveReplayPlaybackRateAsync(true)) }
         ];
 
     private static Task LiveFirstSeekAsync(bool actual) => TestSta.RunOffscreenAsync(async () =>

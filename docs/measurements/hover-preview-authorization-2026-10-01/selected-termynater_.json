@@ -1,0 +1,76 @@
+{
+  "channel": "termynater_",
+  "utc": "2026-10-01T08:37:22.081913+00:00",
+  "authorization_ms": 162,
+  "master_ms": 112,
+  "selected_quality": "360p",
+  "dateranges": [
+    {
+      "CLASS": "timestamp",
+      "START-DATE": "2026-10-01T08:37:22.137Z",
+      "END-ON-NEXT": "YES",
+      "ID": "redacted-range"
+    },
+    {
+      "CLASS": "twitch-session",
+      "START-DATE": "2026-10-01T08:37:22.137Z",
+      "END-ON-NEXT": "YES",
+      "ID": "redacted-range"
+    },
+    {
+      "CLASS": "twitch-stitched-ad",
+      "START-DATE": "2026-10-01T08:37:17.088Z",
+      "DURATION": "15.235",
+      "X-TV-TWITCH-AD-POD-LENGTH": "1",
+      "X-TV-TWITCH-AD-POD-POSITION": "0",
+      "X-TV-TWITCH-AD-POD-FILLED-DURATION": "15",
+      "X-TV-TWITCH-AD-ROLL-TYPE": "PREROLL",
+      "ID": "stitched-ad-redacted"
+    },
+    {
+      "CLASS": "twitch-stream-source",
+      "START-DATE": "2026-10-01T08:37:17.088Z",
+      "END-ON-NEXT": "YES",
+      "ID": "redacted-range"
+    },
+    {
+      "CLASS": "twitch-trigger",
+      "START-DATE": "2026-10-01T08:37:17.088Z",
+      "END-ON-NEXT": "YES",
+      "ID": "redacted-range"
+    },
+    {
+      "CLASS": "twitch-ad-quartile",
+      "START-DATE": "2026-10-01T08:37:17.088Z",
+      "DURATION": "2.000",
+      "ID": "redacted-range"
+    },
+    {
+      "CLASS": "twitch-ad-quartile",
+      "START-DATE": "2026-10-01T08:37:19.088Z",
+      "DURATION": "2.000",
+      "ID": "redacted-range"
+    }
+  ],
+  "segments": [
+    {
+      "date": "2026-10-01T08:37:17.088Z",
+      "duration": "2.000",
+      "title": "Amazon|2488883100494",
+      "extension": "ts"
+    },
+    {
+      "date": "2026-10-01T08:37:19.088Z",
+      "duration": "2.000",
+      "title": "Amazon|2488883100494",
+      "extension": "ts"
+    },
+    {
+      "date": "2026-10-01T08:37:21.088Z",
+      "duration": "2.000",
+      "title": "Amazon|2488883100494",
+      "extension": "ts"
+    }
+  ],
+  "media_ms": 361
+}

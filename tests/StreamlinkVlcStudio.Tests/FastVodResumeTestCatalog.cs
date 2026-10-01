@@ -1,4 +1,3 @@
-using System.Net.Http;
 
 internal static class FastVodResumeTestCatalog
 {

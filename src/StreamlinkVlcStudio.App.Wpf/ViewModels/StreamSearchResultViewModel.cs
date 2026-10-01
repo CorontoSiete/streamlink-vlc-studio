@@ -66,7 +66,9 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
 
     public string Channel => Target.Channel;
 
-    public string DisplayName => FirstNonEmpty(channel?.DisplayName, metadata?.DisplayName, Target.Channel);
+    public string DisplayName => Target.IsExplicitVod
+        ? Target.TabTitle
+        : FirstNonEmpty(channel?.DisplayName, metadata?.DisplayName, Target.Channel);
 
     public string ThumbnailUrl => FirstNonEmpty(channel?.ThumbnailUrl, metadata?.ThumbnailUrl);
 
@@ -81,7 +83,7 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
     public StreamSearchChannelState State => channel?.State ??
         (probeResult.HasPlayableStream ? StreamSearchChannelState.Live : StreamSearchChannelState.Unavailable);
 
-    public bool IsLive => channel?.IsLive ?? probeResult.HasPlayableStream;
+    public bool IsLive => !Target.IsExplicitVod && (channel?.IsLive ?? probeResult.HasPlayableStream);
 
     public bool CanPlay => channel?.CanPlay ?? probeResult.HasPlayableStream;
 
@@ -89,7 +91,7 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
 
     public bool CanOpen => CanPlay || IsOffline;
 
-    public string StateText => IsLive ? "Live" : State switch
+    public string StateText => Target.IsExplicitVod && CanPlay ? "VOD" : IsLive ? "Live" : State switch
     {
         StreamSearchChannelState.Offline => "Offline",
         _ => "Unavailable"

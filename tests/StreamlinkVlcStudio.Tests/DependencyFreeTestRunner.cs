@@ -1,4 +1,3 @@
-using System.Globalization;
 
 internal static class DependencyFreeTestRunner
 {
@@ -22,10 +21,11 @@ internal static class DependencyFreeTestRunner
     private static readonly HashSet<string> FreshProcessTests = new(StringComparer.Ordinal)
     {
         AppLifecycleTestCatalog.ExitSignalTestName,
+        ApplicationTestCatalog.TabContentInputTestName,
         "inactive window first click focuses docked chat input and accepts typing",
         "theatre chat input stays above the taskbar and accepts physical typing",
         "docked and theatre chat release native overlay keyboard capture before typing",
-        "native overlay chat clears stale shift state after shifted symbol input",
+        "native overlay chat handles shifted symbols and Ctrl+V paste",
         "native video double click exits theatre mode when the first click activates the window"
     };
 

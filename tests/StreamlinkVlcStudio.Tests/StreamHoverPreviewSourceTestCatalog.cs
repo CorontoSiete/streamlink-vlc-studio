@@ -1,6 +1,6 @@
 using StreamlinkVlcStudio.Infrastructure.Previews;
 
-internal static class StreamHoverPreviewSourceTestCatalog
+internal static partial class StreamHoverPreviewSourceTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All =>
     [
@@ -16,7 +16,9 @@ internal static class StreamHoverPreviewSourceTestCatalog
         ("stream hover preview: failed direct startup preserves the exact fallback request", DirectFailureAsync),
         ("stream hover preview: first-frame deadline stops direct playback before fallback", FirstFrameDeadlineAsync),
         ("stream hover preview: successful direct video outlives its startup deadline", SuccessfulDirectAsync),
-        ("stream hover preview: a later ad stops direct video before Streamlink replacement", LaterAdAsync)
+        ("stream hover preview: a later ad stops direct video before Streamlink replacement", () => LaterAdAsync(false)),
+        .. AuthorizationTests,
+        .. FormatTests
     ];
 
     private const string Master = """
@@ -42,7 +44,7 @@ internal static class StreamHoverPreviewSourceTestCatalog
         """;
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static StreamTransportRequest Request(PlatformKind platform = PlatformKind.Twitch) =>
-        new(StreamInputParser.Parse("preview_test", platform), "360p,480p,best", Environment.ProcessPath!, true, [], true);
+        new(StreamInputParser.Parse("preview_test", platform), LibVlcLivePreview.QualityPreference, Environment.ProcessPath!, true, [], true);
 
     private static async Task SelectedQualityAsync(PlatformKind platform)
     {
@@ -305,9 +307,9 @@ internal static class StreamHoverPreviewSourceTestCatalog
         await Assert.ThrowsAsync<HttpRequestException>(() => client.GetStringAsync(source.PlaybackUri));
     }
 
-    private static async Task LaterAdAsync()
+    private static async Task LaterAdAsync(bool fragmentedMp4)
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture { MediaText = fragmentedMp4 ? FragmentedMedia : Media };
         var source = (await fixture.Resolver.OpenAsync(Request(), CancellationToken.None))!;
         var directStarted = Signal();
         var fallbackStarted = Signal();
@@ -339,7 +341,7 @@ internal static class StreamHoverPreviewSourceTestCatalog
             await directStarted.Task;
             using var client = new HttpClient();
             await client.GetStringAsync(source.PlaybackUri);
-            fixture.MediaText = Media + "\n#EXT-X-DATERANGE:ID=\"stitched-ad-1\",CLASS=\"twitch-stitched-ad\"";
+            fixture.MediaText += "\n#EXT-X-DATERANGE:ID=\"stitched-ad-1\",CLASS=\"twitch-stitched-ad\"";
             await Assert.ThrowsAsync<HttpRequestException>(() => client.GetStringAsync(source.PlaybackUri));
             await fallbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.Equal(1, transport.Starts);

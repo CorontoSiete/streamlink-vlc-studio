@@ -1,17 +1,10 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Collections.Specialized;
-using System.Diagnostics;
-using System.Globalization;
-using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Vlc;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
@@ -33,6 +26,7 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
         streamSearchService = dependencies.StreamSearchService;
         streamlinkService = dependencies.StreamlinkService;
         streamMetadataService = dependencies.StreamMetadataService;
+        twitchVodService = dependencies.TwitchVodService;
         viewerCountService = dependencies.ViewerCountService;
         streamSearchDebounceInterval = dependencies.StreamSearchDebounceInterval ?? DefaultStreamSearchDebounceInterval;
         AddAndPlayCommand = CreateCommand(AddAndPlayAsync, () => HasNewStreamSearchText);
@@ -51,6 +45,7 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
     private readonly IStreamlinkService streamlinkService;
     private readonly IViewerCountService? viewerCountService;
     private readonly IStreamMetadataService? streamMetadataService;
+    private readonly ITwitchVodService? twitchVodService;
     private readonly IStreamSearchService? streamSearchService;
     private readonly TimeSpan streamSearchDebounceInterval;
     private readonly StreamSearchController streamSearchController = new();
@@ -62,6 +57,7 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
     private int activeStreamSearchGeneration;
     private string activeStreamSearchQuality = "";
     private bool isStreamSearchDropdownOpen;
+    private long streamSearchScheduleVersion;
     public ObservableCollection<StreamSearchResultViewModel> StreamSearchResults { get; } = [];
 
     public AsyncRelayCommand AddAndPlayCommand { get; }
@@ -306,7 +302,7 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
         IReadOnlyList<StreamCandidateProbe> probes,
         CancellationToken cancellationToken)
     {
-        if (streamMetadataService is null || probes.Count == 0)
+        if ((streamMetadataService is null && twitchVodService is null) || probes.Count == 0)
         {
             return probes;
         }
@@ -320,6 +316,11 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
         StreamCandidateProbe probe,
         CancellationToken cancellationToken)
     {
+        if (probe.Target.IsExplicitTwitchVod)
+        {
+            return await LoadTwitchVodMetadataAsync(probe, cancellationToken);
+        }
+
         if (probe.Channel is not null || probe.Target.Kind != StreamTargetKind.Live)
         {
             return probe;
@@ -349,6 +350,61 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
         {
             logger.Write(AppLogLevel.Warning, "Search", $"Failed to load metadata for {probe.Target.DisplayName}.", ex);
             return probe;
+        }
+    }
+
+    private async Task<StreamCandidateProbe> LoadTwitchVodMetadataAsync(
+        StreamCandidateProbe probe,
+        CancellationToken cancellationToken)
+    {
+        if (twitchVodService is null)
+        {
+            return probe;
+        }
+
+        try
+        {
+            var video = await twitchVodService.GetVideoAsync(probe.Target.MediaId, cancellationToken);
+            if (video is null)
+            {
+                return probe with
+                {
+                    Result = new StreamlinkProbeResult(false, "This Twitch VOD was not found or is no longer available.")
+                };
+            }
+
+            return probe with
+            {
+                Target = probe.Target with
+                {
+                    Channel = video.ChannelLogin,
+                    DisplayTitle = FirstNonEmpty(video.Title, video.ChannelDisplayName),
+                    BroadcasterId = video.BroadcasterId,
+                    MediaDuration = video.Duration,
+                    MediaStartedAtUtc = video.CreatedAtUtc,
+                    CategoryName = video.CategoryName,
+                    ProfileImageUrl = video.ProfileImageUrl
+                },
+                Metadata = new StreamMetadataResult(
+                    StreamMetadataState.Available,
+                    video.ThumbnailUrl,
+                    video.ChannelDisplayName,
+                    "Twitch VOD metadata loaded.",
+                    video.CategoryName,
+                    video.ProfileImageUrl)
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "Search", $"Failed to load metadata for {probe.Target.DisplayName}.", ex);
+            return probe with
+            {
+                Result = probe.Result with { Message = "Twitch VOD. Title and avatar could not be loaded. Try searching again." }
+            };
         }
     }
 
@@ -481,21 +537,32 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
 
         var query = NewStreamText.Trim();
         var searchGeneration = streamSearchController.CurrentGeneration;
+        var scheduleVersion = Interlocked.Increment(ref streamSearchScheduleVersion);
         if (string.IsNullOrWhiteSpace(query))
         {
             SetStreamSearchDropdownOpen(false);
             return;
         }
 
+        void StartSearchIfCurrent()
+        {
+            // Cancellation can occur after the timer has already posted to the UI.
+            // Recheck there so a dismissed search cannot reopen the popup later.
+            if (scheduleVersion == Volatile.Read(ref streamSearchScheduleVersion))
+            {
+                _ = RunAutomaticStreamSearchAsync(query, searchGeneration);
+            }
+        }
+
         if (streamSearchDebounceInterval <= TimeSpan.Zero)
         {
-            dispatch(() => _ = RunAutomaticStreamSearchAsync(query, searchGeneration));
+            dispatch(StartSearchIfCurrent);
             return;
         }
 
         streamSearchController.Schedule(
             streamSearchDebounceInterval,
-            () => dispatch(() => _ = RunAutomaticStreamSearchAsync(query, searchGeneration)),
+            () => dispatch(StartSearchIfCurrent),
             ReportDebouncedCallbackFailure);
     }
 
@@ -511,6 +578,7 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
 
     internal void CancelStreamSearchDebounce()
     {
+        Interlocked.Increment(ref streamSearchScheduleVersion);
         streamSearchController.CancelScheduled();
     }
 
@@ -549,6 +617,14 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
 
     internal static string FormatStreamSearchResult(string query, IReadOnlyList<StreamCandidateProbe> probes)
     {
+        if (probes.Count == 1 && probes[0].Target.IsExplicitTwitchVod)
+        {
+            var video = probes[0];
+            return video.Metadata is not null
+                ? $"Twitch VOD found: {video.Target.DisplayTitle}"
+                : video.Result.Message;
+        }
+
         if (probes.Count == 0)
         {
             return $"No Twitch or Kick channels found for {query}.";
@@ -577,7 +653,8 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
 
     internal static bool IsLiveStreamSearchProbe(StreamCandidateProbe probe)
     {
-        return probe.Channel?.IsLive ?? probe.Result.HasPlayableStream;
+        return probe.Target.Kind == StreamTargetKind.Live &&
+            (probe.Channel?.IsLive ?? probe.Result.HasPlayableStream);
     }
 
     internal async Task<IReadOnlyList<StreamCandidateProbe>> ProbeCandidatesAsync(

@@ -2,16 +2,18 @@ using System.Net;
 
 namespace StreamlinkVlcStudio.Infrastructure.Http;
 
-/// <summary>Keeps a streaming response within the timeout used to request its headers.</summary>
+/// <summary>Bounds response bodies by a request deadline or a timeout on each network read.</summary>
 internal sealed class DeadlineHttpContent : HttpContent
 {
     private readonly HttpContent content;
     private readonly CancellationTokenSource deadline;
+    private readonly TimeSpan? readTimeout;
 
-    internal DeadlineHttpContent(HttpContent content, CancellationTokenSource deadline)
+    internal DeadlineHttpContent(HttpContent content, CancellationTokenSource deadline, TimeSpan? readTimeout = null)
     {
         this.content = content;
         this.deadline = deadline;
+        this.readTimeout = readTimeout;
         foreach (var header in content.Headers)
         {
             Headers.TryAddWithoutValidation(header.Key, header.Value);
@@ -32,6 +34,13 @@ internal sealed class DeadlineHttpContent : HttpContent
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, cancellationToken);
         linked.Token.ThrowIfCancellationRequested();
+        if (readTimeout is not null)
+        {
+            await using var source = await CreateContentReadStreamAsync(linked.Token).ConfigureAwait(false);
+            await source.CopyToAsync(stream, linked.Token).ConfigureAwait(false);
+            return;
+        }
+
         await content.CopyToAsync(stream, context, linked.Token).ConfigureAwait(false);
     }
 
@@ -40,10 +49,18 @@ internal sealed class DeadlineHttpContent : HttpContent
 
     protected override async Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, cancellationToken);
+        using var linked = CreateReadCancellation(deadline.Token, cancellationToken, readTimeout);
         linked.Token.ThrowIfCancellationRequested();
         var stream = await content.ReadAsStreamAsync(linked.Token).ConfigureAwait(false);
-        return new DeadlineReadStream(stream, deadline.Token);
+        return new DeadlineReadStream(stream, deadline.Token, readTimeout);
+    }
+
+    private static CancellationTokenSource CreateReadCancellation(
+        CancellationToken deadlineToken, CancellationToken cancellationToken, TimeSpan? readTimeout)
+    {
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(deadlineToken, cancellationToken);
+        if (readTimeout is { } timeout) linked.CancelAfter(timeout);
+        return linked;
     }
 
     protected override void Dispose(bool disposing)
@@ -66,7 +83,7 @@ internal sealed class DeadlineHttpContent : HttpContent
         }
     }
 
-    private sealed class DeadlineReadStream(Stream stream, CancellationToken deadlineToken) : Stream
+    private sealed class DeadlineReadStream(Stream stream, CancellationToken deadlineToken, TimeSpan? readTimeout) : Stream
     {
         public override bool CanRead => stream.CanRead;
         public override bool CanSeek => stream.CanSeek;
@@ -86,7 +103,7 @@ internal sealed class DeadlineHttpContent : HttpContent
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(deadlineToken, cancellationToken);
+            using var linked = CreateReadCancellation(deadlineToken, cancellationToken, readTimeout);
             linked.Token.ThrowIfCancellationRequested();
             return await stream.ReadAsync(buffer, linked.Token).ConfigureAwait(false);
         }

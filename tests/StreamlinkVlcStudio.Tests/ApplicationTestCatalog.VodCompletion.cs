@@ -102,10 +102,18 @@ internal static partial class ApplicationTestCatalog
                     host.UpdateLayout();
                     var message = host.Children.OfType<TextBlock>().Single(text => text.Text == "VOD finished");
                     Assert.Equal(finished ? Visibility.Visible : Visibility.Collapsed, message.Visibility);
+                    var presenter = host.Children.OfType<VideoSurfacePresenter>().Single();
+                    Assert.True(ReferenceEquals(tab, presenter.Tab));
                     Assert.Equal(finished ? Visibility.Hidden : Visibility.Visible,
-                        host.Children.OfType<VideoSurface>().Single().Visibility);
-                    Assert.Equal<FrameworkElement?>(finished ? host : host.Children.OfType<VideoSurface>().Single(),
-                        host.Children.OfType<ReplaySeekOverlay>().Single().PlacementTarget);
+                        presenter.Visibility);
+                    var seekOverlay = host.Children.OfType<ReplaySeekOverlay>().Single();
+                    Assert.Equal<FrameworkElement?>(finished ? host : presenter.Surface, seekOverlay.PlacementTarget);
+                    if (!finished)
+                    {
+                        var placement = BindingOperations.GetBinding(seekOverlay, ReplaySeekOverlay.PlacementTargetProperty)!;
+                        Assert.Equal(presenter.Name, placement.ElementName);
+                        Assert.Equal(nameof(VideoSurfacePresenter.Surface), placement.Path.Path);
+                    }
                     if (finished)
                     {
                         Assert.True(message.ActualWidth > 100 && message.ActualHeight > 20);

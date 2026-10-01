@@ -1,0 +1,47 @@
+PASS stream hover preview: disabled and VOD targets start no work
+PASS stream hover preview: setting persists both values and upgrades default off
+PASS stream hover preview: leaving during the hover delay starts no work
+PASS stream hover preview: request preserves platform and custom transport settings
+PASS stream hover preview: replacing rapid hovers waits for cleanup and rejects stale frames
+PASS stream hover preview: disabling cancels startup and clears buffered video
+PASS stream hover preview: failures preserve fallback and allow another hover
+PASS stream hover preview: shutdown awaits cleanup and refuses future work
+PASS stream hover preview: only live cards are eligible
+PASS stream hover preview: frame mailbox stays bounded
+PASS stream hover preview: missing VLC releases the opened transport
+PASS stream hover preview: canceled transport arrival is disposed before decoding
+Native hover preview: 75 frames, red-to-green transition, transport disposed.
+PASS stream hover preview: native VLC presents changing video and releases transport
+PASS stream hover preview: direct Twitch authorizes and requests only the selected quality
+PASS stream hover preview: direct Kick authorizes and requests only the selected quality
+PASS stream hover preview: preview quality fallbacks preserve their order
+PASS stream hover preview: custom arguments configs and plugins retain Streamlink
+PASS stream hover preview: unsafe redirects DNS and oversized responses never open native playback
+PASS stream hover preview: ad encrypted and unsupported playlists require Streamlink
+PASS stream hover preview: local playlist rejects unrelated requests and refreshes after handoff
+PASS stream hover preview: cancellation interrupts a pending playlist refresh and closes its listener
+PASS stream hover preview: late direct resolution is disposed without starting fallback
+PASS stream hover preview: failed direct startup preserves the exact fallback request
+PASS stream hover preview: first-frame deadline stops direct playback before fallback
+PASS stream hover preview: successful direct video outlives its startup deadline
+PASS stream hover preview: a later ad stops direct video before Streamlink replacement
+FAIL stream hover preview: anonymous Twitch TS avoids restarting device-bound prerolls: System.InvalidOperationException: Expected '0', got '1'.
+   at Assert.Equal[T](T expected, T actual) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\TestFixtures.cs:line 1135
+   at StreamHoverPreviewSourceTestCatalog.AnonymousTwitchAsync(Boolean fragmentedMp4) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\StreamHoverPreviewSourceTestCatalog.Authorization.cs:line 56
+   at DependencyFreeTestRunner.RunAsync(IReadOnlyList`1 tests) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\DependencyFreeTestRunner.cs:line 92
+FAIL stream hover preview: anonymous Twitch MP4 avoids restarting device-bound prerolls: System.InvalidOperationException: Expected '0', got '1'.
+   at Assert.Equal[T](T expected, T actual) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\TestFixtures.cs:line 1135
+   at StreamHoverPreviewSourceTestCatalog.AnonymousTwitchAsync(Boolean fragmentedMp4) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\StreamHoverPreviewSourceTestCatalog.Authorization.cs:line 56
+   at DependencyFreeTestRunner.RunAsync(IReadOnlyList`1 tests) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\DependencyFreeTestRunner.cs:line 92
+PASS stream hover preview: authorization failures retain the exact Streamlink fallback
+PASS stream hover preview: web GraphQL callers retain their explicit device and OAuth identity
+PASS stream hover preview: frame-rate quality names keep the selected preview small
+PASS stream hover preview: fragmented MP4 maps and segments are validated and refreshed
+PASS stream hover preview: malformed unsafe ranged and missing MP4 maps retain fallback
+PASS stream hover preview: initialization and container changes stop playlist reloads
+PASS stream hover preview: a later fragmented MP4 ad stops before Streamlink replacement
+Native fragmented MP4 hover preview: first frame 455 ms, 37 changing frames across segments; no fallback, decoder and listener closed.
+PASS stream hover preview: native VLC decodes fragmented MP4 initialization and changing segments
+PASS stream hover preview: settings toggle and live card template bind to the shared controller
+PASS stream hover preview: physical hover click leave hide and disable control the player
+36 passed, 2 failed, 0 timed out, 0 skipped, 0 not run out of 38 selected tests.

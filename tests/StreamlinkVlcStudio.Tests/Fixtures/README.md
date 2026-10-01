@@ -34,3 +34,19 @@ This completed playlist checks the fast resume path independently of its clock.
 Generate it with the second command above, replacing `-g 2` with `-g 20`, using
 `-hls_playlist_type vod`, removing `-hls_flags omit_endlist`, and writing to
 `replay-position-long-gop/index.m3u8`.
+
+`playback-rate-tone` is an eight-second, one-segment HLS VOD with a continuous
+440 Hz MP2 tone in an MPEG-TS segment. The native audio-output regression plays
+this through VLC's HLS demuxer from both a file and a loopback HTTP server, then
+measures Windows loopback output while changing speed. Keep `index.m3u8` and
+`tone.ts` together so the playlist's relative segment URL resolves in both cases.
+
+`hover-preview-fmp4` contains twelve seconds of generated moving test patterns,
+160 x 90 at 30 fps, in two-second fragmented MP4 segments with a whole `init.mp4`.
+It exercises the hover preview's validated map, native HLS initialization, changing
+video across segment boundaries, and cancellation without live-provider access.
+Generate it with:
+
+```text
+ffmpeg -f lavfi -i testsrc2=size=160x90:rate=30:duration=12 -an -c:v libx264 -preset fast -crf 28 -pix_fmt yuv420p -g 60 -sc_threshold 0 -f hls -hls_time 2 -hls_list_size 0 -hls_flags omit_endlist -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 -hls_segment_filename hover-preview-fmp4/segment%d.m4s hover-preview-fmp4/index.m3u8
+```

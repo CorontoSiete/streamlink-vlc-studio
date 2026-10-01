@@ -9,6 +9,8 @@ internal static partial class ApplicationTestCatalog
                 ("pause continuity: native overlay HLS retains its input after manual and hidden pauses", () => NativeReplayPauseRetainsInputAsync(overlay: true)),
                 ("pause continuity: native HLS presents the held content without black frames after a long pause", () => NativeReplayFirstOutputAsync(true, pauseAfterOpening: true)),
                 ("pause continuity: native HLS still follows playlist growth after resuming", NativeReplayPauseGrowthAsync),
+                ("pause continuity: native live resume reconnects when DVR has not published the paused time", NativeLivePausePastPublishedDvrAsync),
+                ("pause continuity: native live resume holds its position when DVR has published the paused time", NativeLivePauseAfterDvrCatchesUpAsync),
                 ("pause seekbar: native VLC VOD stays synchronized after a seven-second pause", () => NativePauseClockAsync(false)),
                 ("pause seekbar: native VLC live resume reloads at the held timestamp", () => NativePauseClockAsync(true)),
                 ("pause seekbar: native VLC behind-live resume survives delayed media loading", NativeDelayedReplayResumeAsync),

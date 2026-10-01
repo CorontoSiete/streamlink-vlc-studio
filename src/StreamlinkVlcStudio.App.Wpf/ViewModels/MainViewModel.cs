@@ -3,17 +3,15 @@ using System.ComponentModel;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
-using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
@@ -24,7 +22,8 @@ public enum SettingsCategory
     Accounts,
     Chat,
     Hotkeys,
-    Advanced
+    Advanced,
+    Downloads
 }
 
 public sealed class MainViewModel : ObservableObject, IAsyncDisposable
@@ -34,6 +33,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private const int DenseMultiStreamStartupThreshold = 4;
     private const int MaxConcurrentTabStarts = 2;
     private readonly VodLibraryViewModel vodLibrary;
+    private readonly VodDownloadsViewModel downloads;
     private readonly BrowseViewModel browse;
     private readonly FollowedChannelsViewModel followed;
     private readonly RecentStreamsViewModel recent;
@@ -84,6 +84,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private StreamTabViewModel? audioActiveTab;
     private TabStripItemViewModel? selectedTabStripItem;
     private string selectedQuality;
+    private bool isDownloadsHomePageSelected;
     private string statusMessage = "Ready";
     private string settingsSaveStatus = "Changes are saved automatically.";
     private bool isSavingSettings;
@@ -181,12 +182,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ShowTwitchVodsHomePageCommand = new RelayCommand(ShowTwitchVodsHomePage);
         ShowRecentHomePageCommand = new RelayCommand(ShowRecentHomePage);
         ShowBrowseHomePageCommand = new RelayCommand(ShowBrowseHomePage);
+        ShowDownloadsHomePageCommand = new RelayCommand(ShowDownloadsHomePage);
         browse = new BrowseViewModel(dependencies, value => StatusMessage = value,
             OpenLiveStreamCardAsync, RecordNavigation, () => IsBrowseHomePageVisible);
         browse.PropertyChanged += HomeFeatureOnPropertyChanged;
-        followed = new FollowedChannelsViewModel(dependencies, value => StatusMessage = value, OpenLiveStreamCardAsync);
+        followed = new FollowedChannelsViewModel(dependencies, value => StatusMessage = value, OpenLiveStreamCardAsync,
+            channel => OpenChannelVodsAsync(channel.Platform, channel.Channel));
         followed.PropertyChanged += HomeFeatureOnPropertyChanged;
-        vodLibrary = new VodLibraryViewModel(dependencies, value => StatusMessage = value, OpenTwitchVodAsync);
+        downloads = new VodDownloadsViewModel(dependencies, value => StatusMessage = value,
+            () => SelectedVodDownloadQuality, OpenOfflineVodAsync, EnsureDownloadNotOpen);
+        downloads.PropertyChanged += HomeFeatureOnPropertyChanged;
+        vodLibrary = new VodLibraryViewModel(dependencies, value => StatusMessage = value, OpenTwitchVodAsync,
+            downloads.CreateDownloadCommand);
+        downloads.BindVodCards(vodLibrary.TwitchVods);
         vodLibrary.PropertyChanged += HomeFeatureOnPropertyChanged;
         PlaySelectedCommand = CreateCommand(() => StartSelectedTabAsync("Starting"), () => SelectedTab is not null);
         ReloadSelectedCommand = CreateCommand(() => StartSelectedTabAsync("Reloading"), () => SelectedTab is not null);
@@ -207,6 +215,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         ToggleSettingsCommand = new RelayCommand(() => IsSettingsOpen = !IsSettingsOpen);
         ShowGeneralSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.General);
         ShowPlaybackSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Playback);
+        ShowDownloadsSettingsCommand = new RelayCommand(() =>
+        {
+            SelectedSettingsCategory = SettingsCategory.Downloads;
+            IsSettingsOpen = true;
+        });
         ShowAccountsSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Accounts);
         ShowChatSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Chat);
         ShowHotkeysSettingsCommand = new RelayCommand(() => SelectedSettingsCategory = SettingsCategory.Hotkeys);
@@ -236,7 +249,32 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<LiveStreamCardViewModel> LiveFollowedChannels { get => followed.LiveFollowedChannels; }
 
+    public ObservableCollection<OfflineFollowedChannelViewModel> OfflineFollowedChannels { get => followed.OfflineFollowedChannels; }
+
     public ObservableCollection<VodViewModel> TwitchVods { get => vodLibrary.TwitchVods; }
+
+    public ObservableCollection<VodDownloadViewModel> VodDownloads => downloads.VodDownloads;
+    public bool HasVodDownloads => downloads.HasVodDownloads;
+    public string DownloadsStatus => downloads.DownloadsStatus;
+    public string DownloadDirectory => downloads.DownloadDirectory;
+    public bool CanChangeDownloadDirectory => downloads.CanChangeDownloadDirectory;
+    public Task ChangeDownloadDirectoryAsync(string directory) => downloads.ChangeDownloadDirectoryAsync(directory);
+    public string VodDownloadUrl { get => downloads.VodDownloadUrl; set => downloads.VodDownloadUrl = value; }
+    public string DownloadUrlError => downloads.DownloadUrlError;
+    public bool HasDownloadUrlError => downloads.HasDownloadUrlError;
+    public AsyncRelayCommand DownloadVodUrlCommand => downloads.DownloadVodUrlCommand;
+    public AsyncRelayCommand OpenDownloadFolderCommand => downloads.OpenDownloadFolderCommand;
+    public string SelectedVodDownloadQuality
+    {
+        get => Settings.Downloads.Quality;
+        set
+        {
+            if (Settings.Downloads.Quality == value) return;
+            Settings.Downloads.Quality = value;
+            OnPropertyChanged();
+            downloads.RefreshVodCards();
+        }
+    }
 
     public ObservableCollection<RecentStreamViewModel> RecentStreams { get => recent.RecentStreams; }
 
@@ -257,6 +295,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public RelayCommand ShowTwitchVodsHomePageCommand { get; }
     public RelayCommand ShowRecentHomePageCommand { get; }
     public RelayCommand ShowBrowseHomePageCommand { get; }
+    public RelayCommand ShowDownloadsHomePageCommand { get; }
 
     public RelayCommand ReturnToBrowseCategoriesCommand { get => browse.ReturnToBrowseCategoriesCommand; }
 
@@ -312,6 +351,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public RelayCommand ToggleSettingsCommand { get; }
     public RelayCommand ShowGeneralSettingsCommand { get; }
     public RelayCommand ShowPlaybackSettingsCommand { get; }
+    public RelayCommand ShowDownloadsSettingsCommand { get; }
     public RelayCommand ShowAccountsSettingsCommand { get; }
     public RelayCommand ShowChatSettingsCommand { get; }
     public RelayCommand ShowHotkeysSettingsCommand { get; }
@@ -609,7 +649,21 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsFollowedHomePageSelected => !IsRecentHomePageSelected &&
         !IsTwitchVodsHomePageSelected &&
-        !IsBrowseHomePageSelected;
+        !IsBrowseHomePageSelected && !IsDownloadsHomePageSelected;
+
+    public bool IsDownloadsHomePageSelected
+    {
+        get => isDownloadsHomePageSelected;
+        private set
+        {
+            if (!SetProperty(ref isDownloadsHomePageSelected, value)) return;
+            OnPropertyChanged(nameof(IsDownloadsHomePageVisible));
+            OnPropertyChanged(nameof(IsFollowedHomePageSelected));
+            OnPropertyChanged(nameof(IsFollowedHomePageVisible));
+        }
+    }
+
+    public bool IsDownloadsHomePageVisible => IsDownloadsHomePageSelected;
 
     public bool IsFollowedHomePageVisible => IsFollowedHomePageSelected;
 
@@ -620,6 +674,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isRecentHomePageSelected, value))
             {
+                if (value) IsDownloadsHomePageSelected = false;
                 OnPropertyChanged(nameof(IsFollowedHomePageSelected));
                 OnPropertyChanged(nameof(IsFollowedHomePageVisible));
                 OnPropertyChanged(nameof(IsRecentHomePageVisible));
@@ -640,6 +695,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isTwitchVodsHomePageSelected, value))
             {
+                if (value) IsDownloadsHomePageSelected = false;
                 OnPropertyChanged(nameof(IsFollowedHomePageSelected));
                 OnPropertyChanged(nameof(IsFollowedHomePageVisible));
                 OnPropertyChanged(nameof(IsRecentHomePageSelected));
@@ -660,6 +716,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref isBrowseHomePageSelected, value))
             {
+                if (value) IsDownloadsHomePageSelected = false;
                 OnPropertyChanged(nameof(IsFollowedHomePageSelected));
                 OnPropertyChanged(nameof(IsFollowedHomePageVisible));
                 OnPropertyChanged(nameof(IsRecentHomePageSelected));
@@ -685,6 +742,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public bool HasLiveFollowedChannels { get => followed.HasLiveFollowedChannels; }
 
     public bool IsFollowedChannelsEmptyVisible { get => followed.IsFollowedChannelsEmptyVisible; }
+
+    public string OfflineFollowedChannelsStatus => followed.OfflineFollowedChannelsStatus;
+
+    public string OfflineFollowedChannelsCountText => followed.OfflineFollowedChannelsCountText;
+
+    public bool HasOfflineFollowedChannels => followed.HasOfflineFollowedChannels;
+
+    public bool IsOfflineFollowedChannelsEmptyVisible => followed.IsOfflineFollowedChannelsEmptyVisible;
 
     public bool HasRecentStreams { get => recent.HasRecentStreams; }
 
@@ -751,6 +816,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
             OnPropertyChanged(nameof(IsGeneralSettingsSelected));
             OnPropertyChanged(nameof(IsPlaybackSettingsSelected));
+            OnPropertyChanged(nameof(IsDownloadsSettingsSelected));
             OnPropertyChanged(nameof(IsAccountsSettingsSelected));
             OnPropertyChanged(nameof(IsChatSettingsSelected));
             OnPropertyChanged(nameof(IsHotkeysSettingsSelected));
@@ -761,6 +827,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public bool IsGeneralSettingsSelected => SelectedSettingsCategory == SettingsCategory.General;
 
     public bool IsPlaybackSettingsSelected => SelectedSettingsCategory == SettingsCategory.Playback;
+
+    public bool IsDownloadsSettingsSelected => SelectedSettingsCategory == SettingsCategory.Downloads;
 
     public bool IsAccountsSettingsSelected => SelectedSettingsCategory == SettingsCategory.Accounts;
 
@@ -989,6 +1057,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             logger.EntryWritten += loggerEntryWrittenHandler;
         }
 
+        downloads.Initialize();
         followed.Initialize();
     }
 
@@ -1010,6 +1079,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         Followed,
         Recent,
         Vods,
+        Downloads,
         BrowseCategories,
         BrowseStreams,
         Stream,
@@ -1040,6 +1110,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 ? new(NavigationPage.BrowseStreams, BrowsePlatform: SelectedBrowsePlatform, BrowseCategory: category)
                 : new(NavigationPage.BrowseCategories, BrowsePlatform: SelectedBrowsePlatform);
         }
+
+        if (IsDownloadsHomePageSelected) return new(NavigationPage.Downloads);
 
         return new(IsRecentHomePageSelected
             ? NavigationPage.Recent
@@ -1136,6 +1208,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             case NavigationPage.Vods:
                 ShowTwitchVodsHomePage();
                 break;
+            case NavigationPage.Downloads:
+                ShowDownloadsHomePage();
+                break;
             case NavigationPage.BrowseCategories:
             case NavigationPage.BrowseStreams:
                 if (SelectedBrowsePlatform != destination.BrowsePlatform)
@@ -1185,6 +1260,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ShowFollowedHomePage()
     {
+        IsDownloadsHomePageSelected = false;
         CancelActiveBrowseCategoryViewerCountLoad();
         IsRecentHomePageSelected = false;
         IsTwitchVodsHomePageSelected = false;
@@ -1212,6 +1288,17 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StatusMessage = RecentStreamsStatus;
         EnsureRecentThumbnailRefreshTimerStarted();
         RefreshRecentThumbnailsInBackground();
+        RecordNavigation();
+    }
+
+    private void ShowDownloadsHomePage()
+    {
+        CancelActiveBrowseCategoryViewerCountLoad();
+        IsRecentHomePageSelected = false;
+        IsTwitchVodsHomePageSelected = false;
+        IsBrowseHomePageSelected = false;
+        IsDownloadsHomePageSelected = true;
+        StatusMessage = DownloadsStatus;
         RecordNavigation();
     }
 
@@ -1295,6 +1382,29 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             StatusMessage = ex.Message;
             logger.Write(AppLogLevel.Error, "VODs", $"Failed to open {vod.Platform} VOD {vod.Id}.", ex);
         }
+    }
+
+    private async Task OpenOfflineVodAsync(StreamTarget target, string quality)
+    {
+        IsHomeSelected = false;
+        try { await OpenStreamAsync(target, quality: quality); }
+        catch
+        {
+            IsHomeSelected = true;
+            ApplyVideoLayout();
+            RecordNavigation();
+            throw;
+        }
+    }
+
+    private void EnsureDownloadNotOpen(VodDownloadItem item)
+    {
+        var itemDirectoryName = item.Id.ToString("N");
+        if (Tabs.Any(tab => tab.Target.IsOfflineVod &&
+            (string.Equals(tab.Target.LocalMediaPath, item.LocalMediaPath, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(tab.Target.LocalMediaPath))),
+                 itemDirectoryName, StringComparison.OrdinalIgnoreCase))))
+            throw new InvalidOperationException("Close this VOD's offline playback tab before replacing or deleting its downloaded files.");
     }
 
     private void CancelTwitchVodSearchDebounce() => vodLibrary.CancelTwitchVodSearchDebounce();
@@ -1780,7 +1890,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     internal async Task OpenStreamAsync(
         StreamTarget target,
         bool clearInputOnSuccess = false,
-        bool selectOpenedTab = true)
+        bool selectOpenedTab = true,
+        string? quality = null)
     {
         if (disposed) return;
 
@@ -1801,7 +1912,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            var tab = selectOpenedTab ? CreateAndSelectTab(target) : CreateTab(target);
+            var tab = quality is null
+                ? selectOpenedTab ? CreateAndSelectTab(target) : CreateTab(target)
+                : selectOpenedTab ? CreateAndSelectTabWithQuality(target, quality) : CreateTabWithQuality(target, quality);
             StatusMessage = $"Starting {target.DisplayName}";
             var openingMetadata = LoadOpeningTabMetadataInBackground(tab);
             StartTabInBackground(tab, searchGenerationToClear, openingMetadata);
@@ -1834,12 +1947,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         var previewCleanup = HoverPreviews.DisposeAsync().AsTask();
         var vodLibraryCleanup = vodLibrary.DisposeAsync().AsTask();
+        var downloadsCleanup = downloads.DisposeAsync().AsTask();
         var browseCleanup = browse.DisposeAsync().AsTask();
         var followedCleanup = followed.DisposeAsync().AsTask();
         var recentCleanup = recent.DisposeAsync().AsTask();
         var searchCleanup = streamSearch.DisposeAsync().AsTask();
         streamSearch.PropertyChanged -= HomeFeatureOnPropertyChanged;
         vodLibrary.PropertyChanged -= HomeFeatureOnPropertyChanged;
+        downloads.PropertyChanged -= HomeFeatureOnPropertyChanged;
         browse.PropertyChanged -= HomeFeatureOnPropertyChanged;
         followed.PropertyChanged -= HomeFeatureOnPropertyChanged;
         recent.PropertyChanged -= HomeFeatureOnPropertyChanged;
@@ -1895,7 +2010,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             if (automaticUpdateTask is not null) await automaticUpdateTask;
-            await Task.WhenAll(searchCleanup, vodLibraryCleanup, browseCleanup, followedCleanup, recentCleanup);
+            await Task.WhenAll(searchCleanup, vodLibraryCleanup, downloadsCleanup, browseCleanup, followedCleanup, recentCleanup);
 
             var tabDisposals = Tabs
                 .ToArray()
@@ -1976,12 +2091,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task OpenOfflineSearchResultVodsAsync(StreamSearchResultViewModel result)
+    private Task OpenOfflineSearchResultVodsAsync(StreamSearchResultViewModel result) =>
+        OpenChannelVodsAsync(result.Platform, result.Channel);
+
+    private async Task OpenChannelVodsAsync(PlatformKind platform, string channel)
     {
+        if (disposed) return;
         IsHomeSelected = true;
         ShowTwitchVodsHomePage();
-        SelectVodPlatform(result.Platform);
-        TwitchVodSearchText = result.Channel;
+        SelectVodPlatform(platform);
+        TwitchVodSearchText = channel;
         CancelTwitchVodSearchDebounce();
         SetStreamSearchDropdownOpen(false);
         await SearchTwitchVodsAsync(reset: true);
@@ -2064,6 +2183,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         tab.SetProfileImageUrl(target.ProfileImageUrl);
+        // A failed lookup still carries the parser's VOD-ID placeholder. Only
+        // metadata with a resolved broadcaster can replace the default tab title.
+        if (target.IsExplicitTwitchVod && !string.IsNullOrWhiteSpace(target.BroadcasterId) &&
+            !string.IsNullOrWhiteSpace(target.DisplayTitle) &&
+            string.Equals(tab.Title, tab.Target.TabTitle, StringComparison.Ordinal))
+        {
+            tab.Title = target.TabTitle;
+        }
         if (selectOpenedTab)
         {
             SelectedTab = tab;
@@ -2093,19 +2220,23 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private StreamTabViewModel CreateAndSelectTab(StreamTarget target)
+    private StreamTabViewModel CreateAndSelectTab(StreamTarget target) => CreateAndSelectTabWithQuality(target, null);
+
+    private StreamTabViewModel CreateAndSelectTabWithQuality(StreamTarget target, string? quality)
     {
-        var tab = CreateTab(target);
+        var tab = quality is null ? CreateTab(target) : CreateTabWithQuality(target, quality);
         SelectedTab = tab;
         return tab;
     }
 
-    private StreamTabViewModel CreateTab(StreamTarget target)
+    private StreamTabViewModel CreateTab(StreamTarget target) => CreateTabWithQuality(target, null);
+
+    private StreamTabViewModel CreateTabWithQuality(StreamTarget target, string? quality)
     {
         var tab = new StreamTabViewModel(new StreamTabViewModelDependencies
         {
             Target = target,
-            Quality = SelectedQuality,
+            Quality = quality ?? SelectedQuality,
             StreamlinkService = streamlinkService,
             PlaybackFactory = playbackFactory,
             ChatFactory = chatFactory,
@@ -2564,7 +2695,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var tab in Tabs.ToArray())
         {
-            tab.TryReleaseNativeOverlayChatInputFocus();
+            backgroundOperationController.Track(tab.TryReleaseNativeOverlayChatInputFocusAsync());
         }
     }
 
@@ -2726,7 +2857,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         return CloseTabs(Tabs.ToArray());
     }
 
-    private bool CloseTabs(IReadOnlyList<StreamTabViewModel> closingTabs)
+    internal bool CloseTabs(IReadOnlyList<StreamTabViewModel> closingTabs)
     {
         var closingSet = closingTabs
             .Where(Tabs.Contains)

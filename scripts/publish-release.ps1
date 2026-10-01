@@ -94,5 +94,10 @@ try {
 } catch {
     throw "Release publication stopped. Rerun the protected workflow to retry its matching draft. $($_.Exception.Message)"
 } finally {
-    Remove-Item -LiteralPath $temporaryNotes -Force
+    try {
+        [IO.File]::Delete($temporaryNotes)
+    } catch {
+        # Cleanup must preserve publication success or the original upload error.
+        Write-Warning "Could not remove temporary release notes: $($_.Exception.Message)" -WarningAction Continue
+    }
 }

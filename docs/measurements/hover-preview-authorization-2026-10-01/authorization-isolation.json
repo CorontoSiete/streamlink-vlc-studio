@@ -1,0 +1,306 @@
+[
+  {
+    "channel": "termynater_",
+    "case": "direct",
+    "utc": "2026-10-01T08:39:43.695510+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p",
+    "segments": 3,
+    "amazon_segments": 3,
+    "ad_ranges": 1,
+    "elapsed_ms": 720
+  },
+  {
+    "channel": "termynater_",
+    "case": "omit_device_id",
+    "utc": "2026-10-01T08:39:44.416024+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": false,
+    "selected": "360p",
+    "segments": 15,
+    "amazon_segments": 0,
+    "ad_ranges": 0,
+    "elapsed_ms": 653
+  },
+  {
+    "channel": "termynater_",
+    "case": "direct_repeat",
+    "utc": "2026-10-01T08:39:45.068827+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p",
+    "segments": 3,
+    "amazon_segments": 3,
+    "ad_ranges": 1,
+    "elapsed_ms": 553
+  },
+  {
+    "channel": "termynater_",
+    "case": "json_content_type",
+    "utc": "2026-10-01T08:39:45.621821+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p",
+    "segments": 3,
+    "amazon_segments": 3,
+    "ad_ranges": 1,
+    "elapsed_ms": 612
+  },
+  {
+    "channel": "termynater_",
+    "case": "omit_fetch_metadata",
+    "utc": "2026-10-01T08:39:46.234263+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p",
+    "segments": 3,
+    "amazon_segments": 3,
+    "ad_ranges": 1,
+    "elapsed_ms": 544
+  },
+  {
+    "channel": "termynater_",
+    "case": "omit_device_id_repeat",
+    "utc": "2026-10-01T08:39:46.778530+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": false,
+    "selected": "360p",
+    "segments": 15,
+    "amazon_segments": 0,
+    "ad_ranges": 0,
+    "elapsed_ms": 536
+  },
+  {
+    "channel": "termynater_",
+    "case": "direct_repeat",
+    "utc": "2026-10-01T08:39:47.314237+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p",
+    "segments": 3,
+    "amazon_segments": 3,
+    "ad_ranges": 1,
+    "elapsed_ms": 625
+  },
+  {
+    "channel": "termynater_",
+    "case": "omit_device_id_repeat",
+    "utc": "2026-10-01T08:39:47.938803+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": false,
+    "selected": "360p",
+    "segments": 15,
+    "amazon_segments": 0,
+    "ad_ranges": 0,
+    "elapsed_ms": 578
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "direct",
+    "utc": "2026-10-01T08:39:48.517285+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p30",
+    "segments": 4,
+    "amazon_segments": 4,
+    "ad_ranges": 1,
+    "elapsed_ms": 793
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "omit_device_id",
+    "utc": "2026-10-01T08:39:49.310646+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": false,
+    "selected": "360p30",
+    "segments": 14,
+    "amazon_segments": 0,
+    "ad_ranges": 0,
+    "elapsed_ms": 722
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "direct_repeat",
+    "utc": "2026-10-01T08:39:50.033124+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p30",
+    "segments": 4,
+    "amazon_segments": 4,
+    "ad_ranges": 1,
+    "elapsed_ms": 587
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "json_content_type",
+    "utc": "2026-10-01T08:39:50.620334+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p30",
+    "segments": 4,
+    "amazon_segments": 4,
+    "ad_ranges": 1,
+    "elapsed_ms": 554
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "omit_fetch_metadata",
+    "utc": "2026-10-01T08:39:51.174680+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p30",
+    "segments": 4,
+    "amazon_segments": 4,
+    "ad_ranges": 1,
+    "elapsed_ms": 566
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "omit_device_id_repeat",
+    "utc": "2026-10-01T08:39:51.741145+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": false,
+    "selected": "360p30",
+    "segments": 14,
+    "amazon_segments": 0,
+    "ad_ranges": 0,
+    "elapsed_ms": 728
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "direct_repeat",
+    "utc": "2026-10-01T08:39:52.469269+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": true,
+    "selected": "360p30",
+    "segments": 4,
+    "amazon_segments": 4,
+    "ad_ranges": 1,
+    "elapsed_ms": 562
+  },
+  {
+    "channel": "tttcheekyttt",
+    "case": "omit_device_id_repeat",
+    "utc": "2026-10-01T08:39:53.031405+00:00",
+    "token_flags": {
+      "adblock": false,
+      "hide_ads": false,
+      "platform": "site",
+      "player_type": "embed",
+      "server_ads": true,
+      "show_ads": true
+    },
+    "token_has_device_id": false,
+    "selected": "360p30",
+    "segments": 14,
+    "amazon_segments": 0,
+    "ad_ranges": 0,
+    "elapsed_ms": 587
+  }
+]

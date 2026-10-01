@@ -1,6 +1,5 @@
 using static StreamlinkVlcStudio.Infrastructure.Replay.ReplayPayloadReader;
 using System.Globalization;
-using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,16 +7,14 @@ using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Json;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
-using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.Replay;
 
@@ -607,13 +604,16 @@ internal sealed partial class TwitchReplayProvider
 
     public static bool IsValidTwitchDvrPlaylist(string playlist)
     {
-        if (string.IsNullOrWhiteSpace(playlist) ||
-            !playlist.Contains("#EXTM3U", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(playlist)) return false;
+        var lines = HlsPlaylistPolicy.SplitLines(playlist);
+        if (lines.Length == 0 || lines[0] != "#EXTM3U" ||
+            HlsPlaylistPolicy.HasSkippedSegments(lines) ||
+            lines.Any(line => line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal)))
         {
             return false;
         }
 
-        return playlist.Contains("#EXTINF", StringComparison.Ordinal) &&
+        return lines.Any(line => line.StartsWith("#EXTINF:", StringComparison.Ordinal)) &&
             TwitchDvrMediaSegmentPattern().IsMatch(playlist);
     }
 

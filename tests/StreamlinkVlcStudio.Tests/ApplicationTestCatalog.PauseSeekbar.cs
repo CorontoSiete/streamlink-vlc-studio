@@ -11,6 +11,9 @@ internal static partial class ApplicationTestCatalog
         ("pause seekbar: unavailable VLC clock excludes paused time", () => VodPauseClockAsync(PlatformKind.Twitch, false, true)),
         ("pause seekbar: hidden VOD excludes paused time", () => VodPauseClockAsync(PlatformKind.Twitch, true, false)),
         ("pause seekbar: live clock freezes at the pause request", () => PauseBeforeFirstClockPollAsync(false)),
+        ("pause seekbar: live resume reconnects when the held time is beyond published DVR", LiveResumePastPublishedDvrAsync),
+        ("pause seekbar: live resume holds its position when DVR catches up despite stale metadata", LiveResumeAfterDvrCatchesUpAsync),
+        ("pause seekbar: live resume reconnects after a long pause without replay", LiveResumeWithoutReplayAsync),
         ("pause seekbar: behind-live clock freezes at the pause request", () => PauseBeforeFirstClockPollAsync(true)),
         ("pause seekbar: repeated pauses capture a fresh position without an intervening poll", RepeatedPauseClockAsync),
         ("pause seekbar: queued pre-pause UI samples are discarded", QueuedPauseClockAsync),
@@ -26,6 +29,108 @@ internal static partial class ApplicationTestCatalog
         ("pause seekbar: a failed in-place seek preserves the frozen clock and resume position", FailedPausedSeekAsync),
         .. NativePauseSeekbarTests
     ];
+
+    private static async Task LiveResumePastPublishedDvrAsync()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
+        var complete = File.ReadAllText(Path.Combine(directory, "index.m3u8"));
+        var lastSegment = complete.LastIndexOf("#EXTINF:", StringComparison.Ordinal);
+        var playlist = complete[..complete.LastIndexOf("#EXTINF:", lastSegment - 1, StringComparison.Ordinal)];
+        await using var server = new ReplayFixtureServer(directory, playlist);
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (_, _) => Task.FromResult(new StreamlinkResolvedUrl(server.Uri, "Published DVR"))
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch, "streamer", "https://www.twitch.tv/videos/123", "123",
+            DateTimeOffset.UtcNow - TimeSpan.FromMinutes(1), TimeSpan.FromSeconds(40), true, "");
+        var logger = new MemoryLogger();
+        await using var tab = TestViewModels.CreateTab(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch), "best", streamlink,
+            playbackFactory, new FakeChatClientFactory(), logger, action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
+        var settings = new AppSettings { StreamlinkPath = "streamlink.exe", VlcDirectory = @"C:\VLC" };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(() => tab.CanSeekReplay, TimeSpan.FromSeconds(2));
+
+        await tab.PauseOrResumeAsync();
+        Assert.Equal(PlaybackStatus.Paused, tab.Status);
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        await tab.PauseOrResumeAsync();
+
+        var engine = playbackFactory.Engine!;
+        Assert.Equal(PlaybackStatus.Playing, tab.Status);
+        Assert.Equal(false, tab.IsReplayMode);
+        Assert.Equal(false, tab.IsBehindLive);
+        Assert.Equal(new Uri("http://127.0.0.1:5000/"), engine.LastPlayedUri);
+        Assert.True(engine.PlayCount >= 2, "A stale live input must be reopened after the DVR falls behind the held timestamp.");
+        Assert.Equal(0, engine.SeekCount);
+    }
+
+    private static async Task LiveResumeAfterDvrCatchesUpAsync()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
+        await using var server = new ReplayFixtureServer(directory);
+        var streamlink = new FakeStreamlinkService
+        {
+            ResolveStreamUrlOverride = (_, _) => Task.FromResult(new StreamlinkResolvedUrl(server.Uri, "Published DVR"))
+        };
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = new ReplaySessionInfo(
+            PlatformKind.Twitch, "streamer", "https://www.twitch.tv/videos/123", "123",
+            DateTimeOffset.UtcNow - TimeSpan.FromSeconds(35), TimeSpan.FromSeconds(20), true, "");
+        await using var tab = TestViewModels.CreateTab(
+            StreamInputParser.Parse("streamer", PlatformKind.Twitch), "best", streamlink,
+            playbackFactory, new FakeChatClientFactory(), new MemoryLogger(), action => action(),
+            replayResolver: new FakeReplayResolver(replay),
+            vodChatProvider: new FakeVodChatProvider(FakeVodChatProvider.Once([])));
+        var settings = new AppSettings { StreamlinkPath = "streamlink.exe", VlcDirectory = @"C:\VLC" };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+        await tab.StartAsync(settings);
+        await TestWait.UntilAsync(() => tab.CanSeekReplay, TimeSpan.FromSeconds(2));
+
+        await tab.PauseOrResumeAsync();
+        var held = tab.ReplaySeekValue;
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        await tab.PauseOrResumeAsync();
+
+        var engine = playbackFactory.Engine!;
+        Assert.Equal(PlaybackStatus.Playing, tab.Status);
+        Assert.True(tab.IsReplayMode);
+        Assert.True(tab.IsBehindLive);
+        Assert.True(engine.LastStartPosition.HasValue &&
+            Math.Abs(engine.LastStartPosition.Value.TotalSeconds - held) < 1);
+        Assert.Equal(server.Uri, engine.LastPlayedUri);
+    }
+
+    private static async Task LiveResumeWithoutReplayAsync()
+    {
+        var streamlink = new FakeStreamlinkService();
+        var playbackFactory = new FakePlaybackEngineFactory();
+        var replay = ReplaySessionInfo.Unavailable(PlatformKind.Kick, "streamer", "No replay yet");
+        await using var tab = TestViewModels.CreateTab(
+            StreamInputParser.Parse("streamer", PlatformKind.Kick), "best", streamlink,
+            playbackFactory, new FakeChatClientFactory(), new MemoryLogger(), action => action(),
+            replayResolver: new FakeReplayResolver(replay));
+        var settings = new AppSettings { StreamlinkPath = "streamlink.exe", VlcDirectory = @"C:\VLC" };
+        settings.Chat.ConnectAutomatically = false;
+        tab.SetVideoHandle(new IntPtr(42));
+        await tab.StartAsync(settings);
+        await tab.PauseOrResumeAsync();
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        await tab.PauseOrResumeAsync();
+
+        var engine = playbackFactory.Engine!;
+        Assert.Equal(PlaybackStatus.Playing, tab.Status);
+        Assert.Equal(false, tab.IsReplayMode);
+        Assert.Equal(2, engine.PlayCount);
+        Assert.Equal(0, engine.ResumeCount);
+    }
 
     private static async Task PausedSeekAsync(bool explicitVod, bool reload)
     {

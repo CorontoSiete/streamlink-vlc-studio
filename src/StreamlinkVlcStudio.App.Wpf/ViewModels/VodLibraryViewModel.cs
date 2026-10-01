@@ -1,28 +1,21 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Collections.Specialized;
-using System.Diagnostics;
-using System.Globalization;
-using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Core.Text;
-using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Vlc;
-using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 internal sealed class VodLibraryViewModel : HomeFeatureViewModel
 {
     private readonly Func<VodViewModel, bool, Task> openVod;
+    private readonly Func<VodViewModel, AsyncRelayCommand>? downloadCommand;
     internal VodLibraryViewModel(MainViewModelDependencies dependencies, Action<string> setStatus,
-        Func<VodViewModel, bool, Task> openVod) : base(dependencies, setStatus)
+        Func<VodViewModel, bool, Task> openVod,
+        Func<VodViewModel, AsyncRelayCommand>? downloadCommand = null) : base(dependencies, setStatus)
     {
         this.openVod = openVod;
+        this.downloadCommand = downloadCommand;
         twitchVodService = dependencies.TwitchVodService;
         kickVodService = dependencies.KickVodService;
         vodPlaybackHistory = dependencies.VodPlaybackHistory;
@@ -362,7 +355,7 @@ internal sealed class VodLibraryViewModel : HomeFeatureViewModel
                 {
                     TwitchVodNextCursor = vodPages.ApplyPage(
                         TwitchVods, result.Videos, card => card.Identity, VodViewModel.GetIdentity,
-                        vod => new VodViewModel(vod, openVod), (card, vod) => card.Update(vod),
+                        vod => new VodViewModel(vod, openVod, downloadCommand), (card, vod) => card.Update(vod),
                         cursor, result.NextCursor);
                 }
                 message = result.Message;
@@ -378,7 +371,7 @@ internal sealed class VodLibraryViewModel : HomeFeatureViewModel
                 {
                     TwitchVodNextCursor = vodPages.ApplyPage(
                         TwitchVods, result.Videos, card => card.Identity, VodViewModel.GetIdentity,
-                        vod => new VodViewModel(vod, openVod), (card, vod) => card.Update(vod),
+                        vod => new VodViewModel(vod, openVod, downloadCommand), (card, vod) => card.Update(vod),
                         cursor, result.NextCursor);
                 }
                 message = result.Message;

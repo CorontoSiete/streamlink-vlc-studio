@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Windows;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
@@ -11,26 +12,59 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
     private TwitchVodItem? twitchVod;
     private KickVodItem? kickVod;
     private VodPlaybackBookmark? playbackBookmark;
+    private VodDownloadViewModel? download;
+    private bool isDownloadStarting;
 
     public VodViewModel(
         TwitchVodItem vod,
-        Func<VodViewModel, bool, Task> openAsync)
+        Func<VodViewModel, bool, Task> openAsync,
+        Func<VodViewModel, AsyncRelayCommand>? downloadCommand = null)
     {
         twitchVod = vod;
         OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
+        DownloadCommand = downloadCommand?.Invoke(this) ?? new AsyncRelayCommand(() => Task.CompletedTask, () => false);
     }
 
     public VodViewModel(
         KickVodItem vod,
-        Func<VodViewModel, bool, Task> openAsync)
+        Func<VodViewModel, bool, Task> openAsync,
+        Func<VodViewModel, AsyncRelayCommand>? downloadCommand = null)
     {
         kickVod = vod;
         OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
+        DownloadCommand = downloadCommand?.Invoke(this) ?? new AsyncRelayCommand(() => Task.CompletedTask, () => false);
     }
 
     public AsyncRelayCommand OpenCommand { get; }
+
+    public AsyncRelayCommand DownloadCommand { get; }
+
+    public VodDownloadViewModel? Download => download;
+
+    public bool IsDownloadStarting
+    {
+        get => isDownloadStarting;
+        internal set => SetProperty(ref isDownloadStarting, value);
+    }
+
+    internal void UpdateDownload(VodDownloadViewModel? value)
+    {
+        if (!ReferenceEquals(download, value))
+        {
+            if (download is not null)
+                WeakEventManager<AsyncRelayCommand, EventArgs>.RemoveHandler(download.PlayCommand,
+                    nameof(AsyncRelayCommand.CanExecuteChanged), OnDownloadActionChanged);
+            SetProperty(ref download, value, nameof(Download));
+            if (download is not null)
+                WeakEventManager<AsyncRelayCommand, EventArgs>.AddHandler(download.PlayCommand,
+                    nameof(AsyncRelayCommand.CanExecuteChanged), OnDownloadActionChanged);
+        }
+        DownloadCommand.RaiseCanExecuteChanged();
+    }
+
+    private void OnDownloadActionChanged(object? sender, EventArgs arguments) => DownloadCommand.RaiseCanExecuteChanged();
 
     public AsyncRelayCommand OpenAndStayOnHomeCommand { get; }
 

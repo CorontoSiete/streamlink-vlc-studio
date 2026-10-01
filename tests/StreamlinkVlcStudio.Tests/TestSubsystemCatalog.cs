@@ -1,29 +1,8 @@
-using System.Diagnostics;
-using System.Net;
 using System.Net.WebSockets;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json.Nodes;
-using StreamlinkVlcStudio.App.Wpf;
-using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.App.Wpf.Controls;
-using StreamlinkVlcStudio.App.Wpf.Notifications;
-using StreamlinkVlcStudio.App.Wpf.ViewModels;
-using StreamlinkVlcStudio.Core.Logging;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
-using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Security;
-using StreamlinkVlcStudio.Core.Twitch;
-using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Logging;
-using StreamlinkVlcStudio.Infrastructure.Processes;
-using StreamlinkVlcStudio.Infrastructure.Replay;
-using StreamlinkVlcStudio.Infrastructure.Settings;
-using StreamlinkVlcStudio.Infrastructure.Viewers;
-using StreamlinkVlcStudio.Infrastructure.Vlc;
 
 internal static class TestSubsystemCatalog
 {

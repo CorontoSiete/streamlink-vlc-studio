@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -175,8 +174,11 @@ public partial class MainWindow : Window
         ApplyWindowChromeHitTestState();
         dockedChatController.Attach();
         SourceInitialized += MainWindowSourceInitialized;
+        Loaded += MainWindowNativeFrameLoaded;
         Loaded += MainWindowLoaded;
         Activated += MainWindowActivated;
+        Deactivated += MainWindowDeactivated;
+        IsVisibleChanged += MainWindowIsVisibleChanged;
         StateChanged += MainWindowStateChanged;
         PreviewMouseDown += MainWindowPreviewMouseDown;
         PreviewMouseUp += MainWindowPreviewMouseUp;
@@ -211,6 +213,23 @@ public partial class MainWindow : Window
         {
             MarkTaskbarFullscreen();
         }
+    }
+
+    private void MainWindowNativeFrameLoaded(object sender, RoutedEventArgs e)
+    {
+        Loaded -= MainWindowNativeFrameLoaded;
+        QueueRemoveDwmClientFrame();
+    }
+
+    private void QueueRemoveDwmClientFrame()
+    {
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            if (IsLoaded && !fullscreen && WindowChrome.GetWindowChrome(this) is not null)
+            {
+                _ = TryRemoveDwmClientFrame(new WindowInteropHelper(this).Handle);
+            }
+        }));
     }
 
     private IntPtr WindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -276,11 +295,32 @@ public partial class MainWindow : Window
 
     private void MainWindowStateChanged(object? sender, EventArgs e)
     {
+        if (WindowState == WindowState.Minimized)
+        {
+            viewModel?.DismissStreamSearchDropdown();
+        }
+
         ApplyWindowChromeHitTestState();
+        QueueRemoveDwmClientFrame();
         UpdateMaximizeRestoreButton();
         if (ShouldMarkTaskbarFullscreen())
         {
             MarkTaskbarFullscreen();
+        }
+    }
+
+    private void MainWindowDeactivated(object? sender, EventArgs e)
+    {
+        // The search popup has its own topmost HWND. Clicks in other windows never
+        // reach our PreviewMouseDown handler, so dismiss it through its bound state.
+        viewModel?.DismissStreamSearchDropdown();
+    }
+
+    private void MainWindowIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!IsVisible)
+        {
+            viewModel?.DismissStreamSearchDropdown();
         }
     }
 
@@ -613,10 +653,8 @@ public partial class MainWindow : Window
         }
 
         return candidate is DependencyObject dependencyObject &&
-            (dependencyObject is Visual ||
-                dependencyObject is System.Windows.Media.Media3D.Visual3D) &&
-            (FindVisualParent<TextBoxBase>(dependencyObject) is not null ||
-                FindVisualParent<PasswordBox>(dependencyObject) is not null);
+            (FindInputAncestor<TextBoxBase>(dependencyObject) is not null ||
+                FindInputAncestor<PasswordBox>(dependencyObject) is not null);
     }
 
     internal bool TryExecuteMouseHotkey(MouseButton changedButton, ModifierKeys modifiers, IInputElement? focusedElement)
@@ -706,7 +744,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (e.OriginalSource is DependencyObject source && FindVisualParent<ScrollBar>(source) is not null)
+        if (e.OriginalSource is DependencyObject source && FindInputAncestor<ScrollBar>(source) is not null)
         {
             return;
         }
@@ -893,7 +931,7 @@ public partial class MainWindow : Window
         out AsyncRelayCommand command)
     {
         command = null!;
-        var button = source as Button ?? (source is null ? null : FindVisualParent<Button>(source));
+        var button = source as Button ?? (source is null ? null : FindInputAncestor<Button>(source));
         if (button?.DataContext is not IHomeStreamOpenItemViewModel item ||
             !IsHomeStreamOpenButton(button))
         {
@@ -991,6 +1029,12 @@ public partial class MainWindow : Window
             VodChatProvider = vodChatProvider,
             VodPlaybackHistory = new JsonVodPlaybackHistory(
                 Path.Combine(Path.GetDirectoryName(settingsService.SettingsPath)!, "vod-history.json"), logger),
+            VodDownloadService = new VodDownloadService(
+                settings.Downloads.Directory ?? VodDownloadService.GetDefaultDownloadDirectory(),
+                streamlinkService, logger, twitchSubOnlyVodResolver, settings.Downloads.PreviousDirectories),
+            ConfirmDeleteVodDownload = item => MessageBox.Show(this,
+                $"Permanently delete the downloaded VOD ‘{item.Target.DisplayTitle}’ and its local media files?",
+                "Delete downloaded VOD", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes,
             TwitchVodService = twitchVodService,
             BrowseService = browseService,
             StreamSearchService = streamSearchService,
@@ -1233,6 +1277,9 @@ public partial class MainWindow : Window
             surface.NativeMouseLeftButtonDown += VideoSurface_NativeMouseLeftButtonDown;
             surface.NativeMouseMoved += VideoSurface_NativeMouseMoved;
             surface.NativeMouseLeftButtonUp += VideoSurface_NativeMouseLeftButtonUp;
+            surface.SurfaceMouseLeftButtonPressed += VideoSurface_MouseLeftButtonPressed;
+            surface.MouseWheelScrolled += VideoSurface_MouseWheelScrolled;
+            surface.MouseLeftButtonDoubleClicked += VideoSurface_MouseLeftButtonDoubleClicked;
             tab.PropertyChanged -= MainVideoTabOnPropertyChanged;
             tab.PropertyChanged += MainVideoTabOnPropertyChanged;
             tab.SetVideoHandle(surface.Handle);
@@ -1248,9 +1295,15 @@ public partial class MainWindow : Window
             surface.NativeMouseLeftButtonDown -= VideoSurface_NativeMouseLeftButtonDown;
             surface.NativeMouseMoved -= VideoSurface_NativeMouseMoved;
             surface.NativeMouseLeftButtonUp -= VideoSurface_NativeMouseLeftButtonUp;
+            surface.SurfaceMouseLeftButtonPressed -= VideoSurface_MouseLeftButtonPressed;
+            surface.MouseWheelScrolled -= VideoSurface_MouseWheelScrolled;
+            surface.MouseLeftButtonDoubleClicked -= VideoSurface_MouseLeftButtonDoubleClicked;
             tab.PropertyChanged -= MainVideoTabOnPropertyChanged;
             videoSurfaces.Remove(tab);
-            tab.ClearVideoHandle(surface.Handle);
+            if (!surface.IsHostTransferPending)
+            {
+                tab.ClearVideoHandle(surface.Handle);
+            }
         }
     }
 
@@ -1320,7 +1373,7 @@ public partial class MainWindow : Window
 
     private void TabContent_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.OriginalSource is DependencyObject source && FindVisualParent<Button>(source) is not null)
+        if (e.OriginalSource is DependencyObject source && FindInputAncestor<Button>(source) is not null)
         {
             return;
         }
@@ -2167,7 +2220,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void VideoSurface_MouseWheelScrolled(object sender, VideoSurfaceMouseWheelEventArgs e)
+    private void VideoSurface_MouseWheelScrolled(object? sender, VideoSurfaceMouseWheelEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: StreamTabViewModel tab } || e.Delta == 0)
         {
@@ -2801,18 +2854,26 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private static T? FindVisualParent<T>(DependencyObject child)
+    private static T? FindInputAncestor<T>(DependencyObject child)
         where T : DependencyObject
     {
-        var parent = VisualTreeHelper.GetParent(child);
+        DependencyObject? parent = child;
         while (parent is not null)
         {
+            // Routed input can originate in a Run, Span or InlineUIContainer.
+            // Cross its content/logical parents before resuming the visual tree.
+            parent = parent switch
+            {
+                ContentElement content => ContentOperations.GetParent(content) ??
+                    (content as FrameworkContentElement)?.Parent,
+                Visual or System.Windows.Media.Media3D.Visual3D =>
+                    VisualTreeHelper.GetParent(parent) ?? LogicalTreeHelper.GetParent(parent),
+                _ => LogicalTreeHelper.GetParent(parent)
+            };
             if (parent is T match)
             {
                 return match;
             }
-
-            parent = VisualTreeHelper.GetParent(parent);
         }
 
         return null;
@@ -3028,6 +3089,25 @@ public partial class MainWindow : Window
         {
             viewModel.Settings.StreamlinkPath = dialog.FileName;
             viewModel.RefreshSettingsBindings();
+        }
+    }
+
+    private async void BrowseDownloadDirectoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (viewModel?.CanChangeDownloadDirectory != true) return;
+        var dialog = new OpenFolderDialog
+        {
+            Title = "Select VOD download folder",
+            InitialDirectory = Directory.Exists(viewModel.DownloadDirectory) ? viewModel.DownloadDirectory :
+                Path.GetDirectoryName(viewModel.DownloadDirectory),
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try { await viewModel.ChangeDownloadDirectoryAsync(dialog.FolderName); }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "Could not change download folder", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 

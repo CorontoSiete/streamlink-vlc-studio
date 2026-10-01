@@ -25,11 +25,14 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     private const int SwpNoZOrder = 0x0004;
     private const int SwpNoActivate = 0x0010;
     private const int SwpShowWindow = 0x0040;
+    private const uint EventObjectReorder = 0x8004;
     private FrameworkElement? child;
     private FrameworkElement? target;
     private HwndSource? source;
     private Rect bounds;
     private Int32Rect? appliedPixelBounds;
+    private IntPtr rendererReorderHook;
+    private NativeWinEventCallback? rendererReorderCallback;
     internal event EventHandler? PlacementInvalidated;
 
     public FrameworkElement? Child
@@ -113,6 +116,7 @@ public sealed partial class VideoOverlayHost : FrameworkElement
             source.DpiChanged += OnDpiChanged;
             source.RootVisual = child;
             (target as VideoSurface)?.RegisterOverlayWindow(source.Handle);
+            StartRendererReorderTracking();
             // Removing RootVisual suspends WPF layout. Reattach it before measuring,
             // especially when the video changed to compact size while controls were hidden.
             updatePlacement();
@@ -130,6 +134,12 @@ public sealed partial class VideoOverlayHost : FrameworkElement
         var previous = source;
         source = null;
         appliedPixelBounds = null;
+        if (rendererReorderHook != IntPtr.Zero)
+        {
+            _ = UnhookWinEvent(rendererReorderHook);
+            rendererReorderHook = IntPtr.Zero;
+        }
+        rendererReorderCallback = null;
         if (previous is null) return;
         if (!previous.IsDisposed)
         {
@@ -141,6 +151,23 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     }
 
     private void OnTargetDestroying(object? sender, EventArgs e) => Close();
+
+    private void StartRendererReorderTracking()
+    {
+        if (target is not VideoSurface) return;
+        rendererReorderCallback = OnRendererChildrenReordered;
+        rendererReorderHook = SetWinEventHook(EventObjectReorder, EventObjectReorder, IntPtr.Zero,
+            rendererReorderCallback, (uint)Environment.ProcessId, 0, 0);
+        if (rendererReorderHook == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Failed to track native video window ordering.");
+    }
+
+    private void OnRendererChildrenReordered(IntPtr eventHook, uint eventType, IntPtr hwnd,
+        int objectId, int childId, uint eventThread, uint eventTime)
+    {
+        if (target is VideoSurface surface && hwnd == surface.Handle)
+            ApplyBounds();
+    }
 
     private void OnDpiChanged(object sender, HwndDpiChangedEventArgs e)
     {
@@ -191,6 +218,18 @@ public sealed partial class VideoOverlayHost : FrameworkElement
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter,
         int x, int y, int width, int height, int flags);
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate void NativeWinEventCallback(IntPtr eventHook, uint eventType, IntPtr hwnd,
+        int objectId, int childId, uint eventThread, uint eventTime);
+
+    [DllImport("user32", SetLastError = true)]
+    private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module,
+        NativeWinEventCallback callback, uint processId, uint threadId, uint flags);
+
+    [LibraryImport("user32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnhookWinEvent(IntPtr eventHook);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }

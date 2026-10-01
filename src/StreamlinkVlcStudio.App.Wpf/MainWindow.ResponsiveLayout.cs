@@ -31,7 +31,7 @@ public partial class MainWindow
         var chromeWidth = width / scale;
         WindowButtons.Width = Math.Min(138, chromeWidth);
         TitleBrand.Visibility = chromeWidth < 450 ? Visibility.Collapsed : Visibility.Visible;
-        PlaybackActionsToolBar.MaxWidth = Math.Max(28, chromeWidth - 54 - Math.Min(160, chromeWidth * 0.35));
+        UpdatePlaybackToolbarWidth();
         // The auto-sized row follows the transformed top bar so its controls stay in the chrome.
 
         var stackChat = width < 600;
@@ -55,5 +55,26 @@ public partial class MainWindow
         chatScale.ScaleX = chatControlScale;
         chatScale.ScaleY = chatControlScale;
         DockedChatViewport.LayoutTransform = chatScale;
+    }
+
+    private void PlaybackActionsToolBar_LayoutUpdated(object? sender, EventArgs e) => UpdatePlaybackToolbarWidth();
+
+    private void UpdatePlaybackToolbarWidth()
+    {
+        if (WorkspaceRoot.ActualWidth <= 0) return;
+        var chromeWidth = WorkspaceRoot.ActualWidth / chromeScale.ScaleX;
+        var navigationWidth = Math.Max(54,
+            WorkspaceNavigation.DesiredSize.Width + WorkspaceNavigation.Margin.Left + WorkspaceNavigation.Margin.Right);
+        var maxWidth = chromeWidth - navigationWidth - Math.Min(160, chromeWidth * 0.35);
+        if (TopDownloadSettingsButton.Visibility == Visibility.Visible)
+        {
+            // Keep the contextual settings action beside Settings at compact sizes.
+            // Use measured text widths, leaving room for the library overflow button.
+            var requiredWidth = TopDownloadSettingsButton.DesiredSize.Width + TopSettingsButton.DesiredSize.Width + 28;
+            var libraryOverflowWidth = HomeNavigation.Margin.Left + HomeNavigation.Margin.Right + 28;
+            maxWidth = Math.Min(Math.Max(maxWidth, requiredWidth), chromeWidth - navigationWidth - libraryOverflowWidth);
+        }
+        var resolvedWidth = Math.Max(28, maxWidth);
+        if (PlaybackActionsToolBar.MaxWidth != resolvedWidth) PlaybackActionsToolBar.MaxWidth = resolvedWidth;
     }
 }

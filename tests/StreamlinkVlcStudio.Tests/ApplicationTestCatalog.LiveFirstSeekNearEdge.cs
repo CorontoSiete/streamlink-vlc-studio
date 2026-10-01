@@ -81,6 +81,7 @@ internal static partial class ApplicationTestCatalog
         public Task<PlaybackMediaSource> PrepareAsync(Uri mediaUri, Version? libVlcVersion,
             CancellationToken cancellationToken, bool preferFastReplay = false) =>
             Task.FromResult(new PlaybackMediaSource(mediaUri, null,
-                useLiveReplayDemuxer: HlsReplayTimeline.IsPlaylist(mediaUri)));
+                useLiveReplayDemuxer: HlsReplayTimeline.IsPlaylist(mediaUri),
+                liveReplaySegmentDuration: TimeSpan.FromSeconds(10)));
     }
 }

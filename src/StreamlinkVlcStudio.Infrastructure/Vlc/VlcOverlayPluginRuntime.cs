@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,6 +5,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Processes;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
@@ -376,8 +376,8 @@ internal static class VlcOverlayPluginRuntimeFactory
                 }
             }
 
-            var pluginHash = ComputeFileSha256(targetPlugin);
-            var controllerHash = ComputeFileSha256(sourceController);
+            var pluginHash = FileHash.GetSha256(targetPlugin);
+            var controllerHash = FileHash.GetSha256(sourceController);
             logger.Write(
                 AppLogLevel.Info,
                 "VlcOverlay",
@@ -548,12 +548,6 @@ internal static class VlcOverlayPluginRuntimeFactory
         return firstHash.AsSpan().SequenceEqual(secondHash);
     }
 
-    private static string ComputeFileSha256(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream));
-    }
-
     private static string ComputeFileIdentity(string path)
     {
         if (!File.Exists(path))
@@ -562,7 +556,7 @@ internal static class VlcOverlayPluginRuntimeFactory
         }
 
         var file = new FileInfo(path);
-        return $"{file.Length}:{ComputeFileSha256(path)}";
+        return $"{file.Length}:{FileHash.GetSha256(path)}";
     }
 
     private static void TryDeleteFile(string path, IAppLogger logger, string description)

@@ -29,7 +29,8 @@ internal static class ValidatedReplayHttpClient
         Uri initialUri,
         PlatformKind platform,
         Func<Uri, HttpRequestMessage> requestFactory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool useReadTimeout = false)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(validator);
@@ -42,7 +43,7 @@ internal static class ValidatedReplayHttpClient
             await validator.ValidateAsync(currentUri, platform, cancellationToken).ConfigureAwait(false);
             using var request = requestFactory(currentUri);
             var response = await BoundedHttpResponseSender
-                .SendAsync(httpClient, request, cancellationToken)
+                .SendAsync(httpClient, request, cancellationToken, useReadTimeout: useReadTimeout)
                 .ConfigureAwait(false);
             try
             {

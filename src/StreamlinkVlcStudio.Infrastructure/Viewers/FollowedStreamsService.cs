@@ -52,7 +52,9 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         CancellationToken cancellationToken = default)
     {
         var streams = new List<FollowedLiveStream>();
+        var offlineChannels = new List<FollowedChannel>();
         var messages = new List<string>();
+        var offlineMessages = new List<string>();
         var succeededPlatforms = new List<PlatformKind>();
 
         var twitchLoad = GetTwitchFollowedStreamsAsync(settings.Chat, cancellationToken);
@@ -68,11 +70,15 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             if (observed.Result is not { } result)
             {
                 messages.Add(observed.FailureMessage);
+                offlineMessages.Add(observed.FailureMessage);
                 continue;
             }
 
             streams.AddRange(result.Streams);
             messages.AddRange(result.Messages);
+            offlineChannels.AddRange(result.OfflineChannels ?? []);
+            offlineMessages.AddRange(result.Messages);
+            offlineMessages.AddRange(result.OfflineMessages ?? []);
             if (result.Succeeded)
             {
                 succeededPlatforms.Add(observed.Platform);
@@ -86,7 +92,17 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             .ThenBy(stream => stream.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return new FollowedLiveStreamsResult(ordered, messages, succeededPlatforms);
+        var liveKeys = ordered.Select(stream => stream.Target.StateKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var orderedOfflineChannels = offlineChannels
+            .Where(channel => !liveKeys.Contains(channel.Target.StateKey))
+            .DistinctBy(channel => channel.Target.StateKey, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(channel => FirstNonEmpty(channel.DisplayName, channel.Channel), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(channel => channel.Platform)
+            .ToArray();
+
+        return new FollowedLiveStreamsResult(
+            ordered, messages, succeededPlatforms, orderedOfflineChannels, offlineMessages);
     }
 
     private async Task<ObservedPlatformLoad> ObservePlatformResultAsync(
@@ -163,7 +179,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 return new PlatformFollowedStreamsResult(streams, [message]);
             }
 
-            var url = BuildTwitchFollowedStreamsUrl(tokenInfo.UserId, after);
+            var url = BuildTwitchFollowedUrl("streams", tokenInfo.UserId, after);
             using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
 
             using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
@@ -209,15 +225,92 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         }
         while (!string.IsNullOrWhiteSpace(after));
 
+        var offlineResult = (Channels: new List<FollowedChannel>(), Messages: new List<string>());
+        if (!malformed)
+        {
+            offlineResult = await GetTwitchOfflineChannelsAsync(
+                tokenInfo.UserId, token, clientId, streams, cancellationToken).ConfigureAwait(false);
+        }
+
         await EnrichTwitchProfileImagesAsync(
             streams,
+            offlineResult.Channels,
             token,
             clientId,
             cancellationToken).ConfigureAwait(false);
 
         return malformed
             ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Twitch, streams)
-            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
+            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true,
+                OfflineChannels: offlineResult.Channels, OfflineMessages: offlineResult.Messages);
+    }
+
+    private async Task<(List<FollowedChannel> Channels, List<string> Messages)> GetTwitchOfflineChannelsAsync(
+        string userId,
+        string accessToken,
+        string clientId,
+        IReadOnlyList<FollowedLiveStream> streams,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var channels = new List<FollowedChannel>();
+            var after = "";
+            var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+            var pageCount = 0;
+            do
+            {
+                if (++pageCount > MaxTwitchPages)
+                    throw new InvalidOperationException("followed channels pagination exceeded the safety limit.");
+
+                var url = BuildTwitchFollowedUrl("channels", userId, after);
+                using var request = TwitchApiRequest.Create(HttpMethod.Get, url, accessToken, clientId);
+                using var response = await BoundedHttpResponseSender.SendAsync(
+                    httpClient, request, cancellationToken).ConfigureAwait(false);
+                var responseBody = await BoundedHttpContentReader.ReadJsonAsync(
+                    response.Content, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                    throw new HttpRequestException($"followed channels request failed: {(int)response.StatusCode} {response.ReasonPhrase}.");
+
+                using var document = JsonDocument.Parse(responseBody);
+                if (!TryGetArray(document.RootElement, "data", out var data))
+                    throw new InvalidOperationException("followed channels returned malformed data.");
+
+                foreach (var item in data.EnumerateArray())
+                {
+                    if (!TryGetNonEmptyString(item, "broadcaster_login", out var login) ||
+                        !StreamInputParser.TryFromChannel(PlatformKind.Twitch, login, out var target))
+                        throw new InvalidOperationException("followed channels returned malformed data.");
+
+                    channels.Add(new FollowedChannel(PlatformKind.Twitch, target.Channel,
+                        FirstNonEmpty(GetOptionalString(item, "broadcaster_name"), target.Channel), target.Url));
+                }
+
+                if (document.RootElement.TryGetProperty("pagination", out var pagination) &&
+                    (pagination.ValueKind != JsonValueKind.Object ||
+                     (pagination.TryGetProperty("cursor", out var cursor) && cursor.ValueKind != JsonValueKind.String)))
+                    throw new InvalidOperationException("followed channels returned malformed pagination.");
+
+                after = ReadPaginationCursor(document.RootElement);
+                if (!string.IsNullOrWhiteSpace(after) && !seenCursors.Add(after))
+                    throw new InvalidOperationException("followed channels pagination repeated a cursor.");
+            }
+            while (!string.IsNullOrWhiteSpace(after));
+
+            var liveChannels = streams.Select(stream => stream.Channel)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return (channels.Where(channel => !liveChannels.Contains(channel.Channel))
+                .DistinctBy(channel => channel.Channel, StringComparer.OrdinalIgnoreCase).ToList(), []);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "Followed", "Twitch offline followed channels could not be loaded.", ex);
+            return ([], [$"Twitch: offline followed channels unavailable; {ex.Message}"]);
+        }
     }
 
     private async Task<PlatformFollowedStreamsResult> GetKickFollowedStreamsAsync(
@@ -244,8 +337,10 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         }
 
         var streams = new List<FollowedLiveStream>();
+        var offlineChannels = new List<FollowedChannel>();
         var broadcasterUserIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var malformed = false;
+        var missingChannelCount = 0;
         for (var index = 0; index < slugs.Count; index += KickSlugLimit)
         {
             var chunk = slugs.Skip(index).Take(KickSlugLimit).ToArray();
@@ -263,47 +358,74 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                     $"Kick channels request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
                 return new PlatformFollowedStreamsResult(
                     streams,
-                    ["Kick: live followed channels unavailable. Check Kick API credentials."]);
+                    ["Kick: live followed channels unavailable. Check Kick API credentials."],
+                    OfflineChannels: offlineChannels);
             }
 
             using var document = JsonDocument.Parse(responseBody);
             var page = ReadKickChannelStreams(document.RootElement, chunk, broadcasterUserIds);
             streams.AddRange(page.Streams);
+            offlineChannels.AddRange(page.OfflineChannels);
             malformed |= !page.Succeeded;
+            missingChannelCount += page.MissingChannelCount;
         }
 
-        await EnrichKickProfileImagesAsync(streams, broadcasterUserIds, accessToken, cancellationToken)
+        await EnrichKickProfileImagesAsync(streams, offlineChannels, broadcasterUserIds, accessToken, cancellationToken)
             .ConfigureAwait(false);
 
         return malformed
-            ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Kick, streams)
-            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true);
+            ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Kick, streams, offlineChannels)
+            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true,
+                OfflineChannels: offlineChannels, OfflineMessages: missingChannelCount switch
+                {
+                    0 => [],
+                    1 => ["Kick: status could not be determined for 1 followed channel."],
+                    _ => [$"Kick: status could not be determined for {missingChannelCount} followed channels."]
+                });
     }
 
-    private Task EnrichTwitchProfileImagesAsync(
+    private async Task EnrichTwitchProfileImagesAsync(
         List<FollowedLiveStream> streams,
+        List<FollowedChannel> offlineChannels,
         string accessToken,
         string clientId,
         CancellationToken cancellationToken)
     {
-        return ProfileImageLookup.EnrichTwitchAsync(
-            httpClient,
-            streams,
-            stream => stream.Channel,
-            // Followed cards can already carry an image from the followed-channel payload.
-            (stream, profileImage) => stream with
+        var channels = streams.Select(stream => stream.Channel)
+            .Concat(offlineChannels.Select(channel => channel.Channel)).ToArray();
+        if (channels.Length == 0) return;
+
+        try
+        {
+            var profileImages = await ProfileImageLookup.GetTwitchAsync(
+                httpClient, accessToken, clientId, channels, cancellationToken).ConfigureAwait(false);
+            for (var index = 0; index < streams.Count; index++)
             {
-                ProfileImageUrl = FirstNonEmpty(stream.ProfileImageUrl, profileImage)
-            },
-            accessToken,
-            clientId,
-            logger,
-            "Followed",
-            cancellationToken);
+                if (profileImages.TryGetValue(streams[index].Channel, out var profileImage))
+                    streams[index] = streams[index] with
+                    {
+                        ProfileImageUrl = FirstNonEmpty(streams[index].ProfileImageUrl, profileImage)
+                    };
+            }
+            for (var index = 0; index < offlineChannels.Count; index++)
+            {
+                if (profileImages.TryGetValue(offlineChannels[index].Channel, out var profileImage))
+                    offlineChannels[index] = offlineChannels[index] with { ProfileImageUrl = profileImage };
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(AppLogLevel.Warning, "Followed", "Twitch profile images could not be loaded.", ex);
+        }
     }
 
     private async Task EnrichKickProfileImagesAsync(
         List<FollowedLiveStream> streams,
+        List<FollowedChannel> offlineChannels,
         IReadOnlyDictionary<string, string> broadcasterUserIds,
         string accessToken,
         CancellationToken cancellationToken)
@@ -334,6 +456,15 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 }
 
                 streams[index] = streams[index] with { ProfileImageUrl = profileImage };
+            }
+            for (var index = 0; index < offlineChannels.Count; index++)
+            {
+                if (offlineChannels[index].ProfileImageUrl.Length > 0 ||
+                    !broadcasterUserIds.TryGetValue(offlineChannels[index].Channel, out var userId) ||
+                    !profileImages.TryGetValue(userId, out var profileImage))
+                    continue;
+
+                offlineChannels[index] = offlineChannels[index] with { ProfileImageUrl = profileImage };
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -366,18 +497,21 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         }
     }
 
-    private static (IReadOnlyList<FollowedLiveStream> Streams, bool Succeeded) ReadKickChannelStreams(
+    private static (IReadOnlyList<FollowedLiveStream> Streams, IReadOnlyList<FollowedChannel> OfflineChannels,
+        bool Succeeded, int MissingChannelCount) ReadKickChannelStreams(
         JsonElement root,
         IReadOnlyList<string> requestedSlugs,
         IDictionary<string, string> broadcasterUserIds)
     {
         var streams = new List<FollowedLiveStream>();
+        var offlineChannels = new List<FollowedChannel>();
         if (!TryGetArray(root, "data", out var data))
         {
-            return (streams, false);
+            return (streams, offlineChannels, false, 0);
         }
 
         var requested = requestedSlugs.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var returned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var succeeded = true;
         foreach (var item in data.EnumerateArray())
         {
@@ -393,24 +527,29 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 continue;
             }
 
+            returned.Add(target.Channel);
             var payload = LiveChannelPayloadReader.ReadKickChannel(item);
             if (payload.State == LiveChannelState.Unavailable)
             {
                 succeeded = false;
                 continue;
             }
-            if (payload.State == LiveChannelState.Offline)
-            {
-                continue;
-            }
-
-            var stream = payload.Stream;
             var broadcasterUserId = GetOptionalString(item, "broadcaster_user_id");
             if (!string.IsNullOrWhiteSpace(broadcasterUserId))
             {
                 broadcasterUserIds[target.Channel] = broadcasterUserId;
             }
 
+            var profileImage = NormalizeImageUrl(FirstNonEmpty(
+                GetOptionalString(item, "profile_picture"), GetOptionalString(item, "profile_pic")));
+            if (payload.State == LiveChannelState.Offline)
+            {
+                offlineChannels.Add(new FollowedChannel(
+                    PlatformKind.Kick, target.Channel, target.Channel, target.Url, profileImage));
+                continue;
+            }
+
+            var stream = payload.Stream;
             var category = "";
             if (item.TryGetProperty("category", out var categoryElement) &&
                 categoryElement.ValueKind == JsonValueKind.Object)
@@ -432,17 +571,15 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 TryGetBool(stream, "is_mature"),
                 GetOptionalString(stream, "language"),
                 target.Url,
-                NormalizeImageUrl(FirstNonEmpty(
-                    GetOptionalString(item, "profile_picture"),
-                    GetOptionalString(item, "profile_pic")))));
+                profileImage));
         }
 
-        return (streams, succeeded);
+        return (streams, offlineChannels, succeeded, requested.Count - returned.Count);
     }
 
-    private static string BuildTwitchFollowedStreamsUrl(string userId, string after)
+    private static string BuildTwitchFollowedUrl(string resource, string userId, string after)
     {
-        var builder = new StringBuilder("https://api.twitch.tv/helix/streams/followed?");
+        var builder = new StringBuilder($"https://api.twitch.tv/helix/{resource}/followed?");
         builder.Append("user_id=");
         builder.Append(Uri.EscapeDataString(userId));
         builder.Append("&first=");
@@ -527,11 +664,15 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
     private sealed record PlatformFollowedStreamsResult(
         IReadOnlyList<FollowedLiveStream> Streams,
         IReadOnlyList<string> Messages,
-        bool Succeeded = false)
+        bool Succeeded = false,
+        IReadOnlyList<FollowedChannel>? OfflineChannels = null,
+        IReadOnlyList<string>? OfflineMessages = null)
     {
         internal static PlatformFollowedStreamsResult Malformed(
-            PlatformKind platform, IReadOnlyList<FollowedLiveStream> streams) =>
-            new(streams, [$"{platform}: followed streams returned malformed data; offline status could not be determined."]);
+            PlatformKind platform, IReadOnlyList<FollowedLiveStream> streams,
+            IReadOnlyList<FollowedChannel>? offlineChannels = null) =>
+            new(streams, [$"{platform}: followed streams returned malformed data; offline status could not be determined."],
+                OfflineChannels: offlineChannels);
 
         public static PlatformFollowedStreamsResult NotConfigured(string message)
         {

@@ -27,6 +27,7 @@ internal sealed class ReplayUrlSecurityValidator
         PlatformKind platform,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!isAllowedUri(uri, platform))
         {
             throw new InvalidDataException("Replay URL is not an approved public HTTPS provider endpoint.");
@@ -49,6 +50,7 @@ internal sealed class ReplayUrlSecurityValidator
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (addresses.Length == 0 || addresses.Any(static address => !IsPublicAddress(address)))
         {
             throw new InvalidDataException("Replay provider host resolved to a non-public address.");

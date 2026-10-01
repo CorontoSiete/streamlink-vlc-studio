@@ -1,0 +1,64 @@
+{
+  "channel": "https://www.twitch.tv/summit1g",
+  "measurement": "Physical hover to first visible bitmap in the production WPF card",
+  "observation_interval_ms": 100,
+  "pairs": [
+    {
+      "trial": 1,
+      "order": [
+        "before",
+        "after"
+      ],
+      "before_ms": 3461,
+      "after_ms": 1275
+    },
+    {
+      "trial": 2,
+      "order": [
+        "after",
+        "before"
+      ],
+      "before_ms": 3244,
+      "after_ms": 1275
+    },
+    {
+      "trial": 3,
+      "order": [
+        "before",
+        "after"
+      ],
+      "before_ms": 3350,
+      "after_ms": 1282
+    }
+  ],
+  "before_median_ms": 3350,
+  "after_median_ms": 1275,
+  "median_reduction_percent": 61.94,
+  "before_range_ms": [
+    3244,
+    3461
+  ],
+  "after_range_ms": [
+    1275,
+    1282
+  ],
+  "working_tree_git_revision": "933bb5f24c0aafaa336d7227defc6fddc4394ba1",
+  "infrastructure_sha256": {
+    "before": "a3e1e7ef1b9f7ebb48ea2d4c1c80118424352fb6b2f1f6ed934e98c5ddb674ba",
+    "after": "bc5d0c0e579ca2acd181d91ce9d226bedd43e0076eef8cd95298efdc41dc7735"
+  },
+  "application_sha256": {
+    "before": "c9979f0a7fce66ed1705b12750db85b44bad1aac8dfcc96505b3c884dd7ada02",
+    "after": "623cfed4b0b7c53831599604a94e78e23a66b3791aae328ca240b3af40eef7a5"
+  },
+  "continuity": {
+    "Channel": "summit1g",
+    "firstFrameAt": 1418,
+    "frameCount": 634,
+    "changing": true,
+    "longestGap": 158,
+    "observationMs": 40056,
+    "cleanupMs": 76,
+    "Fallbacks": 0
+  }
+}

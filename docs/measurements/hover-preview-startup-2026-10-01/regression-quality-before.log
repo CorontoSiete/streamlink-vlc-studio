@@ -1,0 +1,6 @@
+FAIL stream hover preview: frame-rate quality names keep the selected preview small: System.InvalidOperationException: Expected true.
+   at Assert.True(Boolean value) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\TestFixtures.cs:line 1201
+   at StreamHoverPreviewSourceTestCatalog.FrameRateQualitiesAsync() in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\StreamHoverPreviewSourceTestCatalog.Formats.cs:line 46
+   at StreamHoverPreviewSourceTestCatalog.FrameRateQualitiesAsync() in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\StreamHoverPreviewSourceTestCatalog.Formats.cs:line 46
+   at DependencyFreeTestRunner.RunAsync(IReadOnlyList`1 tests) in C:\Users\ComputerGuy\Documents\streamlink3\streamlink test2\streamlink-vlc-studio\tests\StreamlinkVlcStudio.Tests\DependencyFreeTestRunner.cs:line 92
+0 passed, 1 failed, 0 timed out, 0 skipped, 0 not run out of 1 selected tests.

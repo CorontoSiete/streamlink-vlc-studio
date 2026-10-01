@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Collections.Specialized;
-using System.Diagnostics;
 using System.Globalization;
 using StreamlinkVlcStudio.App.Wpf.Notifications;
 using StreamlinkVlcStudio.Core.Logging;
@@ -9,20 +8,20 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
-using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
-using StreamlinkVlcStudio.Infrastructure.Vlc;
-using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
 {
     private readonly Func<LiveStreamCardViewModel, bool, Task> openStream;
+    private readonly Func<FollowedChannel, Task> openOfflineChannel;
     internal FollowedChannelsViewModel(MainViewModelDependencies dependencies, Action<string> setStatus,
-        Func<LiveStreamCardViewModel, bool, Task> openStream) : base(dependencies, setStatus)
+        Func<LiveStreamCardViewModel, bool, Task> openStream,
+        Func<FollowedChannel, Task> openOfflineChannel) : base(dependencies, setStatus)
     {
         this.openStream = openStream;
+        this.openOfflineChannel = openOfflineChannel;
         settingsService = dependencies.SettingsService;
         followedStreamsService = dependencies.FollowedStreamsService;
         liveNotificationService = dependencies.LiveNotificationService;
@@ -35,6 +34,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         ClearImportedKickFollowsCommand = CreateCommand(ClearImportedKickFollowsAsync,
             () => Volatile.Read(ref kickFollowImportBusy) == 0);
         LiveFollowedChannels.CollectionChanged += LiveFollowedChannelsOnCollectionChanged;
+        OfflineFollowedChannels.CollectionChanged += OfflineFollowedChannelsOnCollectionChanged;
         Settings.PropertyChanged += SettingsOnPropertyChanged;
         ObserveFollowedChannelsSettings(Settings.FollowedChannels);
     }
@@ -59,6 +59,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             followedChannelsRefreshTimer = null;
         }
         LiveFollowedChannels.CollectionChanged -= LiveFollowedChannelsOnCollectionChanged;
+        OfflineFollowedChannels.CollectionChanged -= OfflineFollowedChannelsOnCollectionChanged;
         Settings.PropertyChanged -= SettingsOnPropertyChanged;
         if (observedFollowedChannelsSettings is not null)
         {
@@ -87,6 +88,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     private readonly SemaphoreSlim followedChannelsRefreshGate = new(1, 1);
     private readonly CancellationTokenSource followedChannelsRefreshCancellation = new();
     private string followedChannelsStatus = "Live followed channels are not loaded";
+    private string offlineFollowedChannelsStatus = "Offline followed channels are not loaded.";
     private string kickFollowedChannelsText;
     private DateTimeOffset? followedChannelsLastUpdatedAt;
     private bool isFollowedChannelsRefreshing;
@@ -96,6 +98,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     private int followedChannelsAutomaticRefreshActive;
     private System.Threading.Timer? followedChannelsRefreshTimer;
     public ObservableCollection<LiveStreamCardViewModel> LiveFollowedChannels { get; } = [];
+    public ObservableCollection<OfflineFollowedChannelViewModel> OfflineFollowedChannels { get; } = [];
     public AsyncRelayCommand RefreshFollowedChannelsCommand { get; }
     public AsyncRelayCommand ImportKickFollowsCommand { get; }
     public AsyncRelayCommand ClearImportedKickFollowsCommand { get; }
@@ -106,6 +109,12 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         internal set => SetProperty(ref followedChannelsStatus, value);
     }
 
+    public string OfflineFollowedChannelsStatus
+    {
+        get => offlineFollowedChannelsStatus;
+        private set => SetProperty(ref offlineFollowedChannelsStatus, value);
+    }
+
     public bool IsFollowedChannelsRefreshing
     {
         get => isFollowedChannelsRefreshing;
@@ -114,6 +123,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             if (SetProperty(ref isFollowedChannelsRefreshing, value))
             {
                 OnPropertyChanged(nameof(IsFollowedChannelsEmptyVisible));
+                OnPropertyChanged(nameof(IsOfflineFollowedChannelsEmptyVisible));
             }
         }
     }
@@ -121,6 +131,12 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     public bool HasLiveFollowedChannels => LiveFollowedChannels.Count > 0;
 
     public bool IsFollowedChannelsEmptyVisible => !IsFollowedChannelsRefreshing && LiveFollowedChannels.Count == 0;
+
+    public bool HasOfflineFollowedChannels => OfflineFollowedChannels.Count > 0;
+
+    public bool IsOfflineFollowedChannelsEmptyVisible => !IsFollowedChannelsRefreshing && !HasOfflineFollowedChannels;
+
+    public string OfflineFollowedChannelsCountText => $"{OfflineFollowedChannels.Count} offline";
 
     public string FollowedChannelsLastUpdatedText => followedChannelsLastUpdatedAt is { } updatedAt
         ? $"Updated {updatedAt.ToLocalTime():g}"
@@ -202,6 +218,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         if (followedStreamsService is null)
         {
             FollowedChannelsStatus = "Live followed channels are not available.";
+            OfflineFollowedChannelsStatus = "Offline followed channels are not available.";
             return;
         }
 
@@ -219,6 +236,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
                 out var invalidKickFollowedEntries);
             IsFollowedChannelsRefreshing = true;
             FollowedChannelsStatus = "Refreshing live followed channels";
+            OfflineFollowedChannelsStatus = "Refreshing offline followed channels";
 
             var result = await followedStreamsService.GetLiveFollowedStreamsAsync(Settings, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
@@ -230,6 +248,13 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             var thumbnailCacheVersion = LiveThumbnailCacheVersion.Next();
             UpdateLiveStreamCards(LiveFollowedChannels,
                 result.Streams.Select(LiveStreamCardData.FromFollowedStream), thumbnailCacheVersion);
+            var liveKeys = result.Streams.Select(stream => stream.Target.StateKey)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            PagedResultTracker.ApplyItems(OfflineFollowedChannels,
+                (result.OfflineChannels ?? []).Where(channel => !liveKeys.Contains(channel.Target.StateKey)),
+                card => card.Target.StateKey, channel => channel.Target.StateKey,
+                channel => new OfflineFollowedChannelViewModel(channel, OpenOfflineChannelAsync, () => !disposed),
+                (card, channel) => card.Update(channel), reset: true);
 
             ProcessFollowedChannelLiveNotifications(result);
 
@@ -256,13 +281,31 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             FollowedChannelsStatus = messages.Count == 0
                 ? statusPrefix
                 : $"{statusPrefix} {string.Join(' ', messages)}";
+
+            var offlineMessages = (result.OfflineMessages ?? result.Messages).ToList();
+            if (invalidKickFollowedEntries.Count > 0)
+                offlineMessages.Add(FormatInvalidKickFollowedChannelsMessage(invalidKickFollowedEntries.Count));
+            var offlineStatusPrefix = OfflineFollowedChannels.Count switch
+            {
+                0 when offlineMessages.Count > 0 => "Offline followed channels could not be fully loaded.",
+                0 => "No offline followed channels found.",
+                1 => "1 followed channel is offline.",
+                _ => $"{OfflineFollowedChannels.Count} followed channels are offline."
+            };
+            OfflineFollowedChannelsStatus = offlineMessages.Count == 0
+                ? offlineStatusPrefix
+                : $"{offlineStatusPrefix} {string.Join(' ', offlineMessages)}";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || disposed)
         {
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (IsCurrentFollowedRefresh(generation)) FollowedChannelsStatus = ex.Message;
+            if (IsCurrentFollowedRefresh(generation))
+            {
+                FollowedChannelsStatus = ex.Message;
+                OfflineFollowedChannelsStatus = ex.Message;
+            }
             logger.Write(AppLogLevel.Warning, "Followed", "Failed to refresh live followed channels.", ex);
         }
         finally
@@ -286,6 +329,21 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             card => card.Target.StateKey, data => data.Target.StateKey,
             data => new LiveStreamCardViewModel(data, openStream, thumbnailCacheVersion),
             (card, data) => card.Update(data, thumbnailCacheVersion), reset: true);
+    }
+
+    private async Task OpenOfflineChannelAsync(FollowedChannel channel)
+    {
+        if (disposed) return;
+        try
+        {
+            await Track(openOfflineChannel(channel));
+        }
+        catch (Exception ex)
+        {
+            if (disposed || ex is OperationCanceledException) return;
+            StatusMessage = ex.Message;
+            logger.Write(AppLogLevel.Error, "Followed", $"Failed to browse videos for {channel.Target.DisplayName}.", ex);
+        }
     }
 
     internal void ProcessFollowedChannelLiveNotifications(FollowedLiveStreamsResult result)
@@ -669,5 +727,12 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     {
         OnPropertyChanged(nameof(HasLiveFollowedChannels));
         OnPropertyChanged(nameof(IsFollowedChannelsEmptyVisible));
+    }
+
+    private void OfflineFollowedChannelsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        OnPropertyChanged(nameof(HasOfflineFollowedChannels));
+        OnPropertyChanged(nameof(IsOfflineFollowedChannelsEmptyVisible));
+        OnPropertyChanged(nameof(OfflineFollowedChannelsCountText));
     }
 }

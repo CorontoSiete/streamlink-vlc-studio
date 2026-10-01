@@ -10,7 +10,7 @@
         ResizeMode="CanMinimize"
         Background="#111318"
         Foreground="#F7F7FA"
-        Icon="Assets/Twitch.ico"
+        Icon="Assets/Studio.ico"
         Closing="Window_Closing">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
@@ -84,7 +84,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Image Width="38" Height="38" Source="Assets/Twitch.ico" />
+                <Image Width="38" Height="38" Source="Assets/Studio.ico" />
                 <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
                     <TextBlock FontSize="18" FontWeight="SemiBold" Text="Stream Studio" />
                     <TextBlock Foreground="#A9B0BC" Text="Per-machine setup" />

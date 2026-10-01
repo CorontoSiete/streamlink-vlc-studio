@@ -1,4 +1,5 @@
 using System.Globalization;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 
@@ -11,15 +12,18 @@ internal static class TwitchVodReplayPolicy
         GetSegmentDuration(playlist, version, completed: true);
 
     internal static bool UseLiveReplayDemuxer(string playlist, Version? version) =>
-        GetSegmentDuration(playlist, version, completed: false) > TimeSpan.Zero;
+        GetLiveReplaySegmentDuration(playlist, version) > TimeSpan.Zero;
+
+    internal static TimeSpan GetLiveReplaySegmentDuration(string playlist, Version? version) =>
+        GetSegmentDuration(playlist, version, completed: false);
 
     private static TimeSpan GetSegmentDuration(string playlist, Version? version, bool completed)
     {
         // The bundled demuxer uses VLC 3.0.23's ABI. Other releases and playlist
         // formats retain the installed modules, including encryption and fMP4 support.
         if (version is not { Major: 3, Minor: 0, Build: 23 }) return TimeSpan.Zero;
-        var lines = playlist.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0 || lines[0].TrimStart('\uFEFF') != "#EXTM3U") return TimeSpan.Zero;
+        var lines = HlsPlaylistPolicy.SplitLines(playlist);
+        if (lines.Length == 0 || lines[0] != "#EXTM3U") return TimeSpan.Zero;
         if (completed ? lines[^1] != "#EXT-X-ENDLIST" :
             lines.Contains("#EXT-X-ENDLIST") || !lines.Contains("#EXT-X-PLAYLIST-TYPE:EVENT")) return TimeSpan.Zero;
         var pending = false;
@@ -47,7 +51,7 @@ internal static class TwitchVodReplayPolicy
                 maximumDuration = Math.Max(maximumDuration, duration);
                 pending = true;
             }
-            else if (!line.StartsWith('#') && line[0] != '\uFEFF')
+            else if (!line.StartsWith('#'))
             {
                 if (!pending || !Uri.TryCreate(RelativeUriBase, line, out var uri) ||
                     !uri.AbsolutePath.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)) return TimeSpan.Zero;

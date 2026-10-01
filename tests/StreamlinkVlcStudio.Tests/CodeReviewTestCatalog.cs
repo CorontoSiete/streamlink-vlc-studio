@@ -1,13 +1,5 @@
-using System.Net;
-using System.Text;
-using System.Text.Json;
-using StreamlinkVlcStudio.Core.Parsing;
-using StreamlinkVlcStudio.Core.Services;
-using StreamlinkVlcStudio.App.Wpf.ViewModels;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Io;
-using StreamlinkVlcStudio.Infrastructure.Settings;
-using StreamlinkVlcStudio.Infrastructure.Updates;
 
 internal static class CodeReviewTestCatalog
 {
