@@ -372,7 +372,7 @@ Create a friend-ready release zip, internal app MSI, and full dependency install
 
 ```powershell
 $root = (Get-Location).Path
-& "$root\scripts\build-installer.ps1" -ProductVersion 1.8.4
+& "$root\scripts\build-installer.ps1" -ProductVersion 1.8.5
 ```
 
 The package script publishes the app with the native VLC chat overlay embedded from `src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay\build` by default, stages the required sidecar `vlc-overlay\build` payload, and includes the top-level install guides, `install.ps1`, its shared helpers, release contract, and locked Windows dependency manifest. It writes `release\StreamlinkVlcStudio-release.zip` and validates the staged payload against `shared\release-contract.json`. Packaging fails on an ambiguous payload root, missing runtime file, unexpected or altered native-overlay input (including hidden files), or any provenance/dependency mismatch.

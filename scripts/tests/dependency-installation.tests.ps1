@@ -305,7 +305,14 @@ try {
             -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $repoRoot 'scripts\install.ps1') + '"'), '-SkipApp') `
             -RedirectStandardError $errorPath -RedirectStandardOutput $outputPath
         try {
-            if (-not $process.WaitForExit(10000)) { $process.Kill(); throw 'The 32-bit installation guard did not finish.' }
+            # A disposable Windows runner can spend more than ten seconds on
+            # the first x86 CLR/PowerShell startup. The assertions below still
+            # require rejection before any installation output or work.
+            if (-not $process.WaitForExit(60000)) {
+                $process.Kill()
+                $process.WaitForExit(5000) | Out-Null
+                throw 'The 32-bit installation guard did not finish within 60 seconds.'
+            }
             Assert-DependencyTest ($process.ExitCode -ne 0) 'An x86 process attempted x64 dependency detection.'
             Assert-DependencyTest ([IO.File]::ReadAllText($errorPath) -match '64-bit PowerShell') 'The x86 host failure did not identify the correct supported host.'
             Assert-DependencyTest ([IO.File]::ReadAllText($outputPath).Length -eq 0) 'The installation started before the process architecture was checked.'
