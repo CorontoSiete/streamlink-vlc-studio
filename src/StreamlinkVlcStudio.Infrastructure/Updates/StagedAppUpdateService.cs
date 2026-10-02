@@ -10,6 +10,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Processes;
 
 namespace StreamlinkVlcStudio.Infrastructure.Updates;
 
@@ -44,8 +45,10 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     private readonly string trustedKeyId;
     private readonly bool disposeClient;
     private readonly TimeSpan downloadIdleTimeout;
+    private readonly Func<CancellationToken, Task<bool>> verifyInstallation;
     private readonly Threading.AsyncOperationGate operationGate = new();
     private readonly HashSet<Guid> consumedCompletions = [];
+    private readonly HashSet<Guid> failedOperations = [];
     private AppUpdateState state = AppUpdateState.Idle;
     private AppUpdateRelease? lastVerifiedRelease;
     private PreparedAppUpdate? preparedUpdate;
@@ -66,7 +69,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         Func<Version?>? getCurrentVersion = null,
         RSAParameters? trustedKey = null,
         string? trustedKeyId = null,
-        TimeSpan? downloadIdleTimeout = null)
+        TimeSpan? downloadIdleTimeout = null,
+        Func<CancellationToken, Task<bool>>? verifyInstallation = null)
     {
         this.logger = logger;
         this.httpClient = httpClient;
@@ -75,6 +79,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         this.detectInstallKind = detectInstallKind ?? (() => DetectInstallKind(this.applicationDirectory));
         this.getCurrentVersion = getCurrentVersion ?? GetCurrentVersion;
+        this.verifyInstallation = verifyInstallation ?? VerifyInstalledRuntimeAsync;
         this.trustedKey = trustedKey ?? new RSAParameters { Modulus = PublicModulus, Exponent = PublicExponent };
         this.trustedKeyId = trustedKeyId ?? (trustedKey is null ? TrustedKeyId : ComputeKeyId(this.trustedKey));
         if (!string.Equals(ComputeKeyId(this.trustedKey), this.trustedKeyId, StringComparison.Ordinal))
@@ -141,14 +146,28 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 return new(true, false, true, kind, release, unknownMessage, utcNow());
             }
             lastVerifiedRelease = release;
-            var available = release.Version > current;
+            var pendingRepair = ReadPendingRepair();
+            if (pendingRepair?.TargetVersion < current)
+                TryCleanup(() => DeleteCacheEntry(Path.Combine(updateRoot, "pending-repair.json")));
+            var repairing = release.Version == current &&
+                (HasRepairableRelease(release) || pendingRepair?.TargetVersion == current);
+            if (repairing && kind is AppInstallKind.Managed or AppInstallKind.LegacyManaged &&
+                await verifyInstallation(cancellationToken).ConfigureAwait(false))
+            {
+                await ResolveRepairAsync(current, cancellationToken).ConfigureAwait(false);
+                repairing = false;
+                TryCleanupCache();
+            }
+            var available = release.Version > current || repairing;
             var notifyOnly = available && kind is AppInstallKind.Zip or AppInstallKind.Unmanaged;
-            if (available && !notifyOnly)
+            if (release.Version >= current && kind is AppInstallKind.Managed or AppInstallKind.LegacyManaged)
             {
                 var prepared = await RestorePreparedAsync(release, cancellationToken).ConfigureAwait(false);
                 if (prepared is not null)
                 {
-                    const string readyMessage = "Update verified. Restart and install when you're ready.";
+                    var readyMessage = release.Version == current
+                        ? "Setup did not finish. Restart and install to repair this version and its required runtimes."
+                        : "Update verified. Restart and install when you're ready.";
                     SetState(new(AppUpdatePhase.Ready, readyMessage, release, prepared));
                     return new(true, true, false, kind, release, readyMessage, utcNow());
                 }
@@ -157,7 +176,9 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 ? $"You're on the latest version ({current})."
                 : notifyOnly
                     ? $"Version {release.Version} is available. Open the release page to update this installation."
-                    : $"Version {release.Version} is available. Download it when you're ready.";
+                    : release.Version == current
+                        ? "Setup did not finish. Download the verified installer again to repair this version and its required runtimes."
+                        : $"Version {release.Version} is available. Download it when you're ready.";
             SetState(new(available ? (notifyOnly ? AppUpdatePhase.NotifyOnly : AppUpdatePhase.Available) : AppUpdatePhase.Completed, message, release));
             return new(true, available, notifyOnly, kind, release, message, utcNow());
         }
@@ -216,14 +237,17 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         {
             throw new CryptographicException("The requested release was not produced by this updater's latest signed check.");
         }
-        if (getCurrentVersion() is not { } current || release.Version <= current)
-            throw new InvalidOperationException("Only a newer version can be downloaded for installation.");
+        if (getCurrentVersion() is not { } current || release.Version < current)
+            throw new InvalidOperationException("Only a newer version or an incomplete installation can be downloaded for installation.");
         var existing = await RestorePreparedAsync(release, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
             SetState(new(AppUpdatePhase.Ready, "Update verified. Restart and install when you're ready.", release, existing));
             return existing;
         }
+        var repairing = release.Version == current;
+        if (repairing && !HasRepairableRelease(release) && ReadPendingRepair()?.TargetVersion != current)
+            throw new InvalidOperationException("This version is already installed and has no verified failed installation to repair.");
         var id = Guid.NewGuid();
         var operationsRoot = Path.Combine(updateRoot, "operations");
         Directory.CreateDirectory(operationsRoot);
@@ -246,6 +270,13 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             File.Copy(processPath, helperPath, overwrite: false);
             var prepared = new PreparedAppUpdate(id, release, operation, setupPath, helperPath, utcNow());
             await WriteAtomicJsonAsync(Path.Combine(operation, "operation.json"), prepared, cancellationToken).ConfigureAwait(false);
+            if (repairing)
+            {
+                var pendingRepair = new AppUpdateCompletion(id, AppUpdateCompletionOutcome.Failed, 1603, null,
+                    "Retrying an incomplete installation of this version.", utcNow(), release.Version);
+                await WriteAtomicJsonAsync(Path.Combine(operation, "failure.json"), pendingRepair, cancellationToken).ConfigureAwait(false);
+                failedOperations.Add(id);
+            }
             preparedUpdate = prepared;
             TryCleanupCache();
             SetState(new(AppUpdatePhase.Ready, "Update verified. Restart and install when you're ready.", release, prepared));
@@ -279,7 +310,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         {
             if (detectInstallKind() is not (AppInstallKind.Managed or AppInstallKind.LegacyManaged) ||
                 lastVerifiedRelease is null || !ReleaseEquals(lastVerifiedRelease, update.Release) ||
-                getCurrentVersion() is not { } current || update.Release.Version <= current)
+                getCurrentVersion() is not { } current || update.Release.Version < current ||
+                (update.Release.Version == current && !IsFailedOperation(update.OperationId)))
                 throw new InvalidOperationException("Check for a newer signed update before installing.");
             AssertPrepared(update);
         }
@@ -360,7 +392,52 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             // Completion is authoritative even when antivirus or another process
             // temporarily prevents housekeeping. Retry the file without showing
             // the same result repeatedly during this session.
-            TryCleanup(() => DeleteCacheEntry(path));
+            var failureRecorded = true;
+            var cachedOperation = ReadOperation(completion.OperationId);
+            completion = completion with { TargetVersion = completion.TargetVersion ?? cachedOperation?.Release.Version };
+            if (completion.Outcome is AppUpdateCompletionOutcome.Failed or AppUpdateCompletionOutcome.Canceled)
+            {
+                failedOperations.Add(completion.OperationId);
+                if (completion.TargetVersion is not null)
+                {
+                    try
+                    {
+                        // The repair notice survives expiration of the installer cache.
+                        // A new download still requires the latest signed release and hash.
+                        await WriteAtomicJsonAsync(Path.Combine(updateRoot, "pending-repair.json"), completion, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+                    {
+                        failureRecorded = false;
+                        logger.Write(AppLogLevel.Warning, "Updater", "Keeping the update result until its repair notice can be saved.", ex);
+                    }
+                }
+            }
+            else
+            {
+                failedOperations.Remove(completion.OperationId);
+                var pendingRepair = ReadPendingRepair();
+                if (pendingRepair?.OperationId == completion.OperationId ||
+                    (completion.TargetVersion is not null && pendingRepair?.TargetVersion <= completion.TargetVersion))
+                    TryCleanup(() => DeleteCacheEntry(Path.Combine(updateRoot, "pending-repair.json")));
+            }
+            var operation = Path.Combine(updateRoot, "operations", completion.OperationId.ToString("N"));
+            if (Directory.Exists(operation))
+            {
+                try
+                {
+                    AssertPathNoReparsePoints(operation);
+                    // A successful retry must supersede its earlier failure even when
+                    // another cached file remains locked against deletion.
+                    await WriteAtomicJsonAsync(Path.Combine(operation, "failure.json"), completion, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                    failureRecorded = false;
+                    logger.Write(AppLogLevel.Warning, "Updater", "Keeping the update result until its repair marker can be saved.", ex);
+                }
+            }
+            if (failureRecorded) TryCleanup(() => DeleteCacheEntry(path));
             TryCleanup(() => CleanupCompletedOperation(completion));
             if (!consumedCompletions.Add(completion.OperationId)) continue;
             SetState(new(completion.Outcome == AppUpdateCompletionOutcome.Failed ? AppUpdatePhase.Failed : AppUpdatePhase.Completed, completion.Message));
@@ -434,13 +511,21 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             !Uri.TryCreate(manifest.ReleasePage, UriKind.Absolute, out var page) || page.Scheme != Uri.UriSchemeHttps ||
             !string.Equals(page.AbsoluteUri, $"https://github.com/{Repository}/releases/tag/{manifest.Tag}", StringComparison.Ordinal))
             throw new InvalidDataException("The signed update manifest metadata is inconsistent.");
-        if (manifest.DependencyMinimums is null || manifest.DependencyMinimums.Count == 0 ||
+        if (manifest.DependencyMinimums is null ||
+            !manifest.DependencyMinimums.ContainsKey("streamlink") || !manifest.DependencyMinimums.ContainsKey("vlc") ||
             manifest.DependencyMinimums.Any(entry => string.IsNullOrWhiteSpace(entry.Key) ||
-                !Regex.IsMatch(entry.Value ?? "", "^\\d+(?:\\.\\d+){1,3}(?:-[0-9A-Za-z.-]+)?$", RegexOptions.CultureInvariant)))
+                !IsDependencyVersion(entry.Value)))
             throw new InvalidDataException("The signed dependency minimums are invalid.");
         var setup = ManifestAsset(manifest.Setup, SelectAsset(github, SetupAssetName));
         var zip = ManifestAsset(manifest.Zip, SelectAsset(github, ZipAssetName));
         return new(version, manifest.Tag, manifest.Commit, manifest.Repository, page, manifest.ProtocolVersion, setup, zip, manifest.DependencyMinimums ?? new Dictionary<string, string>());
+    }
+
+    private static bool IsDependencyVersion(string? value)
+    {
+        var match = Regex.Match(value ?? "", "^(?<version>\\d+(?:\\.\\d+){1,3})(?:-\\d+)?$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        return match.Success && Version.TryParse(match.Groups["version"].Value, out var version) &&
+               (version.Major > 0 || version.Minor > 0 || version.Build > 0 || version.Revision > 0);
     }
 
     private static AppUpdateAsset ManifestAsset(UpdateAsset? value, GitHubAsset github)
@@ -552,6 +637,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 var saved = await JsonSerializer.DeserializeAsync<PreparedAppUpdate>(stream, JsonOptions, token).ConfigureAwait(false);
                 if (saved?.Release is null || saved.OperationId != id || !ReleaseEquals(saved.Release, release) ||
                     !IsSamePath(saved.OperationDirectory, operation) || !IsPackageFresh(saved.VerifiedAt)) continue;
+                if (getCurrentVersion() is not { } installed || release.Version < installed ||
+                    (release.Version == installed && !IsFailedOperation(id))) continue;
                 // Local metadata is not a trust root: bind it to the signed check and rehash the installer.
                 var restored = saved with { Release = release };
                 await Task.Run(() => AssertPrepared(restored, verifyHelper: false), token).ConfigureAwait(false);
@@ -663,6 +750,160 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         TryExpireCacheEntry(operation);
     }
 
+    private async Task<bool> VerifyInstalledRuntimeAsync(CancellationToken token)
+    {
+        if (!OperatingSystem.IsWindows() || !SupportsDependencyVerification()) return false;
+        var executable = Path.Combine(applicationDirectory, AppIdentity.ManagedExecutableName);
+        if (!File.Exists(executable)) return false;
+        try
+        {
+            var info = BoundedProcessRunner.CreateRedirectedStartInfo(executable, ["--maintenance-verify-dependencies"]);
+            info.WorkingDirectory = applicationDirectory;
+            var result = await new BoundedProcessRunner().RunAsync(info, TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
+            return result.ExitCode == 0 && !result.TimedOut && !result.OutputWasTruncated;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            logger.Write(AppLogLevel.Debug, "Updater", "The incomplete installation still needs repair.", ex);
+            return false;
+        }
+    }
+
+    private bool SupportsDependencyVerification()
+    {
+        // The MSI includes release metadata but excludes the ZIP's PowerShell
+        // helpers. Older releases omit this capability and must never receive a
+        // command they would interpret as a request to open their normal GUI.
+        var metadata = Path.Combine(applicationDirectory, "release-metadata.json");
+        if (!File.Exists(metadata)) return false;
+        try
+        {
+            AssertPathNoReparsePoints(metadata);
+            using var stream = new FileStream(metadata, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length is <= 0 or > 16 * 1024) return false;
+            using var document = JsonDocument.Parse(stream);
+            return document.RootElement.TryGetProperty("dependencyVerificationProtocol", out var protocol) &&
+                   protocol.TryGetInt32(out var value) && value == 1;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or InvalidOperationException)
+        {
+            logger.Write(AppLogLevel.Debug, "Updater", "The installed release does not declare dependency verification support.", ex);
+            return false;
+        }
+    }
+
+    private PreparedAppUpdate? ReadOperation(Guid id)
+    {
+        var operation = Path.Combine(updateRoot, "operations", id.ToString("N"));
+        var metadata = Path.Combine(operation, "operation.json");
+        if (id == Guid.Empty || !File.Exists(metadata)) return null;
+        try
+        {
+            AssertPathNoReparsePoints(metadata);
+            using var stream = new FileStream(metadata, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length is <= 0 or > 64 * 1024) return null;
+            var saved = JsonSerializer.Deserialize<PreparedAppUpdate>(stream, JsonOptions);
+            return saved?.Release is not null && saved.OperationId == id && IsSamePath(saved.OperationDirectory, operation)
+                ? saved : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+        {
+            logger.Write(AppLogLevel.Debug, "Updater", "Could not read an incomplete installation's metadata.", ex);
+            return null;
+        }
+    }
+
+    private AppUpdateCompletion? ReadPendingRepair()
+    {
+        var path = Path.Combine(updateRoot, "pending-repair.json");
+        if (!File.Exists(path)) return null;
+        try
+        {
+            AssertPathNoReparsePoints(path);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length is <= 0 or > 64 * 1024) return null;
+            var pending = JsonSerializer.Deserialize<AppUpdateCompletion>(stream, JsonOptions);
+            return pending is { OperationId: var id, TargetVersion.Build: >= 0 } && id != Guid.Empty &&
+                   pending.Outcome is AppUpdateCompletionOutcome.Failed or AppUpdateCompletionOutcome.Canceled &&
+                   !string.IsNullOrWhiteSpace(pending.Message) ? pending : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+        {
+            logger.Write(AppLogLevel.Debug, "Updater", "Could not read an update repair notice.", ex);
+            return null;
+        }
+    }
+
+    private async Task ResolveRepairAsync(Version version, CancellationToken token)
+    {
+        var operations = Path.Combine(updateRoot, "operations");
+        if (Directory.Exists(operations))
+        {
+            AssertPathNoReparsePoints(operations);
+            foreach (var operation in Directory.EnumerateDirectories(operations))
+            {
+                token.ThrowIfCancellationRequested();
+                if (!Guid.TryParseExact(Path.GetFileName(operation), "N", out var id) ||
+                    ReadOperation(id)?.Release.Version != version) continue;
+                failedOperations.Remove(id);
+                var completion = new AppUpdateCompletion(id, AppUpdateCompletionOutcome.Succeeded, 0, null,
+                    "The installed application's required runtimes have been verified.", utcNow(), version);
+                try
+                {
+                    await WriteAtomicJsonAsync(Path.Combine(operation, "failure.json"), completion, token).ConfigureAwait(false);
+                    TryCleanup(() => DeleteCacheEntry(Path.Combine(updateRoot, "results", id.ToString("N") + ".json")));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                    logger.Write(AppLogLevel.Debug, "Updater", "Repair is complete; its cache marker will be cleared on the next check.", ex);
+                }
+            }
+        }
+        if (preparedUpdate?.Release.Version == version) preparedUpdate = null;
+        TryCleanup(() => DeleteCacheEntry(Path.Combine(updateRoot, "pending-repair.json")));
+    }
+
+    private bool HasRepairableRelease(AppUpdateRelease release)
+    {
+        var operations = Path.Combine(updateRoot, "operations");
+        if (!Directory.Exists(operations)) return false;
+        AssertPathNoReparsePoints(operations);
+        foreach (var operation in Directory.EnumerateDirectories(operations))
+        {
+            if (!Guid.TryParseExact(Path.GetFileName(operation), "N", out var id) || !IsFailedOperation(id)) continue;
+            var saved = ReadOperation(id);
+            if (saved is not null && IsPackageFresh(saved.VerifiedAt) && ReleaseEquals(saved.Release, release)) return true;
+        }
+        return false;
+    }
+
+    private bool IsFailedOperation(Guid id)
+    {
+        if (failedOperations.Contains(id)) return true;
+        foreach (var path in new[]
+                 {
+                     Path.Combine(updateRoot, "results", id.ToString("N") + ".json"),
+                     Path.Combine(updateRoot, "operations", id.ToString("N"), "failure.json")
+                 })
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                AssertPathNoReparsePoints(path);
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (stream.Length is <= 0 or > 64 * 1024) continue;
+                var result = JsonSerializer.Deserialize<AppUpdateCompletion>(stream, JsonOptions);
+                if (result?.OperationId == id && Enum.IsDefined(result.Outcome) && !string.IsNullOrWhiteSpace(result.Message))
+                    return result.Outcome is AppUpdateCompletionOutcome.Failed or AppUpdateCompletionOutcome.Canceled;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+            {
+                logger.Write(AppLogLevel.Debug, "Updater", "Could not read an update repair marker.", ex);
+            }
+        }
+        return false;
+    }
+
     private void CleanupOperations(string path)
     {
         if (!Directory.Exists(path)) return;
@@ -675,7 +916,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             try
             {
                 if (preparedUpdate is { } prepared && IsSamePath(prepared.OperationDirectory, entry) &&
-                    (currentVersion is null || prepared.Release.Version > currentVersion)) continue;
+                    (currentVersion is null || prepared.Release.Version > currentVersion ||
+                     (prepared.Release.Version == currentVersion && IsFailedOperation(prepared.OperationId)))) continue;
                 var modified = new DateTimeOffset(File.GetLastWriteTimeUtc(entry), TimeSpan.Zero);
                 var verified = File.Exists(Path.Combine(entry, "operation.json"));
                 var maximumAge = verified ? PreparedPackageLifetime : TimeSpan.FromHours(24);
@@ -730,7 +972,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             // Metadata can only select a directory already inside our cache. It is
             // never used as a deletion target or as permission to install a package.
             return !IsPackageFresh(saved.VerifiedAt) ||
-                   (currentVersion is not null && version <= currentVersion) ||
+                   (currentVersion is not null && (version < currentVersion || (version == currentVersion && !IsFailedOperation(id)))) ||
                    (preparedUpdate is { } ready && version <= ready.Release.Version &&
                     !IsSamePath(ready.OperationDirectory, operation));
         }

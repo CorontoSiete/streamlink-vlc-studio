@@ -12,6 +12,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private string defaultQuality = "best";
     private bool lowLatency = true;
     private bool keepInactiveTabsRunning;
+    private bool pauseInactiveVodTabs = true;
     private VideoRendererMode videoRendererMode = VideoRendererMode.Automatic;
     private bool multiStreamEnabled;
     private bool keepHomeCardRightGap = true;
@@ -67,6 +68,12 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => keepInactiveTabsRunning;
         set => SetProperty(ref keepInactiveTabsRunning, value);
+    }
+
+    public bool PauseInactiveVodTabs
+    {
+        get => pauseInactiveVodTabs;
+        set => SetProperty(ref pauseInactiveVodTabs, value);
     }
 
     public VideoRendererMode VideoRendererMode

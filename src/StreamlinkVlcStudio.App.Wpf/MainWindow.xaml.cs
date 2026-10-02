@@ -1051,7 +1051,7 @@ public partial class MainWindow : Window
 
         viewModel.Initialize();
         twitchChannelPoints = new TwitchChannelPointsController(
-            settings, viewModel.Tabs, () => viewModel.SelectedTab, new TwitchBonusBrowser(this), logger,
+            settings, viewModel.LiveFollowedChannels, () => viewModel.SelectedTab, new TwitchBonusBrowser(this), logger,
             settingsService: settingsService);
         TwitchBonusesPanel.DataContext = twitchChannelPoints;
         if (!string.IsNullOrWhiteSpace(settingsLoadWarning))
@@ -1385,7 +1385,7 @@ public partial class MainWindow : Window
         {
             if (viewModel is not null && TabsContainActiveTab(item))
             {
-                viewModel.SelectedTab = item.ActiveTab;
+                viewModel.SelectStreamTab(item.ActiveTab);
                 TabListBox.SelectedItem = viewModel.SelectedTabStripItem;
             }
             else
@@ -1405,7 +1405,7 @@ public partial class MainWindow : Window
         {
             if (viewModel is not null)
             {
-                viewModel.SelectedTab = tab;
+                viewModel.SelectStreamTab(tab);
                 TabListBox.SelectedItem = viewModel.SelectedTabStripItem;
             }
             else
@@ -1421,6 +1421,22 @@ public partial class MainWindow : Window
                 startedWithControlModifier);
             e.Handled = true;
         }
+    }
+
+    private void CompactTabSelectorItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (viewModel is null ||
+            (sender as FrameworkElement)?.DataContext is not TabStripItemViewModel item ||
+            !TabsContainActiveTab(item))
+        {
+            return;
+        }
+
+        viewModel.SelectStreamTab(item.ActiveTab);
+        CompactTabSelector.SelectedItem = viewModel.SelectedTabStripItem;
+        CompactTabSelector.IsDropDownOpen = false;
+        CompactTabSelector.Focus();
+        e.Handled = true;
     }
 
     private bool TabsContainActiveTab(TabStripItemViewModel item)

@@ -19,12 +19,237 @@ internal static class BootstrapperTestCatalog
         ("Bootstrapper retry detects again before offering installation actions", RetryDetectsAgain),
         ("Bootstrapper retry is unavailable for downgrades or cleanup warnings", RetryEligibility),
         ("Bootstrapper reboot-required completion does not offer app launch", RebootRequiredDisablesLaunch),
+        ("Bootstrapper dependency verification failure prevents success and launch", DependencyVerificationFailureAsync),
+        ("Bootstrapper install requests repair registered bundles for current and legacy update helpers", InstalledBundleRequestsRepairAsync),
+        ("Bootstrapper runtime repair uses the reviewed commands and retains newer shared versions", RuntimeRepairCommands),
+        ("Bootstrapper bundles the offline WebView2 runtime as a shared dependency", WebView2DependencyUsesOfflinePackage),
+        ("Bootstrapper dependency component text fits at the minimum window size", DependencyPageLayout),
         ("Bootstrapper cancellation during preparation prevents planning", CancelPreparationAsync),
         ("Bootstrapper cancellation before queued apply prevents elevation", CancelQueuedApplyAsync),
         ("Bootstrapper quiet apply uses a real hidden window handle", HiddenApplyUsesWindowHandleAsync),
         ("Bootstrapper installs VLC from EXE package instead of MSI", VlcDependencyUsesExePackage),
+        ("Bootstrapper app icon decodes at Windows Search display sizes", SearchIconDecodes),
+        ("Bootstrapper clears only Stream Studio search icons across display scales", SearchIconCacheCleanup),
+        ("Bootstrapper search icon cleanup continues past a locked bitmap", LockedSearchIconCacheCleanup),
         ("Scripted installer installs VLC without msiexec", ScriptedInstallerUsesVlcExe)
     ];
+
+    private static Task RuntimeRepairCommands()
+    {
+        var bundle = System.Xml.Linq.XDocument.Load(Path.Combine(FindRepoRoot(), "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs"));
+        var variables = new Dictionary<string, string>
+        {
+            ["Streamlink"] = "StreamlinkMachineVersion",
+            ["Vlc"] = "VlcInstalledVersion",
+            ["WebView2"] = "WebView2InstalledVersion"
+        };
+        foreach (var package in bundle.Descendants().Where(element => element.Name.LocalName == "ExePackage"))
+        {
+            var id = (string)package.Attribute("Id")!;
+            Assert.Equal((string?)package.Attribute("InstallArguments"), (string?)package.Attribute("RepairArguments"));
+            Assert.Equal($"{variables[id]} <= v$(var.{id}InstallerVersion)", (string?)package.Attribute("RepairCondition"));
+            // A false InstallCondition suppresses repair even if RepairCondition is true.
+            Assert.True(package.Attribute("InstallCondition") is null);
+            Assert.Equal("yes", (string?)package.Attribute("Permanent"));
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task InstalledBundleRequestsRepairAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        foreach (var display in new[] { Display.None, Display.Passive, Display.Full })
+            foreach (var installed in new[] { false, true })
+            {
+                var (app, model, engine) = CreateApplication(RelationType.None, (_, _, _) => 0, display);
+                SetField(app, "dispatcher", System.Windows.Threading.Dispatcher.CurrentDispatcher);
+                SetField(app, "isInstalled", installed);
+                SetField(app, "command", new BootstrapperCommand(LaunchAction.Install, display, "", 0,
+                    ResumeType.None, nint.Zero, RelationType.None, false, "", "", ""));
+                // Do not touch an application already installed on the test workstation.
+                var absent = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "app.exe");
+                engine.Variables["InstalledApplicationPath"] = absent;
+                engine.FormattedVariables["[InstalledApplicationPath]"] = absent;
+                if (display == Display.Full) app.Install();
+                else InvokeHandler(app, "OnDetectComplete", new DetectCompleteEventArgs(0, false));
+                await TestWait.UntilAsync(() => engine.PlannedAction != LaunchAction.Unknown, TimeSpan.FromSeconds(3));
+                Assert.Equal(installed ? LaunchAction.Repair : LaunchAction.Install, engine.PlannedAction);
+                Assert.Equal(installed ? "Repairing Stream Studio" : "Installing Stream Studio", model.OperationTitle);
+            }
+    });
+
+    private static Task DependencyPageLayout() => TestSta.RunOffscreenAsync(() =>
+    {
+        var (application, model, _) = CreateApplication(RelationType.None, (_, _, _) => 0);
+        model.Page = BootstrapperPage.Install;
+        model.StreamlinkStatus = "Already installed";
+        model.VlcStatus = "Will be installed";
+        model.WebView2Status = "Will be updated";
+        var window = new BootstrapperAssembly::StreamlinkVlcStudio.Bootstrapper.MainWindow(application, model);
+        try
+        {
+            var root = (Grid)window.Content;
+            root.Background = window.Background;
+            // Reserve normal Windows non-client borders and title-bar height.
+            var size = new Size(window.MinWidth - 16, window.MinHeight - 40);
+            root.Measure(size);
+            root.Arrange(new Rect(size));
+            root.UpdateLayout();
+            var output = Environment.GetEnvironmentVariable("SVS_INSTALLER_SNAPSHOT_DIRECTORY");
+            if (!string.IsNullOrWhiteSpace(output))
+            {
+                Directory.CreateDirectory(output);
+                var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(root);
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var stream = File.Create(Path.Combine(output, "installer-minimum-size.png"));
+                encoder.Save(stream);
+            }
+            var body = root.Children.OfType<Grid>().Single();
+            var text = VisibleText(body).ToArray();
+            Assert.True(text.Any(item => item.Text.Contains("Microsoft Edge WebView2 Runtime", StringComparison.Ordinal)));
+            foreach (var item in text)
+            {
+                var bounds = item.TransformToAncestor(body).TransformBounds(new Rect(new Size(item.ActualWidth, item.ActualHeight)));
+                Assert.True(bounds.Bottom <= body.ActualHeight + 1, $"Setup text exceeds the content area: {item.Text}");
+                Assert.True(bounds.Right <= body.ActualWidth + 1, $"Setup text exceeds the content width: {item.Text}");
+                Assert.True(item.ActualHeight + 1 >= item.DesiredSize.Height - item.Margin.Top - item.Margin.Bottom,
+                    $"Setup text is clipped vertically: {item.Text}");
+            }
+        }
+        finally { window.CloseFromApplication(); }
+        return Task.CompletedTask;
+
+        static IEnumerable<TextBlock> VisibleText(DependencyObject element)
+        {
+            if (element is FrameworkElement { Visibility: not Visibility.Visible }) yield break;
+            if (element is TextBlock block) yield return block;
+            for (var index = 0; index < VisualTreeHelper.GetChildrenCount(element); index++)
+                foreach (var child in VisibleText(VisualTreeHelper.GetChild(element, index))) yield return child;
+        }
+    });
+
+    private static Task DependencyVerificationFailureAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "StreamStudio-dependency-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var executable = Path.Combine(root, "app.exe");
+            File.WriteAllText(executable, "dependency verification is simulated");
+            var calls = new List<string>();
+            var (app, model, engine) = CreateApplication(RelationType.None, (_, argument, _) =>
+            {
+                calls.Add(argument);
+                return 1;
+            }, Display.Full);
+            engine.Variables["InstalledApplicationPath"] = executable;
+            engine.FormattedVariables["[InstalledApplicationPath]"] = executable;
+            SetField(app, "plannedAction", LaunchAction.Install);
+            SetField(app, "dispatcher", System.Windows.Threading.Dispatcher.CurrentDispatcher);
+            model.Page = BootstrapperPage.Progress;
+            await (Task)typeof(StudioBootstrapperApplication).GetMethod("CompleteApplyAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(app, [0, ApplyRestart.None])!;
+            Assert.Equal(1, calls.Count);
+            Assert.Equal("--maintenance-verify-dependencies", calls[0]);
+            Assert.Equal(false, model.ResultSucceeded);
+            Assert.Equal(false, model.CanLaunch);
+            Assert.True(model.CanRetry);
+            Assert.Equal(unchecked((int)0x80070643), (int)GetField(app, "resultCode")!);
+            Assert.Contains("required runtime", model.ResultMessage);
+            Assert.Equal(false, model.CancelCommand.CanExecute(null));
+            app.RequestCancel();
+            Assert.Equal(false, model.CancelRequested);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    });
+
+    private static Task WebView2DependencyUsesOfflinePackage()
+    {
+        var bundle = System.Xml.Linq.XDocument.Load(Path.Combine(FindRepoRoot(), "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs"));
+        var package = bundle.Descendants().Single(element => element.Name.LocalName == "ExePackage" && (string?)element.Attribute("Id") == "WebView2");
+        Assert.Equal("yes", (string?)package.Attribute("Permanent"));
+        Assert.Equal("yes", (string?)package.Attribute("PerMachine"));
+        Assert.Equal("/silent /install", (string?)package.Attribute("InstallArguments"));
+        Assert.Equal("$(var.WebView2Installer)", (string?)package.Attribute("SourceFile"));
+        Assert.Contains("WebView2InstalledVersion", (string)package.Attribute("DetectCondition")!);
+        Assert.Equal(false, package.Descendants().Any(element => element.Name.LocalName == "RemotePayload"));
+        return Task.CompletedTask;
+    }
+
+    private static Task SearchIconDecodes()
+    {
+        var iconPath = Path.Combine(FindRepoRoot(), "src", "StreamlinkVlcStudio.App.Wpf", "Assets", "Studio.ico");
+        foreach (var size in new[] { 64, 96, 128 })
+        {
+            using var icon = new System.Drawing.Icon(iconPath, size, size);
+            using var bitmap = icon.ToBitmap();
+            Assert.Equal(size, bitmap.Width);
+            Assert.Equal(size, bitmap.Height);
+            // Check the mint Studio bars, rather than accepting a generic or old purple icon.
+            var bar = bitmap.GetPixel(size / 4, size / 2);
+            Assert.True(bar.G > 200 && bar.G > bar.R + 60 && bar.B > 140);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task SearchIconCacheCleanup()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "StreamStudio-search-icons-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var cache = Path.Combine(root, "Packages", "Microsoft.Windows.Search_cw5n1h2txyewy", "LocalState", "AppIconCache");
+            foreach (var scale in new[] { "100", "150" })
+            {
+                var directory = Path.Combine(cache, scale);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "{6D809377-6AF0-444B-8957-A3773F02200E}_Streamlink VLC Studio_StreamlinkVlcStudio_exe"), "old icon");
+                File.WriteAllText(Path.Combine(directory, "C__Users_test_AppData_Local_Programs_StreamStudio_StreamStudio_exe"), "old icon");
+                File.WriteAllText(Path.Combine(directory, "OtherApp_exe"), "unrelated icon");
+                File.WriteAllText(Path.Combine(directory, "StreamStudioTools_exe"), "unrelated icon");
+            }
+
+            Assert.Equal(4, ShellIconCache.ClearSearchIcons(root));
+            foreach (var scale in new[] { "100", "150" })
+            {
+                var remaining = Directory.GetFiles(Path.Combine(cache, scale));
+                Assert.Equal(2, remaining.Length);
+                Assert.True(remaining.All(path => File.ReadAllText(path) == "unrelated icon"));
+            }
+            Assert.Equal(0, ShellIconCache.ClearSearchIcons(root));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task LockedSearchIconCacheCleanup()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "StreamStudio-search-icons-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var directory = Path.Combine(root, "Packages", "Microsoft.Windows.Search_cw5n1h2txyewy", "LocalState", "AppIconCache", "150");
+            Directory.CreateDirectory(directory);
+            var lockedIcon = Path.Combine(directory, "path_StreamStudio_exe");
+            var otherIcon = Path.Combine(directory, "path_StreamlinkVlcStudio_exe");
+            File.WriteAllText(lockedIcon, "locked icon");
+            File.WriteAllText(otherIcon, "old icon");
+            using (var stream = new FileStream(lockedIcon, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Assert.Equal(1, ShellIconCache.ClearSearchIcons(root));
+                Assert.True(File.Exists(lockedIcon));
+                Assert.True(!File.Exists(otherIcon));
+            }
+            Assert.Equal(1, ShellIconCache.ClearSearchIcons(root));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+        return Task.CompletedTask;
+    }
 
     private static Task CancelPreparationAsync() => TestSta.RunOffscreenAsync(async () =>
     {
@@ -274,7 +499,8 @@ internal static class BootstrapperTestCatalog
         foreach (var (package, variable, oldVersion, currentVersion) in new[]
                  {
                      ("Streamlink", "StreamlinkMachineVersion", "7.6.0", "8.5.0"),
-                     ("Vlc", "VlcInstalledVersion", "3.0.18", "3.0.23.0")
+                     ("Vlc", "VlcInstalledVersion", "3.0.18", "3.0.23.0"),
+                     ("WebView2", "WebView2InstalledVersion", "120.0.0.0", "152.0.4191.53")
                  })
         {
             foreach (var (version, state, expected) in new[]
@@ -287,7 +513,7 @@ internal static class BootstrapperTestCatalog
             {
                 engine.Variables[variable] = version;
                 detected.Invoke(application, [null, new DetectPackageCompleteEventArgs(package, 0, state, false)]);
-                Assert.Equal(expected, package == "Streamlink" ? model.StreamlinkStatus : model.VlcStatus);
+                Assert.Equal(expected, package switch { "Streamlink" => model.StreamlinkStatus, "Vlc" => model.VlcStatus, _ => model.WebView2Status });
             }
         }
         return Task.CompletedTask;
@@ -340,6 +566,7 @@ internal static class BootstrapperTestCatalog
         Assert.Contains("{Binding Version, Mode=OneWay}", xaml);
         Assert.Contains("{Binding StreamlinkVersion, Mode=OneWay}", xaml);
         Assert.Contains("{Binding VlcVersion, Mode=OneWay}", xaml);
+        Assert.Contains("{Binding WebView2Version, Mode=OneWay}", xaml);
         return Task.CompletedTask;
     }
 
@@ -367,7 +594,7 @@ internal static class BootstrapperTestCatalog
         Assert.Contains("<ExePackage", bundle);
         Assert.Contains("SourceFile=\"$(var.VlcInstaller)\"", bundle);
         Assert.Contains("InstallArguments=\"/L=1033 /S\"", bundle);
-        Assert.Contains("DetectCondition=\"VlcInstalledVersion &gt;= v$(var.VlcVersion)\"", bundle);
+        Assert.Contains("DetectCondition=\"VlcInstalledVersion &gt;= v$(var.VlcVersion) AND VlcRuntimeUsable\"", bundle);
         Assert.Contains("Key=\"SOFTWARE\\VideoLAN\\VLC\"", bundle);
         Assert.Contains("Value=\"InstallDir\"", bundle);
         Assert.Contains("Path=\"[VlcInstallDirectory]\\libvlc.dll\"", bundle);

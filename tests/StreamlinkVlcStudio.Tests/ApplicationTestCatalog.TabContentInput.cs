@@ -54,6 +54,10 @@ internal static partial class ApplicationTestCatalog
             SetMainWindowHandle(window);
             AttachMainWindowMessageHook(window);
             PumpResponsiveLayout(window);
+            main.ToggleSettingsCommand.Execute(null);
+            PumpResponsiveLayout(window);
+            var currentTitle = FindVisualDescendants<EmojiTextBlock>(FindTabStripChrome(window, tabs[0])).Single();
+            RaiseTitleClick(currentTitle.Inlines.OfType<Run>().First(), tabs[0]);
             // Raise from the actual template's Run, rather than assigning SelectedTab or
             // raising from TabChrome: those bypass the original crash's input source.
             for (var pass = 0; pass < 4; pass++)
@@ -74,8 +78,11 @@ internal static partial class ApplicationTestCatalog
             await NativeWindowTest.RequireForegroundAsync(
                 new System.Windows.Interop.WindowInteropHelper(window).Handle,
                 TimeSpan.FromSeconds(2), "tab title click regression");
-            foreach (var tab in tabs.Reverse())
+            foreach (var tab in new[] { tabs[0], tabs[2], tabs[1], tabs[0] })
             {
+                main.ToggleSettingsCommand.Execute(null);
+                PumpResponsiveLayout(window);
+                Assert.True(main.IsSettingsOpen);
                 var title = FindVisualDescendants<EmojiTextBlock>(FindTabStripChrome(window, tab)).Single();
                 var run = title.Inlines.OfType<Run>().First();
                 var rectangle = run.ContentStart.GetCharacterRect(LogicalDirection.Forward);
@@ -95,7 +102,7 @@ internal static partial class ApplicationTestCatalog
                 await Task.Run(() => NativeWindowTest.SendLeftClick((int)Math.Round(point.X), (int)Math.Round(point.Y)));
                 try
                 {
-                    await TestWait.UntilAsync(() => sources.Count > count && ReferenceEquals(main.SelectedTab, tab) &&
+                    await TestWait.UntilAsync(() => sources.Count > count && !main.IsSettingsOpen && ReferenceEquals(main.SelectedTab, tab) &&
                         dragField.GetValue(window) is null, TimeSpan.FromSeconds(2), "Physical title click did not finish selecting its stream.");
                 }
                 catch (InvalidOperationException exception)
@@ -110,9 +117,12 @@ internal static partial class ApplicationTestCatalog
                     "The physical click did not hit the title's Run, so it did not exercise the crash path.");
                 Assert.True(ReferenceEquals(list.SelectedItem, main.SelectedTabStripItem));
                 PumpResponsiveLayout(window);
+                Assert.Equal(Visibility.Collapsed, ((FrameworkElement)window.FindName("SettingsPanel")).Visibility);
+                Assert.Equal(Visibility.Visible, ((FrameworkElement)window.FindName("PlaybackHost")).Visibility);
             }
 
             main.SelectHomeCommand.Execute(null);
+            main.ToggleSettingsCommand.Execute(null);
             PumpResponsiveLayout(window);
             var homeTitle = FindVisualDescendants<EmojiTextBlock>(FindTabStripChrome(window, tabs[0])).Single();
             RaiseTitleClick(homeTitle.Inlines.OfType<Run>().First(), tabs[0]);
@@ -120,16 +130,33 @@ internal static partial class ApplicationTestCatalog
 
             Assert.True(main.TryMergeTabsIntoMultiView([tabs[1]], tabs[0]));
             main.SelectedTab = tabs[2];
+            main.ToggleSettingsCommand.Execute(null);
             PumpResponsiveLayout(window);
             var groupChrome = FindTabStripChrome(window, tabs[0]);
             var group = (TabStripItemViewModel)groupChrome.DataContext;
             var groupTitle = FindVisualDescendants<EmojiTextBlock>(groupChrome).Single();
             RaiseTitleClick(groupTitle.Inlines.OfType<Run>().First(), group.ActiveTab);
             Assert.Equal(2, main.SelectedTabStripItem!.Tabs.Count);
+            main.ToggleSettingsCommand.Execute(null);
+            PumpResponsiveLayout(window);
+            groupTitle = FindVisualDescendants<EmojiTextBlock>(FindTabStripChrome(window, tabs[0])).Single();
+            RaiseTitleClick(groupTitle.Inlines.OfType<Run>().First(), main.SelectedTab!);
+
+            window.Width = 600;
+            window.Height = 480;
+            PumpResponsiveLayout(window);
+            await ClickCompactTabAsync(tabs[0]);
+            await ClickCompactTabAsync(tabs[2]);
+            await ClickCompactTabAsync(tabs[2]);
+            await ClickCompactTabAsync(tabs[0]);
+            window.Width = 1400;
+            window.Height = 760;
+            PumpResponsiveLayout(window);
 
             // Inline text inside a close button must remain a button click, without
             // selecting its tab or starting a detach drag in the enclosing TabChrome.
             main.SelectedTab = tabs[2];
+            main.ToggleSettingsCommand.Execute(null);
             PumpResponsiveLayout(window);
             groupChrome = FindTabStripChrome(window, tabs[0]);
             var close = FindVisualDescendants<Button>(groupChrome).Single(button => button.Name == "TabCloseControl");
@@ -145,10 +172,12 @@ internal static partial class ApplicationTestCatalog
             Assert.True(ReferenceEquals(closeRun, closeDown.OriginalSource));
             Assert.Equal(false, closeDown.Handled);
             Assert.True(ReferenceEquals(main.SelectedTab, tabs[2]));
+            Assert.True(main.IsSettingsOpen, "A tab close control must not activate its stream.");
             Assert.True(dragField.GetValue(window) is null);
             close.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.SequenceEqual(new[] { tabs[2] }, main.Tabs);
             Assert.True(ReferenceEquals(main.SelectedTab, tabs[2]));
+            Assert.True(main.IsSettingsOpen);
             Assert.True(tabs.All(tab => !tab.IsDetached));
         }
         finally
@@ -168,6 +197,8 @@ internal static partial class ApplicationTestCatalog
             Assert.True(ReferenceEquals(source, down.OriginalSource));
             Assert.Equal(true, down.Handled);
             Assert.True(ReferenceEquals(main.SelectedTab, expected));
+            Assert.Equal(false, main.IsSettingsOpen);
+            Assert.Equal(false, main.IsHomeSelected);
             Assert.True(ReferenceEquals(list.SelectedItem, main.SelectedTabStripItem));
             Assert.True(ReferenceEquals(dragField.GetValue(window), expected));
             Assert.True(ReferenceEquals(Mouse.Captured, window));
@@ -180,6 +211,48 @@ internal static partial class ApplicationTestCatalog
             Assert.True(dragField.GetValue(window) is null);
             Assert.True(!ReferenceEquals(Mouse.Captured, window));
             PumpResponsiveLayout(window);
+        }
+
+        async Task ClickCompactTabAsync(StreamTabViewModel target)
+        {
+            main.ToggleSettingsCommand.Execute(null);
+            PumpResponsiveLayout(window);
+            var selector = (ComboBox)window.FindName("CompactTabSelector");
+            Assert.True(main.IsSettingsOpen && selector.IsVisible);
+            var center = selector.PointToScreen(new Point(selector.ActualWidth / 2, selector.ActualHeight / 2));
+            await Task.Run(() => NativeWindowTest.SendLeftClick((int)Math.Round(center.X), (int)Math.Round(center.Y)));
+            await TestWait.UntilAsync(() => selector.IsDropDownOpen, TimeSpan.FromSeconds(2),
+                "Physical click did not open the compact stream selector.");
+            PumpResponsiveLayout(window);
+            var item = main.TabStripItems.Single(candidate => candidate.Contains(target));
+            var container = (ComboBoxItem)selector.ItemContainerGenerator.ContainerFromItem(item);
+            Assert.NotNull(container);
+            var title = FindVisualDescendants<EmojiTextBlock>(container).Single();
+            var run = title.Inlines.OfType<Run>().First();
+            var rectangle = run.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+            var next = run.ContentStart.GetPositionAtOffset(1)!.GetCharacterRect(LogicalDirection.Forward);
+            var point = title.PointToScreen(new Point((rectangle.Left + next.Left) / 2, rectangle.Top + rectangle.Height / 2));
+            var popupSource = (System.Windows.Interop.HwndSource)PresentationSource.FromVisual(container);
+            // The popup uses a fade animation. Wait until its native window
+            // receives input at the title before sending the actual mouse click.
+            await TestWait.UntilAsync(() => NativeWindowTest.IsRootWindowAtPoint(popupSource.Handle,
+                (int)Math.Round(point.X), (int)Math.Round(point.Y)), TimeSpan.FromSeconds(2),
+                $"Compact popup {popupSource.Handle} did not own its title click point {point}: " +
+                NativeWindowTest.DescribeWindowAtPoint((int)Math.Round(point.X), (int)Math.Round(point.Y)));
+            object? originalSource = null;
+            container.AddHandler(UIElement.PreviewMouseLeftButtonDownEvent,
+                new MouseButtonEventHandler((_, args) => originalSource = args.OriginalSource), handledEventsToo: true);
+            await Task.Run(() => NativeWindowTest.SendLeftClick((int)Math.Round(point.X), (int)Math.Round(point.Y)));
+            await TestWait.UntilAsync(() => originalSource is not null && !main.IsSettingsOpen &&
+                ReferenceEquals(main.SelectedTab, target) && !selector.IsDropDownOpen,
+                TimeSpan.FromSeconds(2), "Physical compact title click did not close Settings and select its stream.");
+            Assert.True(ReferenceEquals(originalSource, run), "The compact click must hit the title's actual Run.");
+            Assert.True(ReferenceEquals(selector.SelectedItem, main.SelectedTabStripItem));
+            Assert.Equal(false, main.IsHomeSelected);
+            Assert.True(dragField.GetValue(window) is null);
+            PumpResponsiveLayout(window);
+            Assert.Equal(Visibility.Collapsed, ((FrameworkElement)window.FindName("SettingsPanel")).Visibility);
+            Assert.Equal(Visibility.Visible, ((FrameworkElement)window.FindName("PlaybackHost")).Visibility);
         }
     });
 

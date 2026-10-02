@@ -13,6 +13,13 @@ data, the restarted application's managed updater, and quiet repair before the
 release is published. The manual upgrade workflow can still select older source
 versions and the target helper for clients predating the packaged-updater fix.
 
+For the latest published target and the source helper, the manual workflow runs the
+installed source application's real signed release check and download against
+GitHub. It installs the exact package and helper staged by that updater, then
+checks that the upgraded application reports the latest version. Targets that
+declare dependency verification also undergo passive same-version repair with
+an intentionally removed application plugin and exact-byte restoration checks.
+
 ## Retry an interrupted release
 
 Rerun the failed protected workflow for the same stable tag and source commit.

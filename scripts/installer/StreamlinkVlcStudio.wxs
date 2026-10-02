@@ -25,8 +25,9 @@
       <Directory Id="StartMenuProgramsFolder" Name="Stream Studio" />
     </StandardDirectory>
 
-    <Icon Id="StreamlinkVlcStudio.ico" SourceFile="$(var.AppIcon)" />
-    <Property Id="ARPPRODUCTICON" Value="StreamlinkVlcStudio.ico" />
+    <!-- A fresh filename avoids reusing shell images cached under the legacy icon name. -->
+    <Icon Id="Studio.ico" SourceFile="$(var.AppIcon)" />
+    <Property Id="ARPPRODUCTICON" Value="Studio.ico" />
     <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
 
     <!-- The shortcut is keyed to the machine-installed executable. Windows Installer
@@ -43,7 +44,7 @@
           Description="Watch Twitch and Kick streams with Streamlink and VLC."
           Directory="StartMenuProgramsFolder"
           WorkingDirectory="INSTALLFOLDER"
-          Icon="StreamlinkVlcStudio.ico"
+          Icon="Studio.ico"
           Advertise="yes" />
       </File>
       <RemoveFolder Id="RemoveStartMenuProgramsFolder" Directory="StartMenuProgramsFolder" On="uninstall" />

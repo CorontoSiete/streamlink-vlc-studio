@@ -21,6 +21,9 @@
       Name="VlcDependencyVersion"
       Type="string"
       Value="$(var.VlcVersion)" />
+    <Variable Name="WebView2DependencyVersion" Type="string" Value="$(var.WebView2MinimumVersion)" />
+    <Variable Name="WebView2InstalledVersion" Type="version" Value="0.0.0.0" />
+    <Variable Name="VlcRuntimeUsable" Type="numeric" Value="0" />
     <Variable
       Name="InstalledApplicationPath"
       Type="formatted"
@@ -75,6 +78,8 @@
         DisplayName="Streamlink (x64)"
         SourceFile="$(var.StreamlinkInstaller)"
         InstallArguments="/AllUsers /S"
+        RepairArguments="/AllUsers /S"
+        RepairCondition="StreamlinkMachineVersion &lt;= v$(var.StreamlinkInstallerVersion)"
         PerMachine="yes"
         Permanent="yes"
         DetectCondition="StreamlinkMachineVersion &gt;= v$(var.StreamlinkMinimumVersion)" />
@@ -83,10 +88,21 @@
         DisplayName="VLC media player (64-bit)"
         SourceFile="$(var.VlcInstaller)"
         InstallArguments="/L=1033 /S"
+        RepairArguments="/L=1033 /S"
+        RepairCondition="VlcInstalledVersion &lt;= v$(var.VlcInstallerVersion)"
         PerMachine="yes"
         Permanent="yes"
-        DetectCondition="VlcInstalledVersion &gt;= v$(var.VlcVersion)"
-        InstallCondition="VlcInstalledVersion &lt; v$(var.VlcVersion)" />
+        DetectCondition="VlcInstalledVersion &gt;= v$(var.VlcVersion) AND VlcRuntimeUsable" />
+      <ExePackage
+        Id="WebView2"
+        DisplayName="Microsoft Edge WebView2 Runtime (x64)"
+        SourceFile="$(var.WebView2Installer)"
+        InstallArguments="/silent /install"
+        RepairArguments="/silent /install"
+        RepairCondition="WebView2InstalledVersion &lt;= v$(var.WebView2InstallerVersion)"
+        PerMachine="yes"
+        Permanent="yes"
+        DetectCondition="WebView2InstalledVersion &gt;= v$(var.WebView2MinimumVersion)" />
       <MsiPackage
         Id="StreamStudio"
         DisplayName="Stream Studio"

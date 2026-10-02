@@ -7,10 +7,15 @@ internal static partial class TwitchChannelPointsTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
-        ("Twitch bonuses follow open streams across pause stop restart and collection reset", LifecycleAsync),
-        ("Twitch bonuses share duplicate channels and exclude Kick VOD and replay", ScopeAsync),
+        ("Twitch bonuses follow live followed channels independently of playback tabs", LifecycleAsync),
+        ("Twitch bonuses share duplicate follows and exclude Kick VOD browse and invalid channels", ScopeAsync),
+        ("Twitch bonuses check all live follows without a channel limit or open tabs", AllFollowedAsync),
+        ("Twitch bonuses observe replaced and updated followed cards without reloading metadata", FollowedCardsAsync),
+        ("Twitch bonuses use the current followed list after a pending website session check", PendingSessionAsync),
+        ("Twitch bonuses follow startup automatic and manual followed refreshes", FollowedRefreshAsync),
+        ("Twitch bonuses inspect a followed channel regardless of its tab playback state", SelectedPageAsync),
         ("Twitch bonuses stop on disable and observe replacement settings", SettingsAsync),
-        ("Twitch bonuses cancel pending page creation when a tab closes", PendingPageAsync),
+        ("Twitch bonuses cancel pending page creation when a followed channel leaves the live list", PendingPageAsync),
         ("Twitch bonuses cancel pending checks during shutdown", PendingCheckAsync),
         ("Twitch bonuses require website sign-in and close pages before sign-out", AccountAsync),
         ("Twitch bonuses close all chat pages when the website session expires", SessionExpiredAsync),
@@ -29,6 +34,7 @@ internal static partial class TwitchChannelPointsTestCatalog
             {
                 ("Twitch bonuses real WebView2 clicks only available bonus controls", BrowserScriptAsync),
                 ("Twitch bonuses real browser claims silently without opening a Twitch window", BrowserBackgroundAsync),
+                ("Twitch bonuses real browser confirms all live followed channels without playback tabs", BrowserFollowedChannelsAsync),
                 ("Twitch bonuses real browser keeps claiming after inspection closes and owner minimizes", BrowserInspectionAsync),
                 ("Twitch bonuses real browser blocks video and worker streaming requests before any claim check", BrowserMediaAsync),
                 ("Twitch bonuses real browser confines navigation to the selected chat", BrowserNavigationAsync),
@@ -44,55 +50,66 @@ internal static partial class TwitchChannelPointsTestCatalog
     private static Task LifecycleAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         await using var fixture = new Fixture();
-        var tab = fixture.Add("alpha");
-        Assert.Equal(0, fixture.Browser.Pages.Count);
-        await tab.StartAsync(fixture.Settings);
+        var channel = fixture.Add("alpha");
         await Eventually(() => fixture.Browser.Pages.Count == 1 && fixture.Browser.Pages[0].Checks > 0);
         var page = fixture.Browser.Pages[0];
+        Assert.Equal(0, fixture.Tabs.Count);
+        var tab = fixture.AddTab("alpha");
+        await tab.StartAsync(fixture.Settings);
         var checksBeforePause = page.Checks;
         await tab.PauseForTabSwitchAsync();
         await Eventually(() => page.Checks > checksBeforePause);
         Assert.Equal(1, fixture.Browser.Pages.Count);
         Assert.Equal(false, page.Disposed);
         await tab.ResumeFromTabSwitchAsync();
-        // Live reconnect passes through Starting, so its previous companion is
-        // closed and a new one starts once playback has actually resumed.
-        await Eventually(() => fixture.Browser.Pages.Count > 1 && !fixture.Browser.Pages.Last().Disposed && fixture.Browser.Pages.Last().Checks > 0);
-        page = fixture.Browser.Pages.Last();
+        Assert.Equal(1, fixture.Browser.Pages.Count);
         await tab.StopAsync();
-        Assert.True(page.Disposed);
-        var beforeRestart = fixture.Browser.Pages.Count;
+        Assert.Equal(false, page.Disposed);
+        SetStatus(tab, PlaybackStatus.Error);
+        typeof(StreamTabViewModel).GetProperty(nameof(StreamTabViewModel.IsBehindLive))!.SetValue(tab, true);
+        Assert.Equal(false, page.Disposed);
+        typeof(StreamTabViewModel).GetProperty(nameof(StreamTabViewModel.IsBehindLive))!.SetValue(tab, false);
         await tab.StartAsync(fixture.Settings);
-        await Eventually(() => fixture.Browser.Pages.Count == beforeRestart + 1);
         fixture.Tabs.Clear();
-        Assert.True(fixture.Browser.Pages.Last().Disposed);
         await tab.StopAsync();
-        Assert.Equal(beforeRestart + 1, fixture.Browser.Pages.Count);
+        var checksAfterClose = page.Checks;
+        await Eventually(() => page.Checks > checksAfterClose);
+        Assert.Equal(1, fixture.Browser.OpenAttempts);
+        fixture.LiveFollowedChannels.Remove(channel);
+        Assert.True(page.Disposed);
+        Assert.True(fixture.Controller.HasNoChannelClaims);
+        fixture.Add("alpha");
+        await Eventually(() => fixture.Browser.Pages.Count == 2 && fixture.Browser.Pages[1].Checks > 0);
+        fixture.LiveFollowedChannels.Clear();
+        Assert.True(fixture.Browser.Pages.All(candidate => candidate.Disposed));
     });
 
     private static Task ScopeAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         await using var fixture = new Fixture();
-        var first = fixture.Add("Alpha");
+        var first = fixture.Add(" Alpha ");
         var duplicate = fixture.Add("alpha");
-        var other = fixture.Add("bravo");
-        var kick = fixture.Add("kickone", PlatformKind.Kick);
-        var vod = fixture.Add("vodone", kind: StreamTargetKind.TwitchVod);
-        foreach (var tab in new[] { first, duplicate, other, kick, vod }) SetStatus(tab, PlaybackStatus.Playing);
+        fixture.Add("bravo");
+        fixture.Add("kickone", PlatformKind.Kick);
+        fixture.Add("vodone", kind: StreamTargetKind.TwitchVod);
+        fixture.Add("browseone", source: LiveStreamCardSource.Browse);
+        foreach (var invalid in new[] { "", "../login", "abc/def", "x?query", new string('a', 26) }) fixture.Add(invalid);
+        SetStatus(fixture.AddTab("notfollowed"), PlaybackStatus.Playing);
         await Eventually(() => fixture.Browser.Pages.Count == 2);
         Assert.True(fixture.Browser.Pages.All(page => page.Channel is "alpha" or "bravo"));
-        fixture.Tabs.Remove(first);
+        Assert.SequenceEqual(new[] { "alpha", "bravo" }, fixture.Controller.ChannelClaims.Select(row => row.Channel));
+        fixture.LiveFollowedChannels.Remove(first);
         Assert.True(fixture.Browser.Pages.All(page => !page.Disposed));
-        fixture.Tabs.Remove(duplicate);
+        fixture.LiveFollowedChannels.Remove(duplicate);
         Assert.True(fixture.Browser.Pages.Single(page => page.Channel == "alpha").Disposed);
-        typeof(StreamTabViewModel).GetProperty(nameof(StreamTabViewModel.IsBehindLive))!.SetValue(other, true);
-        Assert.True(fixture.Browser.Pages.Single(page => page.Channel == "bravo").Disposed);
+        Assert.Equal(false, fixture.Browser.Pages.Single(page => page.Channel == "bravo").Disposed);
+        Assert.Equal(2, fixture.Browser.OpenAttempts);
     });
 
     private static Task SettingsAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         await using var fixture = new Fixture();
-        SetStatus(fixture.Add("alpha"), PlaybackStatus.Playing);
+        fixture.Add("alpha");
         await Eventually(() => fixture.Browser.Pages.Count == 1);
         fixture.Controller.Enabled = false;
         Assert.True(fixture.Browser.Pages[0].Disposed);
@@ -111,10 +128,9 @@ internal static partial class TwitchChannelPointsTestCatalog
         await using var fixture = new Fixture();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Browser.OpenGate = release.Task;
-        var tab = fixture.Add("alpha");
-        SetStatus(tab, PlaybackStatus.Playing);
+        var channel = fixture.Add("alpha");
         await Eventually(() => fixture.Browser.OpenAttempts == 1);
-        fixture.Tabs.Remove(tab);
+        fixture.LiveFollowedChannels.Remove(channel);
         Assert.True(fixture.Browser.LastOpenToken.IsCancellationRequested);
         release.SetResult();
         await Eventually(() => fixture.Browser.Pages.Count == 1 && fixture.Browser.Pages[0].Disposed);
@@ -126,7 +142,7 @@ internal static partial class TwitchChannelPointsTestCatalog
         await using var fixture = new Fixture();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Browser.CheckGate = release.Task;
-        SetStatus(fixture.Add("alpha"), PlaybackStatus.Playing);
+        fixture.Add("alpha");
         await Eventually(() => fixture.Browser.Pages.Count == 1 && fixture.Browser.Pages[0].Checks == 1);
         var page = fixture.Browser.Pages[0];
         fixture.Controller.Dispose();
@@ -135,14 +151,19 @@ internal static partial class TwitchChannelPointsTestCatalog
         var status = fixture.Controller.Status;
         release.SetResult();
         await Task.Delay(40);
+        fixture.LiveFollowedChannels.Clear();
+        fixture.Add("bravo");
+        fixture.Controller.Enabled = false;
+        fixture.Controller.Enabled = true;
         Assert.Equal(status, fixture.Controller.Status);
         Assert.Equal(1, page.Checks);
+        Assert.Equal(1, fixture.Browser.OpenAttempts);
     });
 
     private static Task AccountAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         await using var fixture = new Fixture(signedIn: false);
-        SetStatus(fixture.Add("alpha"), PlaybackStatus.Playing);
+        fixture.Add("alpha");
         await Eventually(() => fixture.Controller.Status.StartsWith("Sign in", StringComparison.Ordinal));
         Assert.Equal(0, fixture.Browser.OpenAttempts);
         await fixture.Controller.SignInCommand.ExecuteAsync();
@@ -161,7 +182,7 @@ internal static partial class TwitchChannelPointsTestCatalog
     {
         await using var fixture = new Fixture();
         fixture.Browser.FailOpen = true;
-        SetStatus(fixture.Add("alpha"), PlaybackStatus.Playing);
+        fixture.Add("alpha");
         await Eventually(() => fixture.Browser.OpenAttempts == 1);
         await Task.Delay(70);
         Assert.Equal(1, fixture.Browser.OpenAttempts);
@@ -174,8 +195,8 @@ internal static partial class TwitchChannelPointsTestCatalog
     private static Task SessionExpiredAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         await using var fixture = new Fixture();
-        SetStatus(fixture.Add("alpha"), PlaybackStatus.Playing);
-        SetStatus(fixture.Add("bravo"), PlaybackStatus.Playing);
+        fixture.Add("alpha");
+        fixture.Add("bravo");
         await Eventually(() => fixture.Browser.Pages.Count == 2);
         fixture.Browser.Pages[0].Expired = true;
         await Eventually(() => fixture.Browser.Pages.All(page => page.Disposed));
@@ -323,11 +344,12 @@ internal static partial class TwitchChannelPointsTestCatalog
     {
         internal AppSettings Settings { get; }
         internal ObservableCollection<StreamTabViewModel> Tabs { get; } = [];
+        internal ObservableCollection<LiveStreamCardViewModel> LiveFollowedChannels { get; } = [];
         internal FakeBrowser Browser { get; } = new();
         internal TwitchChannelPointsController Controller { get; }
         private readonly List<StreamTabViewModel> ownedTabs = [];
         internal Fixture(bool signedIn = true, AppSettings? settings = null, ISettingsService? settingsService = null,
-            Task? sessionGate = null)
+            Task? sessionGate = null, IEnumerable<LiveStreamCardData>? initialChannels = null)
         {
             Settings = settings ?? new();
             Settings.StreamlinkPath = "streamlink.exe";
@@ -336,9 +358,20 @@ internal static partial class TwitchChannelPointsTestCatalog
             Settings.Chat.Layout = ChatLayout.Docked;
             Browser.SignedIn = signedIn;
             Browser.SessionGate = sessionGate;
-            Controller = new(Settings, Tabs, () => Tabs.FirstOrDefault(), Browser, new MemoryLogger(), TimeSpan.FromMilliseconds(10), settingsService);
+            foreach (var channel in initialChannels ?? [])
+                LiveFollowedChannels.Add(new(channel, (_, _) => Task.CompletedTask));
+            Controller = new(Settings, LiveFollowedChannels, () => Tabs.FirstOrDefault(), Browser,
+                new MemoryLogger(), TimeSpan.FromMilliseconds(10), settingsService);
         }
-        internal StreamTabViewModel Add(string channel, PlatformKind platform = PlatformKind.Twitch, StreamTargetKind kind = StreamTargetKind.Live)
+        internal LiveStreamCardViewModel Add(string channel, PlatformKind platform = PlatformKind.Twitch,
+            StreamTargetKind kind = StreamTargetKind.Live, LiveStreamCardSource source = LiveStreamCardSource.Followed)
+        {
+            var card = new LiveStreamCardViewModel(ChannelData(channel, platform, kind, source), (_, _) => Task.CompletedTask);
+            LiveFollowedChannels.Add(card);
+            return card;
+        }
+        internal StreamTabViewModel AddTab(string channel, PlatformKind platform = PlatformKind.Twitch,
+            StreamTargetKind kind = StreamTargetKind.Live)
         {
             var tab = TestViewModels.CreateTab(new StreamTarget(platform, channel, $"https://www.twitch.tv/{channel}", kind),
                 "best", new FakeStreamlinkService(), new FakePlaybackEngineFactory(), new FakeChatClientFactory(),
@@ -393,7 +426,7 @@ internal static partial class TwitchChannelPointsTestCatalog
         public event EventHandler<string>? ClaimConfirmed;
         internal void Confirm(string id) => ClaimConfirmed?.Invoke(this, id);
         internal string Channel => channel;
-        internal int Checks;
+        internal int Checks, Shows;
         internal bool Disposed, Expired;
         internal CancellationToken LastCheckToken;
         internal string Result = "Checking chat for available bonuses (no background video).";
@@ -407,7 +440,7 @@ internal static partial class TwitchChannelPointsTestCatalog
             token.ThrowIfCancellationRequested();
             return Result;
         }
-        public void Show() { }
+        public void Show() => Shows++;
         public void Dispose() => Disposed = true;
     }
 }

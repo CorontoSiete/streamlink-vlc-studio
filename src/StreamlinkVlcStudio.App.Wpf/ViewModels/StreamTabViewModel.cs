@@ -1951,7 +1951,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 $"Paused {Target.DisplayName} because its video is off-grid " +
                 $"(visible={IsVideoVisible}, detached={IsDetached}, " +
                 $"suspendedConnection={livePlaybackConnectionSuspended}). " +
-                "Enable \"Keep inactive tabs running\" to keep hidden tabs playing.");
+                (Target.IsExplicitVod
+                    ? "Disable \"Pause unselected VOD tabs\" to keep hidden VODs playing."
+                    : "Enable \"Keep inactive live tabs running\" to keep hidden live tabs playing."));
         }
 
         await StopBackgroundResourceServicesAsync();

@@ -2193,7 +2193,8 @@ internal static class TestViewModels
         IReplayResolver? replayResolver = null,
         IVodChatProvider? vodChatProvider = null,
         TimeSpan? twitchLiveDvrPromotionPollInterval = null,
-        ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver = null) =>
+        ITwitchSubOnlyVodResolver? twitchSubOnlyVodResolver = null,
+        IVodPlaybackHistory? vodPlaybackHistory = null) =>
         new(new StreamTabViewModelDependencies
         {
             Target = target,
@@ -2208,7 +2209,8 @@ internal static class TestViewModels
             ReplayResolver = replayResolver,
             VodChatProvider = vodChatProvider,
             TwitchLiveDvrPromotionPollInterval = twitchLiveDvrPromotionPollInterval,
-            TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver
+            TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver,
+            VodPlaybackHistory = vodPlaybackHistory
         });
 }
 

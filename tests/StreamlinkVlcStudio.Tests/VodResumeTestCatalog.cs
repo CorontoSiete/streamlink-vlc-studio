@@ -286,6 +286,7 @@ internal static class VodResumeTestCatalog
         using var files = new HistoryFiles();
         var settings = Settings();
         settings.KeepInactiveTabsRunning = true;
+        settings.PauseInactiveVodTabs = false;
         var factory = new FakePlaybackEngineFactory();
         await using var main = new MainViewModel(new MainViewModelDependencies
         {

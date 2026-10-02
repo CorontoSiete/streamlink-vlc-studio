@@ -271,6 +271,13 @@ Copy-Item `
     -LiteralPath $installerDependencyManifestLibrary `
     -Destination (Join-Path $installerCommonStage "dependency-manifest.ps1") `
     -Force
+foreach ($runtimeHelper in @('runtime-dependencies.ps1', 'WindowsDependencyProbe.cs')) {
+    $runtimeHelperSource = Join-Path $scriptRoot ('lib\' + $runtimeHelper)
+    if (-not (Test-Path -LiteralPath $runtimeHelperSource -PathType Leaf)) {
+        throw "Shared runtime dependency helper missing: $runtimeHelperSource"
+    }
+    Copy-Item -LiteralPath $runtimeHelperSource -Destination (Join-Path $installerCommonStage $runtimeHelper) -Force
+}
 $releaseContractLibrary = Join-Path $scriptRoot "lib\release-contract.ps1"
 Copy-Item `
     -LiteralPath $releaseContractLibrary `
@@ -328,6 +335,7 @@ $zipReleaseMetadata = [ordered]@{
     commit = if ([string]::IsNullOrWhiteSpace($Commit)) { $null } else { $Commit }
     repository = $Repository
     updaterProtocolVersion = [int]$releaseContract.release.updaterProtocolVersion
+    dependencyVerificationProtocol = 1
     updateSigningKeyId = [string]$releaseContract.release.manifestSignature.keyId
     authenticodeSigned = [bool]$authenticode.Enabled
 }

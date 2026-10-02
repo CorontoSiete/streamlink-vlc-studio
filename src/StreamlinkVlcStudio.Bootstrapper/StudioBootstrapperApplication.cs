@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Text.RegularExpressions;
+using StreamStudio.Installation;
 using StreamlinkVlcStudio.Infrastructure.Processes;
 using System.Windows;
 using System.Windows.Threading;
@@ -69,6 +69,8 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     internal string VlcVersion => SafeVariable("VlcDependencyVersion", "3.0.23");
 
+    internal string WebView2Version => SafeVariable("WebView2DependencyVersion", "152.0.4191.53");
+
     protected override void OnCreate(CreateEventArgs args)
     {
         base.OnCreate(args);
@@ -115,7 +117,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 }
 
                 engine.Log(LogLevel.Standard, "Managed bootstrapper application initialized.");
-                ProbeStreamlinkDependency();
+                ProbeRuntimeDependencies();
                 engine.Detect(window.IsVisible ? window.WindowHandle : nint.Zero);
                 Dispatcher.Run();
             }
@@ -150,8 +152,8 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         if (command?.Display == Display.Full && window is not null)
         {
             var message = viewModel?.PurgeUserData == true
-                ? "Uninstall Stream Studio and permanently remove your settings, cache, and temporary data? VLC and Streamlink will be retained."
-                : "Uninstall Stream Studio? Your settings, cache, VLC, and Streamlink will be retained.";
+                ? "Uninstall Stream Studio and permanently remove your settings, cache, and temporary data? VLC, Streamlink, and WebView2 will be retained."
+                : "Uninstall Stream Studio? Your settings, cache, VLC, Streamlink, and WebView2 will be retained.";
             if (MessageBox.Show(
                     window,
                     message,
@@ -169,7 +171,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
     internal void RequestCancel()
     {
-        if (!IsApplying || isRollingBack || viewModel is null)
+        if (!IsApplying || isRollingBack || viewModel is null || viewModel.IsVerifyingDependencies)
         {
             return;
         }
@@ -190,10 +192,11 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         viewModel.CanLaunch = false;
         viewModel.CancelRequested = false;
         viewModel.IsRollingBack = false;
+        viewModel.IsVerifyingDependencies = false;
         viewModel.Progress = 0;
         viewModel.StatusText = "Checking installed components again...";
         viewModel.Page = BootstrapperPage.Loading;
-        ProbeStreamlinkDependency();
+        ProbeRuntimeDependencies();
         engine.Detect(window?.IsVisible == true ? window.WindowHandle : nint.Zero);
     }
 
@@ -261,6 +264,15 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             return;
         }
 
+        // Older update helpers launch Setup with /passive and no /repair switch.
+        // Once this bundle is registered, Install can leave damaged MSI files in
+        // place. Repair also installs prerequisite packages detected as absent.
+        if (action == LaunchAction.Install && isInstalled)
+        {
+            action = LaunchAction.Repair;
+            TryLog(LogLevel.Standard, "The requested bundle is already registered; planning repair of the application and missing runtimes.");
+        }
+
         if (newerRelatedBundle && action is LaunchAction.Install or LaunchAction.Repair)
         {
             ShowResult(
@@ -278,6 +290,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         notificationsUnregistered = false;
         isRollingBack = false;
         viewModel.IsRollingBack = false;
+        viewModel.IsVerifyingDependencies = false;
         viewModel.CancelRequested = false;
         viewModel.Progress = 0;
         viewModel.Page = BootstrapperPage.Progress;
@@ -366,51 +379,31 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         return MaintenanceResult.Ok;
     }
 
-    private void ProbeStreamlinkDependency()
+    private void ProbeRuntimeDependencies()
     {
-        const string versionVariable = "StreamlinkMachineVersion";
         var executable = SafeFormattedVariable("StreamlinkMachineExecutable", string.Empty);
-        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
-        {
-            TryLog(LogLevel.Standard, "A machine-wide Streamlink executable was not found under Program Files.");
-            engine.SetVariableVersion(versionVariable, "0.0.0.0");
-            return;
-        }
+        var streamlink = ProbeDependency("Streamlink", () => WindowsDependencyProbe.ReadStreamlinkVersion(executable, 10_000));
+        engine.SetVariableVersion("StreamlinkMachineVersion", streamlink.Length == 0 ? "0.0.0.0" : streamlink);
+        var vlc = ProbeDependency("VLC", () => WindowsDependencyProbe.ReadVlcVersion(WindowsDependencyProbe.FindMachineVlcDirectory()));
+        engine.SetVariableNumeric("VlcRuntimeUsable", vlc.Length == 0 ? 0 : 1);
+        var webView2 = ProbeDependency("WebView2", () => WindowsDependencyProbe.ReadWebView2Version(machineOnly: true));
+        engine.SetVariableVersion("WebView2InstalledVersion", webView2.Length == 0 ? "0.0.0.0" : webView2);
+    }
 
+    private string ProbeDependency(string name, Func<string> probe)
+    {
         try
         {
-            var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(executable, ["--version"]);
-            startInfo.WorkingDirectory = Path.GetDirectoryName(executable)!;
-            var result = new BoundedProcessRunner().RunAsync(startInfo, TimeSpan.FromSeconds(10))
-                .GetAwaiter().GetResult();
-            if (result.TimedOut)
-            {
-                engine.SetVariableVersion(versionVariable, "0.0.0.0");
-                TryLog(LogLevel.Standard, "The machine-wide Streamlink version probe timed out.");
-                return;
-            }
-
-            var output = string.Concat(result.StandardOutput, " ", result.StandardError);
-            var match = Regex.Match(
-                output,
-                @"(?<!\d)(?<version>\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)(?!\d)",
-                RegexOptions.CultureInvariant,
-                TimeSpan.FromSeconds(1));
-            if (result.ExitCode != 0 || result.OutputWasTruncated || !match.Success)
-            {
-                engine.SetVariableVersion(versionVariable, "0.0.0.0");
-                TryLog(LogLevel.Standard, "The machine-wide Streamlink executable did not report a usable version.");
-                return;
-            }
-
-            var version = match.Groups["version"].Value;
-            engine.SetVariableVersion(versionVariable, version);
-            TryLog(LogLevel.Standard, $"Detected machine-wide Streamlink {version} at {executable}.");
+            var version = probe();
+            TryLog(LogLevel.Standard, version.Length == 0
+                ? $"A usable machine-wide x64 {name} runtime was not found."
+                : $"Detected usable machine-wide x64 {name} {version}.");
+            return version;
         }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
+        catch (Exception ex)
         {
-            engine.SetVariableVersion(versionVariable, "0.0.0.0");
-            TryLog(LogLevel.Standard, $"The machine-wide Streamlink version probe failed: {ex.Message}");
+            TryLog(LogLevel.Standard, $"The machine-wide {name} runtime probe failed: {ex.Message}");
+            return string.Empty;
         }
     }
 
@@ -424,35 +417,25 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         }
         try
         {
-            using var process = Process.Start(new ProcessStartInfo
+            var result = new BoundedProcessRunner().RunAsync(new ProcessStartInfo
             {
                 FileName = executable,
                 Arguments = argument,
                 WorkingDirectory = Path.GetDirectoryName(executable)!,
                 UseShellExecute = false,
-                CreateNoWindow = true
-            });
-            if (process is null)
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }, timeout).GetAwaiter().GetResult();
+            if (result.TimedOut)
             {
-                return new MaintenanceResult(false, 1, "The maintenance process could not be started.");
-            }
-
-            if (!process.WaitForExit((int)timeout.TotalMilliseconds))
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                }
-
                 return new MaintenanceResult(false, ErrorInstallUserExit, "The maintenance process timed out.");
             }
-
-            return process.ExitCode == 0
+            if (!string.IsNullOrWhiteSpace(result.StandardOutput)) TryLog(LogLevel.Standard, result.StandardOutput);
+            if (!string.IsNullOrWhiteSpace(result.StandardError)) TryLog(LogLevel.Error, result.StandardError);
+            return result.ExitCode == 0 && !result.OutputWasTruncated
                 ? MaintenanceResult.Ok
-                : new MaintenanceResult(false, process.ExitCode, $"The maintenance process returned {process.ExitCode}.");
+                : new MaintenanceResult(false, result.ExitCode == 0 ? 1 : result.ExitCode, $"The maintenance process returned {result.ExitCode}.");
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
@@ -483,6 +466,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
         {
             "Streamlink" => "StreamlinkMachineVersion",
             "Vlc" => "VlcInstalledVersion",
+            "WebView2" => "WebView2InstalledVersion",
             _ => null
         };
         var installedVersion = versionVariable is null ? "0.0.0.0" : SafeVariable(versionVariable, "0.0.0.0");
@@ -502,6 +486,9 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 case "Vlc":
                     vm.VlcStatus = status;
                     break;
+                case "WebView2":
+                    vm.WebView2Status = status;
+                    break;
             }
         });
     }
@@ -520,6 +507,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
             vm.StreamlinkStatus = ResolvePendingStatus(vm.StreamlinkStatus);
             vm.VlcStatus = ResolvePendingStatus(vm.VlcStatus);
+            vm.WebView2Status = ResolvePendingStatus(vm.WebView2Status);
 
             if (retryingDetection)
             {
@@ -662,6 +650,38 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             }
         }
 
+        if (status >= 0 && plannedAction != LaunchAction.Uninstall)
+        {
+            if (restart == ApplyRestart.None)
+            {
+                await InvokeUiAsync(() =>
+                {
+                    if (viewModel is null) return;
+                    viewModel.IsVerifyingDependencies = true;
+                    viewModel.StatusText = "Verifying application and runtime dependencies...";
+                }).ConfigureAwait(false);
+                var executable = GetInstalledApplicationPath();
+                var verification = File.Exists(executable)
+                    ? await Task.Run(() => RunMaintenance(executable, "--maintenance-verify-dependencies", TimeSpan.FromSeconds(60))).ConfigureAwait(false)
+                    : new MaintenanceResult(false, 2, "The installed application executable is missing.");
+                if (!verification.Success)
+                {
+                    effectiveStatus = unchecked((int)0x80070643);
+                    lastError = "The application or a required runtime could not be verified. Use Try again and Repair to finish installation. Open the setup log for the dependency details.";
+                    TryLog(LogLevel.Error, $"Post-install dependency verification failed: {verification.Message}");
+                }
+            }
+            try
+            {
+                // This also runs for passive installs launched by older update helpers.
+                if (effectiveStatus == status) ShellIconCache.Refresh();
+            }
+            catch (Exception ex)
+            {
+                TryLog(LogLevel.Standard, $"Windows icon cache refresh failed: {ex.Message}");
+            }
+        }
+
         await InvokeUiAsync(() => FinalizeApply(status, effectiveStatus, restart, cleanupWarning)).ConfigureAwait(false);
     }
 
@@ -732,8 +752,8 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             };
             var message = plannedAction == LaunchAction.Uninstall
                 ? "Your personal data was " + (viewModel?.PurgeUserData == true
-                    ? "removed. VLC and Streamlink were retained."
-                    : "preserved. VLC and Streamlink were retained.")
+                    ? "removed. VLC, Streamlink, and WebView2 were retained."
+                    : "preserved. VLC, Streamlink, and WebView2 were retained.")
                 : restart == ApplyRestart.None
                     ? "Stream Studio is ready to use."
                     : "Windows must be restarted before all changes take effect.";
@@ -909,6 +929,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     {
         "Streamlink" => "Streamlink",
         "Vlc" => "VLC media player",
+        "WebView2" => "Microsoft Edge WebView2 Runtime",
         "StreamStudio" => "Stream Studio",
         "StreamlinkVlcStudio" => "Stream Studio",
         null or "" => "setup files",

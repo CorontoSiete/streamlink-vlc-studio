@@ -9,6 +9,12 @@ internal static class MaintenanceModeRunner
     public static bool TryRun(string[] args, out int exitCode)
     {
         exitCode = 0;
+        if (args.Length > 0 && string.Equals(args[0], ApplicationDependencyVerifier.Command, StringComparison.OrdinalIgnoreCase))
+        {
+            try { exitCode = ApplicationDependencyVerifier.Run(args); }
+            catch (Exception ex) { Console.Error.WriteLine($"Dependency verification failed: {ex.Message}"); exitCode = 1; }
+            return true;
+        }
         if (args.Length != 1) return false;
         try
         {

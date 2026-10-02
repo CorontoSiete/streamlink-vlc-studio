@@ -30,6 +30,8 @@
       "lib/common.ps1",
       "lib/install-state.ps1",
       "lib/dependency-manifest.ps1",
+      "lib/runtime-dependencies.ps1",
+      "lib/WindowsDependencyProbe.cs",
       "lib/release-contract.ps1",
       "vlc-overlay/build/libmyoverlay_plugin.dll",
       "vlc-overlay/build/vlc_chat_overlay.exe"

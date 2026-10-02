@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Stream Studio Setup"
         Width="720"
-        Height="590"
+        Height="710"
         MinWidth="680"
-        MinHeight="550"
+        MinHeight="670"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanMinimize"
         Background="#111318"
@@ -112,7 +112,7 @@
                 <StackPanel>
                     <TextBlock Style="{StaticResource PageTitle}" Text="Install Stream Studio" />
                     <TextBlock Style="{StaticResource MutedText}"
-                               Text="Setup installs the application for everyone on this PC under Program Files. Compatible VLC and Streamlink installations are kept and never downgraded." />
+                               Text="Setup installs the application and missing runtimes for everyone on this PC. Compatible VLC, Streamlink, and WebView2 installations are kept." />
                 </StackPanel>
                 <Border Grid.Row="1" Margin="0,22,0,0" Style="{StaticResource Card}">
                     <StackPanel>
@@ -140,6 +140,21 @@
                             </StackPanel>
                             <TextBlock Grid.Column="1" Margin="18,0,0,0" Foreground="#BFAEFF" Text="{Binding VlcStatus}" />
                         </Grid>
+                        <Separator Margin="0,13" Background="#303641" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock FontWeight="SemiBold" Text="Microsoft Edge WebView2 Runtime" />
+                                <TextBlock Margin="0,3,0,0" Style="{StaticResource MutedText}">
+                                    <Run Text="Browser runtime · "/><Run Text="{Binding WebView2Version, Mode=OneWay}"/><Run Text=" or newer"/>
+                                </TextBlock>
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" Margin="18,0,0,0" Foreground="#BFAEFF" Text="{Binding WebView2Status}" />
+                        </Grid>
+                        <TextBlock Margin="0,16,0,0" Style="{StaticResource MutedText}" Text="The application includes its .NET, drawing, and text runtimes." />
                     </StackPanel>
                 </Border>
                 <TextBlock Grid.Row="2" Margin="0,18,0,0" VerticalAlignment="Top" Style="{StaticResource MutedText}"
@@ -164,7 +179,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel>
                             <TextBlock FontSize="16" FontWeight="SemiBold" Text="Repair installation" />
-                            <TextBlock Margin="0,5,20,0" Style="{StaticResource MutedText}" Text="Verify and restore the installed application files." />
+                            <TextBlock Margin="0,5,20,0" Style="{StaticResource MutedText}" Text="Restore application files, install missing runtimes, and verify the completed installation." />
                         </StackPanel>
                         <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Command="{Binding RepairCommand}" Content="Repair" />
                     </Grid>
@@ -183,7 +198,7 @@
                             <StackPanel>
                                 <TextBlock FontSize="16" FontWeight="SemiBold" Text="Uninstall application" />
                                 <TextBlock Margin="0,5,20,0" Style="{StaticResource MutedText}"
-                                           Text="VLC and Streamlink are always retained." />
+                                           Text="VLC, Streamlink, and WebView2 are always retained." />
                             </StackPanel>
                             <Button Grid.Column="1" Style="{StaticResource DangerButton}" Command="{Binding UninstallCommand}" Content="Uninstall" />
                         </Grid>

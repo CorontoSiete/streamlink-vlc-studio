@@ -118,6 +118,11 @@ function Assert-MsiTableStreamSizes {
     }
 }
 
+function Test-WixToolVersion([string]$Installed, [string]$Expected) {
+    # WiX reports the stable version followed by SemVer build metadata.
+    $Installed.Trim() -cmatch ('^' + [regex]::Escape($Expected) + '(?:\+[0-9A-Za-z.-]+)?$')
+}
+
 function Ensure-WixTool {
     param([Parameter(Mandatory = $true)][string]$Version)
 
@@ -145,7 +150,7 @@ function Ensure-WixTool {
     }
 
     $installedVersion = [string](& $wixPath --version 2>$null | Select-Object -First 1)
-    if ((ConvertTo-DependencyVersion $installedVersion) -ne (ConvertTo-DependencyVersion $Version)) {
+    if (-not (Test-WixToolVersion $installedVersion $Version)) {
         throw "WiX version mismatch. Expected $Version, found '$installedVersion'."
     }
 
@@ -262,7 +267,8 @@ if (-not (Test-Path -LiteralPath $dependencyManifestPath -PathType Leaf)) {
 $dependencyManifestData = Read-WindowsDependencyManifest $dependencyManifestPath
 if ($dependencyManifestData.schemaVersion -ne 1 -or
     $null -eq $dependencyManifestData.dependencies.streamlink -or
-    $null -eq $dependencyManifestData.dependencies.vlc) {
+    $null -eq $dependencyManifestData.dependencies.vlc -or
+    $null -eq $dependencyManifestData.dependencies.webview2) {
     throw "Unsupported or incomplete installer dependency manifest: $dependencyManifestPath"
 }
 
@@ -377,6 +383,20 @@ try {
     Expand-ValidatedZipArchive -ArchivePath $releaseZipPath -DestinationDirectory $payloadRoot
 
     $payloadRoot = Resolve-ReleasePayloadRoot -ExtractedRoot $payloadRoot -Contract $releaseContract
+    $payloadDependencies = Read-WindowsDependencyManifest (Join-Path $payloadRoot 'dependencies\windows-installers.json')
+    Assert-DependencyManifestsMatch -Expected $dependencyManifestData -Actual $payloadDependencies
+    $compiledDependencies = Read-WindowsDependencyManifest (Join-Path $repoRoot 'dependencies\windows-installers.json')
+    $compiledMinimums = [ordered]@{}
+    foreach ($entry in $compiledDependencies.dependencies.PSObject.Properties) {
+        $compiledMinimums[$entry.Name] = Get-DependencyMinimumVersion $entry.Value
+    }
+    Assert-DependencyMinimums ([pscustomobject]$compiledMinimums) $payloadDependencies
+    [xml]$applicationProject = Get-Content -LiteralPath (Join-Path $repoRoot 'src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj') -Raw
+    $webViewSdk = @($applicationProject.GetElementsByTagName('PackageReference') |
+        Where-Object { $_.GetAttribute('Include') -ceq 'Microsoft.Web.WebView2' })
+    if ($webViewSdk.Count -ne 1 -or $webViewSdk[0].GetAttribute('Version') -cne [string]$payloadDependencies.dependencies.webview2.sdkVersion) {
+        throw 'The WebView2 SDK changed. Review its official minimum Runtime and update the locked dependency manifest before building Setup.'
+    }
     if ($authenticode.Enabled) {
         Invoke-AuthenticodeSigning `
             -Path @(
@@ -435,7 +455,7 @@ try {
 
     Write-Info "Downloading the locked Streamlink Windows dependency..."
     $streamlinkInfo = $dependencyManifestData.dependencies.streamlink
-    $streamlinkMinimumVersion = ([string]$streamlinkInfo.version).Trim()
+    $streamlinkMinimumVersion = Get-DependencyMinimumVersion $streamlinkInfo
     if ($streamlinkMinimumVersion -notmatch '^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?$') {
         throw "The locked Streamlink version is not a valid Burn version: $streamlinkMinimumVersion"
     }
@@ -447,7 +467,7 @@ try {
 
     Write-Info "Downloading the locked VLC Windows x64 dependency..."
     $vlcInfo = $dependencyManifestData.dependencies.vlc
-    $vlcVersion = ([string]$vlcInfo.version).Trim()
+    $vlcVersion = Get-DependencyMinimumVersion $vlcInfo
     if ($vlcVersion -notmatch '^\d+(?:\.\d+){1,3}$') {
         throw "The locked VLC version is not a valid installer version: $vlcVersion"
     }
@@ -456,6 +476,15 @@ try {
         -Uri $vlcInfo.url `
         -DestinationPath $vlcInstallerPath `
         -Dependency $vlcInfo
+
+    Write-Info "Downloading the locked WebView2 Evergreen standalone x64 dependency..."
+    $webView2Info = $dependencyManifestData.dependencies.webview2
+    $webView2MinimumVersion = Get-DependencyMinimumVersion $webView2Info
+    $webView2InstallerPath = Join-Path $dependencyRoot ([string]$webView2Info.fileName)
+    Save-DependencyFile `
+        -Uri $webView2Info.url `
+        -DestinationPath $webView2InstallerPath `
+        -Dependency $webView2Info
 
     $dotnet = Resolve-DotNetTool
     $bootstrapperProject = Join-Path $repoRoot "src\StreamlinkVlcStudio.Bootstrapper\StreamlinkVlcStudio.Bootstrapper.csproj"
@@ -584,8 +613,13 @@ try {
         "-d", ("BootstrapperApplicationDir=" + $bootstrapperApplicationRoot),
         "-d", ("StreamlinkInstaller=" + $streamlinkInstallerPath),
         "-d", ("StreamlinkMinimumVersion=" + $streamlinkMinimumVersion),
+        "-d", ("StreamlinkInstallerVersion=" + (ConvertTo-DependencyVersion ([string]$streamlinkInfo.version)).ToString()),
         "-d", ("VlcInstaller=" + $vlcInstallerPath),
         "-d", ("VlcVersion=" + $vlcVersion),
+        "-d", ("VlcInstallerVersion=" + (ConvertTo-DependencyVersion ([string]$vlcInfo.version)).ToString()),
+        "-d", ("WebView2Installer=" + $webView2InstallerPath),
+        "-d", ("WebView2MinimumVersion=" + $webView2MinimumVersion),
+        "-d", ("WebView2InstallerVersion=" + (ConvertTo-DependencyVersion ([string]$webView2Info.version)).ToString()),
         "-pdbtype", "none",
         "-o", $stagedBootstrapperPath,
         $bundleSource,

@@ -35,6 +35,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not [Environment]::Is64BitOperatingSystem) { throw 'Stream Studio requires 64-bit Windows.' }
+if (-not [Environment]::Is64BitProcess) {
+    throw 'Run this installer in 64-bit PowerShell so it can verify the x64 VLC runtime. From a 32-bit shell, use %WINDIR%\Sysnative\WindowsPowerShell\v1.0\powershell.exe.'
+}
 
 if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -50,6 +54,7 @@ $script:ScriptDirectory = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) 
 . (Join-Path $script:ScriptDirectory "lib\common.ps1")
 . (Join-Path $script:ScriptDirectory "lib\install-state.ps1")
 . (Join-Path $script:ScriptDirectory "lib\dependency-manifest.ps1")
+. (Join-Path $script:ScriptDirectory "lib\runtime-dependencies.ps1")
 . (Join-Path $script:ScriptDirectory "lib\release-contract.ps1")
 $releaseContractCandidates = @(
     (Join-Path $script:ScriptDirectory "release-contract.json"),
@@ -100,9 +105,13 @@ if ([string]::IsNullOrWhiteSpace($dependencyManifestPath)) {
     throw "Locked dependency manifest was not found. Supply -DependencyManifest or use a complete release package."
 }
 $script:DependencyManifest = Read-WindowsDependencyManifest $dependencyManifestPath
+$script:InstallerDependencyManifest = $script:DependencyManifest
+$script:DependencyManifestWasOverridden = $PSBoundParameters.ContainsKey('DependencyManifest')
+$script:VerifyInstalledAppDependencies = $false
 if ($script:DependencyManifest.schemaVersion -ne 1 -or
     $null -eq $script:DependencyManifest.dependencies.streamlink -or
-    $null -eq $script:DependencyManifest.dependencies.vlc) {
+    $null -eq $script:DependencyManifest.dependencies.vlc -or
+    $null -eq $script:DependencyManifest.dependencies.webview2) {
     throw "Unsupported or incomplete dependency manifest: $dependencyManifestPath"
 }
 
@@ -325,9 +334,17 @@ function Read-VerifiedUpdateManifest(
         [string]$manifest.keyId -cne $script:UpdateManifestKeyId) {
         throw 'Signed update manifest identity is inconsistent with the final GitHub release.'
     }
-    if ([string]$manifest.dependencyMinimums.streamlink -cne [string]$script:DependencyManifest.dependencies.streamlink.version -or
-        [string]$manifest.dependencyMinimums.vlc -cne [string]$script:DependencyManifest.dependencies.vlc.version) {
-        throw 'Signed update manifest dependency minimums do not match the bundled dependency manifest.'
+    foreach ($name in @('streamlink', 'vlc')) {
+        if ($null -eq $manifest.dependencyMinimums.PSObject.Properties[$name]) {
+            throw "Signed update manifest omits required dependency '$name'."
+        }
+    }
+    foreach ($entry in $manifest.dependencyMinimums.PSObject.Properties) {
+        $parsedMinimum = ConvertTo-DependencyVersion ([string]$entry.Value)
+        if ([string]$entry.Value -notmatch '^\d+(?:\.\d+){1,3}(?:-\d+)?$' -or
+            $null -eq $parsedMinimum -or $parsedMinimum -le [version]'0.0.0.0') {
+            throw "Signed update manifest has an invalid dependency minimum for '$($entry.Name)'."
+        }
     }
 
     foreach ($description in @(
@@ -533,20 +550,19 @@ function Find-OnPath([string]$FileName) {
 
         $candidate = Join-Path $candidateDirectory $FileName
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return [IO.Path]::GetFullPath($candidate)
+            [IO.Path]::GetFullPath($candidate)
         }
     }
 
-    $null
 }
 
 function Get-StreamlinkCandidatePaths {
     $candidatePaths = @(
         (Normalize-PathCandidate $env:STREAMLINK_PATH),
-        (Find-OnPath "streamlink.exe"),
         (Join-Path $env:LOCALAPPDATA "Programs\Streamlink\bin\streamlink.exe"),
-        (Join-Path $env:ProgramFiles "Streamlink\bin\streamlink.exe")
+        (Join-Path ([StreamStudio.Installation.WindowsDependencyProbe]::GetProgramFiles64Directory()) "Streamlink\bin\streamlink.exe")
     )
+    $candidatePaths += @(Find-OnPath 'streamlink.exe')
 
     foreach ($candidate in $candidatePaths) {
         if (-not [string]::IsNullOrWhiteSpace($candidate) -and
@@ -557,7 +573,10 @@ function Get-StreamlinkCandidatePaths {
 }
 
 function Find-Streamlink {
-    @(Get-StreamlinkCandidatePaths) | Select-Object -First 1
+    $selected = Select-CompatibleDependencyCandidate -CandidatePaths @(Get-StreamlinkCandidatePaths) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.streamlink) `
+        -VersionReader { param($path) Get-StreamlinkVersion $path } -Description 'Streamlink' -AllowNone
+    if ($null -ne $selected) { $selected.Path }
 }
 
 function Get-StreamlinkVersion([string]$StreamlinkPath) {
@@ -567,10 +586,7 @@ function Get-StreamlinkVersion([string]$StreamlinkPath) {
     }
 
     try {
-        $output = & $StreamlinkPath --version 2>$null | Select-Object -First 1
-        if ($output -match "streamlink\s+v?([0-9][0-9A-Za-z\.\-\+]*)") {
-            return $Matches[1]
-        }
+        return [StreamStudio.Installation.WindowsDependencyProbe]::ReadStreamlinkVersion($StreamlinkPath, 10000)
     } catch {
         return ""
     }
@@ -581,13 +597,14 @@ function Get-StreamlinkVersion([string]$StreamlinkPath) {
 function Get-VlcCandidateDirectories {
     $programFilesX86 = ${env:ProgramFiles(x86)}
     $candidateDirectories = @(
-        (Normalize-PathCandidate $env:VLC_PLUGIN_PATH),
-        (Join-Path $env:ProgramFiles "VideoLAN\VLC"),
+        ([StreamStudio.Installation.WindowsDependencyProbe]::FindMachineVlcDirectory()),
+        (Join-Path ([StreamStudio.Installation.WindowsDependencyProbe]::GetProgramFiles64Directory()) "VideoLAN\VLC"),
         $(if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) { Join-Path $programFilesX86 "VideoLAN\VLC" }),
         $(try { (Get-ItemProperty -Path "HKLM:\SOFTWARE\VideoLAN\VLC" -ErrorAction Stop).InstallDir } catch { $null }),
         $(try { (Get-ItemProperty -Path "HKCU:\SOFTWARE\VideoLAN\VLC" -ErrorAction Stop).InstallDir } catch { $null }),
         $(try { (Get-ItemProperty -Path "HKLM:\SOFTWARE\WOW6432Node\VideoLAN\VLC" -ErrorAction Stop).InstallDir } catch { $null })
     )
+    $candidateDirectories += @($env:VLC_PLUGIN_PATH -split [IO.Path]::PathSeparator | ForEach-Object { Normalize-PathCandidate $_ })
 
     foreach ($candidate in $candidateDirectories) {
         $directory = Normalize-PathCandidate $candidate
@@ -609,25 +626,15 @@ function Get-VlcCandidateDirectories {
 }
 
 function Find-VlcDirectory {
-    @(Get-VlcCandidateDirectories | Select-Object -Unique) | Select-Object -First 1
+    $selected = Select-CompatibleDependencyCandidate -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.vlc) `
+        -VersionReader { param($path) Get-VlcVersion $path } -Description 'VLC' -AllowNone
+    if ($null -ne $selected) { $selected.Path }
 }
 
 function Get-VlcVersion([string]$VlcDirectory) {
-    $vlcExe = Join-Path $VlcDirectory "vlc.exe"
-    if (-not (Test-Path -LiteralPath $vlcExe -PathType Leaf)) {
-        return ""
-    }
-
     try {
-        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($vlcExe).ProductVersion
-        if ($null -eq $version) {
-            $version = ""
-        }
-
-        $version = $version.Replace(",", ".")
-        if ($version -match "([0-9]+(?:\.[0-9]+)+)") {
-            return $Matches[1]
-        }
+        return [StreamStudio.Installation.WindowsDependencyProbe]::ReadVlcVersion($VlcDirectory)
     } catch {
         return ""
     }
@@ -642,7 +649,7 @@ function Assert-DownloadedDependency([string]$Path, $Dependency) {
 
 function Start-Installer([string]$FilePath, [string[]]$ArgumentList, [string]$Name) {
     Write-Detail "Running $Name installer"
-    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
+    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -notin @(0, 1641, 3010)) {
         throw "$Name installer failed with exit code $($process.ExitCode). Installer path: $FilePath"
     }
@@ -699,7 +706,19 @@ function Copy-DirectoryContents([string]$SourceDirectory, [string]$DestinationDi
 }
 
 function Assert-AppPayload([string]$PayloadRoot) {
-    Assert-ReleasePayload -PayloadRoot $PayloadRoot -Contract $script:ReleaseContract
+    $contract = $script:ReleaseContract
+    $manifestPath = Join-Path $PayloadRoot 'dependencies\windows-installers.json'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($null -eq $manifest.dependencies.PSObject.Properties['webview2']) {
+            # Older complete signed ZIPs predate the shared runtime probes. Their
+            # original payload contract remains valid; current ZIPs require both helpers.
+            $contract = $script:ReleaseContract | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            $contract.payload.requiredFiles = @($contract.payload.requiredFiles |
+                Where-Object { $_ -cnotin @('lib/runtime-dependencies.ps1', 'lib/WindowsDependencyProbe.cs') })
+        }
+    }
+    Assert-ReleasePayload -PayloadRoot $PayloadRoot -Contract $contract
 }
 
 function Remove-InstallWorkingDirectory([string]$Directory) {
@@ -845,6 +864,35 @@ function Find-LocalAppPayloadRoot {
     $null
 }
 
+function Use-AppPayloadDependencyManifest([string]$PayloadRoot, $SignedMinimums = $null) {
+    $payloadManifest = Read-WindowsDependencyManifest `
+        -Path (Join-Path $PayloadRoot 'dependencies\windows-installers.json') `
+        -RequiredDependencies @('streamlink', 'vlc')
+    if ($null -ne $SignedMinimums) {
+        # The ZIP's signed hash authenticates these installer URLs and hashes. Compare
+        # minima after extraction, so an older install script can follow a newer release.
+        Assert-DependencyMinimums $SignedMinimums $payloadManifest
+    }
+    $script:VerifyInstalledAppDependencies = Test-Path -LiteralPath (Join-Path $PayloadRoot 'lib\WindowsDependencyProbe.cs') -PathType Leaf
+    if ($script:DependencyManifestWasOverridden) {
+        foreach ($entry in $payloadManifest.dependencies.PSObject.Properties) {
+            $override = $script:InstallerDependencyManifest.dependencies.PSObject.Properties[$entry.Name]
+            if ($null -eq $override -or (Get-DependencyMinimumVersion $override.Value) -cne (Get-DependencyMinimumVersion $entry.Value)) {
+                throw "The explicit dependency manifest does not match the payload's '$($entry.Name)' minimum."
+            }
+        }
+        $script:DependencyManifest = $script:InstallerDependencyManifest
+        return
+    }
+    if ($null -eq $payloadManifest.dependencies.PSObject.Properties['webview2']) {
+        # Legacy signed releases declared only Streamlink and VLC. Their browser
+        # features still need the reviewed WebView2 dependency supplied with this script.
+        $payloadManifest.dependencies | Add-Member -NotePropertyName webview2 `
+            -NotePropertyValue $script:InstallerDependencyManifest.dependencies.webview2
+    }
+    $script:DependencyManifest = $payloadManifest
+}
+
 function Install-AppFromLocalPayload {
     Write-Step "Installing Stream Studio from local package"
     $payloadRoot = Find-LocalAppPayloadRoot
@@ -852,15 +900,17 @@ function Install-AppFromLocalPayload {
         throw "No local StreamStudio.exe was found beside install.ps1. Run from the extracted release zip, publish a GitHub release, or rerun with -SkipApp to install dependencies only."
     }
 
+    Use-AppPayloadDependencyManifest $payloadRoot
     Install-AppPayloadAtomically $payloadRoot "local package"
 }
 
-function Install-AppFromPackageFile([string]$PackagePath, [string]$SourceDescription) {
+function Install-AppFromPackageFile([string]$PackagePath, [string]$SourceDescription, $SignedManifest = $null) {
     $extension = [IO.Path]::GetExtension($PackagePath)
     if ([string]::Equals($extension, ".zip", [StringComparison]::OrdinalIgnoreCase)) {
         $extractDirectory = Join-Path $script:TempRoot ("app-" + [Guid]::NewGuid().ToString("N"))
         Expand-ValidatedZipArchive $PackagePath $extractDirectory
         $payloadRoot = Resolve-AppPayloadRoot $extractDirectory
+        Use-AppPayloadDependencyManifest $payloadRoot $(if ($null -ne $SignedManifest) { $SignedManifest.dependencyMinimums } else { $null })
         return Install-AppPayloadAtomically $payloadRoot $SourceDescription
     } elseif ([string]::Equals($extension, ".exe", [StringComparison]::OrdinalIgnoreCase)) {
         throw "Loose executable app packages are not accepted; use a checksummed complete release zip."
@@ -901,7 +951,7 @@ function Install-AppFromGitHubRelease {
         throw "Release checksum manifest is unexpectedly large."
     }
     Assert-FileChecksum $downloadPath (Read-ChecksumManifest $checksumPath)
-    Install-AppFromPackageFile $downloadPath "GitHub release $($release.tag_name)"
+    Install-AppFromPackageFile $downloadPath "GitHub release $($release.tag_name)" $manifest
 }
 
 function Install-AppFromGitHubArtifact {
@@ -972,7 +1022,7 @@ function Install-App {
 function Ensure-LockedStreamlink {
     Write-Step "Checking Streamlink"
     $dependency = $script:DependencyManifest.dependencies.streamlink
-    $targetVersion = [string]$dependency.version
+    $targetVersion = Get-DependencyMinimumVersion $dependency
     $current = Select-CompatibleDependencyCandidate `
         -CandidatePaths @(Get-StreamlinkCandidatePaths) `
         -MinimumVersion $targetVersion `
@@ -1017,7 +1067,7 @@ function Ensure-LockedStreamlink {
 function Ensure-LockedVlc {
     Write-Step "Checking VLC"
     $dependency = $script:DependencyManifest.dependencies.vlc
-    $targetVersion = [string]$dependency.version
+    $targetVersion = Get-DependencyMinimumVersion $dependency
     $current = Select-CompatibleDependencyCandidate `
         -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
         -MinimumVersion $targetVersion `
@@ -1057,6 +1107,55 @@ function Ensure-LockedVlc {
         -Description "VLC"
     Write-Detail "VLC $($installed.ReportedVersion) ready at $($installed.Path)"
     $installed.Path
+}
+
+function Ensure-LockedWebView2 {
+    Write-Step "Checking Microsoft Edge WebView2 Runtime"
+    $dependency = $script:DependencyManifest.dependencies.webview2
+    $minimumVersion = Get-DependencyMinimumVersion $dependency
+    $minimum = ConvertTo-DependencyVersion $minimumVersion
+    $current = Get-WebView2Version
+    $parsed = ConvertTo-DependencyVersion $current
+    $pinned = ConvertTo-DependencyVersion ([string]$dependency.version)
+    if ($null -ne $parsed -and $parsed -ge $minimum -and (-not $ForceDependencyUpdate -or $parsed -ge $pinned)) {
+        Write-Detail "WebView2 $current meets the required minimum $minimumVersion."
+        return $current
+    }
+    $downloadPath = Get-TempDownloadPath ([string]$dependency.fileName)
+    New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
+    $expectedBytes = Get-BoundedDownloadLength $dependency.length "WebView2 dependency" $script:MaximumDownloadBytes
+    Save-Uri ([string]$dependency.url) $downloadPath $expectedBytes $expectedBytes
+    Assert-DownloadedDependency $downloadPath $dependency
+    Start-Installer $downloadPath @('/silent', '/install') 'Microsoft Edge WebView2 Runtime'
+    $installed = Get-WebView2Version
+    $installedVersion = ConvertTo-DependencyVersion $installed
+    if ($null -eq $installedVersion -or $installedVersion -lt $minimum) {
+        throw "WebView2 setup exited successfully, but a usable x64 runtime $minimumVersion or newer was not found."
+    }
+    Write-Detail "WebView2 $installed ready."
+    $installed
+}
+
+function Assert-InstalledDependencies([string]$AppExe, [string]$StreamlinkPath, [string]$VlcDirectory) {
+    Write-Step 'Verifying installed dependencies'
+    Select-CompatibleDependencyCandidate -CandidatePaths @($StreamlinkPath) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.streamlink) `
+        -VersionReader { param($path) Get-StreamlinkVersion $path } -Description 'Streamlink' | Out-Null
+    Select-CompatibleDependencyCandidate -CandidatePaths @($VlcDirectory) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.vlc) `
+        -VersionReader { param($path) Get-VlcVersion $path } -Description 'VLC' | Out-Null
+    $webView2 = Get-WebView2Version
+    $webView2Version = ConvertTo-DependencyVersion $webView2
+    if ($null -eq $webView2Version -or
+        $webView2Version -lt (ConvertTo-DependencyVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.webview2))) {
+        throw 'A usable supported x64 WebView2 runtime was not found after dependency setup.'
+    }
+    if ($script:RebootRequired -or [string]::IsNullOrWhiteSpace($AppExe) -or -not $script:VerifyInstalledAppDependencies) { return }
+    $verification = [StreamStudio.Installation.WindowsDependencyProbe]::VerifyApplication($AppExe, $StreamlinkPath, $VlcDirectory)
+    if (-not [string]::IsNullOrWhiteSpace($verification.Output)) { Write-Detail $verification.Output.Trim() }
+    if ($verification.ExitCode -ne 0 -or $verification.Truncated) {
+        throw "The installed application could not verify its runtime dependencies. $($verification.Error.Trim())"
+    }
 }
 
 function Set-ObjectProperty([object]$Target, [string]$Name, $Value) {
@@ -1134,6 +1233,61 @@ function Update-AppSettings([string]$StreamlinkPath, [string]$VlcDirectory) {
     }
 }
 
+function Remove-SearchIconCache([string]$LocalApplicationData) {
+    $removed = 0
+    foreach ($package in @('Microsoft.Windows.Search_cw5n1h2txyewy', 'Microsoft.Windows.Cortana_cw5n1h2txyewy', 'MicrosoftWindows.Client.CBS_cw5n1h2txyewy')) {
+        $cache = Join-Path $LocalApplicationData ("Packages\" + $package + "\LocalState\AppIconCache")
+        if (-not (Test-Path -LiteralPath $cache -PathType Container)) { continue }
+        try {
+            if (((Get-Item -LiteralPath $cache -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            $directories = @($cache) + @(Get-ChildItem -LiteralPath $cache -Directory -Force -ErrorAction Stop |
+                Where-Object { $_.Name -match '^\d+$' -and ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 } |
+                Select-Object -ExpandProperty FullName)
+            foreach ($directory in $directories) {
+                foreach ($icon in Get-ChildItem -LiteralPath $directory -File -Force -ErrorAction Stop) {
+                    if ($icon.Name -notmatch '(?:^|_)(?:StreamStudio|StreamlinkVlcStudio|StreamlinkVlcStudio_App_Wpf)_exe$' -or
+                        ($icon.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                    try {
+                        Remove-Item -LiteralPath $icon.FullName -Force -ErrorAction Stop
+                        $removed++
+                    } catch {
+                        Write-Detail "A Stream Studio search icon is still in use: $($_.Exception.Message)"
+                    }
+                }
+            }
+        } catch {
+            Write-Detail "Windows Search icon cleanup could not complete: $($_.Exception.Message)"
+        }
+    }
+    $removed
+}
+
+function Update-ShortcutIconCache {
+    try {
+        Remove-SearchIconCache ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) | Out-Null
+        if ($null -eq ('StreamStudio.ShellIconCache' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace StreamStudio {
+    public static class ShellIconCache {
+        [DllImport("shell32.dll")]
+        private static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+
+        public static void Refresh() {
+            SHChangeNotify(0x08000000, 0x2000, IntPtr.Zero, IntPtr.Zero);
+        }
+    }
+}
+'@
+        }
+        [StreamStudio.ShellIconCache]::Refresh()
+    } catch {
+        # A cosmetic shell refresh must not fail a committed app installation.
+        Write-Detail "Windows icon cache refresh could not complete: $($_.Exception.Message)"
+    }
+}
+
 function New-StartMenuShortcut([string]$AppExe) {
     if ($SkipShortcut -or [string]::IsNullOrWhiteSpace($AppExe) -or
         -not (Test-Path -LiteralPath $AppExe -PathType Leaf)) {
@@ -1149,8 +1303,9 @@ function New-StartMenuShortcut([string]$AppExe) {
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $AppExe
     $shortcut.WorkingDirectory = Split-Path -Parent $AppExe
-    $shortcut.IconLocation = $AppExe
+    $shortcut.IconLocation = $AppExe + ',0'
     $shortcut.Save()
+    Update-ShortcutIconCache
     Write-Detail $shortcutPath
 }
 
@@ -1254,10 +1409,18 @@ try {
     Register-AppUninstallEntry $appExe
     New-StartMenuShortcut $appExe
 
+    if ($SkipApp -and -not [string]::IsNullOrWhiteSpace($appExe)) {
+        # Dependency-only repair must use the installed payload's minima, not
+        # whichever older installation script the user happened to run.
+        Use-AppPayloadDependencyManifest $InstallDir
+    }
+
     $streamlinkPath = if ($SkipStreamlink) { Find-Streamlink } else { Ensure-LockedStreamlink }
     $vlcDirectory = if ($SkipVlc) { Find-VlcDirectory } else { Ensure-LockedVlc }
+    $webView2Version = Ensure-LockedWebView2
 
     Update-AppSettings $streamlinkPath $vlcDirectory
+    Assert-InstalledDependencies $appExe $streamlinkPath $vlcDirectory
 
     Write-Step "Done"
     if (-not [string]::IsNullOrWhiteSpace($appExe)) {
@@ -1269,6 +1432,7 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($vlcDirectory)) {
         Write-Detail "VLC: $vlcDirectory"
     }
+    Write-Detail "WebView2: $webView2Version"
     if ($script:RebootRequired) {
         Write-Detail "A dependency installer requested a reboot to complete installation."
     }

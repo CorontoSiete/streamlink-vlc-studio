@@ -34,6 +34,10 @@ internal static partial class ApplicationTestCatalog
                 quality.SetCurrentValue(ComboBox.SelectedValueProperty, "720p");
                 Assert.Equal("720p", settings.DefaultQuality);
                 Assert.Equal("720p", main.SelectedQuality);
+                var pauseVods = (CheckBox)window.FindName("PauseInactiveVodTabsCheckBox");
+                Assert.Equal(true, pauseVods.IsChecked);
+                pauseVods.SetCurrentValue(ToggleButton.IsCheckedProperty, false);
+                Assert.Equal(false, settings.PauseInactiveVodTabs);
 
                 settings.CloseBehavior = WindowCloseBehavior.MinimizeToTray;
                 settings.Replay.Enabled = false;
@@ -71,6 +75,7 @@ internal static partial class ApplicationTestCatalog
                 var reloaded = await new JsonSettingsService(service.SettingsPath).LoadAsync();
                 Assert.Equal(WindowCloseBehavior.MinimizeToTray, reloaded.CloseBehavior);
                 Assert.Equal("720p", reloaded.DefaultQuality);
+                Assert.Equal(false, reloaded.PauseInactiveVodTabs);
                 Assert.Equal("480p", reloaded.Downloads.Quality);
                 Assert.Equal(1.25, reloaded.Downloads.BandwidthLimitMegabytesPerSecond);
                 Assert.Equal(false, reloaded.Replay.Enabled);

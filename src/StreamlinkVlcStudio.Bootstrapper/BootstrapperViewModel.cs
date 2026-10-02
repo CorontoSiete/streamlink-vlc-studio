@@ -13,10 +13,12 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
     private string resultMessage = string.Empty;
     private string streamlinkStatus = "Checking…";
     private string vlcStatus = "Checking…";
+    private string webView2Status = "Checking…";
     private int progress;
     private bool purgeUserData;
     private bool cancelRequested;
     private bool isRollingBack;
+    private bool isVerifyingDependencies;
     private bool canRetry;
     private bool resultSucceeded;
     private bool resultWarning;
@@ -28,10 +30,11 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         Version = application.BundleVersion;
         StreamlinkVersion = application.StreamlinkVersion;
         VlcVersion = application.VlcVersion;
+        WebView2Version = application.WebView2Version;
         InstallCommand = new RelayCommand(application.Install, () => Page == BootstrapperPage.Install);
         RepairCommand = new RelayCommand(application.Repair, () => Page == BootstrapperPage.Maintenance);
         UninstallCommand = new RelayCommand(application.Uninstall, () => Page == BootstrapperPage.Maintenance);
-        CancelCommand = new RelayCommand(application.RequestCancel, () => Page == BootstrapperPage.Progress && !CancelRequested && !IsRollingBack);
+        CancelCommand = new RelayCommand(application.RequestCancel, () => Page == BootstrapperPage.Progress && !CancelRequested && !IsRollingBack && !IsVerifyingDependencies);
         RetryCommand = new RelayCommand(application.Retry, () => Page == BootstrapperPage.Result && CanRetry);
         CloseCommand = new RelayCommand(application.Close, () => Page != BootstrapperPage.Progress);
         OpenLogCommand = new RelayCommand(application.OpenLog, () => CanOpenLog);
@@ -45,6 +48,8 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
     public string StreamlinkVersion { get; }
 
     public string VlcVersion { get; }
+
+    public string WebView2Version { get; }
 
     public ICommand InstallCommand { get; }
 
@@ -125,6 +130,12 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         set => Set(ref vlcStatus, value);
     }
 
+    public string WebView2Status
+    {
+        get => webView2Status;
+        set => Set(ref webView2Status, value);
+    }
+
     public int Progress
     {
         get => progress;
@@ -164,6 +175,15 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         set
         {
             if (Set(ref canRetry, value)) ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
+        }
+    }
+
+    public bool IsVerifyingDependencies
+    {
+        get => isVerifyingDependencies;
+        set
+        {
+            if (Set(ref isVerifyingDependencies, value)) ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
         }
     }
 

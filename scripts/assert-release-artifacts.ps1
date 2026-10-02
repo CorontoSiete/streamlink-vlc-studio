@@ -34,7 +34,8 @@ if ($identity.VersionText -cne $Version) {
     -ExpectedVersion $Version `
     -ExpectedTag $Tag `
     -ExpectedCommit $Commit `
-    -ExpectedRepository $Repository
+    -ExpectedRepository $Repository `
+    -DependencyManifestPath (Join-Path $repoRoot 'dependencies\windows-installers.json')
 
 foreach ($path in @($SetupPath, $InternalMsiPath, $ZipPath, $SbomPath, $MetadataPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {

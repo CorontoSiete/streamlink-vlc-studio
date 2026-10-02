@@ -37,12 +37,11 @@ internal static partial class TwitchChannelPointsTestCatalog
         fixture.Browser.FailSession = false;
         await fixture.Controller.SignInCommand.ExecuteAsync();
         fixture.Controller.Enabled = true;
-        var tab = fixture.Add("alpha");
-        SetStatus(tab, PlaybackStatus.Playing);
+        fixture.Add("alpha");
         await Eventually(() => fixture.Browser.Pages.Count == 1);
         fixture.Browser.Pages[0].Expired = true;
         await Eventually(() => fixture.Controller.RequiresSignIn);
-        SetStatus(tab, PlaybackStatus.Stopped);
+        fixture.LiveFollowedChannels.Clear();
         fixture.Controller.OpenPageCommand.Execute(null);
         Assert.Contains("Session expired", fixture.Controller.SignInStatus);
         fixture.Controller.Enabled = false;
@@ -59,11 +58,9 @@ internal static partial class TwitchChannelPointsTestCatalog
             var service = new JsonSettingsService(path);
             await using (var fixture = new Fixture(settingsService: service))
             {
-                var alpha = fixture.Add("ALPHA");
-                var duplicate = fixture.Add("alpha");
-                SetStatus(alpha, PlaybackStatus.Playing);
-                SetStatus(duplicate, PlaybackStatus.Paused);
-                SetStatus(fixture.Add("bravo"), PlaybackStatus.Playing);
+                fixture.Add("ALPHA");
+                fixture.Add("alpha");
+                fixture.Add("bravo");
                 fixture.Add("vod", kind: StreamTargetKind.TwitchVod);
                 fixture.Add("kick", platform: PlatformKind.Kick);
                 Assert.Equal(2, fixture.Controller.ChannelClaims.Count);
@@ -88,13 +85,13 @@ internal static partial class TwitchChannelPointsTestCatalog
                 newPage.Confirm("claim-3");
                 firstPage.Confirm("stale-page");
                 Assert.Equal(3L, fixture.Settings.TwitchBonusClaims["alpha"].Count);
-                fixture.Tabs.Clear();
+                fixture.LiveFollowedChannels.Clear();
                 Assert.Equal(2, fixture.Controller.ChannelClaims.Count);
                 Assert.Equal(3L, (await service.LoadAsync()).TwitchBonusClaims["alpha"].Count);
             }
             await using var restarted = new Fixture(settings: await service.LoadAsync(), settingsService: service);
             Assert.Equal(3L, restarted.Controller.ChannelClaims.Single(row => row.Channel == "alpha").Count);
-            SetStatus(restarted.Add("alpha"), PlaybackStatus.Playing);
+            restarted.Add("alpha");
             await Eventually(() => restarted.Browser.Pages.Count == 1);
             restarted.Browser.Pages[0].Confirm("claim-3");
             restarted.Browser.Pages[0].Confirm("claim-4");
@@ -109,7 +106,7 @@ internal static partial class TwitchChannelPointsTestCatalog
     {
         var service = new BonusHistorySettingsService { FailSave = true };
         await using var fixture = new Fixture(settingsService: service);
-        SetStatus(fixture.Add("alpha"), PlaybackStatus.Playing);
+        fixture.Add("alpha");
         await Eventually(() => fixture.Browser.Pages.Count == 1);
         fixture.Browser.Pages[0].Confirm("claim-1");
         Assert.Equal(1L, fixture.Settings.TwitchBonusClaims["alpha"].Count);
@@ -223,7 +220,6 @@ internal static partial class TwitchChannelPointsTestCatalog
                 }
             }
             await fixture.Controller.SignInCommand.ExecuteAsync();
-            SetStatus(fixture.Tabs.Single(), PlaybackStatus.Playing);
             await Eventually(() => fixture.Browser.Pages.Count == 1);
             fixture.Browser.Pages[0].Confirm("ui-confirmed");
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.DataBind);

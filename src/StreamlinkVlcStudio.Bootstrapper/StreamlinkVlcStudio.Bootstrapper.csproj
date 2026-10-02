@@ -27,10 +27,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\scripts\lib\WindowsDependencyProbe.cs" Link="Dependencies\WindowsDependencyProbe.cs" />
     <Resource Include="..\StreamlinkVlcStudio.App.Wpf\Assets\Studio.ico"
               Link="Assets\Studio.ico" />
-    <Resource Include="..\StreamlinkVlcStudio.App.Wpf\Assets\Twitch.ico"
-              Link="Assets\Twitch.ico" />
     <!-- Share bounded process handling without adding the application's native payload to Setup. -->
     <Compile Include="..\StreamlinkVlcStudio.Infrastructure\Processes\ProcessExtensions.cs"
              Link="Processes\ProcessExtensions.cs" />

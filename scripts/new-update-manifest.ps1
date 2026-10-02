@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot '..'))
 . (Join-Path $scriptRoot 'lib\common.ps1')
+. (Join-Path $scriptRoot 'lib\dependency-manifest.ps1')
 . (Join-Path $scriptRoot 'lib\release-contract.ps1')
 $contractFile = if ([string]::IsNullOrWhiteSpace($ContractPath)) {
     Join-Path $repoRoot 'shared\release-contract.json'
@@ -36,11 +37,11 @@ if ([string]::IsNullOrWhiteSpace($PublicKeyPath)) {
 foreach ($path in @($SetupPath, $ZipPath, $PrivateKeyPath, $PublicKeyPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required update-manifest input is missing: $path" }
 }
-$dependencyManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'dependencies\windows-installers.json') -Raw | ConvertFrom-Json
-if ($dependencyManifest.schemaVersion -ne 1 -or
-    [string]::IsNullOrWhiteSpace([string]$dependencyManifest.dependencies.streamlink.version) -or
-    [string]::IsNullOrWhiteSpace([string]$dependencyManifest.dependencies.vlc.version)) {
-    throw 'The locked Windows dependency manifest is incomplete.'
+$dependencyManifestPath = Join-Path $repoRoot 'dependencies\windows-installers.json'
+$dependencyManifest = Read-WindowsDependencyManifest $dependencyManifestPath
+$dependencyMinimums = [ordered]@{}
+foreach ($entry in $dependencyManifest.dependencies.PSObject.Properties) {
+    $dependencyMinimums[$entry.Name] = Get-DependencyMinimumVersion $entry.Value
 }
 $setup = Get-Item -LiteralPath $SetupPath
 $zip = Get-Item -LiteralPath $ZipPath
@@ -59,10 +60,7 @@ $manifest = [ordered]@{
     repository = $Repository
     releasePage = "https://github.com/$Repository/releases/tag/$Tag"
     keyId = [string]$contract.release.manifestSignature.keyId
-    dependencyMinimums = [ordered]@{
-        streamlink = [string]$dependencyManifest.dependencies.streamlink.version
-        vlc = [string]$dependencyManifest.dependencies.vlc.version
-    }
+    dependencyMinimums = $dependencyMinimums
     setup = [ordered]@{
         name = $setup.Name
         length = $setup.Length
@@ -116,7 +114,8 @@ try {
     -ExpectedVersion $Version `
     -ExpectedTag $Tag `
     -ExpectedCommit $Commit `
-    -ExpectedRepository $Repository
+    -ExpectedRepository $Repository `
+    -DependencyManifestPath $dependencyManifestPath
 
 Write-Output $manifestPath
 Write-Output $signaturePath

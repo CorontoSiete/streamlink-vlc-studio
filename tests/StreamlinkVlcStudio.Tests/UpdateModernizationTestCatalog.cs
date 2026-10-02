@@ -1,7 +1,7 @@
 using System.Net.Http.Headers;
 using StreamlinkVlcStudio.Core;
 
-internal static class UpdateModernizationTestCatalog
+internal static partial class UpdateModernizationTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
@@ -1268,10 +1268,11 @@ internal static class UpdateModernizationTestCatalog
         return Task.CompletedTask;
     }
 
-    private static StagedAppUpdateService ManagedService(HttpClient client, string root, RSA rsa, Func<DateTimeOffset>? now = null, Version? version = null) =>
+    private static StagedAppUpdateService ManagedService(HttpClient client, string root, RSA rsa, Func<DateTimeOffset>? now = null, Version? version = null,
+        Func<CancellationToken, Task<bool>>? verifyInstallation = null) =>
         new(new MemoryLogger(), client, root, Path.Combine(root, "updates"), now,
             detectInstallKind: () => AppInstallKind.Managed,
-            getCurrentVersion: () => version ?? new Version(1, 7, 0), trustedKey: rsa.ExportParameters(false));
+            getCurrentVersion: () => version ?? new Version(1, 7, 0), trustedKey: rsa.ExportParameters(false), verifyInstallation: verifyInstallation);
 
     private static async Task RestoresPreparedDownloadAsync()
     {
@@ -1693,7 +1694,8 @@ internal static class UpdateModernizationTestCatalog
             bool corruptSignature = false,
             bool mismatchedSetupLength = false,
             bool wrongKeyId = false,
-            string version = "1.8.0")
+            string version = "1.8.0",
+            Dictionary<string, string>? dependencyMinimums = null)
         {
             var setup = Encoding.UTF8.GetBytes("setup-package");
             var zip = Encoding.UTF8.GetBytes("zip-package");
@@ -1711,7 +1713,7 @@ internal static class UpdateModernizationTestCatalog
                 keyId = wrongKeyId
                     ? new string('0', 64)
                     : Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())).ToLowerInvariant(),
-                dependencyMinimums = new Dictionary<string, string> { ["streamlink"] = "8.2.1", ["vlc"] = "3.0.23" },
+                dependencyMinimums = dependencyMinimums ?? new Dictionary<string, string> { ["streamlink"] = "8.2.1", ["vlc"] = "3.0.23" },
                 setup = new { name = StagedAppUpdateService.SetupAssetName, length = setup.LongLength, sha256 = Convert.ToHexString(SHA256.HashData(setup)).ToLowerInvariant() },
                 zip = new { name = StagedAppUpdateService.ZipAssetName, length = zip.LongLength, sha256 = Convert.ToHexString(SHA256.HashData(zip)).ToLowerInvariant() }
             });

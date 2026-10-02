@@ -10,14 +10,14 @@ function Assert-Lifecycle([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
-# Load only the filesystem transaction. Network, dependency installation, registry,
+# Load only filesystem helpers. Network, dependency installation, registry,
 # shortcuts, settings, and process termination are never invoked by these fixtures.
 $tokens = $null
 $parseErrors = $null
 $installer = [Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $repoRoot 'scripts\install.ps1'), [ref]$tokens, [ref]$parseErrors)
 Assert-Lifecycle ($parseErrors.Count -eq 0) 'Installer PowerShell syntax is invalid.'
-$functionNames = @('Install-AppPayloadAtomically', 'Copy-DirectoryContents', 'Remove-InstallWorkingDirectory')
+$functionNames = @('Install-AppPayloadAtomically', 'Copy-DirectoryContents', 'Remove-InstallWorkingDirectory', 'Remove-SearchIconCache')
 foreach ($definition in $installer.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $functionNames
@@ -47,6 +47,28 @@ function Invoke-LifecycleTest([string]$Name, [scriptblock]$Test) {
 
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
+    Invoke-LifecycleTest 'search icon cleanup preserves unrelated apps at every display scale' {
+        $localApplicationData = Join-Path $testRoot 'search-cache'
+        $cache = Join-Path $localApplicationData 'Packages\Microsoft.Windows.Search_cw5n1h2txyewy\LocalState\AppIconCache'
+        foreach ($scale in @('100', '150')) {
+            $directory = Join-Path $cache $scale
+            [IO.Directory]::CreateDirectory($directory) | Out-Null
+            [IO.File]::WriteAllText((Join-Path $directory '{6D809377-6AF0-444B-8957-A3773F02200E}_Streamlink VLC Studio_StreamlinkVlcStudio_exe'), 'old icon')
+            [IO.File]::WriteAllText((Join-Path $directory 'C__Users_test_AppData_Local_Programs_StreamStudio_StreamStudio_exe'), 'old icon')
+            [IO.File]::WriteAllText((Join-Path $directory 'OtherApp_exe'), 'unrelated icon')
+            [IO.File]::WriteAllText((Join-Path $directory 'StreamStudioTools_exe'), 'unrelated icon')
+        }
+        Assert-Lifecycle ((Remove-SearchIconCache $localApplicationData) -eq 4) 'The old Stream Studio search bitmaps remained.'
+        foreach ($scale in @('100', '150')) {
+            $remaining = @(Get-ChildItem -LiteralPath (Join-Path $cache $scale) -File)
+            Assert-Lifecycle ($remaining.Count -eq 2) 'Unrelated application icons were removed.'
+            foreach ($file in $remaining) {
+                Assert-Lifecycle ([IO.File]::ReadAllText($file.FullName) -ceq 'unrelated icon') 'An unrelated icon changed.'
+            }
+        }
+        Assert-Lifecycle ((Remove-SearchIconCache $localApplicationData) -eq 0) 'Icon cleanup is not repeatable.'
+    }
+
     Invoke-LifecycleTest 'upgrade preserves empty user directories and removes obsolete managed directories' {
         $existing = Join-Path $testRoot 'existing'
         $stage = Join-Path $testRoot 'stage'

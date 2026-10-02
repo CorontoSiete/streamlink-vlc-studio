@@ -16,7 +16,7 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $assetDirectory = Join-Path $repoRoot 'src\StreamlinkVlcStudio.App.Wpf\Assets'
 [xml]$source = Get-Content -LiteralPath (Join-Path $assetDirectory 'Studio.svg') -Raw
 $iconFrames = [Collections.Generic.List[byte[]]]::new()
-$iconSizes = @(16, 20, 24, 32, 40, 48, 64, 128, 256)
+$iconSizes = @(16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 
 foreach ($size in $iconSizes) {
     $visual = [Windows.Media.DrawingVisual]::new()
@@ -40,13 +40,43 @@ foreach ($size in $iconSizes) {
     }
     $bitmap = [Windows.Media.Imaging.RenderTargetBitmap]::new($size, $size, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
     $bitmap.Render($visual)
-    $encoder = [Windows.Media.Imaging.PngBitmapEncoder]::new()
-    $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+    # Use standard 32-bit bitmap frames. PNG-only ICOs fail in some larger-icon
+    # readers used by Windows Search and older System.Drawing implementations.
+    $converted = [Windows.Media.Imaging.FormatConvertedBitmap]::new($bitmap, [Windows.Media.PixelFormats]::Bgra32, $null, 0)
+    $stride = $size * 4
+    $pixels = [byte[]]::new($stride * $size)
+    $converted.CopyPixels($pixels, $stride, 0)
+    $maskStride = [int]([Math]::Ceiling($size / 32.0)) * 4
+    $mask = [byte[]]::new($maskStride * $size)
+    for ($y = 0; $y -lt $size; $y++) {
+        for ($x = 0; $x -lt $size; $x++) {
+            if ($pixels[$y * $stride + $x * 4 + 3] -eq 0) {
+                $maskIndex = ($size - 1 - $y) * $maskStride + [int][Math]::Floor($x / 8.0)
+                $mask[$maskIndex] = [byte]($mask[$maskIndex] -bor (0x80 -shr ($x % 8)))
+            }
+        }
+    }
     $stream = [IO.MemoryStream]::new()
+    $frameWriter = [IO.BinaryWriter]::new($stream)
     try {
-        $encoder.Save($stream)
+        $frameWriter.Write([uint32]40) # BITMAPINFOHEADER
+        $frameWriter.Write([int32]$size)
+        $frameWriter.Write([int32]($size * 2)) # Color bitmap plus transparency mask.
+        $frameWriter.Write([uint16]1)
+        $frameWriter.Write([uint16]32)
+        $frameWriter.Write([uint32]0) # BI_RGB
+        $frameWriter.Write([uint32]$pixels.Length)
+        $frameWriter.Write([int32]0)
+        $frameWriter.Write([int32]0)
+        $frameWriter.Write([uint32]0)
+        $frameWriter.Write([uint32]0)
+        for ($y = $size - 1; $y -ge 0; $y--) {
+            $frameWriter.Write($pixels, $y * $stride, $stride)
+        }
+        $frameWriter.Write($mask)
         $iconFrames.Add($stream.ToArray())
     } finally {
+        $frameWriter.Dispose()
         $stream.Dispose()
     }
 }

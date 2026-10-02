@@ -3660,6 +3660,11 @@
                               ItemsSource="{Binding TabStripItems}" SelectedItem="{Binding SelectedTabStripItem}"
                               FontSize="11"
                               AutomationProperties.Name="Stream tabs">
+                        <ComboBox.ItemContainerStyle>
+                            <Style TargetType="{x:Type ComboBoxItem}" BasedOn="{StaticResource StudioComboBoxItemStyle}">
+                                <EventSetter Event="PreviewMouseLeftButtonDown" Handler="CompactTabSelectorItem_PreviewMouseLeftButtonDown" />
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
                         <ComboBox.ToolTip>
                             <ToolTip Content="{Binding PlacementTarget.DataContext.SelectedTabStripItem.ToolTip, RelativeSource={RelativeSource Self}}"
                                      ContentTemplate="{StaticResource StreamDetailsToolTipTemplate}" />
@@ -4388,8 +4393,16 @@
                                                       Style="{StaticResource SettingsToggleStyle}"
                                                       IsChecked="{Binding Settings.KeepInactiveTabsRunning}"
                                                       Margin="0,0,0,8"
-                                                      ToolTip="When disabled, hidden live tabs close their player connection and reconnect at the live edge when shown again, while keeping Streamlink and chat ready. Replay/VOD and behind-live tabs preserve their position."
-                                                      Content="Keep inactive tabs running"
+                                                      ToolTip="When disabled, hidden live tabs close their player connection and reconnect at the live edge when shown again, while keeping Streamlink and chat ready. Replay and behind-live tabs preserve their position. VOD tabs use the separate pause setting below."
+                                                      Content="Keep inactive live tabs running"
+                                                      ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
+                                            <CheckBox x:Name="PauseInactiveVodTabsCheckBox"
+                                                      Style="{StaticResource SettingsToggleStyle}"
+                                                      IsChecked="{Binding Settings.PauseInactiveVodTabs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      Margin="0,0,0,8"
+                                                      ToolTip="Pause hidden VOD tabs and resume them from the same position when shown again. This controls VODs independently of the live-tab setting. Visible grid, picture-in-picture, and Never mute VODs keep playing."
+                                                      AutomationProperties.Name="Pause unselected VOD tabs"
+                                                      Content="Pause unselected VOD tabs"
                                                       ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
                                             <CheckBox
                                                       Style="{StaticResource SettingsToggleStyle}"
@@ -4546,7 +4559,7 @@
                                                     <TextBlock x:Name="TwitchBonusSignInStatus" Text="{Binding SignInStatus}"
                                                                FontWeight="SemiBold" TextWrapping="Wrap" />
                                                 </Border>
-                                                <TextBlock Text="Sign in separately to Twitch below. Available bonuses are claimed through chat while a live stream is open or paused, without a second video stream. Chat-only access does not guarantee new watch-time bonuses. Stopping, closing, or replaying closes the bonus chat."
+                                                <TextBlock Text="Connect Twitch above to load your follows, then sign in separately for bonuses below. Available bonuses are checked for every live followed Twitch channel, even with no stream tabs open. Channels refresh automatically. Chat-only access does not guarantee new watch-time bonuses."
                                                            TextWrapping="Wrap" Margin="0,0,0,12" />
                                                 <WrapPanel>
                                                     <Button Content="Sign in for bonuses" Command="{Binding SignInCommand}" Margin="0,0,8,8" />
@@ -4559,7 +4572,7 @@
                                                 <TextBlock Text="Confirmed bonuses by channel" Style="{StaticResource StudioFieldLabelStyle}" Margin="0,18,0,6" />
                                                 <TextBlock Text="Successful bonus claims in this app, including the bonus chat window. Totals are saved across restarts and sign-ins; earlier claims cannot be recovered."
                                                            TextWrapping="Wrap" Foreground="{DynamicResource StudioTextSecondaryBrush}" Margin="0,0,0,8" />
-                                                <TextBlock Text="Open a live Twitch channel to see its count."
+                                                <TextBlock Text="Live followed Twitch channels and saved claim totals appear here."
                                                            Visibility="{Binding HasNoChannelClaims, Converter={StaticResource BoolToVisibility}}"
                                                            TextWrapping="Wrap" />
                                                 <ItemsControl x:Name="TwitchBonusChannelClaims" ItemsSource="{Binding ChannelClaims}">

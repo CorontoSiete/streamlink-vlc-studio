@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedUtc": "2026-08-15T00:00:00Z",
+  "reviewedUtc": "2026-10-02T00:00:00Z",
   "dependencies": {
     "streamlink": {
       "version": "8.5.0-1",
@@ -21,6 +21,21 @@
       "authenticode": "Valid",
       "expectedPublisher": "CN=VideoLAN, O=VideoLAN, L=Paris, C=FR",
       "expectedSignerThumbprint": "CCF8C4F9272D8A25477AF13EC71F97A3027C7319"
+    },
+    "webview2": {
+      "version": "154.0.4258.53",
+      "minimumVersion": "152.0.4191.53",
+      "fileName": "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+      "url": "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/d7548c8b-0dc9-4e81-87dd-a346cc9b73a5/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+      "length": 212272848,
+      "sha256": "f6df8e4bc857786ff641cd01da1449169eaf8236c936ced485ea61685ba4da40",
+      "authenticode": "Valid",
+      "expectedPublisher": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+      "expectedSignerThumbprint": "4028CAD637509D4744B17EC5B42AED8D7A31E6AF",
+      "expectedProductName": "Microsoft Edge Update",
+      "sdkVersion": "1.0.4191.47",
+      "sdkReleaseNotes": "https://learn.microsoft.com/en-us/microsoft-edge/webview2/release-notes/sdk/1-0-4191-47",
+      "distributionDocumentation": "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution"
     }
   }
 }

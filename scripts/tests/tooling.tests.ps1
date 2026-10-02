@@ -9,6 +9,10 @@ $developmentHadExitCode = $null -ne $developmentExitCode
 $developmentSavedExitCode = if ($developmentHadExitCode) { $developmentExitCode.Value } else { $null }
 & (Join-Path $PSScriptRoot 'development.tests.ps1')
 & (Join-Path $PSScriptRoot 'install-lifecycle.tests.ps1')
+& (Join-Path $PSScriptRoot 'dependency-installation.tests.ps1')
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    & (Join-Path $PSScriptRoot 'update-manifest.tests.ps1')
+}
 $developmentExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
 if (($null -ne $developmentExitCode) -ne $developmentHadExitCode -or
     ($developmentHadExitCode -and $developmentExitCode.Value -ne $developmentSavedExitCode)) {
@@ -48,6 +52,22 @@ try {
     $obsolete | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $obsoleteManifestPath -Encoding UTF8
     Assert-Throws { Read-WindowsDependencyManifest $obsoleteManifestPath | Out-Null } 'expectedLength'
     Write-Host 'PASS tooling: dependency manifests use canonical length'
+
+    $tokens = $null
+    $parseErrors = $null
+    $builder = [Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $scriptRoot 'build-installer.ps1'), [ref]$tokens, [ref]$parseErrors)
+    $versionCheck = $builder.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-WixToolVersion'
+        }, $false)
+    . ([scriptblock]::Create($versionCheck.Extent.Text))
+    foreach ($reported in @('6.0.2', '6.0.2+b3f3403')) {
+        Assert-True (Test-WixToolVersion $reported '6.0.2') 'The pinned WiX tool with valid build metadata was rejected.'
+    }
+    foreach ($reported in @('6.0.3+b3f3403', '6.0.2-preview', 'prefix 6.0.2', '6.0.2 garbage')) {
+        Assert-True (-not (Test-WixToolVersion $reported '6.0.2')) "An unpinned WiX version was accepted: $reported"
+    }
+    Write-Host 'PASS tooling: WiX stable version is exact and its reported build metadata is accepted'
 
     $candidateRoot = Join-Path $testRoot 'candidates'
     New-Item -ItemType Directory -Path $candidateRoot | Out-Null

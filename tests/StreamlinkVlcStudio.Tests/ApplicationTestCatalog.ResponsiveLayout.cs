@@ -443,7 +443,7 @@ internal static partial class ApplicationTestCatalog
     {
         var visibleLabels = FindVisualDescendants<TextBlock>(selector)
             .Where(label => label.IsVisible && label.ActualWidth > 0 && label.ActualHeight > 0)
-            .Select(label => label.Text)
+            .Select(label => label is EmojiTextBlock emoji ? emoji.SourceText ?? "" : label.Text)
             .ToArray();
         Assert.True(visibleLabels.Contains(expectedTitle, StringComparer.Ordinal),
             $"The compact tab selector should display '{expectedTitle}', but visible text was '{string.Join(" | ", visibleLabels)}'.");

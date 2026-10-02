@@ -118,6 +118,9 @@ public sealed class JsonSettingsService : ISettingsService
             }
 
             var settings = root.Deserialize<AppSettings>(SerializerOptions) ?? new AppSettings();
+            // Preserve the previous shared policy until the user changes the VOD setting.
+            if (!TryGetPropertyCaseInsensitive(root, nameof(AppSettings.PauseInactiveVodTabs), out _, out _))
+                settings.PauseInactiveVodTabs = !settings.KeepInactiveTabsRunning;
             if (!TryGetPropertyCaseInsensitive(root, nameof(AppSettings.Downloads), out _, out _))
                 settings.Downloads.Quality = settings.DefaultQuality;
             ApplySecrets(settings.Chat, secrets);

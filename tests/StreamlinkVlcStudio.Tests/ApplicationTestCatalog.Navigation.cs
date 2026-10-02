@@ -9,6 +9,8 @@ internal static partial class ApplicationTestCatalog
         ("home navigation closes every settings category and preserves the selected Home page", HomeFromSettingsPreservesPageAsync),
         ("home navigation from settings preserves playing streams and visit order", HomeFromSettingsPreservesStreamsAsync),
         ("home navigation button closes settings and records one destination at wide and compact sizes", HomeButtonFromSettingsAsync),
+        ("stream tab navigation closes settings and preserves playback and visit order", StreamTabFromSettingsAsync),
+        ("stream tab navigation compact clicks close settings for current and other tabs", CompactStreamTabFromSettingsAsync),
         ("back navigation restores the same playing stream from settings without restarting", BackFromSettingsPreservesStreamAsync),
         ("back navigation follows Home pages and stream tabs in visit order", BackNavigationVisitOrderAsync),
         ("back navigation ignores repeated selections and disables when history is exhausted", BackNavigationRepeatedSelectionAsync),
@@ -163,6 +165,137 @@ internal static partial class ApplicationTestCatalog
                 Layout(size);
                 Assert.Equal(false, main.IsSettingsOpen);
                 Assert.Equal(tab, main.SelectedTab);
+            }
+        }
+        finally
+        {
+            window.Close();
+        }
+    });
+
+    private static async Task StreamTabFromSettingsAsync()
+    {
+        await using var fixture = new NavigationFixture();
+        fixture.Settings.KeepInactiveTabsRunning = true;
+        var main = fixture.Main;
+        var first = fixture.AddTab("albralelie");
+        var second = fixture.AddTab("summit1g");
+        var third = fixture.AddTab("navigationfixture");
+        main.SelectedTab = first;
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        first.SetVideoHandle(new IntPtr(1234));
+        await first.StartAsync(fixture.Settings);
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        var engine = fixture.Playback.Engine!;
+        var plays = engine.PlayCount;
+        var starts = fixture.Streamlink.StartCount;
+        var creates = fixture.Playback.CreateCount;
+
+        foreach (var category in Enum.GetValues<SettingsCategory>())
+        {
+            main.SelectedTab = second;
+            main.SelectedSettingsCategory = category;
+            main.ToggleSettingsCommand.Execute(null);
+            main.SelectedTabStripItem = main.TabStripItems.Single(item => item.Contains(first));
+
+            Assert.Equal(false, main.IsSettingsOpen);
+            Assert.True(main.IsPlaybackWorkspaceVisible && !main.IsHomeSelected);
+            Assert.Equal(first, main.SelectedTab);
+            Assert.Equal(category, main.SelectedSettingsCategory);
+            main.GoBackCommand.Execute(null);
+            Assert.True(main.IsSettingsOpen, "Back must return directly to Settings without an intermediate stream visit.");
+            main.GoBackCommand.Execute(null);
+            Assert.Equal(false, main.IsSettingsOpen);
+            Assert.Equal(second, main.SelectedTab);
+        }
+
+        Assert.True(main.TryMergeTabsIntoMultiView([second], first));
+        main.SelectedTab = third;
+        main.ToggleSettingsCommand.Execute(null);
+        var group = main.TabStripItems.Single(item => item.Contains(first));
+        main.SelectedTabStripItem = group;
+        Assert.Equal(false, main.IsSettingsOpen);
+        Assert.Equal(group.ActiveTab, main.SelectedTab);
+        Assert.Equal(2, main.SelectedTabStripItem!.Tabs.Count);
+        main.GoBackCommand.Execute(null);
+        Assert.True(main.IsSettingsOpen);
+        main.GoBackCommand.Execute(null);
+        Assert.Equal(third, main.SelectedTab);
+
+        main.ShowRecentHomePageCommand.Execute(null);
+        main.SelectHomeCommand.Execute(null);
+        main.ToggleSettingsCommand.Execute(null);
+        main.SelectedTabStripItem = main.TabStripItems.Single(item => item.Contains(third));
+        Assert.True(!main.IsSettingsOpen && !main.IsHomeSelected);
+        Assert.Equal(third, main.SelectedTab);
+        main.GoBackCommand.Execute(null);
+        Assert.True(main.IsSettingsOpen);
+        main.GoBackCommand.Execute(null);
+        Assert.True(main.IsHomeSelected && main.IsRecentHomePageSelected);
+        await main.InactivePlaybackPolicyIdleTask.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(PlaybackStatus.Playing, first.Status);
+        Assert.Equal(plays, engine.PlayCount);
+        Assert.Equal(starts, fixture.Streamlink.StartCount);
+        Assert.Equal(creates, fixture.Playback.CreateCount);
+        Assert.SequenceEqual(new[] { first, second, third }, main.Tabs);
+    }
+
+    private static Task CompactStreamTabFromSettingsAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        await using var fixture = new NavigationFixture();
+        var main = fixture.Main;
+        var first = fixture.AddTab("albralelie");
+        var second = fixture.AddTab("summit1g");
+        main.SelectedTab = first;
+        var window = new MainWindow { DataContext = main };
+        RemoveMainWindowAutomaticStartup(window);
+        SetMainWindowViewModel(window, main);
+        var selector = (ComboBox)window.FindName("CompactTabSelector");
+        var settingsPanel = (FrameworkElement)window.FindName("SettingsPanel");
+        var playbackHost = (FrameworkElement)window.FindName("PlaybackHost");
+        try
+        {
+            foreach (var category in Enum.GetValues<SettingsCategory>())
+            {
+                foreach (var target in new[] { first, second })
+                {
+                    main.SelectedTab = first;
+                    main.SelectedSettingsCategory = category;
+                    main.ToggleSettingsCommand.Execute(null);
+                    LayoutStudioPolishWindow(window, new Size(600, 480));
+                    Assert.Equal(Visibility.Visible, selector.Visibility);
+                    Assert.Equal(Visibility.Visible, settingsPanel.Visibility);
+                    Assert.Equal(Visibility.Collapsed, playbackHost.Visibility);
+                    // Generate the production popup rows offscreen, including their
+                    // event setters, rather than assigning SelectedItem for a click.
+                    var popup = (FrameworkElement)((Popup)selector.Template.FindName("PART_Popup", selector)).Child;
+                    popup.Measure(new Size(300, 200));
+                    popup.Arrange(new Rect(new Size(300, 200)));
+                    popup.UpdateLayout();
+                    var item = main.TabStripItems.Single(candidate => candidate.Contains(target));
+                    var container = (ComboBoxItem)selector.ItemContainerGenerator.ContainerFromItem(item);
+                    Assert.NotNull(container);
+                    var title = FindVisualDescendants<EmojiTextBlock>(container).Single();
+                    var run = title.Inlines.OfType<Run>().First();
+                    var down = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+                    {
+                        RoutedEvent = Mouse.PreviewMouseDownEvent
+                    };
+                    run.RaiseEvent(down);
+                    Assert.True(ReferenceEquals(run, down.OriginalSource));
+                    Assert.Equal(false, main.IsSettingsOpen);
+                    Assert.Equal(target, main.SelectedTab);
+                    Assert.Equal(false, main.IsHomeSelected);
+                    Assert.True(ReferenceEquals(selector.SelectedItem, main.SelectedTabStripItem));
+                    LayoutStudioPolishWindow(window, new Size(600, 480));
+                    Assert.Equal(Visibility.Collapsed, settingsPanel.Visibility);
+                    Assert.Equal(Visibility.Visible, playbackHost.Visibility);
+                    main.GoBackCommand.Execute(null);
+                    Assert.True(main.IsSettingsOpen);
+                    main.GoBackCommand.Execute(null);
+                    Assert.Equal(false, main.IsSettingsOpen);
+                    Assert.Equal(first, main.SelectedTab);
+                }
             }
         }
         finally

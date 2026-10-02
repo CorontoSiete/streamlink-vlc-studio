@@ -21,6 +21,7 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - Subscriber-only Twitch VOD playback: if Streamlink cannot resolve a Twitch VOD, the app falls back to a direct CloudFront playlist derived from the VOD's public storyboard metadata (TwitchNoSub technique). Pasting a `https://www.twitch.tv/videos/{id}` URL into the search box opens it directly. Very recent uploads cannot be resolved this way, and `audio_only` maps to the lowest video variant.
 - Download completed Twitch and Kick VODs for offline viewing. Use **Download** on a Past broadcasts thumbnail, or paste a VOD URL in **Downloads**. The card button shows live progress, offers **Retry** after a failure, and becomes a green-check **Downloaded** button that opens offline playback when complete. Choose download quality, set a bandwidth limit, and pick a local destination in **Settings > Downloads**; manage cancellation or deletion in **Downloads**. The library survives app restarts and saves self-contained HLS packages in your chosen folder (by default, `StreamStudio VODs` in Windows Videos); offline playback, seeking, and resume do not require internet or Streamlink. Replay chat is not downloaded. See [VOD downloads](docs/vod-downloads.md) for storage, limits, and validation.
 - Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. By default, the selected main stream keeps its audio when a picture-in-picture window is focused; inactive visible streams stay muted. Clicking a picture-in-picture window leaves the main tab and layout in place. When no stream is selected in the main window, audio follows the activated picture-in-picture stream. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted. Enable **Never mute** beside the mute button to keep that tab unmuted and playing when switching tabs or opening Home. It clears manual mute and disables the mute button until turned off; volume, manual pause, and stop still work. A speaker icon beside the tab title marks tabs with Never mute enabled, including in the compact tab selector; for grouped tabs, its tooltip names the protected streams. The toggle is separate for each open tab, survives playback reloads, and resets when the tab is closed. Turning it off restores the normal inactive-tab mute and pause behavior.
+- **Settings > Playback > Pause unselected VOD tabs** controls hidden Twitch, Kick, and offline VOD playback independently of **Keep inactive live tabs running**. Enabled VOD pausing preserves the current position and resumes automatically when the VOD becomes visible; manual pauses remain paused. Visible grid, picture-in-picture, and Never mute VODs keep playing. Changes apply immediately and save automatically. Existing settings retain their previous VOD behavior.
 - Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL. Use Up/Down to choose a result, Enter to open it, and Escape to close results while keeping your query. Arrow keys can reopen retained results and skip unavailable channels.
 - Home page showing live and offline followed Twitch channels, imported Kick follows and additional Kick channels, Twitch/Kick VOD browsing, and recently watched streams.
 - Each library page remembers its own scroll position. New broadcast or category searches start at the top; returning from a category restores your place in Discover.
@@ -32,7 +33,7 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - **Numpad 4 (Left)** and **Numpad 6 (Right)** skip backward and forward by 30 seconds in seekable playback, with Num Lock on or off. Reassign them in **Settings > Hotkeys**, or right-click either skip binding to set its own amount from 1 to 300 seconds. Both shortcuts and amounts are saved automatically across restarts. The regular Left/Right arrows continue to switch tabs.
 - **Space** pauses or resumes the selected stream, including in fullscreen and detached players. Reassign **Pause / resume** in **Settings > Hotkeys**; changes are saved automatically across restarts. Typing and shortcut recording keep their normal Space behavior, and holding the key toggles playback only once.
 - Twitch chat via anonymous read-only IRC, or authenticated IRC sending with a Twitch OAuth token.
-- Automatic Twitch channel-point bonus claims for open live streams, using a separate in-app Twitch website sign-in (Settings > Accounts > Channel-point bonuses).
+- Automatic Twitch channel-point bonus claims for all live followed Twitch channels, using a separate in-app Twitch website sign-in (Settings > Accounts > Channel-point bonuses).
 - Kick chat via isolated public Pusher-style adapter, with OAuth chat sending through Kick's public API.
 - VOD chat replays on both platforms with no setup: Twitch from its public VOD comments GraphQL path, Kick from its public recent-messages endpoint, which serves history well beyond Kick's VOD retention. Chat streams in as playback advances and is appended like live chat, so it scrolls with the video.
 - Native VLC plugin chat overlay mode using `vlc-overlay`, with draggable/resizable chat and in-overlay chat input.
@@ -44,17 +45,19 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - 64-bit Windows 10 or Windows 11.
 - Administrator permission for the per-machine installation under `C:\Program Files`.
 - Internet access for platform sign-in and streaming. The full installer embeds its reviewed dependency installers and does not download them during setup.
-- VLC 3.0.18 or newer when you bring your own VLC (the installer provides a newer one). The app repairs invalid timestamps in Twitch's muted VOD segments, including end-of-media failures on VLC 3.0.23 (see "Replay Seekbar").
+- VLC 3.0.23 or newer for installation and updates; Setup provides VLC 3.0.23. The app repairs invalid timestamps in Twitch's muted VOD segments, including end-of-media failures on VLC 3.0.23 (see "Replay Seekbar").
 
-`StreamlinkVlcStudio-Setup.exe` is the normal installer. It contains the self-contained app MSI and the reviewed, version-locked x64 Streamlink and VLC installers. It installs the app and any missing dependencies, creates the Start Menu shortcut, and offers to launch the first-run account wizard. The wizard never asks for a Twitch or Kick password: sign-in and consent happen in the platform browser. Streamlink and VLC are treated as shared dependencies and are left installed if the app is later removed.
+`StreamlinkVlcStudio-Setup.exe` is the normal installer. It contains the self-contained app MSI and the reviewed, version-locked x64 Streamlink, VLC, and WebView2 installers. It installs the app and any missing dependencies, creates the Start Menu shortcut, and offers to launch the first-run account wizard. The wizard never asks for a Twitch or Kick password: sign-in and consent happen in the platform browser. Streamlink, VLC, and WebView2 are treated as shared dependencies and are left installed if the app is later removed.
 
 The app-only MSI is an internal bundle payload and is not published. This avoids split ownership in Apps & features: the Setup bundle is the sole supported per-machine installer, repair entry, updater, and uninstaller.
 
-The self-contained GitHub release does not require the .NET SDK. Building from source requires the .NET 10 SDK selected by `global.json`; running that build also requires Streamlink and VLC 64-bit with `libvlc.dll`.
+Running the same registered Setup version again repairs the application, including passive launches from older update helpers. Repair can rerun the bundled dependency installers while retaining compatible newer runtimes. Before reporting success, Setup verifies Streamlink's Twitch and Kick provider imports, VLC's playback and bundled app plugins, WebView2 browser startup, and the drawing and text runtimes.
+
+The self-contained GitHub release includes its .NET, drawing, and text runtimes. Setup installs the reviewed x64 Streamlink, VLC, and Microsoft Edge WebView2 Runtime dependencies. Building from source requires the .NET 10 SDK selected by `global.json`; running that build requires those same three Windows dependencies.
 
 ## Install Latest Release
 
-Download `StreamlinkVlcStudio-Setup.exe` from the latest GitHub release and verify it against the release's `SHA256SUMS.txt` before running it. The installer walks through installing Streamlink, VLC, and the app, then offers a Launch button. Click Launch to open the setup wizard:
+Download `StreamlinkVlcStudio-Setup.exe` from the latest GitHub release and verify it against the release's `SHA256SUMS.txt` before running it. The offline installer contains Streamlink, VLC, WebView2, and the app. It verifies that the installed app can initialize its runtimes before offering Launch. If Windows requires a restart, Setup reports that requirement and keeps Launch disabled. Click Launch to open the setup wizard:
 
 1. Twitch: create a Twitch developer app, set its redirect URL to exactly `http://localhost:39178`, enter its Client ID, and click Connect Twitch. The wizard requests `chat:read`, `chat:edit`, `user:read:follows`, `channel:manage:predictions`, and `clips:edit`.
 2. Kick: create a Kick developer app, set its redirect URL to exactly `http://localhost:39177`, enter its Client ID and Client Secret, and click Connect Kick. The wizard requests `user:read`, `channel:read`, and `chat:write`.
@@ -62,11 +65,13 @@ Download `StreamlinkVlcStudio-Setup.exe` from the latest GitHub release and veri
 
 The full installer uses `C:\Program Files\Streamlink VLC Studio` for the app. It creates `Start Menu\Programs\Stream Studio\Stream Studio` and registers the app with Apps & features / Programs and Features.
 
-Uninstall Stream Studio from Apps & features / Control Panel. The bundle removes the app, shortcut, Windows notification registration, and this Windows account's product data under `%APPDATA%\StreamStudio`, `%LOCALAPPDATA%\StreamStudio`, and the product-owned temp folders. Shared Streamlink and VLC installations are retained. To intentionally keep user data, clear the setup UI's data-removal checkbox or run the bundle with `PurgeUserData=0`.
+Uninstall Stream Studio from Apps & features / Control Panel. The bundle removes the app, shortcut, Windows notification registration, and this Windows account's product data under `%APPDATA%\StreamStudio`, `%LOCALAPPDATA%\StreamStudio`, and the product-owned temp folders. Shared Streamlink, VLC, and WebView2 installations are retained. To intentionally keep user data, clear the setup UI's data-removal checkbox or run the bundle with `PurgeUserData=0`.
 
 For a ZIP/PowerShell installation, run `Uninstall.exe` in the installed app folder. Use `Uninstall.exe --preserve-user-data` to keep settings and cache, or add `/quiet` for unattended removal. The uninstaller removes its temporary helper after it exits and removes empty folders created for managed app files; files and folders you added to the installation folder are preserved.
 
 The release zip also provides the advanced PowerShell installer. It can install or update the app and its version-locked dependencies from the latest final GitHub release, install the adjacent extracted payload, or install dependencies only. A GitHub app download requires both `StreamlinkVlcStudio-release.zip` and `SHA256SUMS.txt`; the script verifies the zip before installing it. Normal `Auto`, `Release`, and `GitHub` modes never fall back to an arbitrary Actions artifact. `Auto` falls back only to an app payload beside `install.ps1`; the explicit developer artifact mode additionally requires a trusted 40-character main-branch commit. For a private repository, set `GITHUB_TOKEN` to a token with release-content read access (and Actions read access only when using developer artifact mode).
+
+Run the advanced installer from 64-bit PowerShell. A dependency-only repair (`-SkipApp`) reads the installed application's dependency requirements, so it also respects requirements from a newer app payload.
 
 The app checks for stable releases automatically. A managed Program Files install first offers **Download update**, verifies the signed manifest and package, and then enables the separate **Restart and install** action. You can opt into **Download verified updates automatically** under Settings > Advanced > Updates. This setting is off by default and respects automatic checks and **Later**, which snoozes that version for 24 hours. ZIP/PowerShell installs are notify-only and offer the release page. Installing and restarting always require the **Restart and install** action.
 
@@ -84,7 +89,7 @@ Cache cleanup removes read-only files and continues removing other files when on
 
 Update results remain visible when a result file is locked or temporary package cleanup fails. An update that requires a Windows restart leaves the app closed until you restart Windows. ZIP upgrades preserve empty folders you created and copy user files after the app closes. ZIP uninstall preserves personal data if application removal is incomplete, so you can retry without losing settings. Installer cleanup retries temporary locks and removes other files while a locked file remains. See the [installer and cleanup changes](docs/installer-update-cleanup-2026-09-26.md).
 
-Locks on the ZIP uninstaller or its ownership files now preserve the complete set of files needed to retry removal. The PowerShell installer also registers the app before dependency setup, so a failed Streamlink or VLC installation remains removable. See [installer and updater retry safety](docs/installer-updater-retry-safety-2026-09-26.md) for details and validation.
+Locks on the ZIP uninstaller or its ownership files now preserve the complete set of files needed to retry removal. The PowerShell installer also registers the app before dependency setup, so a failed runtime installation remains removable. A managed update that replaced the app but failed its runtime checks remains repairable at the same version; expired or damaged cached installers are downloaded and verified again. A successful native health check clears the repair notice. See [dependency installation and update recovery](docs/installer-updater-dependencies-2026-10-02.md) for the dependency audit and validation.
 
 Setup offers **Try again** after a failed or canceled operation, rechecks installed components, and returns to the appropriate install or maintenance choices. Canceling during preparation prevents the installation plan or elevation from starting, and rollback is allowed to finish. When setup requires a Windows restart, it does not offer to launch the app prematurely.
 
@@ -151,7 +156,7 @@ caller's environment and working directory on success or failure.
 .\scripts\dev.ps1 Test -Interactive
 ```
 
-`Test` and `Check` use the current CI headless skip ceiling of 271; interactive
+`Test` and `Check` use the current CI headless skip ceiling of 276; interactive
 runs allow zero skips by default. `-ExpectedMaxSkips` provides an explicit override.
 CI includes two optional native hover-preview skips because its validation runner
 does not have VLC installed; those tests run locally when VLC is available.
@@ -275,13 +280,17 @@ page so it does not keep intercepting channel links.
 
 In **Settings > Accounts > Twitch account**, leave **Automatically claim Twitch bonuses**
 enabled, select **Sign in for bonuses**, sign in on Twitch's own page, then close that
-window. This is separate from **Connect Twitch**: the public-API token used for chat and
-follows is not accepted by Twitch's website bonus-claim endpoint. The website session
-can use a different Twitch account; bonuses belong to the account signed in there.
+window. Use **Connect Twitch** to load the channels you follow. Bonus sign-in is
+separate: the public-API token used for chat and follows is not accepted by Twitch's
+website bonus-claim endpoint. The website session can use a different Twitch account;
+channels come from the connected account's follows, and bonuses belong to the
+account signed in to the bonus website session.
 
-The app keeps one Twitch **chat popout** per distinct open live Twitch channel,
+The app keeps one Twitch **chat popout** per distinct live followed Twitch channel,
 running silently in the background without opening a window or taking focus. After
-the separate website sign-in, no click on **Open selected bonus chat** is needed.
+the separate website sign-in, no stream tab or click on **Open selected bonus chat**
+is needed. The live-followed list loads at startup and refreshes every minute,
+including while another page or stream is selected. You can also refresh it manually.
 It checks the actual bonus button every 10 seconds. The bonus browser has no stream
 player: it stays on `/popout/<channel>/chat`, and blocks media requests, Twitch's
 streaming CDN/player hosts, and playlist/segment URLs (including worker requests)
@@ -296,11 +305,13 @@ earning to watching on the Twitch channel page or Twitch app. Do not assume
 Streamlink/VLC playback plus chat earns the same points as Twitch's own player.
 The app does not simulate watch time or report a button click as a confirmed award.
 
-Pausing a stream leaves its bonus chat checking for available bonuses. Closing or
-stopping the tab, playback failure, seeking into replay, disabling the feature, and
-exiting the app close the corresponding pages. Kick, explicit VODs, and unrelated
-browser tabs are excluded. Duplicate tabs share a single bonus chat. Hidden docked
-chat and picture-in-picture do not disable claims.
+Playing, pausing, stopping, closing, or replaying a stream tab does not affect bonus
+checks for its live followed channel. A channel's bonus chat closes when it leaves
+the live-followed list, and starts again if a later refresh reports it live. Disabling
+the feature, signing out of bonuses, and exiting the app close all bonus chats.
+Kick, offline channels, explicit VODs, and channels outside the live-followed list
+are excluded. Duplicate entries share a single bonus chat. Hidden docked chat and
+picture-in-picture do not disable claims.
 
 The optional **Open selected bonus chat** button lets you inspect the point balance
 or handle a Twitch consent prompt. Use **Sign in for bonuses** to sign in again.
@@ -311,7 +322,7 @@ and limits on simultaneous channels. This feature never redeems rewards or spend
 channel points.
 
 The **Bonus sign-in** indicator stays visible separately from activity messages,
-including when automatic claims are off or no stream is open. It distinguishes a
+including when automatic claims are off or no followed channel is live. It distinguishes a
 missing session, a saved website session, an expired/rejected session, and a failed
 sign-in check. A saved cookie is not proof of a valid server session; an HTTP 401
 from Twitch stops the bonus chats and prompts you to sign in again.
@@ -325,20 +336,25 @@ tabs start at zero; past claims from before tracking was added cannot be recover
 Recent claim IDs prevent retries or repeated responses from counting twice. If
 saving fails, Settings shows an error and **Retry bonuses** retries the save.
 
-Microsoft Edge WebView2 **Evergreen Runtime** must be installed. If it is missing, the
-feature shows an actionable status and other playback continues normally. Download
-it from [Microsoft's WebView2 page](https://developer.microsoft.com/microsoft-edge/webview2/).
+Microsoft Edge WebView2 **Evergreen Runtime** must be installed. Setup and the
+PowerShell installer supply its reviewed x64 offline installer and retain a compatible
+existing runtime. The current SDK requires Runtime 152.0.4191.53 or newer. If it is
+removed later, the feature shows an actionable status and other playback continues
+normally; run Setup and choose **Repair**.
 Cookies remain in the app's isolated `%LOCALAPPDATA%\StreamStudio\TwitchBonusesWebView2`
 profile; website tokens are not copied into app settings. **Sign out of bonuses**
 closes the bonus chats and clears that browser profile's browsing data. Product
 data removal during uninstall includes this directory.
 
 The normal test suite covers bonus lifecycle, scope, settings, cancellation, and
-retry behavior. Set `SVS_TEST_FILTER='Twitch bonuses'` and
+retry behavior, including 125 live follows with no playback tabs and the actual
+startup, automatic, and manual followed-list refresh workflow.
+Set `SVS_TEST_FILTER='Twitch bonuses'` and
 `SVS_TEST_TWITCH_BONUS_BROWSER=true` to also run the production script in an actual
 WebView2 browser against local Twitch-shaped HTML fixtures. These tests verify
 claims without video, media blocking before the first claim check (including fetch
 and worker traffic), chat-only navigation, hidden/minimized window lifecycle,
+confirmed bonuses for multiple live followed channels with no playback tabs,
 confirmed versus failed/batched claim responses, and rejected website sessions.
 They require the Evergreen Runtime, perform no account login, and make no Twitch
 requests. A real account with an available bonus is still needed to verify an actual
@@ -356,7 +372,7 @@ Create a friend-ready release zip, internal app MSI, and full dependency install
 
 ```powershell
 $root = (Get-Location).Path
-& "$root\scripts\build-installer.ps1" -ProductVersion 1.0.0
+& "$root\scripts\build-installer.ps1" -ProductVersion 1.8.4
 ```
 
 The package script publishes the app with the native VLC chat overlay embedded from `src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledOverlay\build` by default, stages the required sidecar `vlc-overlay\build` payload, and includes the top-level install guides, `install.ps1`, its shared helpers, release contract, and locked Windows dependency manifest. It writes `release\StreamlinkVlcStudio-release.zip` and validates the staged payload against `shared\release-contract.json`. Packaging fails on an ambiguous payload root, missing runtime file, unexpected or altered native-overlay input (including hidden files), or any provenance/dependency mismatch.
@@ -366,7 +382,7 @@ packaging output to temporary directories outside the source tree. The ignored `
 `.codex-*`, `.tools`, `.wix`, `artifacts`, `bin`, and `obj` directories are disposable generated
 output; the bundled overlay binaries under `src\...\BundledOverlay\build` are required source assets.
 
-The installer script runs the package script when `-ReleaseZip` is not supplied and builds an internal app MSI plus `release\StreamlinkVlcStudio-Setup.exe` with WiX Burn. It downloads exactly the Streamlink and VLC x64 installers recorded in `dependencies\windows-installers.json`, whose canonical byte-count field is `length`, using a bounded temporary download and one shared verifier for length, SHA-256, Authenticode signer/status, and product metadata. Equal or newer compatible dependency executables are retained; dependencies are never removed with the app. The build fails on any manifest or verification mismatch and does not discover or guess a newer upstream asset. `-ProductVersion` must be the same three-part version injected into the application and ZIP metadata.
+The installer script runs the package script when `-ReleaseZip` is not supplied and builds an internal app MSI plus `release\StreamlinkVlcStudio-Setup.exe` with WiX Burn. It downloads exactly the Streamlink, VLC, and WebView2 x64 installers recorded in `dependencies\windows-installers.json`, whose canonical byte-count field is `length`, using a bounded temporary download and one shared verifier for length, SHA-256, Authenticode signer/status, and product metadata. Compatible runtimes are retained; dependencies are never removed with the app. The build checks that the ZIP, bundle, app dependency minima, and WebView2 SDK declaration agree. It fails on any mismatch and does not discover a newer upstream asset. `-ProductVersion` must be the same three-part version injected into the application and ZIP metadata.
 
 Stable releases are created only from exact `vMAJOR.MINOR.PATCH` tags by the protected `release` GitHub environment. Main and pull-request runs upload validation artifacts only. The protected environment must provide `UPDATE_MANIFEST_PRIVATE_KEY_PEM`, matching `shared/update-signing-public-key.pem`; a missing or mismatched key fails closed. The workflow signs the exact UTF-8 manifest with RSA-PSS/SHA-256 and independently verifies every version, asset name, length, and hash before publishing. Optional Authenticode secrets are all-or-nothing. When configured, the workflow signs app/helper binaries and MSI, then follows the required Burn sequence: detach and sign the engine, reattach it, and sign the final bundle with an RFC3161 timestamp.
 

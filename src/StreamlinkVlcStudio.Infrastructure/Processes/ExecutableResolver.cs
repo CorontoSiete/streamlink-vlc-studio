@@ -1,3 +1,5 @@
+using StreamStudio.Installation;
+
 namespace StreamlinkVlcStudio.Infrastructure.Processes;
 
 public static class ExecutableResolver
@@ -13,8 +15,15 @@ public static class ExecutableResolver
 
     public static string? FindVlcDirectory()
     {
-        var pluginPath = Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH") ?? "";
-        foreach (var entry in pluginPath.Split(
+        return FindVlcDirectory(Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH"),
+            () => OperatingSystem.IsWindows() ? WindowsDependencyProbe.FindMachineVlcDirectory() : null,
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "VideoLAN", "VLC"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "VideoLAN", "VLC"));
+    }
+
+    internal static string? FindVlcDirectory(string? pluginPath, Func<string?> machineDirectory, params string?[] fallbackDirectories)
+    {
+        foreach (var entry in (pluginPath ?? "").Split(
             Path.PathSeparator,
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -36,9 +45,9 @@ public static class ExecutableResolver
             }
         }
 
-        return FirstDirectoryWithLibVlc(
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "VideoLAN", "VLC"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "VideoLAN", "VLC"));
+        // Setup and runtime verification also use VLC's machine registration.
+        // Retain explicit environment selection before searching shared installs.
+        return FirstDirectoryWithLibVlc([machineDirectory(), .. fallbackDirectories]);
     }
 
     private static string? FirstExisting(params string?[] candidates)

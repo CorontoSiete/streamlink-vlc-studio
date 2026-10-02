@@ -61,14 +61,14 @@ internal static partial class ApplicationTestCatalog
     });
 
     private sealed class VodResumeNativeFactory(ChatSettings chat,
-        IPlaybackMediaSourceGateway? mediaSourceGateway = null, bool nativeOverlay = false) : IPlaybackEngineFactory
+        IPlaybackMediaSourceGateway? mediaSourceGateway = null, bool nativeOverlay = false, MemoryLogger? logger = null) : IPlaybackEngineFactory
     {
         internal IPlaybackEngine? Engine { get; private set; }
         public async Task<IPlaybackEngine> CreateAsync(string vlcDirectory, bool enableNativeOverlay = true,
             string? nativeOverlayPositionStatePath = null, CancellationToken cancellationToken = default,
             VideoRendererMode rendererMode = VideoRendererMode.Automatic)
         {
-            Engine = await new LibVlcPlaybackEngineFactory(new MemoryLogger(), chat, mediaSourceGateway).CreateAsync(vlcDirectory,
+            Engine = await new LibVlcPlaybackEngineFactory(logger ?? new MemoryLogger(), chat, mediaSourceGateway).CreateAsync(vlcDirectory,
                 enableNativeOverlay: nativeOverlay, cancellationToken: cancellationToken, rendererMode: rendererMode);
             return Engine;
         }

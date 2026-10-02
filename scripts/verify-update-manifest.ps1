@@ -10,6 +10,7 @@ param(
     [string]$ExpectedTag,
     [string]$ExpectedCommit,
     [string]$ExpectedRepository = 'CorontoSiete/streamlink-vlc-studio',
+    [string]$DependencyManifestPath,
     [switch]$PassThru
 )
 
@@ -18,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot '..'))
 . (Join-Path $scriptRoot 'lib\common.ps1')
+. (Join-Path $scriptRoot 'lib\dependency-manifest.ps1')
 . (Join-Path $scriptRoot 'lib\release-contract.ps1')
 $contractFile = if ([string]::IsNullOrWhiteSpace($ContractPath)) {
     Join-Path $repoRoot 'shared\release-contract.json'
@@ -98,6 +100,16 @@ foreach ($dependency in @('streamlink', 'vlc')) {
     if ($null -eq $property -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
         throw "Update manifest omits the $dependency dependency minimum."
     }
+}
+foreach ($property in $manifest.dependencyMinimums.PSObject.Properties) {
+    $parsedMinimum = ConvertTo-DependencyVersion ([string]$property.Value)
+    if ([string]$property.Value -notmatch '^\d+(?:\.\d+){1,3}(?:-\d+)?$' -or
+        $null -eq $parsedMinimum -or $parsedMinimum -le [version]'0.0.0.0') {
+        throw "Update manifest has an invalid dependency minimum for '$($property.Name)'."
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($DependencyManifestPath)) {
+    Assert-DependencyMinimums $manifest.dependencyMinimums (Read-WindowsDependencyManifest $DependencyManifestPath)
 }
 
 function Assert-ManifestAsset {

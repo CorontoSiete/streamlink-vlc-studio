@@ -317,6 +317,7 @@ internal static partial class ApplicationTestCatalog
             Task? pauseCompletion = null)
         {
             Settings = new AppSettings { StreamlinkPath = "streamlink.exe", VlcDirectory = @"C:\VLC", KeepInactiveTabsRunning = true };
+            Settings.PauseInactiveVodTabs = false;
             Settings.Chat.ConnectAutomatically = false;
             Settings.Chat.Layout = ChatLayout.Hidden;
             Streamlink = new FakeStreamlinkService();

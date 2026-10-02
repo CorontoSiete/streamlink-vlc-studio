@@ -1,9 +1,55 @@
+using System.Collections.ObjectModel;
 using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
 using StreamlinkVlcStudio.App.Wpf.Twitch;
 
 internal static partial class TwitchChannelPointsTestCatalog
 {
+    private static Task BrowserFollowedChannelsAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        using var fixture = await NativeBrowserFixture.CreateAsync();
+        fixture.ConfirmBonuses = true;
+        var foreground = NativeWindowTest.GetForegroundWindow();
+        var channels = new ObservableCollection<LiveStreamCardViewModel>
+        {
+            new(ChannelData(" ALPHA "), (_, _) => Task.CompletedTask),
+            new(ChannelData("alpha"), (_, _) => Task.CompletedTask),
+            new(ChannelData("bravo"), (_, _) => Task.CompletedTask),
+            new(ChannelData("kickone", PlatformKind.Kick), (_, _) => Task.CompletedTask),
+            new(ChannelData("vodone", kind: StreamTargetKind.TwitchVod), (_, _) => Task.CompletedTask)
+        };
+        var settings = new AppSettings();
+        using var controller = new TwitchChannelPointsController(settings, channels, () => null,
+            fixture.Browser, new MemoryLogger(), TimeSpan.FromMilliseconds(50));
+        await TestWait.UntilAsync(() => settings.TwitchBonusClaims.Count == 2,
+            TimeSpan.FromSeconds(15));
+        Assert.SequenceEqual(new[] { "alpha", "bravo" }, controller.ChannelClaims.Select(row => row.Channel));
+        Assert.True(controller.ChannelClaims.All(row => row.Count == 1));
+        // The sign-in check owns a blank page; only the two distinct live Twitch follows get chats.
+        Assert.Equal(3, fixture.Controllers.Count);
+        var chats = fixture.Controllers.Where(browser => browser.CoreWebView2.Source != "about:blank")
+            .ToDictionary(browser => browser.CoreWebView2.Source, StringComparer.Ordinal);
+        Assert.Equal(0, fixture.Owner.OwnedWindows.Count);
+        Assert.Equal(foreground, NativeWindowTest.GetForegroundWindow());
+        foreach (var chat in chats.Values)
+        {
+            Assert.Equal("1", await chat.CoreWebView2.ExecuteScriptAsync("window.claims"));
+            Assert.Equal("0", await chat.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video, audio').length"));
+            Assert.Equal(false, NativeWindowTest.IsWindowVisible(chat.ParentWindow));
+        }
+        var alphaHost = chats[TwitchBonusBrowser.ChannelChatUrl("alpha")].ParentWindow;
+        var bravoHost = chats[TwitchBonusBrowser.ChannelChatUrl("bravo")].ParentWindow;
+        channels.RemoveAt(0);
+        Assert.True(NativeWindowTest.IsWindow(alphaHost));
+        channels.RemoveAt(0);
+        Assert.Equal(false, NativeWindowTest.IsWindow(alphaHost));
+        Assert.True(NativeWindowTest.IsWindow(bravoHost));
+        controller.Enabled = false;
+        Assert.Equal(false, NativeWindowTest.IsWindow(bravoHost));
+        Assert.Equal(1L, settings.TwitchBonusClaims["alpha"].Count);
+        Assert.Equal(1L, settings.TwitchBonusClaims["bravo"].Count);
+    });
+
     private static Task BrowserClaimConfirmationAsync() => TestSta.RunOffscreenAsync(async () =>
     {
         using var fixture = await NativeBrowserFixture.CreateAsync();
@@ -241,6 +287,7 @@ internal static partial class TwitchChannelPointsTestCatalog
         internal List<(string Uri, int Status)> Responses { get; } = [];
         internal HashSet<string> BlockedRequests { get; } = new(StringComparer.Ordinal);
         internal bool ProbeMedia { get; set; }
+        internal bool ConfirmBonuses { get; set; }
         internal string GraphQlResponse { get; set; } = "{}";
         internal int GraphQlStatusCode { get; set; } = 200;
         internal Task? CreationGate { get; set; }
@@ -270,8 +317,11 @@ internal static partial class TwitchChannelPointsTestCatalog
             core.WebResourceRequested += (_, args) =>
             {
                 var isGraphQl = TwitchBonusClaimResponse.IsGraphQlEndpoint(args.Request.Uri);
+                var response = isGraphQl
+                    ? ConfirmBonuses ? ClaimSuccess(new Uri(core.Source).AbsolutePath.Split('/')[2] + "-fixture-claim") : GraphQlResponse
+                    : Html + (ProbeMedia ? MediaProbes : "") + (ConfirmBonuses ? BonusClaims : "");
                 args.Response = environment.CreateWebResourceResponse(
-                    new System.IO.MemoryStream(Encoding.UTF8.GetBytes(isGraphQl ? GraphQlResponse : Html + (ProbeMedia ? MediaProbes : ""))),
+                    new System.IO.MemoryStream(Encoding.UTF8.GetBytes(response)),
                     isGraphQl ? GraphQlStatusCode : 200, "Fixture response",
                     "Content-Type: " + (isGraphQl ? "application/json" : "text/html") + "\r\nAccess-Control-Allow-Origin: *");
             };
@@ -338,6 +388,22 @@ internal static partial class TwitchChannelPointsTestCatalog
                     worker.terminate();
                     URL.revokeObjectURL(workerUrl);
                 };
+            </script>
+            """;
+
+        private const string BonusClaims = """
+            <script>
+                document.addEventListener('click', event => {
+                    if (!event.target.closest('#bonus')) return;
+                    const channel = location.pathname.split('/')[2];
+                    fetch('https://gql.twitch.tv/gql', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            operationName: 'ClaimCommunityPoints',
+                            variables: { input: { channelID: channel, claimID: channel + '-fixture-claim' } }
+                        })
+                    });
+                });
             </script>
             """;
     }

@@ -421,6 +421,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    internal void SelectStreamTab(StreamTabViewModel tab)
+    {
+        if (!Tabs.Contains(tab))
+        {
+            return;
+        }
+
+        // Finish selecting the stream before closing Settings so history records
+        // the destination once, including when the same stream is selected again.
+        SelectedTab = tab;
+        IsSettingsOpen = false;
+    }
+
     internal void ActivatePictureInPictureTab(StreamTabViewModel tab)
     {
         if (!Tabs.Contains(tab) || !tab.IsDetached)
@@ -470,7 +483,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged();
             if (value is { } item && Tabs.Contains(item.ActiveTab) && !ReferenceEquals(SelectedTab, item.ActiveTab))
             {
-                SelectedTab = item.ActiveTab;
+                SelectStreamTab(item.ActiveTab);
             }
         }
     }
@@ -3503,7 +3516,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (e.PropertyName == nameof(AppSettings.KeepInactiveTabsRunning))
+        if (e.PropertyName is nameof(AppSettings.KeepInactiveTabsRunning) or nameof(AppSettings.PauseInactiveVodTabs))
         {
             ApplyInactivePlaybackPolicyInBackground();
         }
@@ -4473,7 +4486,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         // Let a stream finish its initial resolve/start even if the user changes
         // pages while it is still loading. Once startup completes, the normal
         // off-grid pause policy applies without interrupting the initial handoff.
-        return tab.NeverMute || Settings.KeepInactiveTabsRunning || tab.IsVideoVisible || tab.IsDetached || tab.IsBusy;
+        if (tab.NeverMute || tab.IsVideoVisible || tab.IsDetached || tab.IsBusy)
+        {
+            return true;
+        }
+
+        return tab.Target.IsExplicitVod
+            ? !Settings.PauseInactiveVodTabs
+            : Settings.KeepInactiveTabsRunning;
     }
 
     private void ApplySelectedTabSelection()

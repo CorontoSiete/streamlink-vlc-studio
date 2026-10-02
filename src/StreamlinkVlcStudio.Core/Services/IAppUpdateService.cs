@@ -71,4 +71,5 @@ public sealed record AppUpdateCompletion(
     int InstallerExitCode,
     string? LogPath,
     string Message,
-    DateTimeOffset CompletedAt);
+    DateTimeOffset CompletedAt,
+    Version? TargetVersion = null);

@@ -11,10 +11,14 @@ Recommended latest install/update:
 Download StreamlinkVlcStudio-Setup.exe from the latest GitHub release and run
 it. Verify the download against SHA256SUMS.txt from the same release first.
 The setup executable is a compressed, per-machine bundle containing the app
-MSI and the reviewed, version-locked x64 Streamlink and VLC installers. It
+MSI and the reviewed, version-locked x64 Streamlink, VLC, and WebView2 installers. It
 installs the app under C:\Program Files\Streamlink VLC Studio, installs missing
 dependencies, creates the Start Menu shortcut, and offers to launch the app's
 first-run setup wizard.
+Setup verifies real runtime initialization before reporting success or enabling
+Launch. The app includes its .NET, graphics, and text runtimes; no separate .NET
+SDK, Python installation, or Visual C++ redistributable is required for the
+reviewed payload. Streamlink's Windows installer includes its Python runtime.
 
 The app checks for stable releases automatically. A managed Program Files
 installation offers Download update, verifies it, and then offers the separate
@@ -27,6 +31,16 @@ Settings. Completed downloads are retained for up to seven days and reverified
 after an app restart. Installation still starts with Restart and install.
 The seven-day limit also applies while the app stays open. Expired packages
 are cleaned up and must be downloaded again before installation.
+An incomplete installation remains repairable even if the app's new version
+was already copied. The updater retains a repair notice, verifies cached bytes
+again, and can download a fresh signed installer after cache expiration. A
+successful dependency health check clears that notice.
+
+Running the same registered Setup version again repairs the app, including
+passive updater launches. Repair can rerun its reviewed dependency installers
+while retaining compatible newer runtimes. Verification includes Streamlink's
+Twitch and Kick imports, VLC's playback and bundled app plugins, browser startup,
+and the drawing and text runtimes.
 
 Startup cleanup removes installers for versions already installed, partial
 downloads older than 24 hours, and update logs older than 30 days. It also runs
@@ -41,8 +55,8 @@ still fails, it reopens the app unless Windows needs to restart.
 
 The normal setup is registered through WiX/Windows Installer, not the separate
 per-user Uninstall.exe. Removing Stream Studio through Apps & features /
-Control Panel removes the app and its shortcut but leaves the shared VLC and
-Streamlink installations. It also removes this Windows account's Streamlink VLC
+Control Panel removes the app and its shortcut but leaves the shared VLC,
+Streamlink, and WebView2 installations. It also removes this Windows account's Streamlink VLC
 Studio settings, logs, protected account secrets, replay caches, extracted
 assets, update cache, and product-owned temporary files under
 %APPDATA%\StreamStudio, %LOCALAPPDATA%\StreamStudio, and the
@@ -50,6 +64,9 @@ product temp folders. Clear the setup UI's data-removal checkbox, or run the
 bundle with PurgeUserData=0, only when you intentionally want to keep that data.
 
 Advanced PowerShell install is also available from the release zip:
+
+Use 64-bit PowerShell. Dependency-only repair (-SkipApp) reads the installed
+application's dependency requirements, including requirements from newer apps.
 
 ZIP upgrades preserve user-created files and empty directories. The installer
 waits for the app to close before copying those files, and aborts if the new
@@ -80,7 +97,9 @@ artifact installation is an explicit developer-only mode that requires a trusted
 40-character main-branch commit.
 
 The script reads dependencies\windows-installers.json and installs the pinned
-Streamlink and VLC builds when no same-or-newer detected version is present.
+Streamlink and VLC builds and the supported WebView2 Runtime when no compatible
+working x64 installation is present. WebView2 must meet the SDK-required minimum;
+the current minimum is 152.0.4191.53. Newer shared runtimes are retained.
 Downloads are checked by size and SHA-256 plus the recorded signature/product
 metadata. By default, it installs the app under
 %LOCALAPPDATA%\Programs\StreamStudio. It writes the detected paths to
@@ -107,13 +126,19 @@ Manual portable setup:
 1. Extract the release zip to a normal folder, for example:
    C:\Users\you\Apps\StreamStudio
 
-2. Install Streamlink for Windows if it is not already installed.
+2. Install x64 Streamlink for Windows 8.5.0 or newer if a supported working
+   installation is not already present.
 
-3. Install VLC 64-bit if it is not already installed.
+3. Install VLC 64-bit 3.0.23 or newer if a supported working installation is
+   not already present.
 
-4. Run StreamStudio.exe.
+4. Install the x64 Microsoft Edge WebView2 Runtime 152.0.4191.53 or newer if
+   a supported working installation is not already present. The full Setup
+   executable and PowerShell installer handle all three dependencies for you.
 
-5. Open Settings and verify:
+5. Run StreamStudio.exe.
+
+6. Open Settings and verify:
    - Streamlink executable points to streamlink.exe.
    - VLC directory points to the folder containing libvlc.dll.
 
@@ -141,6 +166,6 @@ The PowerShell-path Uninstall.exe removes its registered shortcut, uninstall
 entry, managed app payload (including modified managed files), current-user
 product data, and product-owned temporary files. It removes its temporary
 helper after exiting and preserves unrelated files added to the install
-directory. VLC and Streamlink remain installed. Run
+directory. VLC, Streamlink, and WebView2 remain installed. Run
 Uninstall.exe --preserve-user-data only when you intentionally want to keep
 %APPDATA%\StreamStudio and %LOCALAPPDATA%\StreamStudio.

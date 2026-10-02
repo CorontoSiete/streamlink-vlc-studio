@@ -6,6 +6,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Io;
+using StreamlinkVlcStudio.Infrastructure.Processes;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
@@ -63,9 +64,13 @@ internal static class UpdateHelperRunner
                     outcome = AppUpdateCompletionOutcome.Failed;
                     code = -2;
                 }
+                else
+                {
+                    await VerifyInstalledDependenciesAsync(installedTarget).ConfigureAwait(false);
+                }
             }
 
-            completion = new(operationId, outcome, code, logPath, Message(outcome, code), DateTimeOffset.UtcNow);
+            completion = new(operationId, outcome, code, logPath, Message(outcome, code), DateTimeOffset.UtcNow, targetVersion);
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
@@ -75,11 +80,12 @@ internal static class UpdateHelperRunner
                 1223,
                 logPath,
                 "The update was canceled.",
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                targetVersion);
         }
         catch (Exception ex)
         {
-            completion = new(operationId, AppUpdateCompletionOutcome.Failed, -1, logPath, $"Update failed. {ex.Message}", DateTimeOffset.UtcNow);
+            completion = new(operationId, AppUpdateCompletionOutcome.Failed, -1, logPath, $"Update failed. {ex.Message}", DateTimeOffset.UtcNow, targetVersion);
         }
 
         await CompleteAndRelaunchAsync(resultPath, completion, installDirectory, info => Process.Start(info)?.Dispose()).ConfigureAwait(false);
@@ -113,6 +119,19 @@ internal static class UpdateHelperRunner
             // after Setup exits. Reboot-required outcomes still leave it closed.
             RelaunchAfterUpdate(completion.Outcome, installDirectory, startProcess);
         }
+    }
+
+    internal static async Task VerifyInstalledDependenciesAsync(
+        string executable,
+        Func<ProcessStartInfo, TimeSpan, Task<ProcessExecutionResult>>? run = null)
+    {
+        var info = BoundedProcessRunner.CreateRedirectedStartInfo(executable, [ApplicationDependencyVerifier.Command]);
+        info.WorkingDirectory = Path.GetDirectoryName(executable)!;
+        var result = run is null
+            ? await new BoundedProcessRunner().RunAsync(info, TimeSpan.FromSeconds(60)).ConfigureAwait(false)
+            : await run(info, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+        if (result.TimedOut || result.OutputWasTruncated || result.ExitCode != 0)
+            throw new InvalidDataException($"The installed application's dependencies could not be verified. Run Setup and Repair, or retry the update. {result.StandardError.Trim()}");
     }
 
     internal static void RelaunchAfterUpdate(

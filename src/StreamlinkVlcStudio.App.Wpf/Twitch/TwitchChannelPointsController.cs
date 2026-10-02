@@ -11,11 +11,11 @@ using StreamlinkVlcStudio.Core.Settings;
 
 namespace StreamlinkVlcStudio.App.Wpf.Twitch;
 
-/// <summary>One bonus chat page per distinct open live channel, independent of the docked chat and tab selection.</summary>
+/// <summary>One bonus chat page per distinct live followed Twitch channel, independent of playback tabs.</summary>
 internal sealed class TwitchChannelPointsController : ObservableObject, IDisposable
 {
     private readonly AppSettings settings;
-    private readonly ObservableCollection<StreamTabViewModel> tabs;
+    private readonly ObservableCollection<LiveStreamCardViewModel> liveFollowedChannels;
     private readonly Func<StreamTabViewModel?> selectedTab;
     private readonly ITwitchBonusBrowser browser;
     private readonly IAppLogger logger;
@@ -25,7 +25,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
     private readonly TimeSpan checkInterval;
     private readonly CancellationTokenSource lifetime = new();
     private readonly CancellationToken lifetimeToken;
-    private readonly HashSet<StreamTabViewModel> observedTabs = [];
+    private readonly HashSet<LiveStreamCardViewModel> observedChannels = [];
     private readonly Dictionary<string, Worker> workers = new(StringComparer.Ordinal);
     private ChatSettings chat;
     private bool sessionChecked, signedIn, checkingSession, accountBusy, disposed;
@@ -37,7 +37,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
 
     internal TwitchChannelPointsController(
         AppSettings settings,
-        ObservableCollection<StreamTabViewModel> tabs,
+        ObservableCollection<LiveStreamCardViewModel> liveFollowedChannels,
         Func<StreamTabViewModel?> selectedTab,
         ITwitchBonusBrowser browser,
         IAppLogger logger,
@@ -45,7 +45,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         ISettingsService? settingsService = null)
     {
         this.settings = settings;
-        this.tabs = tabs;
+        this.liveFollowedChannels = liveFollowedChannels;
         this.selectedTab = selectedTab;
         this.browser = browser;
         this.logger = logger;
@@ -59,14 +59,14 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         OpenPageCommand = new RelayCommand(OpenSelectedPage);
         settings.PropertyChanged += SettingsChanged;
         chat.PropertyChanged += ChatChanged;
-        tabs.CollectionChanged += TabsChanged;
+        liveFollowedChannels.CollectionChanged += ChannelsChanged;
         sessionTimer = new DispatcherTimer(TimeSpan.FromSeconds(30), DispatcherPriority.Background,
             (_, _) =>
             {
                 if (!disposed && !checkingSession && !accountBusy && !sessionExpired && workers.Count == 0)
                     _ = CheckSessionAsync();
             }, dispatcher);
-        ObserveTabs();
+        ObserveChannels();
         Synchronize();
         _ = CheckSessionAsync();
     }
@@ -87,8 +87,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
     public bool HasSavedSession => signedIn && !checkingSession && !accountBusy && sessionError is null;
     public string HistorySaveStatus { get => historySaveStatus; private set => SetProperty(ref historySaveStatus, value); }
     public IReadOnlyList<ChannelClaimSummary> ChannelClaims => settings.TwitchBonusClaims.Keys
-        .Concat(tabs.Where(tab => tab.Target.Platform == PlatformKind.Twitch && tab.Target.Kind == StreamTargetKind.Live)
-            .Select(tab => tab.Target.Channel.Trim().ToLowerInvariant()).Where(TwitchBonusBrowser.IsChannelLogin))
+        .Concat(EligibleChannels())
         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
         .Select(channel => new ChannelClaimSummary(channel, settings.TwitchBonusClaims.GetValueOrDefault(channel)?.Count ?? 0))
         .ToArray();
@@ -118,28 +117,32 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         Synchronize();
     });
 
-    private void TabsChanged(object? sender, NotifyCollectionChangedEventArgs args) => OnUi(() =>
+    private void ChannelsChanged(object? sender, NotifyCollectionChangedEventArgs args) => OnUi(() =>
     {
-        ObserveTabs();
+        ObserveChannels();
         RaiseChannelClaims();
         Synchronize();
     });
 
-    private void ObserveTabs()
+    private void ObserveChannels()
     {
-        foreach (var tab in observedTabs.Where(tab => !tabs.Contains(tab)).ToArray())
+        foreach (var channel in observedChannels.Where(channel => !liveFollowedChannels.Contains(channel)).ToArray())
         {
-            tab.PropertyChanged -= TabChanged;
-            observedTabs.Remove(tab);
+            channel.PropertyChanged -= ChannelChanged;
+            observedChannels.Remove(channel);
         }
-        foreach (var tab in tabs)
-            if (observedTabs.Add(tab)) tab.PropertyChanged += TabChanged;
+        foreach (var channel in liveFollowedChannels)
+            if (observedChannels.Add(channel)) channel.PropertyChanged += ChannelChanged;
     }
 
-    private void TabChanged(object? sender, PropertyChangedEventArgs args)
+    private void ChannelChanged(object? sender, PropertyChangedEventArgs args)
     {
-        if (args.PropertyName is nameof(StreamTabViewModel.Status) or nameof(StreamTabViewModel.IsBehindLive))
-            OnUi(Synchronize);
+        if (args.PropertyName is nameof(LiveStreamCardViewModel.Source) or nameof(LiveStreamCardViewModel.Target))
+            OnUi(() =>
+            {
+                RaiseChannelClaims();
+                Synchronize();
+            });
     }
 
     private void OnUi(Action action)
@@ -149,16 +152,19 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         else dispatcher.BeginInvoke(() => { if (!disposed) action(); });
     }
 
-    internal static bool IsEligible(StreamTabViewModel tab) =>
-        tab.Target.Platform == PlatformKind.Twitch && tab.Target.Kind == StreamTargetKind.Live &&
-        !tab.IsBehindLive && tab.Status is PlaybackStatus.Playing or PlaybackStatus.Paused &&
-        TwitchBonusBrowser.IsChannelLogin(tab.Target.Channel.Trim().ToLowerInvariant());
+    internal static bool IsEligible(LiveStreamCardViewModel channel) =>
+        channel.Source == LiveStreamCardSource.Followed &&
+        channel.Target.Platform == PlatformKind.Twitch && channel.Target.Kind == StreamTargetKind.Live &&
+        TwitchBonusBrowser.IsChannelLogin(channel.Target.Channel.Trim().ToLowerInvariant());
+
+    private IEnumerable<string> EligibleChannels() => liveFollowedChannels.Where(IsEligible)
+        .Select(channel => channel.Target.Channel.Trim().ToLowerInvariant());
 
     private void Synchronize()
     {
         if (disposed) return;
         var desired = Enabled && !accountBusy
-            ? tabs.Where(IsEligible).Select(tab => tab.Target.Channel.Trim().ToLowerInvariant()).ToHashSet(StringComparer.Ordinal)
+            ? EligibleChannels().ToHashSet(StringComparer.Ordinal)
             : new HashSet<string>(StringComparer.Ordinal);
         foreach (var key in workers.Keys.Where(key => !desired.Contains(key)).ToArray()) StopWorker(key);
         if (!Enabled) { Status = "Automatic Twitch bonuses are off."; return; }
@@ -315,7 +321,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
             return;
         }
         Status = workers.Count == 0
-            ? "Twitch website session saved. Open a live Twitch stream to claim bonuses."
+            ? "Twitch website session saved. Waiting for live followed Twitch channels. Connect Twitch to load your follows."
             : string.Join(Environment.NewLine, workers.Values.Select(worker => $"{worker.Channel}: {worker.Message}"));
     }
 
@@ -360,9 +366,10 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
     private void OpenSelectedPage()
     {
         var tab = selectedTab();
-        if (tab is not null && IsEligible(tab) && workers.TryGetValue(tab.Target.Channel.Trim().ToLowerInvariant(), out var worker)
+        if (tab is not null && tab.Target.Platform == PlatformKind.Twitch && tab.Target.Kind == StreamTargetKind.Live &&
+            workers.TryGetValue(tab.Target.Channel.Trim().ToLowerInvariant(), out var worker)
             && worker.Page is not null) worker.Page.Show();
-        else Status = "Select an open live Twitch stream, then open its bonus page.";
+        else Status = "Select a live followed Twitch channel's tab, then open its bonus chat.";
     }
 
     private void StopWorker(string channel)
@@ -395,9 +402,9 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         StopAllWorkers();
         settings.PropertyChanged -= SettingsChanged;
         chat.PropertyChanged -= ChatChanged;
-        tabs.CollectionChanged -= TabsChanged;
-        foreach (var tab in observedTabs) tab.PropertyChanged -= TabChanged;
-        observedTabs.Clear();
+        liveFollowedChannels.CollectionChanged -= ChannelsChanged;
+        foreach (var channel in observedChannels) channel.PropertyChanged -= ChannelChanged;
+        observedChannels.Clear();
         browser.Dispose();
         lifetime.Dispose();
     }

@@ -44,11 +44,9 @@
 
   <ItemGroup>
     <None Remove="Assets\Studio.ico" />
-    <None Remove="Assets\Twitch.ico" />
     <None Remove="Assets\TwitchBadges\**\*.*" />
     <None Remove="Assets\KickBadges\**\*.*" />
     <Resource Include="Assets\Studio.ico" />
-    <Resource Include="Assets\Twitch.ico" />
     <Resource Include="Assets\TwitchBadges\**\*.*" />
     <Resource Include="Assets\KickBadges\**\*.*" />
   </ItemGroup>
