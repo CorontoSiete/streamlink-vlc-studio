@@ -86,8 +86,7 @@ public sealed class JsonVodPlaybackHistory(string path, IAppLogger logger) : IVo
         {
             if (File.Exists(path))
             {
-                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
-                    4096, FileOptions.Asynchronous);
+                await using var stream = await AtomicFile.OpenReadAsync(path, cancellationToken).ConfigureAwait(false);
                 if (stream.Length > MaximumBytes) throw new JsonException("VOD history exceeded its size limit.");
                 var saved = await JsonSerializer.DeserializeAsync<Entry[]>(stream, cancellationToken: cancellationToken)
                     .ConfigureAwait(false) ?? [];
@@ -130,7 +129,7 @@ public sealed class JsonVodPlaybackHistory(string path, IAppLogger logger) : IVo
         {
             // Preserve the damaged file before allowing a fresh history to replace it.
             File.Move(path, $"{path}.invalid-{Guid.NewGuid():N}");
-            logger.Write(AppLogLevel.Warning, "VOD resume", "Invalid VOD history was backed up; starting a new history.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VOD resume", "Invalid VOD history was backed up; starting a new history.", ex);
         }
         loaded = true;
     }

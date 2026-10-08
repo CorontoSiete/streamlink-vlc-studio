@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media.Imaging;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Controls;
 
@@ -160,9 +161,10 @@ public partial class ReplaySeekOverlay
     private void CancelPreviewImage()
     {
         previewVersion++;
-        previewCancellation?.Cancel();
-        // The request owns disposal, including when a decoder is still finishing in the background.
+        var cancellation = previewCancellation;
         previewCancellation = null;
+        // The request owns disposal, including when a decoder is still finishing in the background.
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     private void HideSeekHover()

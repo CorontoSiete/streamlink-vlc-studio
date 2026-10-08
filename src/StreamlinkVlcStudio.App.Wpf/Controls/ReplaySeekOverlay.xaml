@@ -226,6 +226,18 @@
                         AutomationProperties.Name="Playback position"
                         AutomationProperties.HelpText="Use arrow keys to seek five seconds, or Page Up and Page Down to seek thirty seconds."
                         ToolTipService.IsEnabled="False" />
+                <ProgressBar x:Name="ReplaySeekingIndicator"
+                             Grid.Row="0"
+                             Height="2"
+                             VerticalAlignment="Bottom"
+                             IsIndeterminate="True"
+                             IsHitTestVisible="False"
+                             Focusable="False"
+                             Foreground="{DynamicResource StudioAccentBrush}"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Visibility="{Binding IsReplaySeekInProgress, Converter={StaticResource OverlayBooleanToVisibilityConverter}}"
+                             AutomationProperties.Name="Seeking to the selected position" />
                 <Grid x:Name="ReplayTransportGrid" Grid.Row="1">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />

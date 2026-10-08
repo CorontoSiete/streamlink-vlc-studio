@@ -4,10 +4,12 @@ using System.ComponentModel;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using StreamlinkVlcStudio.App.Wpf.ViewModels;
+using StreamlinkVlcStudio.Core.Commands;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Twitch;
 
@@ -270,7 +272,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
                     if (worker.Cancellation.IsCancellationRequested) return;
                     // Log the click, never claim server success based on DOM disappearance.
                     if (result == "Bonus claim clicked; waiting for Twitch.")
-                        logger.Write(AppLogLevel.Info, "TwitchBonuses", $"{worker.Channel}: {result}");
+                        logger.WriteSafely(AppLogLevel.Info, "TwitchBonuses", $"{worker.Channel}: {result}");
                     worker.Message = result;
                     failures = 0;
                 }
@@ -287,12 +289,11 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
                 }
                 catch (Exception error)
                 {
-                    worker.Page?.Dispose();
-                    worker.Page = null;
+                    ReleaseWorkerPage(worker);
                     worker.Message = DescribeError(error);
                     delay = TimeSpan.FromSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(++failures, 5))));
                     // Avoid logging browser URLs, cookies, or page content from an exception.
-                    if (failures == 1) logger.Write(AppLogLevel.Warning, "TwitchBonuses",
+                    if (failures == 1) logger.WriteSafely(AppLogLevel.Warning, "TwitchBonuses",
                         $"{worker.Channel}: {worker.Message} ({error.GetType().Name})");
                 }
                 RefreshStatus();
@@ -302,7 +303,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         catch (OperationCanceledException) when (worker.Cancellation.IsCancellationRequested) { }
         finally
         {
-            worker.Page?.Dispose();
+            ReleaseWorkerPage(worker);
             worker.Cancellation.Dispose();
         }
     }
@@ -336,7 +337,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         {
             [worker.Channel] = history.Record(id)
         };
-        logger.Write(AppLogLevel.Info, "TwitchBonuses", $"{worker.Channel}: Bonus confirmed by Twitch; {settings.TwitchBonusClaims[worker.Channel].Count:N0} total.");
+        logger.WriteSafely(AppLogLevel.Info, "TwitchBonuses", $"{worker.Channel}: Bonus confirmed by Twitch; {settings.TwitchBonusClaims[worker.Channel].Count:N0} total.");
         _ = SaveHistoryAsync();
     }
 
@@ -353,7 +354,7 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         {
             if (!disposed && version == historyVersion)
                 HistorySaveStatus = "Claim totals could not be saved. Click Retry bonuses to save them again.";
-            logger.Write(AppLogLevel.Warning, "TwitchBonuses", $"Could not save bonus totals ({error.GetType().Name}).");
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchBonuses", $"Could not save bonus totals ({error.GetType().Name}).");
         }
     }
 
@@ -375,10 +376,26 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
     private void StopWorker(string channel)
     {
         if (!workers.Remove(channel, out var worker)) return;
-        worker.Cancellation.Cancel();
-        worker.Page?.Dispose();
-        worker.Page = null;
+        RequestCancellation(worker.Cancellation);
+        ReleaseWorkerPage(worker);
     }
+
+    private void ReleaseWorkerPage(Worker worker)
+    {
+        var page = worker.Page;
+        // Detach before invoking browser callbacks, including callbacks that reenter shutdown.
+        worker.Page = null;
+        try { page?.Dispose(); }
+        catch (Exception error)
+        {
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchBonuses", $"Bonus page cleanup failed ({error.GetType().Name}).");
+        }
+    }
+
+    private void RequestCancellation(CancellationTokenSource cancellation) =>
+        CancellationSourceCleanup.Cancel(cancellation, error =>
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchBonuses", $"Bonus cancellation callback failed ({error.GetType().Name})."));
+
     private void StopAllWorkers()
     {
         foreach (var channel in workers.Keys.ToArray()) StopWorker(channel);
@@ -398,15 +415,19 @@ internal sealed class TwitchChannelPointsController : ObservableObject, IDisposa
         if (disposed) return;
         disposed = true;
         sessionTimer.Stop();
-        lifetime.Cancel();
+        RequestCancellation(lifetime);
         StopAllWorkers();
         settings.PropertyChanged -= SettingsChanged;
         chat.PropertyChanged -= ChatChanged;
         liveFollowedChannels.CollectionChanged -= ChannelsChanged;
         foreach (var channel in observedChannels) channel.PropertyChanged -= ChannelChanged;
         observedChannels.Clear();
-        browser.Dispose();
-        lifetime.Dispose();
+        try { browser.Dispose(); }
+        catch (Exception error)
+        {
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchBonuses", $"Bonus browser cleanup failed ({error.GetType().Name}).");
+        }
+        finally { lifetime.Dispose(); }
     }
 
     public sealed record ChannelClaimSummary(string Channel, long Count);

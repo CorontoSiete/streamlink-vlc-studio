@@ -1,17 +1,4 @@
-using System.Diagnostics;
-using System.IO.Pipes;
-using System.Reflection;
-using System.Windows;
 using System.Windows.Automation;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media;
-using StreamlinkVlcStudio.App.Wpf;
-using StreamlinkVlcStudio.App.Wpf.Chat;
-using StreamlinkVlcStudio.App.Wpf.ViewModels;
-using StreamlinkVlcStudio.Core.Models;
-using StreamlinkVlcStudio.Core.Parsing;
-using StreamlinkVlcStudio.Core.Settings;
 
 internal static class NativeInputFocusTestCatalog
 {

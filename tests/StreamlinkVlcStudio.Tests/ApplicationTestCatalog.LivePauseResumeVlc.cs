@@ -44,9 +44,9 @@ internal static partial class ApplicationTestCatalog
             var engine = (LibVlcPlaybackEngine)typeof(StreamTabViewModel)
                 .GetField("playbackEngine", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(tab)!;
-            await TestWait.UntilAsync(() => engine.TryGetPlaybackHealth(out var health) &&
-                health.DisplayedPictures > 0, TimeSpan.FromSeconds(6));
-            Assert.True(engine.TryGetPlaybackHealth(out var before));
+            PlaybackHealth before = default;
+            await TestWait.UntilAsync(() => engine.TryGetPlaybackHealth(out before) &&
+                before.DisplayedPictures > 0, TimeSpan.FromSeconds(6));
 
             await tab.PauseOrResumeAsync();
             var held = tab.ReplaySeekValue;
@@ -61,8 +61,13 @@ internal static partial class ApplicationTestCatalog
             Assert.True(watch.Elapsed < TimeSpan.FromSeconds(7));
             if (caughtUp)
             {
-                Assert.True(engine.TryGetPlaybackClock(out var clock) &&
-                    Math.Abs(clock.Position.TotalSeconds - held) < 5,
+                // Native reads deliberately avoid blocking behind audio/output work.
+                // Retry availability only; a readable clock at the wrong target still fails.
+                PlaybackClock clock = new(TimeSpan.Zero, null, false);
+                await TestWait.UntilAsync(() => engine.TryGetPlaybackClock(out clock), TimeSpan.FromSeconds(1),
+                    "The resumed DVR must provide a readable native playback clock.");
+                Console.WriteLine($"Live DVR resume clock: held={held:0.000}s, clock={clock.Position.TotalSeconds:0.000}s, elapsed={watch.ElapsedMilliseconds}ms.");
+                Assert.True(Math.Abs(clock.Position.TotalSeconds - held) < 5,
                     "The published DVR must resume near the held timestamp.");
                 Console.WriteLine($"Live held {held:0.000} s and resumed replay video in {watch.ElapsedMilliseconds} ms.");
             }

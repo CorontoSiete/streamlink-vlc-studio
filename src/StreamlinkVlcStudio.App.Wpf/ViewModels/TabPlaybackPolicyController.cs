@@ -11,7 +11,7 @@ internal sealed class TabPlaybackPolicyController : IDisposable
     private readonly Func<long, Task> applyPassAsync;
     private readonly Action<Task> trackOperation;
     private readonly Action<Exception> reportFailure;
-    private TaskCompletionSource idleCompletion = CreateCompletedCompletion();
+    private TaskCompletionSource? idleCompletion;
     private long generation;
     private bool loopQueued;
     private bool runRequested;
@@ -37,7 +37,7 @@ internal sealed class TabPlaybackPolicyController : IDisposable
         {
             lock (gate)
             {
-                return idleCompletion.Task;
+                return idleCompletion?.Task ?? Task.CompletedTask;
             }
         }
     }
@@ -201,12 +201,5 @@ internal sealed class TabPlaybackPolicyController : IDisposable
         {
             DispatchLoop();
         }
-    }
-
-    private static TaskCompletionSource CreateCompletedCompletion()
-    {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        completion.SetResult();
-        return completion;
     }
 }

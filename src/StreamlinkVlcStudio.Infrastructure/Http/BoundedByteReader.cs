@@ -8,25 +8,11 @@ internal static class BoundedByteReader
 {
     private const int BufferSize = 81_920;
 
-    public static async Task<byte[]?> ReadAsync(
+    public static Task<byte[]?> ReadAsync(
         HttpContent content,
         int maxBytes,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(content);
-        ValidateMaximum(maxBytes);
-
-        try
-        {
-            var bytes = await ReadOrThrowAsync(content, maxBytes, cancellationToken)
-                .ConfigureAwait(false);
-            return bytes.Length == 0 ? null : bytes;
-        }
-        catch (PayloadTooLargeException)
-        {
-            return null;
-        }
-    }
+        CancellationToken cancellationToken = default) =>
+        ReadOptionalAsync(ReadOrThrowAsync(content, maxBytes, cancellationToken));
 
     public static async Task<byte[]?> ReadFileAsync(
         string path,
@@ -55,18 +41,17 @@ internal static class BoundedByteReader
         return await ReadAsync(stream, maxBytes, cancellationToken).ConfigureAwait(false);
     }
 
-    internal static async Task<byte[]?> ReadAsync(
+    internal static Task<byte[]?> ReadAsync(
         Stream stream,
         int maxBytes,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(stream);
-        ValidateMaximum(maxBytes);
+        CancellationToken cancellationToken = default) =>
+        ReadOptionalAsync(ReadOrThrowAsync(stream, maxBytes, cancellationToken));
 
+    private static async Task<byte[]?> ReadOptionalAsync(Task<byte[]> readTask)
+    {
         try
         {
-            var bytes = await ReadOrThrowAsync(stream, maxBytes, cancellationToken)
-                .ConfigureAwait(false);
+            var bytes = await readTask.ConfigureAwait(false);
             return bytes.Length == 0 ? null : bytes;
         }
         catch (PayloadTooLargeException)

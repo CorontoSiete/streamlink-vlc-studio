@@ -1,3 +1,5 @@
+using StreamlinkVlcStudio.Core.Time;
+
 internal static partial class ApplicationTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> PlaybackBrowseAndReplay { get; } =
@@ -716,12 +718,12 @@ internal static partial class ApplicationTestCatalog
                         {
                           "id": "101",
                           "name": "Rust",
-                          "box_art_url": "https://static-cdn.jtvnw.net/ttv-boxart/101-{width}x{height}.jpg"
+                          "box_art_url": "https://static-cdn.jtvnw.net/ttv-boxart/101-52x72.jpg"
                         },
                         {
                           "id": "202",
                           "name": "Rust Slots",
-                          "box_art_url": "https://static-cdn.jtvnw.net/ttv-boxart/202-{width}x{height}.jpg"
+                          "box_art_url": "https://static-cdn.jtvnw.net/ttv-boxart/202_IGDB-52x72.jpg"
                         }
                       ],
                       "pagination": { "cursor": "search-next" }
@@ -760,6 +762,8 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("search-next", result.NextCursor);
         Assert.Equal(2, result.Items.Count);
         Assert.SequenceEqual(new[] { "Rust", "Rust Slots" }, result.Items.Select(category => category.Name).ToArray());
+        Assert.Equal("https://static-cdn.jtvnw.net/ttv-boxart/101-285x380.jpg", result.Items[0].ThumbnailUrl);
+        Assert.Equal("https://static-cdn.jtvnw.net/ttv-boxart/202_IGDB-285x380.jpg", result.Items[1].ThumbnailUrl);
         Assert.Equal<int?>(null, result.Items[0].ViewerCount);
         Assert.Equal<int?>(null, result.Items[1].ViewerCount);
         Assert.Equal(1, requests.Count);
@@ -1507,7 +1511,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal("page-two", firstPage.NextCursor);
         Assert.Equal(3, requests.Count);
     }),
-    ("browse service maps Kick category search with cursor tags thumbnail and detail viewer counts", async () =>
+    ("browse service maps Kick category search with tags thumbnail and detail viewer counts", async () =>
     {
         var requests = new List<HttpRequestMessage>();
         var requestsGate = new object();
@@ -1520,11 +1524,10 @@ internal static partial class ApplicationTestCatalog
 
             Assert.Equal("api.kick.com", request.RequestUri!.Host);
             Assert.Equal("Bearer kick-token", request.Headers.Authorization?.ToString());
-            if (request.RequestUri.AbsolutePath == "/public/v2/categories")
+            if (request.RequestUri.AbsolutePath == "/public/v1/categories")
             {
-                Assert.Contains("name=Rust", request.RequestUri.Query);
-                Assert.Contains("cursor=kick-cursor", request.RequestUri.Query);
-                Assert.Contains("limit=25", request.RequestUri.Query);
+                Assert.Contains("q=Rust", request.RequestUri.Query);
+                Assert.Contains("page=1", request.RequestUri.Query);
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent("""
@@ -1543,8 +1546,7 @@ internal static partial class ApplicationTestCatalog
                           "thumbnail": "https://kick.example/rust-slots.jpeg"
                         }
                       ],
-                      "message": "OK",
-                      "pagination": { "next_cursor": "kick-next" }
+                      "message": "OK"
                     }
                     """, Encoding.UTF8, "application/json")
                 };
@@ -1591,11 +1593,11 @@ internal static partial class ApplicationTestCatalog
         var service = new BrowseService(new MemoryLogger(), httpClient);
 
         var result = await service.GetCategoriesAsync(
-            new BrowseCategoryRequest(PlatformKind.Kick, "Rust", "kick-cursor", 25),
+            new BrowseCategoryRequest(PlatformKind.Kick, "Rust", PageSize: 25),
             settings);
 
         Assert.Equal(BrowseResultStatus.Available, result.Status);
-        Assert.Equal("kick-next", result.NextCursor);
+        Assert.Equal("", result.NextCursor);
         Assert.Equal(2, result.Items.Count);
         Assert.Equal("202", result.Items[0].Id);
         Assert.Equal("Rust Slots", result.Items[0].Name);
@@ -2731,29 +2733,29 @@ internal static partial class ApplicationTestCatalog
     }),
     ("parses Twitch VOD durations", () =>
     {
-        Assert.True(ReplayResolver.TryParseTwitchDuration("3h8m33s", out var duration));
+        Assert.True(DurationValues.TryParseHmsDuration("3h8m33s", out var duration));
         Assert.Equal(new TimeSpan(3, 8, 33), duration);
-        Assert.True(ReplayResolver.TryParseTwitchDuration("42m7s", out duration));
+        Assert.True(DurationValues.TryParseHmsDuration("42m7s", out duration));
         Assert.Equal(new TimeSpan(0, 42, 7), duration);
-        Assert.True(ReplayResolver.TryParseTwitchDuration("18s", out duration));
+        Assert.True(DurationValues.TryParseHmsDuration("18s", out duration));
         Assert.Equal(TimeSpan.FromSeconds(18), duration);
-        Assert.Equal(false, ReplayResolver.TryParseTwitchDuration("not-a-duration", out _));
+        Assert.Equal(false, DurationValues.TryParseHmsDuration("not-a-duration", out _));
         return Task.CompletedTask;
     }),
     ("rejects non-finite and overflowing Twitch replay durations", () =>
     {
         var overflowingNumber = new string('9', 400);
 
-        Assert.Equal(false, ReplayResolver.TryParseTwitchDuration($"{overflowingNumber}h", out var vodDuration));
+        Assert.Equal(false, DurationValues.TryParseHmsDuration($"{overflowingNumber}h", out var vodDuration));
         Assert.Equal(TimeSpan.Zero, vodDuration);
-        Assert.Equal(false, ReplayResolver.TryReadTwitchDvrTotalSeconds(
+        Assert.Equal(false, TwitchReplayProvider.TryReadTwitchDvrTotalSeconds(
             $"#EXTM3U\n#EXT-X-TWITCH-TOTAL-SECS:{overflowingNumber}",
             out var dvrDuration));
         Assert.Equal(TimeSpan.Zero, dvrDuration);
-        Assert.Equal(false, ReplayResolver.TryReadTwitchDvrTotalSeconds(
+        Assert.Equal(false, TwitchReplayProvider.TryReadTwitchDvrTotalSeconds(
             "#EXTM3U\n#EXT-X-TWITCH-TOTAL-SECS:NaN",
             out _));
-        Assert.Equal(false, ReplayResolver.TryReadTwitchDvrTotalSeconds(
+        Assert.Equal(false, TwitchReplayProvider.TryReadTwitchDvrTotalSeconds(
             "#EXTM3U\n#EXT-X-TWITCH-TOTAL-SECS:Infinity",
             out _));
         return Task.CompletedTask;
@@ -2764,7 +2766,7 @@ internal static partial class ApplicationTestCatalog
         var byTime = new TwitchVodInfo("vod-time", "", "https://www.twitch.tv/videos/1", live.StartedAtUtc.AddMinutes(2), TimeSpan.FromHours(1));
         var byStream = new TwitchVodInfo("vod-stream", "stream-abc", "https://www.twitch.tv/videos/2", live.StartedAtUtc.AddHours(5), TimeSpan.FromHours(2));
 
-        var match = ReplayResolver.MatchTwitchVod(live, [byTime, byStream]);
+        var match = TwitchReplayProvider.MatchTwitchVod(live, [byTime, byStream]);
 
         Assert.NotNull(match);
         Assert.Equal("vod-stream", match!.Id);
@@ -2776,7 +2778,7 @@ internal static partial class ApplicationTestCatalog
         var tooFar = new TwitchVodInfo("vod-far", "", "https://www.twitch.tv/videos/1", live.StartedAtUtc.AddHours(-2), TimeSpan.FromHours(1));
         var near = new TwitchVodInfo("vod-near", "", "https://www.twitch.tv/videos/2", live.StartedAtUtc.AddMinutes(8), TimeSpan.FromHours(2));
 
-        var match = ReplayResolver.MatchTwitchVod(live, [tooFar, near]);
+        var match = TwitchReplayProvider.MatchTwitchVod(live, [tooFar, near]);
 
         Assert.NotNull(match);
         Assert.Equal("vod-near", match!.Id);
@@ -2787,7 +2789,7 @@ internal static partial class ApplicationTestCatalog
         var live = new TwitchLiveStreamInfo("user-1", "stream-abc", new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero));
         var mismatched = new TwitchVodInfo("vod-other", "stream-other", "https://www.twitch.tv/videos/1", live.StartedAtUtc.AddMinutes(1), TimeSpan.FromHours(1));
 
-        var match = ReplayResolver.MatchTwitchVod(live, [mismatched]);
+        var match = TwitchReplayProvider.MatchTwitchVod(live, [mismatched]);
 
         Assert.Equal<TwitchVodInfo?>(null, match);
         return Task.CompletedTask;
@@ -2801,10 +2803,10 @@ internal static partial class ApplicationTestCatalog
         0.ts
         """;
 
-        Assert.True(ReplayResolver.TryReadTwitchDvrTotalSeconds(playlist, out var duration));
+        Assert.True(TwitchReplayProvider.TryReadTwitchDvrTotalSeconds(playlist, out var duration));
         Assert.Equal(TimeSpan.FromSeconds(3723.5), duration);
-        Assert.True(ReplayResolver.IsValidTwitchDvrPlaylist(playlist));
-        Assert.Equal(false, ReplayResolver.IsValidTwitchDvrPlaylist("not a playlist"));
+        Assert.True(TwitchReplayProvider.IsValidTwitchDvrPlaylist(playlist));
+        Assert.Equal(false, TwitchReplayProvider.IsValidTwitchDvrPlaylist("not a playlist"));
         return Task.CompletedTask;
     }),
     ("resolves Twitch replay from GraphQL archive preview HLS after Helix miss", async () =>
@@ -3140,10 +3142,10 @@ internal static partial class ApplicationTestCatalog
     ("reads Kick live stream failure states", () =>
     {
         using var offline = JsonDocument.Parse("""{"data":[{"slug":"xqc","stream":null}]}""");
-        Assert.Equal<KickLiveStreamInfo?>(null, ReplayResolver.ReadKickLiveStream(offline.RootElement, "xqc"));
+        Assert.Equal<KickLiveStreamInfo?>(null, KickReplayProvider.ReadKickLiveStream(offline.RootElement, "xqc"));
 
         using var live = JsonDocument.Parse("""{"data":[{"slug":"xqc","stream":{"id":123,"is_live":true,"started_at":"2026-06-01T20:00:00Z"}}]}""");
-        var stream = ReplayResolver.ReadKickLiveStream(live.RootElement, "xqc");
+        var stream = KickReplayProvider.ReadKickLiveStream(live.RootElement, "xqc");
         Assert.NotNull(stream);
         Assert.Equal("123", stream!.StreamId);
         Assert.Equal(new DateTimeOffset(2026, 6, 1, 20, 0, 0, TimeSpan.Zero), stream.StartedAtUtc);
@@ -3162,7 +3164,7 @@ internal static partial class ApplicationTestCatalog
         }
         """);
 
-        var stream = ReplayResolver.ReadKickWebsiteLiveStream(live.RootElement, "xqc");
+        var stream = KickReplayProvider.ReadKickWebsiteLiveStream(live.RootElement, "xqc");
 
         Assert.NotNull(stream);
         Assert.Equal("111132734", stream!.StreamId);
@@ -3184,7 +3186,7 @@ internal static partial class ApplicationTestCatalog
         }
         """;
 
-        var candidates = ReplayResolver.ReadKickPrivateReplayCandidates(
+        var candidates = KickReplayProvider.ReadKickPrivateReplayCandidates(
             "xqc",
             body,
             new KickLiveStreamInfo(
@@ -3231,7 +3233,7 @@ internal static partial class ApplicationTestCatalog
         ]
         """;
 
-        var candidates = ReplayResolver.ReadKickPrivateReplayCandidates(
+        var candidates = KickReplayProvider.ReadKickPrivateReplayCandidates(
             "xqc",
             body,
             new KickLiveStreamInfo("111132734", new DateTimeOffset(2026, 6, 1, 18, 46, 11, TimeSpan.Zero)));
@@ -3260,7 +3262,7 @@ internal static partial class ApplicationTestCatalog
         ]
         """;
 
-        var candidates = ReplayResolver.ReadKickPrivateReplayCandidates(
+        var candidates = KickReplayProvider.ReadKickPrivateReplayCandidates(
             "xqc",
             body,
             new KickLiveStreamInfo("110881803", new DateTimeOffset(2026, 5, 30, 21, 58, 5, TimeSpan.Zero)));
@@ -3286,7 +3288,7 @@ internal static partial class ApplicationTestCatalog
         ]
         """;
 
-        var candidates = ReplayResolver.ReadKickPrivateReplayCandidates(
+        var candidates = KickReplayProvider.ReadKickPrivateReplayCandidates(
             "streamer",
             body,
             new KickLiveStreamInfo("current-stream", null));
@@ -3312,7 +3314,7 @@ internal static partial class ApplicationTestCatalog
         ]
         """;
 
-        var candidates = ReplayResolver.ReadKickPrivateReplayCandidates(
+        var candidates = KickReplayProvider.ReadKickPrivateReplayCandidates(
             "streamer",
             body,
             new KickLiveStreamInfo(
@@ -3336,7 +3338,7 @@ internal static partial class ApplicationTestCatalog
         }
         """;
 
-        var candidates = ReplayResolver.ReadKickPrivateReplayCandidates(
+        var candidates = KickReplayProvider.ReadKickPrivateReplayCandidates(
             "streamer",
             body,
             new KickLiveStreamInfo("current-stream", null));

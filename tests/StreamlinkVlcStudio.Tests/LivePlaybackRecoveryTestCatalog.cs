@@ -10,6 +10,11 @@ internal static partial class LivePlaybackRecoveryTestCatalog
         ("live recovery stop cancels an in-flight attempt and disposes a late transport", () => CancelAsync(false)),
         ("live recovery close cancels an in-flight attempt and disposes a late transport", () => CancelAsync(true)),
         ("live recovery manual pause cancels recovery and resume retries the missing connection", PauseDuringRecoveryAsync),
+        ("review cleanup: live recovery stop survives a failed cancellation callback", () => CancellationCallbackFailureAsync(false)),
+        ("review cleanup: live recovery pause survives a failed cancellation callback", () => CancellationCallbackFailureAsync(true)),
+        ("review cleanup: live recovery stop tolerates a completed cancellation source", CompletedCancellationSourceAsync),
+        ("review cleanup: live recovery succeeds when diagnostics fail", () => RecoveryDiagnosticsAsync(false)),
+        ("review cleanup: live recovery retains retry state when diagnostics fail", () => RecoveryDiagnosticsAsync(true)),
         .. NativeTests
     ];
 
@@ -140,13 +145,84 @@ internal static partial class LivePlaybackRecoveryTestCatalog
 
     private static PlaybackHealth Sample(PlaybackEngineState state = PlaybackEngineState.Playing) => new(1, state, 0, 0, 0, 0);
 
+    private static async Task CancellationCallbackFailureAsync(bool pause)
+    {
+        await using var f = new Fixture();
+        await f.StartAsync();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Service.StartExternalHttpOverride = async (_, token) =>
+        {
+            using var registration = token.Register(() => throw new IOException("Recovery cancellation failed."));
+            entered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, token);
+            return new FakeTransportSession();
+        };
+        var recovery = f.Tab.CheckLivePlaybackHealthAsync(Environment.TickCount64);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            var transition = pause ? f.Tab.PauseOrResumeAsync() : f.Tab.StopAsync();
+            await Task.WhenAll(transition, recovery).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(pause ? PlaybackStatus.Paused : PlaybackStatus.Stopped, f.Tab.Status);
+            Assert.Equal(false, f.Tab.IsBusy);
+            Assert.Equal(false, f.Tab.IsRecoveringLivePlayback);
+        }
+        finally
+        {
+            await recovery.WaitAsync(TimeSpan.FromSeconds(3));
+            await f.Tab.StopAsync();
+        }
+    }
+
+    private static async Task CompletedCancellationSourceAsync()
+    {
+        await using var f = new Fixture();
+        await f.StartAsync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Dispose();
+        var field = typeof(StreamTabViewModel).GetField("liveRecoveryCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        field.SetValue(f.Tab, cancellation);
+        try
+        {
+            await f.Tab.StopAsync();
+            Assert.Equal(PlaybackStatus.Stopped, f.Tab.Status);
+        }
+        finally
+        {
+            field.SetValue(f.Tab, null);
+        }
+    }
+
+    private static async Task RecoveryDiagnosticsAsync(bool failRecovery)
+    {
+        var logger = new MemoryLogger();
+        await using var f = new Fixture(logger);
+        await f.StartAsync();
+        logger.EntryWritten += (_, entry) =>
+        {
+            if (entry.Source == "Playback") throw new IOException("Recovery diagnostics unavailable.");
+        };
+        if (failRecovery)
+            f.Service.StartExternalHttpOverride = (_, _) => throw new IOException("The stream is temporarily unavailable.");
+
+        await f.Tab.CheckLivePlaybackHealthAsync(Environment.TickCount64);
+
+        Assert.Equal(false, f.Tab.IsBusy);
+        Assert.Equal(2, f.Service.StartCount);
+        Assert.Equal(failRecovery, f.Tab.IsRecoveringLivePlayback);
+        Assert.Equal(failRecovery ? PlaybackStatus.Starting : PlaybackStatus.Playing, f.Tab.Status);
+        Assert.Equal(1, f.Sessions[0].DisposeCount);
+        if (failRecovery) Assert.True(f.Tab.ErrorMessage.Contains("Retrying", StringComparison.Ordinal));
+        else Assert.Equal(2, f.Engine.PlayCount);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         internal FakePlaybackEngine Engine { get; } = new();
         internal FakeStreamlinkService Service { get; } = new();
         internal List<FakeTransportSession> Sessions { get; } = [];
         internal StreamTabViewModel Tab { get; }
-        internal Fixture()
+        internal Fixture(IAppLogger? logger = null)
         {
             Service.StartExternalHttpOverride = (_, _) =>
             {
@@ -155,7 +231,7 @@ internal static partial class LivePlaybackRecoveryTestCatalog
                 return Task.FromResult<IStreamTransportSession>(session);
             };
             Tab = TestViewModels.CreateTab(StreamInputParser.Parse("shroud", PlatformKind.Twitch), "best",
-                Service, new FakePlaybackEngineFactory(() => Engine), new FakeChatClientFactory(), new MemoryLogger(), action => action());
+                Service, new FakePlaybackEngineFactory(() => Engine), new FakeChatClientFactory(), logger ?? new MemoryLogger(), action => action());
             Tab.SetVideoHandle(new IntPtr(1234));
             EnableSuccessfulOutput();
         }

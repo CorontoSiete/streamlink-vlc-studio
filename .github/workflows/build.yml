@@ -48,8 +48,8 @@ jobs:
           . .\scripts\lib\common.ps1
           . .\scripts\lib\release-contract.ps1
           $contract = Read-ReleaseContract .\shared\release-contract.json
-          if ('${{ github.ref }}'.StartsWith('refs/tags/', [StringComparison]::Ordinal)) {
-            $tag = '${{ github.ref_name }}'
+          if ($env:GITHUB_REF.StartsWith('refs/tags/', [StringComparison]::Ordinal)) {
+            $tag = $env:GITHUB_REF_NAME
             $identity = Get-StableReleaseIdentity `
               -Tag $tag `
               -MinimumVersion ([string]$contract.release.minimumVersion)
@@ -237,8 +237,8 @@ jobs:
             -OutputRoot artifacts\package `
             -Version $env:RELEASE_VERSION `
             -Tag $env:RELEASE_TAG `
-            -Commit '${{ github.sha }}' `
-            -Repository '${{ github.repository }}' `
+            -Commit $env:GITHUB_SHA `
+            -Repository $env:GITHUB_REPOSITORY `
             -KeepStaging `
             -Quiet
           .\scripts\build-installer.ps1 `
@@ -258,7 +258,7 @@ jobs:
             ProjectAssetsPath = 'src\StreamlinkVlcStudio.App.Wpf\obj\project.assets.json'
             PublishedDepsPath = 'src\StreamlinkVlcStudio.App.Wpf\bin\Release\net10.0-windows10.0.19041.0\win-x64\StreamStudio.deps.json'
             ApplicationVersion = $env:RELEASE_VERSION
-            DocumentNamespace = 'https://github.com/${{ github.repository }}/sbom/validation/${{ github.sha }}'
+            DocumentNamespace = "https://github.com/$env:GITHUB_REPOSITORY/sbom/validation/$env:GITHUB_SHA"
           }
           .\scripts\generate-sbom.ps1 @parameters
           .\scripts\generate-sbom.ps1 @parameters -Verify
@@ -269,8 +269,8 @@ jobs:
           .\scripts\assert-build-version.ps1 `
             -Version $env:RELEASE_VERSION `
             -Tag $env:RELEASE_TAG `
-            -Commit '${{ github.sha }}' `
-            -Repository '${{ github.repository }}' `
+            -Commit $env:GITHUB_SHA `
+            -Repository $env:GITHUB_REPOSITORY `
             -SetupPath artifacts\StreamlinkVlcStudio-Setup.exe `
             -InternalMsiPath artifacts\StreamStudio-App.msi `
             -ZipPath artifacts\package\StreamlinkVlcStudio-release.zip `
@@ -293,8 +293,8 @@ jobs:
             disposition = 'validation-only'
             version = $env:RELEASE_VERSION
             tag = if ([string]::IsNullOrWhiteSpace($env:RELEASE_TAG)) { $null } else { $env:RELEASE_TAG }
-            commit = '${{ github.sha }}'
-            repository = '${{ github.repository }}'
+            commit = $env:GITHUB_SHA
+            repository = $env:GITHUB_REPOSITORY
           }
           [IO.File]::WriteAllText(
             (Join-Path $root 'VALIDATION-METADATA.json'),
@@ -519,11 +519,11 @@ jobs:
             -Tag $env:RELEASE_TAG `
             -Commit $env:RELEASE_COMMIT `
             -Repository $env:RELEASE_REPOSITORY `
-            -SourceRef '${{ github.ref }}' `
-            -WorkflowRef '${{ github.workflow_ref }}' `
-            -WorkflowRunId ${{ github.run_id }} `
-            -WorkflowRunNumber ${{ github.run_number }} `
-            -WorkflowRunAttempt ${{ github.run_attempt }} `
+            -SourceRef $env:GITHUB_REF `
+            -WorkflowRef $env:GITHUB_WORKFLOW_REF `
+            -WorkflowRunId $env:GITHUB_RUN_ID `
+            -WorkflowRunNumber $env:GITHUB_RUN_NUMBER `
+            -WorkflowRunAttempt $env:GITHUB_RUN_ATTEMPT `
             -SetupPath artifacts\StreamlinkVlcStudio-Setup.exe `
             -InternalMsiPath artifacts\StreamStudio-App.msi `
             -ZipPath artifacts\package\StreamlinkVlcStudio-release.zip `
@@ -608,19 +608,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          $notes = @'
-          ## Stream Studio
-
-          **One-time migration for 1.7.1 and earlier:** those packaged clients cannot reliably install updates. Download and run `StreamlinkVlcStudio-Setup.exe` manually once. Future managed releases can then be downloaded and installed from inside the app.
-
-          `StreamlinkVlcStudio-Setup.exe` is the supported per-machine installer and updater. The ZIP/PowerShell package is an advanced per-user fallback and receives verified release notifications only.
-
-          Initial releases may be Authenticode-unsigned and show an “unknown publisher” warning. In every release, `UPDATE-MANIFEST.json` is integrity-protected by the detached RSA-PSS/SHA-256 signature, and `SHA256SUMS.txt` covers the complete public release set.
-          '@
-          [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
-          $versionNotes = Join-Path 'docs/releases' "$env:RELEASE_TAG.md"
-          if (Test-Path -LiteralPath $versionNotes) { $notesPath = $versionNotes }
+          $notesPath = Join-Path 'docs/releases' "$env:RELEASE_TAG.md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "Missing versioned changelog: $notesPath. The app and GitHub release must use the same notes."
+          }
           .\scripts\publish-release.ps1 `
             -Tag $env:RELEASE_TAG `
             -Commit $env:RELEASE_COMMIT `

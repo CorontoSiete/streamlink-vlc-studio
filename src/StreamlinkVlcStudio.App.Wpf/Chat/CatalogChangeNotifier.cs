@@ -1,3 +1,5 @@
+using StreamlinkVlcStudio.Infrastructure.Chat;
+
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
 /// <summary>
@@ -41,7 +43,7 @@ internal sealed class CatalogChangeNotifier(object sender, Action<Action>? sched
                 queued = false;
             }
 
-            CatalogLoadCoordinator.RaiseSafely(handlers(), sender, changes);
+            SafeEventDispatcher.Invoke(handlers(), sender, changes, null, nameof(CatalogChangeNotifier), "Changed");
         }
 
         if (schedule is null) _ = Task.Run(Deliver);

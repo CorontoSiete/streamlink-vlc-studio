@@ -9,6 +9,8 @@ internal static partial class ApplicationTestCatalog
         ("settings autosave: rapid edits share one write containing the final values", AutoSaveSettingsDebounceAsync),
         ("settings autosave: replacing settings groups observes the replacements and releases old groups", AutoSaveSettingsReplacementAsync),
         ("settings autosave: edits during a write are serialized and flushed before shutdown", AutoSaveSettingsDuringWriteAsync),
+        ("settings autosave: failed feedback cannot discard edits during shutdown", AutoSaveSettingsReportingFailureAsync),
+        ("settings autosave: failed save feedback retains edits for retry", AutoSaveSettingsFailureReportingAsync),
         ("settings autosave: leaving settings and shutting down flush pending edits", AutoSaveSettingsOnCloseAsync)
     ];
 
@@ -188,6 +190,58 @@ internal static partial class ApplicationTestCatalog
         }
         finally { service.ReleaseFirstSave.TrySetResult(); }
     });
+
+    private static async Task AutoSaveSettingsReportingFailureAsync()
+    {
+        var settings = new AppSettings();
+        var service = new AutoSaveRecordingSettingsService { HoldFirstSave = true };
+        await using var controller = new SettingsAutoSaveController(settings, service, action => action(),
+            _ => throw new IOException("Settings feedback failed."));
+        try
+        {
+            settings.DefaultQuality = "720p";
+            var save = controller.FlushAsync();
+            Assert.Equal(1, service.Snapshots.Count);
+            settings.DefaultQuality = "480p";
+            settings.Hotkeys.SkipForwardSeconds = 90;
+            var shutdown = controller.DisposeAsync().AsTask();
+            Assert.True(ReferenceEquals(save, shutdown));
+            service.ReleaseFirstSave.TrySetResult();
+            await shutdown.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Equal(2, service.Snapshots.Count);
+            Assert.Equal("480p", service.Snapshots[1].DefaultQuality);
+            Assert.Equal(90, service.Snapshots[1].Hotkeys.SkipForwardSeconds);
+            Assert.Equal(1, service.MaximumConcurrentSaves);
+            await controller.FlushAsync();
+            Assert.Equal(2, service.Snapshots.Count);
+        }
+        finally { service.ReleaseFirstSave.TrySetResult(); }
+    }
+
+    private static async Task AutoSaveSettingsFailureReportingAsync()
+    {
+        var settings = new AppSettings();
+        var service = new FakeSettingsService(settings) { SaveException = new IOException("Settings write failed.") };
+        var reported = new List<Exception?>();
+        await using var controller = new SettingsAutoSaveController(settings, service, action => action(), error =>
+        {
+            reported.Add(error);
+            throw new IOException("Settings feedback failed.");
+        });
+        settings.DefaultQuality = "720p";
+        await controller.FlushAsync();
+        Assert.Equal(1, service.SaveCount);
+        Assert.True(ReferenceEquals(service.SaveException, reported.Single()));
+
+        service.SaveException = null;
+        await controller.FlushAsync();
+        Assert.Equal(2, service.SaveCount);
+        Assert.Equal("720p", (await service.LoadAsync()).DefaultQuality);
+        Assert.Equal<Exception?>(null, reported.Last());
+        await controller.FlushAsync();
+        Assert.Equal(2, service.SaveCount);
+    }
 
     private static Task AutoSaveSettingsOnCloseAsync() => TestSta.RunOffscreenAsync(async () =>
     {

@@ -1,8 +1,10 @@
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
+using StreamlinkVlcStudio.App.Wpf.ViewModels;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
@@ -25,8 +27,11 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
     private readonly Action<string, long>? resizeTempWritten;
     private readonly TimeSpan resizeDebounceDelay;
     private readonly object gate = new();
+    private readonly BackgroundOperationController listenerOperations;
     private CancellationTokenSource? cancellation;
     private Task? listeningTask;
+    private Task? disposalTask;
+    private bool disposed;
     private string? pipeName;
     private string? positionStatePath;
     private bool stopRequested;
@@ -53,6 +58,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         Action<uint, int>? textSelectionEvent = null)
     {
         this.logger = logger;
+        listenerOperations = new BackgroundOperationController(logger);
         this.dispatch = dispatch;
         this.replayFrameInvalidated = replayFrameInvalidated;
         this.getVideoHeight = getVideoHeight;
@@ -74,7 +80,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         {
             lock (gate)
             {
-                return listeningTask is not null && !stopRequested;
+                return listeningTask is not null && !stopRequested && !disposed;
             }
         }
     }
@@ -99,8 +105,11 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             return;
         }
 
+        CancellationTokenSource? replacedCancellation;
+        Timer? resizeTimerToDispose;
         lock (gate)
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             if (listeningTask is not null &&
                 !stopRequested &&
                 string.Equals(pipeName, activePipeName, StringComparison.Ordinal) &&
@@ -108,15 +117,10 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             {
                 return;
             }
-        }
-
-        Stop();
-
-        var nextCancellation = new CancellationTokenSource();
-        long activeResizeSessionId;
-        lock (gate)
-        {
-            activeResizeSessionId = NextResizeSessionIdLocked();
+            replacedCancellation = cancellation;
+            resizeTimerToDispose = ClearResizeFlushStateLocked();
+            var nextCancellation = new CancellationTokenSource();
+            var activeResizeSessionId = NextResizeSessionIdLocked();
             resizePersistenceSuspended = true;
             resizePersistenceGeneration++;
             cancellation = nextCancellation;
@@ -128,7 +132,13 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
                 activePositionStatePath,
                 nextCancellation,
                 activeResizeSessionId));
+            listenerOperations.Track(listeningTask);
         }
+
+        // Publish the replacement before cancellation can reenter Start. Every admitted
+        // listener stays tracked until its dispatch and resource cleanup have finished.
+        resizeTimerToDispose?.Dispose();
+        CancellationSourceCleanup.Cancel(replacedCancellation);
     }
 
     public void SuspendResizePersistence()
@@ -167,12 +177,14 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
 
     private Task RequestStop()
     {
-        Task? taskToStop;
+        Task listenersToStop;
         CancellationTokenSource? cancellationToStop;
         Timer? resizeTimerToDispose;
         lock (gate)
         {
-            taskToStop = listeningTask;
+            // A cancellation callback can start a new listener. Drain this snapshot without
+            // waiting for work admitted by that later restart.
+            listenersToStop = listenerOperations.WaitForCurrentAsync();
             cancellationToStop = cancellation;
             resizeTimerToDispose = ClearResizeFlushStateLocked();
             NextResizeSessionIdLocked();
@@ -184,33 +196,15 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         }
 
         resizeTimerToDispose?.Dispose();
-        try
-        {
-            cancellationToStop?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // The listener may finish and dispose its source after the snapshot above.
-        }
+        CancellationSourceCleanup.Cancel(cancellationToStop);
 
-        return taskToStop ?? Task.CompletedTask;
+        return listenersToStop;
     }
 
-    public async Task StopAsync()
-    {
-        try
-        {
-            await RequestStop().ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
+    public Task StopAsync() => RequestStop();
 
-    public async ValueTask DisposeAsync()
-    {
-        await StopAsync().ConfigureAwait(false);
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(gate, ref disposed, ref disposalTask, StopAsync));
 
     private async Task ListenAsync(
         string activePipeName,
@@ -248,11 +242,11 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
                     var busy = IsAllPipeInstancesBusy(ex);
                     if (busy)
                     {
-                        logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native VLC replay overlay event pipe was busy; retrying listener start.", ex);
+                        logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Native VLC replay overlay event pipe was busy; retrying listener start.", ex);
                     }
                     else
                     {
-                        logger.Write(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay event pipe faulted; restarting listener.", ex);
+                        logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay event pipe faulted; restarting listener.", ex);
                     }
 
                     await Task.Delay(busy ? PipeBusyRetryDelay : PipeFaultRetryDelay, cancellationToken)
@@ -265,11 +259,11 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         }
         catch (IOException ex) when (cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Info, "ChatOverlay", "Native VLC replay overlay event listener stopped.", ex);
+            logger.WriteSafely(AppLogLevel.Info, "ChatOverlay", "Native VLC replay overlay event listener stopped.", ex);
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay event listener stopped unexpectedly.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay event listener stopped unexpectedly.", ex);
         }
         finally
         {
@@ -489,13 +483,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
             // System.Threading.Timer propagates callback exceptions to the process. Resize
             // persistence is best-effort UI state, so a callback or dispatcher failure must not
             // terminate playback (and logging failures must not escape this catch either).
-            try
-            {
-                logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not flush native VLC replay overlay size.", ex);
-            }
-            catch
-            {
-            }
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not flush native VLC replay overlay size.", ex);
         }
     }
 
@@ -562,7 +550,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
 
         if (publishException is not null)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not publish native VLC replay overlay size.", publishException);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not publish native VLC replay overlay size.", publishException);
             return;
         }
 
@@ -597,7 +585,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not save native VLC replay overlay size.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not save native VLC replay overlay size.", ex);
             TryDeleteResizeTemp(temporaryPath);
             return false;
         }

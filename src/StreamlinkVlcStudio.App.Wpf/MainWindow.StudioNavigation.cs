@@ -34,6 +34,20 @@ public partial class MainWindow
         SettingsViewport.ScrollToHome();
     }
 
+    private void ChangelogPage_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is true && DataContext is MainViewModel model)
+            model.Changelog.MarkPresented();
+    }
+
+    private void ChangelogVersionSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        SettingsContentScrollViewer.ScrollToHome();
+        SettingsViewport.ScrollToHome();
+        if (ChangelogSettingsPage.IsVisible && DataContext is MainViewModel model)
+            model.Changelog.MarkPresented();
+    }
+
     private void ClearHomeSearch_Click(object sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel model) return;
@@ -110,6 +124,56 @@ public partial class MainWindow
         if (!next.Focus()) return false;
         next.BringIntoView();
         return true;
+    }
+
+    private bool TryNavigateVodChannelSearch(HotkeyGesture input, IInputElement? focusedElement)
+    {
+        if (input.MouseButton is not null || input.Modifiers != ModifierKeys.None ||
+            input.Key is not (Key.Up or Key.Down) || studioNavigationViewModel is not { } model ||
+            !model.IsTwitchVodsHomePageVisible || !model.IsHomeVisible || model.IsSettingsOpen)
+            return false;
+
+        var fromInput = ReferenceEquals(focusedElement, VodStreamerSearchTextBox);
+        var focusedButton = focusedElement as Button;
+        if (!fromInput && (focusedButton is null || !VodChannelSearchResultsList.IsAncestorOf(focusedButton)))
+            return false;
+
+        model.ShowVodChannelSearchResults();
+        if (!model.IsVodChannelSearchVisible) return false;
+        VodChannelSearchResultsList.UpdateLayout();
+        var buttons = new List<Button>();
+        for (var index = 0; index < VodChannelSearchResultsList.Items.Count; index++)
+        {
+            if (VodChannelSearchResultsList.ItemContainerGenerator.ContainerFromIndex(index) is { } container &&
+                FindVisualChild<Button>(container) is { IsEnabled: true, IsVisible: true } button)
+                buttons.Add(button);
+        }
+        if (buttons.Count == 0) return false;
+
+        var direction = input.Key == Key.Down ? 1 : -1;
+        var currentIndex = fromInput ? (direction > 0 ? -1 : buttons.Count) : buttons.IndexOf(focusedButton!);
+        var nextIndex = currentIndex + direction;
+        if (nextIndex < 0 || nextIndex >= buttons.Count) return VodStreamerSearchTextBox.Focus();
+        var next = buttons[nextIndex];
+        if (!next.Focus()) return false;
+        next.BringIntoView();
+        return true;
+    }
+
+    private void VodStreamerSearchTextBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.None) return;
+        var command = (DataContext as MainViewModel)?.SearchTwitchVodsCommand;
+        if (command?.CanExecute(null) == true) command.Execute(null);
+        e.Handled = true;
+    }
+
+    private void ClearVodStreamerSearch_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel model) return;
+        model.TwitchVodSearchText = "";
+        model.DismissVodChannelSearchResults();
+        VodStreamerSearchTextBox.Focus();
     }
 
     private void OpenAccountsSettings_Click(object sender, RoutedEventArgs e)

@@ -8,6 +8,7 @@ param(
     [ValidateSet('', 'references', 'capacity', 'pipe')][string]$Filter = ''
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/native-test.ps1')
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repositoryRoot '.tmp/chat-render-resources' }
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
@@ -21,12 +22,15 @@ if ($BaselineSource) {
         [Text.UTF8Encoding]::new($false))
     $compilerOptions += @('-include', $baselineHeader)
 }
-& $Gcc -O2 -Wall -Wextra -Werror -fmax-errors=4 -static-libgcc @compilerOptions `
-    (Join-Path $repositoryRoot 'native/chat-overlay/tests/render-resources.c') `
-    (Join-Path $repositoryRoot 'native/chat-overlay/tls.c') -o $binary `
-    -lws2_32 -lsecur32 -lcrypt32 -lgdi32 -luser32 -lwinhttp -lole32 -lgdiplus -ld2d1 -ldwrite -luuid -lpsapi
-if ($LASTEXITCODE -ne 0) { throw "Native render resource test build failed ($LASTEXITCODE)." }
-if ($Benchmark) { & $binary --benchmark $Benchmark $Frames $CatalogEntries }
-elseif ($Filter) { & $binary "--$Filter" }
-else { & $binary }
-if ($LASTEXITCODE -ne 0) { throw "Native render resource tests failed ($LASTEXITCODE)." }
+Invoke-NativeTestCommand -FilePath $Gcc -FailureMessage 'Native render resource test build failed' -Arguments (
+    @('-O2', '-Wall', '-Wextra', '-Werror', '-fmax-errors=4', '-static', '-static-libgcc') + $compilerOptions + @(
+        (Join-Path $repositoryRoot 'native/chat-overlay/tests/render-resources.c'),
+        (Join-Path $repositoryRoot 'native/chat-overlay/tls.c'), '-o', $binary,
+        '-lws2_32', '-lsecur32', '-lcrypt32', '-lgdi32', '-luser32', '-lwinhttp', '-lole32',
+        '-lgdiplus', '-ld2d1', '-ldwrite', '-luuid', '-lpsapi'
+    )
+)
+$testArguments = @()
+if ($Benchmark) { $testArguments = @('--benchmark', $Benchmark, $Frames, $CatalogEntries) }
+elseif ($Filter) { $testArguments = @("--$Filter") }
+Invoke-NativeTestCommand -FilePath $binary -Arguments $testArguments -FailureMessage 'Native render resource tests failed'

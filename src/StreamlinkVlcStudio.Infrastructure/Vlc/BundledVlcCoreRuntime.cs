@@ -56,7 +56,7 @@ internal static class BundledVlcCoreRuntime
             BundledCoreSha256);
         var output = Path.Combine(directory, "libvlccore.dll");
         Directory.CreateDirectory(directory);
-        if (File.Exists(output) && FileHash.GetSha256(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
+        if (FileHash.MatchesSha256(output, BundledCoreSha256))
             return output;
 
         var temporary = Path.Combine(directory, $"{Guid.NewGuid():N}.tmp");
@@ -64,18 +64,17 @@ internal static class BundledVlcCoreRuntime
         {
             File.WriteAllBytes(temporary, bytes);
             try { File.Move(temporary, output, overwrite: true); }
-            catch (IOException) when (File.Exists(output) &&
-                FileHash.GetSha256(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
+            catch (IOException) when (FileHash.MatchesSha256(output, BundledCoreSha256))
             {
                 // Another process extracted the same immutable build first.
             }
         }
         finally
         {
-            File.Delete(temporary);
+            AtomicFile.TryDeleteTemporaryFile(temporary);
         }
 
-        if (!File.Exists(output) || !FileHash.GetSha256(output).Equals(BundledCoreSha256, StringComparison.OrdinalIgnoreCase))
+        if (!FileHash.MatchesSha256(output, BundledCoreSha256))
             throw new IOException("The verified VLC address-wait core could not be extracted.");
         return output;
     }

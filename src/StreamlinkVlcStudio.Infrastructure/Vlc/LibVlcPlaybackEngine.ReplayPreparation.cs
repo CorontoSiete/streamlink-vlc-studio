@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using StreamlinkVlcStudio.Core.Logging;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 
@@ -93,7 +94,7 @@ public sealed partial class LibVlcPlaybackEngine
             while (LibVlcNative.libvlc_media_player_get_state(input.Player) != LibVlcNative.MediaPlayerState.Paused)
                 await Task.Delay(25, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
-            logger.Write(AppLogLevel.Debug, "Replay", "Replay input prepared and paused without video output.");
+            logger.WriteSafely(AppLogLevel.Debug, "Replay", "Replay input prepared and paused without video output.");
             var ready = input;
             input = null;
             return ready;
@@ -101,13 +102,13 @@ public sealed partial class LibVlcPlaybackEngine
         catch (OperationCanceledException) { return null; }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Info, "Replay", "Background replay preparation was unavailable; the seek will open it normally.", ex);
+            logger.WriteSafely(AppLogLevel.Info, "Replay", "Background replay preparation was unavailable; the seek will open it normally.", ex);
             return null;
         }
         finally
         {
-            input?.Dispose();
-            LibVlcNative.libvlc_release(retainedInstance);
+            try { input?.Dispose(); }
+            finally { LibVlcNative.libvlc_release(retainedInstance); }
         }
     }
 
@@ -180,7 +181,7 @@ public sealed partial class LibVlcPlaybackEngine
             if (generation == 0) return false;
             await SeekCoreAsync(position, generation, cancellationToken, openingAtPosition: true, seekAlreadySubmitted: true).ConfigureAwait(false);
             await CompleteReplayOpeningAsync(generation, cancellationToken).ConfigureAwait(false);
-            logger.Write(AppLogLevel.Info, "Replay", $"Prepared replay seek confirmed in {watch.ElapsedMilliseconds} ms.");
+            logger.WriteSafely(AppLogLevel.Info, "Replay", $"Prepared replay seek confirmed in {watch.ElapsedMilliseconds} ms.");
             return true;
         }
         catch (OperationCanceledException) { throw; }
@@ -192,7 +193,7 @@ public sealed partial class LibVlcPlaybackEngine
                     throw new OperationCanceledException("The media changed while activating the prepared replay.", ex);
                 if (generation != 0) StopCurrentCore();
             }
-            logger.Write(AppLogLevel.Info, "Replay", "The prepared replay could not be activated; opening a fresh input.", ex);
+            logger.WriteSafely(AppLogLevel.Info, "Replay", "The prepared replay could not be activated; opening a fresh input.", ex);
             return false;
         }
     }
@@ -205,12 +206,17 @@ public sealed partial class LibVlcPlaybackEngine
         replayPreparation = null;
         if (preparation is null) return;
         preparation.Registration.Dispose();
-        preparation.Cancellation.Cancel();
-        _ = preparation.Task.ContinueWith(completed =>
+        CancellationSourceCleanup.Cancel(preparation.Cancellation);
+        _ = Task.Run(async () =>
         {
-            if (completed.IsCompletedSuccessfully) completed.Result?.Dispose();
-            preparation.Cancellation.Dispose();
-        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+            try { (await preparation.Task.ConfigureAwait(false))?.Dispose(); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                logger.WriteSafely(AppLogLevel.Debug, "Replay", "Background replay preparation cleanup failed.", ex);
+            }
+            finally { preparation.Cancellation.Dispose(); }
+        });
     }
 
     private sealed record ReplayPreparation(Uri Uri, CancellationTokenSource Cancellation, Task<PreparedReplayInput?> Task)

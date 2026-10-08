@@ -9,7 +9,7 @@ internal static partial class ApplicationTestCatalog
         ("skip hotkeys: selected VOD uses the current clock custom amounts and both boundaries", SkipHotkeyVodAsync),
         ("skip hotkeys: live replay rewinds and returns to live at the forward boundary", SkipHotkeyLiveAsync),
         ("skip hotkeys: input guards remapping recording and existing navigation remain intact", SkipHotkeyInputGuardsAsync),
-        ("skip hotkeys: opposite directions cannot queue stale seeks while playback is busy", SkipHotkeyBusyAsync),
+        ("skip hotkeys: rapid opposite directions accumulate against the requested position", SkipHotkeyBusyAsync),
         ("skip hotkeys: settings sliders record swap reset and save through the real bindings", SkipHotkeySettingsAsync),
         ("skip hotkeys: detached player and replay overlay dispatch the configured shortcuts", SkipHotkeyOtherSurfacesAsync),
         ("skip hotkeys: physical numpad input seeks with Num Lock on and off and records correctly", SkipHotkeyPhysicalKeyboardAsync),
@@ -195,13 +195,17 @@ internal static partial class ApplicationTestCatalog
             Assert.True(fixture.Press(Key.NumPad4).Handled);
             await fixture.Engine.SeekStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.True(fixture.First.IsReplaySeekInProgress);
-            Assert.Equal(false, fixture.First.SkipBackwardCommand.CanExecute(null));
-            Assert.Equal(false, fixture.First.SkipForwardCommand.CanExecute(null));
+            Assert.True(fixture.First.SkipBackwardCommand.CanExecute(null));
+            Assert.True(fixture.First.SkipForwardCommand.CanExecute(null));
             Assert.True(fixture.Press(Key.NumPad6).Handled);
+            Assert.True(fixture.Press(Key.NumPad6).Handled);
+            Assert.True(fixture.Press(Key.NumPad4).Handled);
+            Assert.Equal(30d, fixture.First.ReplaySeekSliderValue);
             Assert.Equal(1, fixture.Engine.SeekCount);
         }
         finally { release.TrySetResult(); }
         await fixture.WaitForSeekAsync(0, 30);
+        Assert.Equal(2, fixture.Engine.SeekCount);
         await fixture.PressAndWaitAsync(Key.NumPad4, 0);
     });
 

@@ -94,6 +94,54 @@ static void reset(size_t chunk) {
     fail_first = fail_send = false;
 }
 
+struct error_worker {
+    HANDLE ready, release;
+    bool overhead, retained;
+};
+
+static DWORD WINAPI error_worker(void *opaque) {
+    struct error_worker *worker = opaque;
+    tls_conn_t state = {0};
+    if (worker->overhead) state.stream_header = TLS_BUF_SIZE;
+    assert(tls_send(&state, "x", 1) == -1);
+    assert(SetEvent(worker->ready));
+    assert(WaitForSingleObject(worker->release, 5000) == WAIT_OBJECT_0);
+    worker->retained = strcmp(tls_last_error(), worker->overhead
+        ? "TLS stream overhead exceeds send buffer"
+        : "TLS stream maximum message size is zero") == 0;
+    return 0;
+}
+
+static void errors_are_isolated_between_connections(void) {
+    reset(6);
+    fail_first = true;
+    tls_conn_t state = {0};
+    assert(!client_handshake(&state));
+    char main_error[256];
+    snprintf(main_error, sizeof(main_error), "%s", tls_last_error());
+
+    struct error_worker workers[2] = {0};
+    HANDLE threads[2];
+    for (int i = 0; i < 2; i++) {
+        workers[i].ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        workers[i].release = CreateEventW(NULL, TRUE, FALSE, NULL);
+        workers[i].overhead = i == 0;
+        assert(workers[i].ready && workers[i].release);
+        threads[i] = CreateThread(NULL, 0, error_worker, &workers[i], 0, NULL);
+        assert(threads[i]);
+        assert(WaitForSingleObject(workers[i].ready, 5000) == WAIT_OBJECT_0);
+    }
+    bool main_retained = strcmp(tls_last_error(), main_error) == 0;
+    for (int i = 0; i < 2; i++) {
+        assert(SetEvent(workers[i].release));
+        assert(WaitForSingleObject(threads[i], 5000) == WAIT_OBJECT_0);
+        CloseHandle(threads[i]);
+        CloseHandle(workers[i].ready);
+        CloseHandle(workers[i].release);
+    }
+    assert(main_retained && workers[0].retained && workers[1].retained);
+}
+
 int main(void) {
     for (size_t chunk = 1; chunk <= sizeof(wire) - 1; chunk++) {
         reset(chunk);
@@ -115,5 +163,7 @@ int main(void) {
         assert(state.have_ctx == !fail_first);
     }
     puts("PASS TLS handshake consumes buffered records, reads incomplete records and frees every output token");
+    errors_are_isolated_between_connections();
+    puts("PASS TLS errors stay with their connection's calling thread");
     return 0;
 }

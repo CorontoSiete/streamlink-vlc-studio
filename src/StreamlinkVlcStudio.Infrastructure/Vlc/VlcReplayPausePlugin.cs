@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using StreamlinkVlcStudio.Infrastructure.Io;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
 
@@ -30,20 +31,20 @@ internal static class VlcReplayPausePlugin
             foreach (var (name, bytes, hash) in plugins)
             {
                 var path = Path.Combine(directory, name);
-                if (File.Exists(path) && SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(hash)) continue;
+                var expectedHash = Convert.ToHexString(hash);
+                if (FileHash.MatchesSha256(path, expectedHash)) continue;
                 var temporary = Path.Combine(directory, $"{Guid.NewGuid():N}.tmp");
                 try
                 {
                     File.WriteAllBytes(temporary, bytes);
                     // Other processes may be extracting the same immutable, content-addressed DLL.
                     try { File.Move(temporary, path, overwrite: true); }
-                    catch (IOException) when (File.Exists(path) &&
-                        SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(hash))
+                    catch (IOException) when (FileHash.MatchesSha256(path, expectedHash))
                     { }
                 }
                 finally
                 {
-                    File.Delete(temporary);
+                    AtomicFile.TryDeleteTemporaryFile(temporary);
                 }
             }
 

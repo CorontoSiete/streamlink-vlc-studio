@@ -1,4 +1,3 @@
-using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
@@ -77,24 +76,6 @@ public sealed class ReplayResolver : IReplayResolver
                 $"Replay seeking is not supported for {target.Platform}."))
         };
     }
-
-    public static TwitchLiveStreamInfo? ReadTwitchLiveStream(JsonElement root, string channel) => TwitchReplayProvider.ReadTwitchLiveStream(root, channel);
-
-    public static IReadOnlyList<TwitchVodInfo> ReadTwitchArchiveVods(JsonElement root) => TwitchReplayProvider.ReadTwitchArchiveVods(root);
-
-    public static TwitchVodInfo? MatchTwitchVod(TwitchLiveStreamInfo liveStream, IEnumerable<TwitchVodInfo> vods) => TwitchReplayProvider.MatchTwitchVod(liveStream, vods);
-
-    public static bool TryParseTwitchDuration(string value, out TimeSpan duration) => TwitchReplayProvider.TryParseTwitchDuration(value, out duration);
-
-    public static bool TryReadTwitchDvrTotalSeconds(string playlist, out TimeSpan duration) => TwitchReplayProvider.TryReadTwitchDvrTotalSeconds(playlist, out duration);
-
-    public static bool IsValidTwitchDvrPlaylist(string playlist) => TwitchReplayProvider.IsValidTwitchDvrPlaylist(playlist);
-
-    public static KickLiveStreamInfo? ReadKickLiveStream(JsonElement root, string channel) => KickReplayProvider.ReadKickLiveStream(root, channel);
-
-    public static KickLiveStreamInfo? ReadKickWebsiteLiveStream(JsonElement root, string channel) => KickReplayProvider.ReadKickWebsiteLiveStream(root, channel);
-
-    public static IReadOnlyList<KickReplayCandidate> ReadKickPrivateReplayCandidates(string channel, string responseBody, KickLiveStreamInfo liveStream) => KickReplayProvider.ReadKickPrivateReplayCandidates(channel, responseBody, liveStream);
 }
 
 public sealed record TwitchLiveStreamInfo(string UserId, string StreamId, DateTimeOffset StartedAtUtc);

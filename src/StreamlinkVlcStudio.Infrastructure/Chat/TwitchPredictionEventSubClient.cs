@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
@@ -73,84 +74,69 @@ internal sealed class TwitchPredictionEventSubClient : IAsyncDisposable
         }
     }
 
-    public ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(lifecycleGate, ref disposed, ref disposalTask, DisposeCoreAsync));
+
+    private async Task DisposeCoreAsync()
     {
+        CancellationTokenSource? cancellationToDispose;
+        Task? runTaskToWait;
+        ClientWebSocket? socketToAbort;
         lock (lifecycleGate)
         {
-            if (disposalTask is not null)
-            {
-                return new ValueTask(disposalTask);
-            }
-
-            disposed = true;
-            var cancellationToDispose = cancellation;
-            var runTaskToWait = runTask;
-            var socketToAbort = webSocket;
-            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            disposalTask = completion.Task;
-            _ = CompleteDisposalAsync(
-                cancellationToDispose,
-                runTaskToWait,
-                socketToAbort,
-                completion);
-            return new ValueTask(disposalTask);
+            cancellationToDispose = cancellation;
+            runTaskToWait = runTask;
+            socketToAbort = webSocket;
         }
-    }
 
-    private async Task CompleteDisposalAsync(
-        CancellationTokenSource? cancellationToDispose,
-        Task? runTaskToWait,
-        ClientWebSocket? socketToAbort,
-        TaskCompletionSource completion)
-    {
         try
-        {
-            await DisposeCoreAsync(cancellationToDispose, runTaskToWait, socketToAbort)
-                .ConfigureAwait(false);
-            completion.TrySetResult();
-        }
-        catch (Exception ex)
-        {
-            completion.TrySetException(ex);
-        }
-    }
-
-    private async Task DisposeCoreAsync(
-        CancellationTokenSource? cancellationToDispose,
-        Task? runTaskToWait,
-        ClientWebSocket? socketToAbort)
-    {
-        cancellationToDispose?.Cancel();
-        socketToAbort?.Abort();
-
-        if (runTaskToWait is not null)
         {
             try
             {
-                await runTaskToWait.ConfigureAwait(false);
+                cancellationToDispose?.Cancel();
             }
-            catch (OperationCanceledException)
+            finally
             {
+                try
+                {
+                    socketToAbort?.Abort();
+                }
+                finally
+                {
+                    if (runTaskToWait is not null)
+                    {
+                        try
+                        {
+                            await runTaskToWait.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToDispose?.IsCancellationRequested == true)
+                        {
+                        }
+                    }
+                }
             }
         }
-
-        cancellationToDispose?.Dispose();
-        lock (lifecycleGate)
+        finally
         {
-            if (ReferenceEquals(runTask, runTaskToWait))
+            lock (lifecycleGate)
             {
-                runTask = null;
+                if (ReferenceEquals(runTask, runTaskToWait))
+                {
+                    runTask = null;
+                }
+
+                if (ReferenceEquals(cancellation, cancellationToDispose))
+                {
+                    cancellation = null;
+                }
+
+                if (ReferenceEquals(webSocket, socketToAbort))
+                {
+                    webSocket = null;
+                }
             }
 
-            if (ReferenceEquals(cancellation, cancellationToDispose))
-            {
-                cancellation = null;
-            }
-
-            if (ReferenceEquals(webSocket, socketToAbort))
-            {
-                webSocket = null;
-            }
+            ChatConnectionCleanup.DisposeResources(logger, "TwitchEventSub", socketToAbort, cancellationToDispose);
         }
     }
 

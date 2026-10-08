@@ -10,6 +10,9 @@ internal static class ServiceResilienceTestCatalog
         ("service resilience: canceling optional VOD labels still cancels the search", CanceledVodLabelsAsync),
         ("service resilience: Twitch VOD lookup selects the requested channel", TwitchVodChannelIdentityAsync),
         ("service resilience: Twitch VOD lookup rejects unidentified channels", UnidentifiedTwitchVodChannelAsync),
+        ("service resilience: Twitch VOD searches reject missing or malformed video collections", InvalidTwitchVodCollectionAsync),
+        ("service resilience: Kick VOD searches read nested collections with their pagination", NestedKickVodCollectionAsync),
+        ("service resilience: Kick VOD searches distinguish malformed responses from empty collections", InvalidKickVodCollectionAsync),
         ("service resilience: Kick replay selects an identified matching channel", KickReplayChannelIdentity),
         ("service resilience: Kick website replay rejects unidentified channels", KickWebsiteReplayChannelIdentity),
         ("service resilience: Kick chat requires a matching channel and positive broadcaster ID", KickChatChannelIdentity),
@@ -96,12 +99,74 @@ internal static class ServiceResilienceTestCatalog
         {
             var unidentified = $$$"""{ {{{slug}}} "stream":{"id":"wrong","is_live":true}}""";
             using var missing = JsonDocument.Parse($$"""{"data":[{{unidentified}}]}""");
-            Assert.Equal<KickLiveStreamInfo?>(null, ReplayResolver.ReadKickLiveStream(missing.RootElement, "streamer"));
+            Assert.Equal<KickLiveStreamInfo?>(null, KickReplayProvider.ReadKickLiveStream(missing.RootElement, "streamer"));
             using var mixed = JsonDocument.Parse(
                 $$"""{"data":[{{unidentified}}, {"slug":"STREAMER","stream":{{LiveStream}}}]}""");
-            Assert.Equal("123", ReplayResolver.ReadKickLiveStream(mixed.RootElement, "streamer")!.StreamId);
+            Assert.Equal("123", KickReplayProvider.ReadKickLiveStream(mixed.RootElement, "streamer")!.StreamId);
         }
         return Task.CompletedTask;
+    }
+
+    private static async Task InvalidTwitchVodCollectionAsync()
+    {
+        foreach (var body in new[] { "null", "17", "[]", "{}", "{\"data\":null}", "{\"data\":{}}" })
+            await Assert.ThrowsAsync<JsonException>(() => ReadVodsAsync(() => new StringContent("{}"), videos: body));
+
+        var empty = await ReadVodsAsync(() => throw new InvalidOperationException("An empty page needs no access lookup."),
+            videos: "{\"data\":[]}");
+        Assert.Equal(TwitchVodSearchStatus.Available, empty.Status);
+        Assert.Equal(0, empty.Videos.Count);
+    }
+
+    private const string KickVideo = """{"id":"17","source":"https://stream.kick.com/video.m3u8","profile_picture":"https://example.test/avatar.png"}""";
+
+    private static async Task NestedKickVodCollectionAsync()
+    {
+        foreach (var property in new[] { "data", "videos", "items" })
+        {
+            var page = $$"""{"{{property}}":[false,{{KickVideo}}],"cursor":"next-page"}""";
+            foreach (var body in new[] { page, $$"""{"data":{{page}}}""" })
+            {
+                var result = await ReadKickVodsAsync(body);
+                Assert.Equal(KickVodSearchStatus.Available, result.Status);
+                Assert.Equal("17", result.Videos.Single().Id);
+                Assert.Equal("next-page", result.NextCursor);
+            }
+        }
+
+        var bare = await ReadKickVodsAsync($$"""[{{KickVideo}}]""");
+        Assert.Equal("17", bare.Videos.Single().Id);
+        Assert.Equal("", bare.NextCursor);
+    }
+
+    private static async Task InvalidKickVodCollectionAsync()
+    {
+        foreach (var body in new[] { "null", "17", "\"unavailable\"", "{}", "{\"data\":null}",
+                     "{\"videos\":17}", "{\"data\":{\"videos\":null}}", "{\"error\":\"unavailable\"}" })
+        {
+            var result = await ReadKickVodsAsync(body);
+            Assert.Equal(KickVodSearchStatus.Unavailable, result.Status);
+            Assert.Equal(0, result.Videos.Count);
+            Assert.Contains("unavailable", result.Message);
+        }
+
+        foreach (var body in new[] { "[]", "{\"data\":[]}", "{\"videos\":[]}", "{\"data\":{\"items\":[]}}" })
+        {
+            var result = await ReadKickVodsAsync(body);
+            Assert.Equal(KickVodSearchStatus.Available, result.Status);
+            Assert.Equal(0, result.Videos.Count);
+        }
+    }
+
+    private static async Task<KickVodSearchResult> ReadKickVodsAsync(string body)
+    {
+        using var client = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            Assert.Equal("/api/v2/channels/streamer/videos", request.RequestUri!.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
+        }));
+        return await new KickVodService(new MemoryLogger(), client)
+            .SearchAsync(new KickVodSearchRequest("streamer"), new AppSettings());
     }
 
     private static Task KickWebsiteReplayChannelIdentity()
@@ -109,10 +174,10 @@ internal static class ServiceResilienceTestCatalog
         foreach (var slug in new[] { "", "\"slug\":null,", "\"slug\":17,", "\"slug\":\"other\"," })
         {
             using var document = JsonDocument.Parse($$"""{ {{slug}} "livestream":{{LiveStream}} }""");
-            Assert.Equal<KickLiveStreamInfo?>(null, ReplayResolver.ReadKickWebsiteLiveStream(document.RootElement, "streamer"));
+            Assert.Equal<KickLiveStreamInfo?>(null, KickReplayProvider.ReadKickWebsiteLiveStream(document.RootElement, "streamer"));
         }
         using var valid = JsonDocument.Parse($$"""{"slug":"STREAMER","livestream":{{LiveStream}}}""");
-        Assert.Equal("123", ReplayResolver.ReadKickWebsiteLiveStream(valid.RootElement, "streamer")!.StreamId);
+        Assert.Equal("123", KickReplayProvider.ReadKickWebsiteLiveStream(valid.RootElement, "streamer")!.StreamId);
         return Task.CompletedTask;
     }
 
@@ -160,7 +225,8 @@ internal static class ServiceResilienceTestCatalog
     }
 
     private static async Task<TwitchVodSearchResult> ReadVodsAsync(
-        Func<HttpContent> accessContent, string? users = null, CancellationToken cancellationToken = default)
+        Func<HttpContent> accessContent, string? users = null, CancellationToken cancellationToken = default,
+        string? videos = null)
     {
         using var client = new HttpClient(new FakeHttpMessageHandler(request =>
         {
@@ -172,7 +238,7 @@ internal static class ServiceResilienceTestCatalog
             {
                 "/oauth2/validate" => """{"client_id":"client","login":"viewer","user_id":"2","expires_in":3600}""",
                 "/helix/users" => users ?? $$"""{"data":[{{Broadcaster}}]}""",
-                "/helix/videos" => """{"data":[{"id":"123","user_id":"1","user_login":"streamer","url":"https://www.twitch.tv/videos/123","duration":"1h"}],"pagination":{"cursor":"next-page"}}""",
+                "/helix/videos" => videos ?? """{"data":[{"id":"123","user_id":"1","user_login":"streamer","url":"https://www.twitch.tv/videos/123","duration":"1h"}],"pagination":{"cursor":"next-page"}}""",
                 _ => throw new InvalidOperationException($"Unexpected request {request.RequestUri}")
             };
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };

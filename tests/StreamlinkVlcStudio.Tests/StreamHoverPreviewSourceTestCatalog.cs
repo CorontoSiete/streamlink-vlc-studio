@@ -13,10 +13,13 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
         ("stream hover preview: local playlist rejects unrelated requests and refreshes after handoff", PlaylistSessionAsync),
         ("stream hover preview: cancellation interrupts a pending playlist refresh and closes its listener", CancelRefreshAsync),
         ("stream hover preview: late direct resolution is disposed without starting fallback", LateCancellationAsync),
-        ("stream hover preview: failed direct startup preserves the exact fallback request", DirectFailureAsync),
+        ("stream hover preview: failed direct startup preserves the exact fallback request", () => DirectFailureAsync(failedDiagnostics: false)),
+        ("review preview diagnostics: failed logging preserves the exact fallback request", () => DirectFailureAsync(failedDiagnostics: true)),
+        ("review preview diagnostics: failed logging retains direct playback and releases its session", DirectDiagnosticsAsync),
         ("stream hover preview: first-frame deadline stops direct playback before fallback", FirstFrameDeadlineAsync),
         ("stream hover preview: successful direct video outlives its startup deadline", SuccessfulDirectAsync),
         ("stream hover preview: a later ad stops direct video before Streamlink replacement", () => LaterAdAsync(false)),
+        .. PlaylistCleanupTests,
         .. AuthorizationTests,
         .. FormatTests
     ];
@@ -247,10 +250,10 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
         await Assert.ThrowsAsync<HttpRequestException>(() => client.GetStringAsync(address!));
     }
 
-    private static async Task DirectFailureAsync()
+    private static async Task DirectFailureAsync(bool failedDiagnostics)
     {
         var transport = new Transport();
-        var logger = new MemoryLogger();
+        var logger = failedDiagnostics ? MemoryLogger.WithWriteFailure() : new MemoryLogger();
         var request = Request() with { CustomArguments = ["--http-header", "Authorization=secret"] };
         var player = new LibVlcLivePreview(transport, logger,
             (_, _) => throw new InvalidDataException("private signed URL secret"),
@@ -260,6 +263,26 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
         Assert.True(ReferenceEquals(request, transport.Request));
         Assert.True(transport.Disposed);
         Assert.True(logger.Entries.All(entry => !entry.Message.Contains("secret")));
+    }
+
+    private static async Task DirectDiagnosticsAsync()
+    {
+        await using var source = new LivePreviewPlaylistSession(Media, _ => Task.FromResult(Media));
+        var transport = new Transport();
+        var frames = 0;
+        var player = new LibVlcLivePreview(transport, MemoryLogger.WithWriteFailure(),
+            (_, _) => Task.FromResult<LivePreviewPlaylistSession?>(source),
+            (uri, _, present, _, _) =>
+            {
+                Assert.Equal(source.PlaybackUri, uri);
+                present(new(1, 1, [1, 0, 0, 0]));
+                return Task.CompletedTask;
+            });
+        await player.RunAsync(Request(), "vlc", _ => frames++, CancellationToken.None);
+        Assert.Equal(1, frames);
+        Assert.Equal(0, transport.Starts);
+        using var client = new HttpClient();
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetStringAsync(source.PlaybackUri));
     }
 
     private static async Task FirstFrameDeadlineAsync()

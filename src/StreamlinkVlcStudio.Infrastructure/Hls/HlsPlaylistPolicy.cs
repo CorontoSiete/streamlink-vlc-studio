@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace StreamlinkVlcStudio.Infrastructure.Hls;
 
 internal static class HlsPlaylistPolicy
@@ -15,4 +17,26 @@ internal static class HlsPlaylistPolicy
     internal static bool HasSkippedSegments(IEnumerable<string> lines) =>
         lines.Any(static line => line == "#EXT-X-SKIP" ||
             line.StartsWith("#EXT-X-SKIP:", StringComparison.Ordinal));
+
+    internal static bool TryReadSegmentDuration(ReadOnlySpan<char> value, decimal maximumSeconds, out decimal seconds)
+    {
+        seconds = 0;
+        var comma = value.IndexOf(',');
+        if (comma >= 0) value = value[..comma];
+        foreach (var character in value)
+            if (!char.IsAsciiDigit(character) && character != '.') return false;
+        return decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out seconds) &&
+            seconds > 0 && seconds <= maximumSeconds;
+    }
+
+    // Byte-range maps need a ranged downloader. These readers accept only a whole,
+    // quoted URI; provider and encryption policy remains with the caller.
+    internal static bool TryReadWholeMapUri(string attributes, out string uri)
+    {
+        uri = "";
+        if (!HlsAttributeList.TryParse(attributes, out var parsed) || parsed.Count != 1 ||
+            !parsed.TryGetValue("URI", out var value) || !value.IsQuoted || value.Value.Length == 0) return false;
+        uri = value.Value;
+        return true;
+    }
 }

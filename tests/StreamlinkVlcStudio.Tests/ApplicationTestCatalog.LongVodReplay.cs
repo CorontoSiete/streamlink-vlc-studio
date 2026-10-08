@@ -168,10 +168,14 @@ internal static partial class ApplicationTestCatalog
 
     private static async Task ConfirmLongVodOutputAsync(IPlaybackEngine engine, TimeSpan position, TimeSpan duration)
     {
-        Assert.True(engine.TryGetPlaybackClock(out var clock));
+        // These probes deliberately return false while a native worker owns the
+        // gate. Wait for a readable sample without relaxing position or output checks.
+        var clock = new PlaybackClock(TimeSpan.Zero, null, false);
+        await TestWait.UntilAsync(() => engine.TryGetPlaybackClock(out clock), TimeSpan.FromSeconds(1));
         Assert.True((clock.Position - position).Duration() < TimeSpan.FromSeconds(3), $"Expected {position}, got {clock.Position}.");
         Assert.True(clock.Duration.HasValue && (clock.Duration.Value - duration).Duration() < TimeSpan.FromMilliseconds(5), $"Expected duration {duration}, got {clock.Duration}.");
-        Assert.True(engine.TryGetPlaybackHealth(out var first));
+        PlaybackHealth first = default;
+        await TestWait.UntilAsync(() => engine.TryGetPlaybackHealth(out first), TimeSpan.FromSeconds(1));
         await TestWait.UntilAsync(() => engine.TryGetPlaybackHealth(out var next) && next.DisplayedPictures > first.DisplayedPictures &&
             next.PositionMilliseconds > first.PositionMilliseconds, TimeSpan.FromSeconds(5));
         engine.TryGetPlaybackHealth(out var confirmed);

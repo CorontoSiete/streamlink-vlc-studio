@@ -125,7 +125,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
         var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hover-preview-fmp4");
         using var server = LocalHlsHttpServer.StartPlaylist(directory);
         var origin = new Uri("https://video.ttvnw.net/fixture/index.m3u8");
-        var validated = LivePreviewPlaylist.Rewrite(await File.ReadAllTextAsync(Path.Combine(directory, "index.m3u8")), origin, PlatformKind.Twitch);
+        var validated = LivePreviewPlaylist.Rewrite(await File.ReadAllTextAsync(Path.Combine(directory, "index.m3u8")), origin, PlatformKind.Twitch, out _);
         // Only fixture byte delivery is substituted. Production validation, the local
         // playlist handoff, native HLS decoder, callbacks and cancellation all run.
         var localPlaylist = validated.Replace(new Uri(origin, ".").AbsoluteUri, new Uri(server.MediaUri, ".").AbsoluteUri);

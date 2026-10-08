@@ -10,7 +10,7 @@ public static class TwitchIrcParser
 
     public static ChatMessage? TryParsePrivMsg(string? rawLine, string channel)
     {
-        if (string.IsNullOrWhiteSpace(rawLine))
+        if (string.IsNullOrWhiteSpace(rawLine) || string.IsNullOrWhiteSpace(channel))
         {
             return null;
         }
@@ -52,6 +52,14 @@ public static class TwitchIrcParser
             commandStart + privMsgCommand.Length,
             StringComparison.Ordinal);
         if (messageIndex < 0)
+        {
+            return null;
+        }
+
+        var targetStart = commandStart + privMsgCommand.Length;
+        var target = line.AsSpan(targetStart, messageIndex - targetStart).Trim();
+        if (target.IsEmpty || target[0] != '#' ||
+            !target[1..].Equals(channel.AsSpan(), StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }

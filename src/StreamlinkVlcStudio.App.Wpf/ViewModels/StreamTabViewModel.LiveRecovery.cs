@@ -1,5 +1,6 @@
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
@@ -59,7 +60,7 @@ public sealed partial class StreamTabViewModel
                 catch (Exception ex)
                 {
                     Interlocked.Exchange(ref liveHealthTickQueued, 0);
-                    logger.Write(AppLogLevel.Warning, "Playback", $"Could not check playback for {Target.DisplayName}.", ex);
+                    logger.WriteSafely(AppLogLevel.Warning, "Playback", $"Could not check playback for {Target.DisplayName}.", ex);
                 }
             }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         }
@@ -87,7 +88,9 @@ public sealed partial class StreamTabViewModel
     private void CancelLivePlaybackRecovery()
     {
         liveRecoveryInterrupted = true;
-        liveRecoveryCancellation?.Cancel();
+        CancellationSourceCleanup.Cancel(liveRecoveryCancellation,
+            exception => logger.WriteSafely(AppLogLevel.Warning, "Playback",
+                $"A playback recovery cancellation callback failed for {Target.DisplayName}.", exception));
     }
 
     // Also used by deterministic tests to sample the real tab lifecycle without sleeping.
@@ -137,7 +140,7 @@ public sealed partial class StreamTabViewModel
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Error, "Playback", $"Playback health check failed for {Target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Error, "Playback", $"Playback health check failed for {Target.DisplayName}.", ex);
         }
         finally
         {
@@ -163,9 +166,9 @@ public sealed partial class StreamTabViewModel
         IsBusy = true;
         Status = PlaybackStatus.Starting;
         ErrorMessage = "Live playback was interrupted. Reconnecting…";
-        logger.Write(AppLogLevel.Warning, "Playback", $"Recovering {Target.DisplayName}: {reason}.");
         try
         {
+            logger.WriteSafely(AppLogLevel.Warning, "Playback", $"Recovering {Target.DisplayName}: {reason}.");
             // Resolve again, since the old process may still be listening with an expired
             // playlist or may have exited. Keep the tab, chat, volume and mute preferences.
             await StopStreamSessionAsync();
@@ -191,7 +194,7 @@ public sealed partial class StreamTabViewModel
             liveRecoveryFailures++;
             liveRecoveryStableSince = Environment.TickCount64;
             nextLiveRecoveryAt = Environment.TickCount64 + (long)LivePlaybackHealthMonitor.RetryDelay(liveRecoveryFailures).TotalMilliseconds;
-            logger.Write(AppLogLevel.Info, "Playback", $"Recovered {Target.DisplayName}; VLC output is advancing.");
+            logger.WriteSafely(AppLogLevel.Info, "Playback", $"Recovered {Target.DisplayName}; VLC output is advancing.");
         }
         catch (Exception ex)
         {
@@ -210,7 +213,7 @@ public sealed partial class StreamTabViewModel
             var delay = LivePlaybackHealthMonitor.RetryDelay(liveRecoveryFailures);
             nextLiveRecoveryAt = Math.Max(now, Environment.TickCount64) + (long)delay.TotalMilliseconds;
             ErrorMessage = $"Live playback is unavailable. Retrying in {delay.TotalSeconds:0} seconds…";
-            logger.Write(AppLogLevel.Warning, "Playback", $"Recovery failed for {Target.DisplayName}; retry in {delay.TotalSeconds:0}s.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "Playback", $"Recovery failed for {Target.DisplayName}; retry in {delay.TotalSeconds:0}s.", ex);
         }
         finally
         {

@@ -85,7 +85,7 @@ internal sealed class HlsVodDownloader(HttpClient client, ReplayUrlSecurityValid
                 }
                 else if (response.StatusCode != HttpStatusCode.OK)
                     throw new InvalidDataException("The VOD server returned an unexpected partial media response.");
-                if (response.Content.Headers.ContentType?.MediaType is "text/html" or "application/json" ||
+                if (HttpContentTypePolicy.IsErrorDocument(response.Content) ||
                     response.Content.Headers.ContentEncoding.Count != 0)
                     throw new InvalidDataException("The VOD server returned an error page instead of uncompressed media.");
                 var limit = asset.IsKey ? 16 : asset.Length ?? OfflineHlsPlaylist.MaximumAssetBytes;

@@ -41,7 +41,7 @@ internal sealed class TwitchRateLimitCoordinator
 
             var retryDelay = ClampDelay(GetRetryDelay(response) ?? RetryFallback);
             SetPause(SaturatingAdd(DateTimeOffset.UtcNow, retryDelay));
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 "Browse",
                 $"Twitch browse request was rate limited; retrying in {retryDelay.TotalSeconds:0.#}s.");

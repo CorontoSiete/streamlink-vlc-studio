@@ -2188,7 +2188,7 @@ internal static partial class ApplicationTestCatalog
             TimeSpan.FromSeconds(1));
         Assert.Equal(replayDuration.TotalSeconds, tab.ReplaySeekValue);
 
-        tab.BeginReplaySeekPreview();
+        tab.BeginReplaySeekPreview(tab.ReplaySeekSliderValue);
         tab.ReplaySeekSliderValue = TimeSpan.FromMinutes(10).TotalSeconds;
 
         InvokeReplayClockUpdate(tab);

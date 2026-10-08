@@ -7,6 +7,7 @@ $hadExitCode = $null -ne $previousExitCode
 $savedExitCode = if ($hadExitCode) { $previousExitCode.Value } else { $null }
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 . (Join-Path $repoRoot 'scripts\lib\common.ps1')
+. (Join-Path $repoRoot 'scripts\lib\install-state.ps1')
 . (Join-Path $repoRoot 'scripts\lib\dependency-manifest.ps1')
 . (Join-Path $repoRoot 'scripts\lib\runtime-dependencies.ps1')
 
@@ -82,7 +83,7 @@ function Start-Installer([string]$Path, [string[]]$ArgumentList, [string]$Name) 
 
 function Invoke-DependencyTest([string]$TestName, [scriptblock]$Test) {
     $script:events.Clear()
-    $script:DependencyManifest = $canonicalJson | ConvertFrom-Json
+    $script:ParsedDependencyManifest = $canonicalJson | ConvertFrom-Json
     $script:InstallerDependencyManifest = $canonicalJson | ConvertFrom-Json
     $script:DependencyManifestWasOverridden = $false
     $script:VerifyInstalledAppDependencies = $false
@@ -102,6 +103,36 @@ function Invoke-DependencyTest([string]$TestName, [scriptblock]$Test) {
 }
 
 try {
+    Invoke-DependencyTest 'real x64 startup accepts default and explicit dependency manifests before validating the install target' {
+        $invalidInstallTarget = Join-Path $testRoot 'existing-install-file.txt'
+        [IO.File]::WriteAllText($invalidInstallTarget, 'not an installation directory')
+        $startupPowerShell = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        foreach ($explicitManifest in @($false, $true)) {
+            $startupError = Join-Path $testRoot ("startup-$explicitManifest-error.txt")
+            $startupOutput = Join-Path $testRoot ("startup-$explicitManifest-output.txt")
+            $startupArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                ('"' + (Join-Path $repoRoot 'scripts\install.ps1') + '"'),
+                '-SkipApp', '-SkipStreamlink', '-SkipVlc', '-SkipShortcut',
+                '-InstallDir', ('"' + $invalidInstallTarget + '"'))
+            if ($explicitManifest) {
+                $startupArguments += @('-DependencyManifest', ('"' + $canonicalPath + '"'))
+            }
+            $startupProcess = Start-Process -FilePath $startupPowerShell -WindowStyle Hidden -PassThru `
+                -ArgumentList $startupArguments -RedirectStandardError $startupError -RedirectStandardOutput $startupOutput
+            try {
+                if (-not $startupProcess.WaitForExit(20000)) {
+                    $startupProcess.Kill()
+                    $startupProcess.WaitForExit(5000) | Out-Null
+                    throw 'The real installer startup did not finish within 20 seconds.'
+                }
+                Assert-DependencyTest ($startupProcess.ExitCode -ne 0) 'An existing file was accepted as the installation directory.'
+                Assert-DependencyTest ([IO.File]::ReadAllText($startupError) -match 'InstallDir points to an existing file') `
+                    'The real installer rejected its valid dependency manifest before validating the installation directory.'
+                Assert-DependencyTest ([IO.File]::ReadAllText($startupOutput).Length -eq 0) `
+                    'The installer changed the application before validating the installation directory.'
+            } finally { $startupProcess.Dispose() }
+        }
+    }
     Invoke-DependencyTest 'compatible runtimes are retained without downloading or downgrading' {
         $script:streamlinkVersion = '9.0.0'
         $script:vlcVersion = '4.0.0'
@@ -159,7 +190,7 @@ try {
         [IO.File]::WriteAllText((Join-Path $payload 'lib\WindowsDependencyProbe.cs'), 'capability fixture')
         $minimums = [pscustomobject]@{ streamlink = '9.0.0-1'; vlc = '3.0.23'; webview2 = '152.0.4191.53' }
         Use-AppPayloadDependencyManifest $payload $minimums
-        Assert-DependencyTest ($script:DependencyManifest.dependencies.streamlink.version -ceq '9.0.0-1') 'The old script pinned the new payload to an obsolete runtime.'
+        Assert-DependencyTest ($script:ParsedDependencyManifest.dependencies.streamlink.version -ceq '9.0.0-1') 'The old script pinned the new payload to an obsolete runtime.'
         Assert-DependencyTest $script:VerifyInstalledAppDependencies 'Native verification capability was not retained.'
         $minimums.webview2 = '140.0.0.0'
         Assert-DependencyFailure { Use-AppPayloadDependencyManifest $payload $minimums } 'webview2.*does not match'
@@ -173,7 +204,7 @@ try {
         $legacy.dependencies.PSObject.Properties.Remove('webview2')
         $legacy | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $payload 'dependencies\windows-installers.json') -Encoding UTF8
         Use-AppPayloadDependencyManifest $payload ([pscustomobject]@{ streamlink = '8.5.0-1'; vlc = '3.0.23' })
-        Assert-DependencyTest ($script:DependencyManifest.dependencies.webview2.minimumVersion -ceq '152.0.4191.53') 'Legacy installation omitted WebView2.'
+        Assert-DependencyTest ($script:ParsedDependencyManifest.dependencies.webview2.minimumVersion -ceq '152.0.4191.53') 'Legacy installation omitted WebView2.'
         Assert-DependencyTest (-not $script:VerifyInstalledAppDependencies) 'An unsupported command would be sent to a legacy application.'
     }
     Invoke-DependencyTest 'dependency-only repair follows the installed payload rather than the older script minima' {
@@ -193,15 +224,16 @@ try {
         function New-StartMenuShortcut { param($AppExe) $script:events.Add('shortcut') }
         function Update-AppSettings { param($StreamlinkPath, $VlcDirectory) $script:events.Add('settings') }
         function Remove-TempRoot { $script:events.Add('cleanup') }
-        & ([scriptblock]::Create($installer.EndBlock.Statements[-1].Extent.Text))
-        Assert-DependencyTest ($script:DependencyManifest.dependencies.streamlink.version -ceq '9.0.0-1') 'Dependency-only repair used obsolete installer minima.'
+        & ([scriptblock]::Create($installer.EndBlock.Statements[-2].Extent.Text + [Environment]::NewLine +
+            $installer.EndBlock.Statements[-1].Extent.Text))
+        Assert-DependencyTest ($script:ParsedDependencyManifest.dependencies.streamlink.version -ceq '9.0.0-1') 'Dependency-only repair used obsolete installer minima.'
         Assert-DependencyTest (($script:events -join ',') -ceq 'registration,shortcut,settings,cleanup') 'Dependency-only repair did not retain the existing compatible runtime.'
     }
     Invoke-DependencyTest 'manifest and signing checks reject omissions invalid minima and unsafe download locations' {
         $minimums = [pscustomobject]@{ streamlink = '8.5.0-1'; vlc = '3.0.23'; webview2 = '152.0.4191.53' }
-        Assert-DependencyMinimums $minimums $script:DependencyManifest
+        Assert-DependencyMinimums $minimums $script:ParsedDependencyManifest
         $minimums.PSObject.Properties.Remove('webview2')
-        Assert-DependencyFailure { Assert-DependencyMinimums $minimums $script:DependencyManifest } 'every dependency'
+        Assert-DependencyFailure { Assert-DependencyMinimums $minimums $script:ParsedDependencyManifest } 'every dependency'
         foreach ($mutation in @(
                 { param($data) $data.dependencies.webview2.minimumVersion = '999.0.0.0' },
                 { param($data) $data.dependencies.webview2.minimumVersion = '0.0.0.0' },
@@ -217,7 +249,7 @@ try {
         }
         $changedPayload = $canonicalJson | ConvertFrom-Json
         $changedPayload.dependencies.vlc.sha256 = '0' * 64
-        Assert-DependencyFailure { Assert-DependencyManifestsMatch $script:DependencyManifest $changedPayload } 'vlc.*sha256.*does not match'
+        Assert-DependencyFailure { Assert-DependencyManifestsMatch $script:ParsedDependencyManifest $changedPayload } 'vlc.*sha256.*does not match'
     }
 
     # Compile a real x64 .NET Framework executable using the compiler available on

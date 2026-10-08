@@ -29,12 +29,8 @@ internal sealed class RecentStreamsViewModel : HomeFeatureViewModel
 
     protected override void StopOperations()
     {
-        recentThumbnailRefreshCancellation.Cancel();
-        lock (recentThumbnailRefreshTimerGate)
-        {
-            recentThumbnailRefreshTimer?.Dispose();
-            recentThumbnailRefreshTimer = null;
-        }
+        CancelOperation(recentThumbnailRefreshCancellation);
+        StopRefreshTimer(recentThumbnailRefreshTimerGate, ref recentThumbnailRefreshTimer);
         RecentStreams.CollectionChanged -= RecentStreamsOnCollectionChanged;
     }
     protected override void ReleaseResources()
@@ -143,26 +139,9 @@ internal sealed class RecentStreamsViewModel : HomeFeatureViewModel
 
     internal void EnsureRecentThumbnailRefreshTimerStarted()
     {
-        if (streamMetadataService is null ||
-            recentThumbnailRefreshInterval <= TimeSpan.Zero ||
-            disposed)
-        {
-            return;
-        }
-
-        lock (recentThumbnailRefreshTimerGate)
-        {
-            if (recentThumbnailRefreshTimer is not null || disposed)
-            {
-                return;
-            }
-
-            recentThumbnailRefreshTimer = new System.Threading.Timer(
-                _ => RefreshRecentThumbnailsOnUiIfVisible(),
-                null,
-                recentThumbnailRefreshInterval,
-                recentThumbnailRefreshInterval);
-        }
+        if (streamMetadataService is not null)
+            EnsureRefreshTimerStarted(recentThumbnailRefreshTimerGate, ref recentThumbnailRefreshTimer,
+                recentThumbnailRefreshInterval, RefreshRecentThumbnailsOnUiIfVisible);
     }
 
     internal void RefreshRecentThumbnailsOnUiIfVisible()

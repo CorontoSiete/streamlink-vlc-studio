@@ -49,7 +49,7 @@ internal static class OfflineVodProfileImage
                     return request;
                 }, deadline.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentType?.MediaType is "text/html" or "application/json")
+            if (HttpContentTypePolicy.IsErrorDocument(response.Content))
                 throw new InvalidDataException("The broadcaster's profile image returned an error page.");
             var bytes = await BoundedByteReader.ReadAsync(response.Content, MaximumBytes, deadline.Token).ConfigureAwait(false)
                 ?? throw new InvalidDataException("The broadcaster's profile image is empty or exceeds the supported size.");
@@ -63,7 +63,7 @@ internal static class OfflineVodProfileImage
             exception is HttpRequestException or IOException or InvalidDataException or UnauthorizedAccessException or
                 OperationCanceledException or ArgumentException or UriFormatException or InvalidOperationException or NotSupportedException)
         {
-            logger.Write(AppLogLevel.Warning, "VOD downloads",
+            logger.WriteSafely(AppLogLevel.Warning, "VOD downloads",
                 "The broadcaster's profile image could not be cached; its saved URL has been retained.", exception);
         }
     }

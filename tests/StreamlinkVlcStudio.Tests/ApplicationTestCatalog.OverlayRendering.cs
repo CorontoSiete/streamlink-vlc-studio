@@ -2221,25 +2221,25 @@ internal static partial class ApplicationTestCatalog
     {
         Assert.Equal(
             TimeSpan.FromMilliseconds(20),
-            StreamTabViewModel.CalculateNativeReplayOverlayAnimationDelay(
+            NativeChatOverlayController.CalculateNativeReplayOverlayAnimationDelay(
                 TimeSpan.Zero,
                 TimeSpan.FromMilliseconds(20),
                 TimeSpan.Zero));
         Assert.Equal(
             TimeSpan.FromMilliseconds(5),
-            StreamTabViewModel.CalculateNativeReplayOverlayAnimationDelay(
+            NativeChatOverlayController.CalculateNativeReplayOverlayAnimationDelay(
                 TimeSpan.Zero,
                 TimeSpan.FromMilliseconds(20),
                 TimeSpan.FromMilliseconds(15)));
         Assert.Equal(
             TimeSpan.Zero,
-            StreamTabViewModel.CalculateNativeReplayOverlayAnimationDelay(
+            NativeChatOverlayController.CalculateNativeReplayOverlayAnimationDelay(
                 TimeSpan.Zero,
                 TimeSpan.FromMilliseconds(20),
                 TimeSpan.FromMilliseconds(25)));
         Assert.Equal(
             TimeSpan.FromMilliseconds(100),
-            StreamTabViewModel.CalculateNativeReplayOverlayAnimationDelay(
+            NativeChatOverlayController.CalculateNativeReplayOverlayAnimationDelay(
                 TimeSpan.Zero,
                 null,
                 TimeSpan.Zero));

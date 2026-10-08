@@ -24,8 +24,8 @@ internal static class ComprehensiveReviewTestCatalog
 
     private static Task PreviewHeadersAsync()
     {
-        var expected = LivePreviewPlaylist.Rewrite(Playlist, PlaylistUri, PlatformKind.Twitch);
-        Assert.Equal(expected, LivePreviewPlaylist.Rewrite("\uFEFF" + Playlist, PlaylistUri, PlatformKind.Twitch));
+        var expected = LivePreviewPlaylist.Rewrite(Playlist, PlaylistUri, PlatformKind.Twitch, out _);
+        Assert.Equal(expected, LivePreviewPlaylist.Rewrite("\uFEFF" + Playlist, PlaylistUri, PlatformKind.Twitch, out _));
         const string master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000,IVS-NAME=\"source\"\nsource/index.m3u8\n";
         Assert.Equal(new Uri(PlaylistUri, "source/index.m3u8"),
             TwitchVodVariantPlaylist.Select("\uFEFF" + master, PlaylistUri, "best"));

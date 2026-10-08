@@ -4,6 +4,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Limits;
+using StreamlinkVlcStudio.Infrastructure.Logging;
 using StreamlinkVlcStudio.Infrastructure.Processes;
 using StreamlinkVlcStudio.Infrastructure.Text;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
@@ -25,17 +26,27 @@ public sealed partial class StreamlinkService : IStreamlinkService
     private readonly TwitchVodUrlResolver? vodUrlResolver;
     private readonly Func<StreamTransportRequest, bool> canResolveVodDirectly;
     private readonly Func<StreamTransportRequest, CancellationToken, Task<StreamlinkResolvedUrl>> resolveWithStreamlink;
+    private readonly Func<CancellationToken, Task<string?>>? twitchPlaybackTokenProvider;
 
     public StreamlinkService(IAppLogger logger) : this(logger, new TwitchVodUrlResolver()) { }
 
+    public static StreamlinkService WithTwitchWebsiteSession(IAppLogger logger,
+        Func<CancellationToken, Task<string?>> twitchPlaybackTokenProvider)
+    {
+        ArgumentNullException.ThrowIfNull(twitchPlaybackTokenProvider);
+        return new(logger, new TwitchVodUrlResolver(), twitchPlaybackTokenProvider: twitchPlaybackTokenProvider);
+    }
+
     internal StreamlinkService(IAppLogger logger, TwitchVodUrlResolver? vodUrlResolver,
         Func<StreamTransportRequest, bool>? canResolveVodDirectly = null,
-        Func<StreamTransportRequest, CancellationToken, Task<StreamlinkResolvedUrl>>? resolveWithStreamlink = null)
+        Func<StreamTransportRequest, CancellationToken, Task<StreamlinkResolvedUrl>>? resolveWithStreamlink = null,
+        Func<CancellationToken, Task<string?>>? twitchPlaybackTokenProvider = null)
     {
         this.logger = logger;
         this.vodUrlResolver = vodUrlResolver;
         this.canResolveVodDirectly = canResolveVodDirectly ?? DirectVodResolutionPolicy.CanUse;
         this.resolveWithStreamlink = resolveWithStreamlink ?? ResolveWithStreamlinkAsync;
+        this.twitchPlaybackTokenProvider = twitchPlaybackTokenProvider;
     }
 
     public async Task<StreamlinkProbeResult> ProbeStreamsAsync(StreamTransportRequest request, CancellationToken cancellationToken = default)
@@ -136,13 +147,42 @@ public sealed partial class StreamlinkService : IStreamlinkService
 
     public async Task<IStreamTransportSession> StartExternalHttpAsync(StreamTransportRequest request, CancellationToken cancellationToken = default)
     {
+        try
+        {
+            return await StartExternalHttpCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TwitchVideoUnavailableException) when (twitchPlaybackTokenProvider is not null &&
+            !HasCustomTwitchPlaybackIdentity(request.CustomArguments))
+        {
+            // Keep ordinary streams on their existing anonymous path. Twitch may expose
+            // only audio when its sole video rendition exceeds the logged-out limit.
+            // The website cookie is distinct from the app's Helix/chat OAuth token.
+            var token = await ReadTwitchPlaybackTokenAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(token)) throw new TwitchVideoUnavailableException();
+            logger.Write(AppLogLevel.Info, "Playback",
+                "Twitch returned only audio; retrying the requested video quality with the saved Twitch website session.");
+            try
+            {
+                return await StartExternalHttpCoreAsync(request, cancellationToken, token).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException exception) when (exception.Message.Contains("401", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Twitch rejected the saved website session. " +
+                    "In Settings > Accounts > Channel-point bonuses, select Sign in for bonuses, then reload the stream.", exception);
+            }
+        }
+    }
+
+    private async Task<IStreamTransportSession> StartExternalHttpCoreAsync(StreamTransportRequest request,
+        CancellationToken cancellationToken, string? twitchPlaybackToken = null)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(request.StreamlinkPath))
         {
             throw new FileNotFoundException("Streamlink executable was not found.", request.StreamlinkPath);
         }
 
-        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildArguments(request));
+        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, WithTwitchPlaybackToken(BuildArguments(request), twitchPlaybackToken));
 
         logger.Write(AppLogLevel.Info, "Streamlink", $"Starting Streamlink for {request.Target.Url} ({request.Quality})");
         var owner = RedirectedProcessOwner.Start(psi);
@@ -158,8 +198,15 @@ public sealed partial class StreamlinkService : IStreamlinkService
                 return;
             }
 
-            session.AddLogLine(data);
-            logger.Write(AppLogLevel.Info, "Streamlink", $"[{request.Target.DisplayName}] {data}");
+            // Sanitize before either the tab or logger sees process output, including
+            // custom debug logging which can print the authentication argument.
+            var safeLine = FileAppLogger.Sanitize(string.IsNullOrEmpty(twitchPlaybackToken)
+                ? data : data.Replace(twitchPlaybackToken, "[REDACTED]", StringComparison.Ordinal), 16 * 1024);
+            session.AddLogLine(safeLine);
+            logger.Write(AppLogLevel.Info, "Streamlink", $"[{request.Target.DisplayName}] {safeLine}");
+
+            if (RequiresTwitchVideo(request) && HasOnlyAudioStreams(data))
+                uriCompletion.TrySetException(new TwitchVideoUnavailableException());
 
             if (TryReadLocalHttpUri(data, out var uri))
             {
@@ -189,6 +236,7 @@ public sealed partial class StreamlinkService : IStreamlinkService
             // The timeout task is only a race sentinel. Cancel it as soon as one of the real
             // completion paths wins so a successful session does not leave a pending task behind.
             linked.Cancel();
+            if (uriCompletion.Task.IsFaulted) await uriCompletion.Task.ConfigureAwait(false);
             var exitedBeforeReady = completed == exitCompletion || exitCompletion.IsCompleted || process.HasExited;
             if (completed == uriCompletion.Task && !exitedBeforeReady)
             {

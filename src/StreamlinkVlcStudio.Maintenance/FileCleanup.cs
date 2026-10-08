@@ -65,7 +65,8 @@ internal static class DeleteRetry
 internal sealed record CleanupOutcome(
     bool ApplicationRemoved,
     IReadOnlyList<string> RetainedPaths,
-    bool RegistrationRemoved);
+    bool RegistrationRemoved,
+    bool ShortcutRemoved);
 
 internal static class ManagedInstallationCleaner
 {
@@ -120,10 +121,11 @@ internal static class ManagedInstallationCleaner
 
         var applicationRemoved = retained.Count == 0;
         var registrationRemoved = false;
+        var shortcutRemoved = false;
         if (applicationRemoved)
         {
             RemoveEmptyManagedDirectories(ownership, log);
-            RemoveKnownShortcut(ownership.Root, log);
+            shortcutRemoved = RemoveKnownShortcut(ownership.Root, log);
             registrationRemoved = RemoveRegistrationIfMatching(UninstallRegistryPath, ownership.Root, log);
             registrationRemoved &= RemoveRegistrationIfMatching(LegacyUninstallRegistryPath, ownership.Root, log);
         }
@@ -131,7 +133,8 @@ internal static class ManagedInstallationCleaner
         return new CleanupOutcome(
             applicationRemoved,
             retained.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-            registrationRemoved);
+            registrationRemoved,
+            shortcutRemoved);
     }
 
     private static bool DeleteFinalControlFiles(
@@ -291,39 +294,40 @@ internal static class ManagedInstallationCleaner
         }
     }
 
-    private static void RemoveKnownShortcut(string installRoot, MaintenanceLog log)
+    private static bool RemoveKnownShortcut(string installRoot, MaintenanceLog log)
     {
         // A portable copy or an old installation must not remove the shortcut
         // belonging to a different registered installation of the same product.
         if (!RegistrationMatches(UninstallRegistryPath, installRoot, log) &&
-            !RegistrationMatches(LegacyUninstallRegistryPath, installRoot, log)) return;
+            !RegistrationMatches(LegacyUninstallRegistryPath, installRoot, log)) return true;
         var startMenu = Environment.GetFolderPath(Environment.SpecialFolder.StartMenu);
         if (string.IsNullOrWhiteSpace(startMenu))
         {
-            return;
+            return true;
         }
 
-        foreach (var shortcut in new[]
-                 {
-                     Path.Combine(startMenu, "Programs", "Stream Studio.lnk"),
-                     Path.Combine(startMenu, "Programs", "Streamlink VLC Studio.lnk")
-                 })
+        return RemoveShortcuts([
+            Path.Combine(startMenu, "Programs", "Stream Studio.lnk"),
+            Path.Combine(startMenu, "Programs", "Streamlink VLC Studio.lnk")
+        ], log);
+    }
+
+    internal static bool RemoveShortcuts(IEnumerable<string> shortcuts, MaintenanceLog log)
+    {
+        var removed = true;
+        foreach (var shortcut in shortcuts)
         {
-            if (PathSafety.TryGetAttributes(shortcut, out var attributes) &&
-                PathSafety.IsPlainFile(attributes) && !PathSafety.ContainsReparsePoint(shortcut))
+            try
             {
-                try
-                {
-                    ClearReadOnly(shortcut, attributes);
-                    File.Delete(shortcut);
-                    log.Write($"Removed Start Menu shortcut: {shortcut}");
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    log.Write($"Could not remove Start Menu shortcut: {shortcut}. {exception.Message}");
-                }
+                removed &= DeletePlainFileWithRetries(shortcut, Path.GetDirectoryName(shortcut)!, log);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                removed = false;
+                log.Write($"Could not remove Start Menu shortcut: {shortcut}. {exception.Message}");
             }
         }
+        return removed;
     }
 
     private static bool RegistrationMatches(string registryPath, string installRoot, MaintenanceLog log)

@@ -170,13 +170,7 @@ public sealed class JsonSettingsService : ISettingsService
             throw new PayloadTooLargeException(MaximumSettingsBytes);
         }
 
-        await using var stream = new FileStream(
-            file.FullName,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 81_920,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var stream = await AtomicFile.OpenReadAsync(file.FullName, cancellationToken).ConfigureAwait(false);
         var bytes = await BoundedByteReader
             .ReadOrThrowAsync(stream, MaximumSettingsBytes, cancellationToken)
             .ConfigureAwait(false);

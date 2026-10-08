@@ -45,7 +45,7 @@ internal static class TwitchClientIdResolver
             return false;
         }
 
-        logger.Write(
+        logger.WriteSafely(
             AppLogLevel.Warning,
             logCategory,
             $"Configured Twitch Client ID '{configured}' does not match the OAuth token's Client ID; using the validated token Client ID '{validatedClientId}'.");

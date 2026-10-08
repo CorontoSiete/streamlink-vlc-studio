@@ -115,7 +115,7 @@ internal sealed class KickTokenProvider : IKickTokenProvider
         {
             // Shared acquisition has no caller token. HTTP deadlines are failed lookups;
             // each waiter's cancellation is still enforced by ResolveAsync.
-            logger.Write(AppLogLevel.Warning, "KickOAuth", "Kick access-token resolution failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", "Kick access-token resolution failed.", ex);
             token = null;
         }
 

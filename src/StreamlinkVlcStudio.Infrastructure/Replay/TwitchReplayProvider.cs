@@ -472,7 +472,7 @@ internal sealed partial class TwitchReplayProvider
                 continue;
             }
 
-            _ = TryParseTwitchDuration(ReadReplayString(item, "duration"), out var duration);
+            _ = DurationValues.TryParseHmsDuration(ReadReplayString(item, "duration"), out var duration);
             _ = TryGetDateTimeOffset(item, "created_at", out var createdAt) ||
                 TryGetDateTimeOffset(item, "published_at", out createdAt);
             vods.Add(new TwitchVodInfo(
@@ -576,11 +576,6 @@ internal sealed partial class TwitchReplayProvider
 
         return candidateList.FirstOrDefault(candidate =>
             string.Equals(candidate.Id, match.Id, StringComparison.Ordinal));
-    }
-
-    public static bool TryParseTwitchDuration(string value, out TimeSpan duration)
-    {
-        return DurationValues.TryParseHmsDuration(value, out duration);
     }
 
     public static bool TryReadTwitchDvrTotalSeconds(string playlist, out TimeSpan duration)

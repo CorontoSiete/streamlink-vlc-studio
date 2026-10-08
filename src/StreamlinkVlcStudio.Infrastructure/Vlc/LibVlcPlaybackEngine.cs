@@ -3,6 +3,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -170,7 +171,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                 Directory.CreateDirectory(positionStateDirectory);
             }
             pluginPath = BuildPluginPath(this.vlcDirectory, nativeOverlay.PluginRoot, pluginPath);
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Info,
                 "VlcOverlay",
                 $"Native VLC overlay startup plugin={nativeOverlay.PluginPath} pluginSha256={nativeOverlay.PluginSha256} controller={nativeOverlay.ControllerPath} controllerSha256={nativeOverlay.ControllerSha256} pipe={NativeOverlayPipeName} show-placeholder={NativeOverlayShowPlaceholder} pluginRoot={nativeOverlay.PluginRoot} overlay={nativeOverlay.OverlayDirectory}.");
@@ -178,7 +179,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
         LibVlcNative.SetDllDirectory(this.vlcDirectory);
         rateAwareReplayPreroll = LibVlcNative.RateAwareReplayPrerollAvailable;
-        logger.Write(AppLogLevel.Info, "libVLC", LibVlcNative.CoreSelectionDescription);
+        logger.WriteSafely(AppLogLevel.Info, "libVLC", LibVlcNative.CoreSelectionDescription);
         try
         {
             var pluginRoot = VlcReplayPausePlugin.Prepare();
@@ -187,7 +188,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            logger.Write(AppLogLevel.Warning, "libVLC", "Replay pause continuity is unavailable; position restoration will use media reloads.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", "Replay pause continuity is unavailable; position restoration will use media reloads.", ex);
         }
         // Assemble the final search path before publishing it. Reordering the same
         // directories twice per player needlessly mutates MSVCRT's shared environment
@@ -199,7 +200,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             UsesNativeOverlay);
         if (UsesNativeOverlay && rendererMode != VideoRendererMode.Gdi)
         {
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Info,
                 "libVLC",
                 "Native overlay compatibility selected the GDI video renderer.");
@@ -211,7 +212,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
         catch (Exception ex) when (selectedRenderer != VideoRendererMode.Gdi)
         {
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 "libVLC",
                 "Direct3D11 initialization failed; falling back to the GDI video renderer.",
@@ -237,7 +238,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             "dxva2" => "DXVA2 hardware decoding when available",
             _ => "automatic hardware decoding"
         };
-        logger.Write(
+        logger.WriteSafely(
             AppLogLevel.Info,
             "libVLC",
             $"Using {RendererMode} video renderer with {decodingDescription} (libVLC {libVlcVersion?.ToString() ?? "version unknown"}).");
@@ -310,7 +311,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             // A running Win32 vout owns a nested child-window tree. Moving that tree with
             // SetParent can succeed but leaves the GDI output periodically painting black.
             // Recreate it so libvlc_media_player_set_hwnd runs before playback starts.
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Info,
                 "libVLC",
                 "Recreating libVLC video output for the new host surface.");
@@ -414,7 +415,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                         RendererMode == VideoRendererMode.Direct3D11 &&
                         !UsesNativeOverlay)
                     {
-                        logger.Write(
+                        logger.WriteSafely(
                             AppLogLevel.Warning,
                             "libVLC",
                             "Direct3D11 could not start the video output; retrying with GDI.");
@@ -432,7 +433,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                     // retained fast rate during preroll can skip its confirmation window.
                     if (!startPosition.HasValue) ApplyRequestedPlaybackRateCore();
 
-                    logger.Write(
+                    logger.WriteSafely(
                         AppLogLevel.Info,
                         "libVLC",
                         ReferenceEquals(playbackUri, mediaUri)
@@ -444,7 +445,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                     }
                     generation = playerGeneration;
                     if (mediaSource.TimelineOffset > TimeSpan.Zero)
-                        logger.Write(AppLogLevel.Info, "libVLC",
+                        logger.WriteSafely(AppLogLevel.Info, "libVLC",
                             $"Rebased HLS replay by {mediaSource.TimelineOffset.TotalSeconds:0.###} seconds; requested position {startPosition!.Value.TotalSeconds:0.###} seconds.");
                 }
             }, cancellationToken).ConfigureAwait(false);
@@ -481,7 +482,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                     if (disposed || playerGeneration != generation) throw;
                     pauseAfterOpening |= desiredPaused;
                 }
-                logger.Write(AppLogLevel.Warning, "VOD resume", "FFmpeg could not restore this replay; retrying with VLC's adaptive demuxer.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "VOD resume", "FFmpeg could not restore this replay; retrying with VLC's adaptive demuxer.", ex);
                 await PlayCoreAsync(mediaUri, cancellationToken, startPosition, generation, pauseAfterOpening,
                     allowFastReplay: false).ConfigureAwait(false);
                 return;
@@ -511,7 +512,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         catch (Exception ex)
         {
             // Gateways fall back on their own; a helper that still fails must never stop playback.
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 "libVLC",
                 $"The media source gateway failed for {mediaUri.GetLeftPart(UriPartial.Path)}; playing the media directly.",
@@ -631,7 +632,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                 if (startedNormalRateRecovery) deadline.Restart();
                 if (deadline.Elapsed >= PlaybackRateRecoveryTimeout)
                 {
-                    logger.Write(AppLogLevel.Warning, "libVLC",
+                    logger.WriteSafely(AppLogLevel.Warning, "libVLC",
                         $"Playback speed change waited for the previous HLS position to recover and timed out: " +
                         $"state={lastState}, timeMs={lastObservedTime}, targetMs={pendingTarget}.");
                     return false;
@@ -656,7 +657,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             // 1x rate; never submit another seek or change a replacement input.
             if (disposed || player == IntPtr.Zero || generation != playerGeneration) return;
             if (LibVlcNative.libvlc_media_player_set_rate(player, previousRate) != 0)
-                logger.Write(AppLogLevel.Warning, "libVLC", $"Could not restore playback rate {previousRate:0.##}x after interrupted recovery.");
+                logger.WriteSafely(AppLogLevel.Warning, "libVLC", $"Could not restore playback rate {previousRate:0.##}x after interrupted recovery.");
         }
     });
 
@@ -703,7 +704,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             // seeking it again can briefly starve audio.
             if (LibVlcNative.libvlc_media_player_set_rate(player, 1f) != 0)
             {
-                logger.Write(AppLogLevel.Warning, "libVLC", "libVLC rejected playback rate 1x.");
+                logger.WriteSafely(AppLogLevel.Warning, "libVLC", "libVLC rejected playback rate 1x.");
                 return PlaybackRateWaitState.Unavailable;
             }
 
@@ -733,7 +734,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     {
         if (LibVlcNative.libvlc_media_player_set_rate(player, rate) != 0)
         {
-            logger.Write(AppLogLevel.Warning, "libVLC", $"libVLC rejected playback rate {rate:0.##}x.");
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", $"libVLC rejected playback rate {rate:0.##}x.");
             return false;
         }
 
@@ -802,7 +803,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "libVLC",
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC",
                 "Could not resynchronize audio after changing playback rate.", ex);
         }
     }
@@ -978,7 +979,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             await Task.Delay(SeekPollInterval, cancellationToken).ConfigureAwait(false);
         }
 
-        logger.Write(AppLogLevel.Warning, "libVLC",
+        logger.WriteSafely(AppLogLevel.Warning, "libVLC",
             $"Replay restore timed out: state={lastState}, timeMs={lastTime}, lengthMs={lastLength}, targetMs={submittedTarget}, startup={openingAtPosition}.");
         throw new TimeoutException("VLC did not confirm the requested replay position within fifteen seconds.");
     }
@@ -1179,7 +1180,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                 }
                 catch (Exception ex)
                 {
-                    logger.Write(AppLogLevel.Warning, "libVLC", "Applying audio state failed.", ex);
+                    logger.WriteSafely(AppLogLevel.Warning, "libVLC", "Applying audio state failed.", ex);
                     continue;
                 }
 
@@ -1194,7 +1195,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "libVLC", "The audio state worker failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", "The audio state worker failed.", ex);
         }
     }
 
@@ -1215,34 +1216,45 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
     public void Dispose()
     {
-        lock (nativeGate)
+        Task? workerToDrain = null;
+        try
         {
-            if (disposed)
+            lock (nativeGate)
             {
-                return;
-            }
+                if (disposed) return;
 
-            disposed = true;
-            StopCurrentCore();
-            if (runtimeLease is not null)
-            {
-                runtimeLease.Dispose();
-                runtimeLease = null;
-                instance = IntPtr.Zero;
+                disposed = true;
+                workerToDrain = audioApplyTask;
+                try { StopCurrentCore(); }
+                finally
+                {
+                    var releasedRuntime = runtimeLease;
+                    runtimeLease = null;
+                    instance = IntPtr.Zero;
+                    releasedRuntime?.Dispose();
+                }
             }
         }
-
-        audioApplyCancellation.Cancel();
-        SignalAudioWorker();
-        _ = audioApplyTask.ContinueWith(
-            _ =>
+        finally
+        {
+            // Cancellation callbacks can reenter the engine. Publish disposal and
+            // release the native lock before notifying them, even if source cleanup failed.
+            if (workerToDrain is not null)
             {
-                audioApplyCancellation.Dispose();
-                audioApplySignal.Dispose();
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+                CancellationSourceCleanup.Cancel(audioApplyCancellation);
+                SignalAudioWorker();
+                _ = workerToDrain.ContinueWith(
+                    completed =>
+                    {
+                        _ = completed.Exception;
+                        try { audioApplySignal.Dispose(); }
+                        finally { audioApplyCancellation.Dispose(); }
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+        }
     }
 
     private void StopCurrentCore(bool clearCurrentMedia = true)
@@ -1274,28 +1286,54 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
         // The FFmpeg HLS reader owns nested HTTP connections that VLC's input
         // interrupt cannot close. Revoke its local transport before joining it.
-        if (releasedMediaSource?.UseAvformatDemuxer == true) releasedMediaSource.Dispose();
-        if (player != IntPtr.Zero)
+        try
         {
-            LibVlcNative.libvlc_media_player_stop(player);
-            LibVlcNative.libvlc_media_player_release(player);
-            player = IntPtr.Zero;
-            Interlocked.Increment(ref playerGeneration);
+            if (releasedMediaSource?.UseAvformatDemuxer == true) releasedMediaSource.Dispose();
         }
-
-        if (media != IntPtr.Zero)
+        finally
         {
-            LibVlcNative.libvlc_media_release(media);
-            media = IntPtr.Zero;
+            try { ReleasePlayerCore(stop: true); }
+            // Other adapters retain their source until the player has stopped.
+            finally { releasedMediaSource?.Dispose(); }
         }
+    }
 
-        replayPauseReady?.Dispose();
+    private void ReleasePlayerCore(bool stop)
+    {
+        // Detach ownership before native calls or disposal can fail or reenter.
+        var releasedPlayer = player;
+        player = IntPtr.Zero;
+        var releasedMedia = media;
+        media = IntPtr.Zero;
+        var pauseReady = replayPauseReady;
         replayPauseReady = null;
-        replayVideoReady?.Dispose();
+        var videoReady = replayVideoReady;
         replayVideoReady = null;
+        if (releasedPlayer != IntPtr.Zero) Interlocked.Increment(ref playerGeneration);
 
-        // Other adapters retain their source until the player has stopped.
-        releasedMediaSource?.Dispose();
+        try
+        {
+            if (releasedPlayer != IntPtr.Zero)
+            {
+                try
+                {
+                    if (stop) LibVlcNative.libvlc_media_player_stop(releasedPlayer);
+                }
+                finally { LibVlcNative.libvlc_media_player_release(releasedPlayer); }
+            }
+        }
+        finally
+        {
+            try
+            {
+                if (releasedMedia != IntPtr.Zero) LibVlcNative.libvlc_media_release(releasedMedia);
+            }
+            finally
+            {
+                try { pauseReady?.Dispose(); }
+                finally { videoReady?.Dispose(); }
+            }
+        }
     }
 
     private void CreatePlayerCore(Uri mediaUri, TimeSpan? startPosition = null)
@@ -1350,23 +1388,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
         catch
         {
-            if (player != IntPtr.Zero)
-            {
-                LibVlcNative.libvlc_media_player_release(player);
-                player = IntPtr.Zero;
-            }
-
-            if (media != IntPtr.Zero)
-            {
-                LibVlcNative.libvlc_media_release(media);
-                media = IntPtr.Zero;
-            }
-
-            replayPauseReady?.Dispose();
-            replayPauseReady = null;
-            replayVideoReady?.Dispose();
-            replayVideoReady = null;
-
+            ReleasePlayerCore(stop: false);
             throw;
         }
     }
@@ -1519,7 +1541,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.Write(AppLogLevel.Warning, "libVLC", "Failed to recreate libVLC video output for a moved video surface.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "libVLC", "Failed to recreate libVLC video output for a moved video surface.", ex);
             }
         });
     }
@@ -1645,7 +1667,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
 
             if (!restored)
             {
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Warning,
                     "libVLC",
                     "The rebound video output did not become seekable within five seconds; playback continued without a position restore.");
@@ -1697,7 +1719,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException)
         {
             audioTrackSelectionUnavailable = true;
-            logger.Write(AppLogLevel.Warning, "libVLC", "libVLC audio track selection is unavailable; falling back to volume-only audio control.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", "libVLC audio track selection is unavailable; falling back to volume-only audio control.", ex);
             return ApplyVolumeOnlyAudioFallbackCore(audioState, version);
         }
     }
@@ -1732,7 +1754,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException)
         {
             audioTrackSelectionUnavailable = true;
-            logger.Write(AppLogLevel.Warning, "libVLC", "libVLC audio track selection is unavailable; falling back to volume-only audio control.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", "libVLC audio track selection is unavailable; falling back to volume-only audio control.", ex);
             return ApplyVolumeOnlyAudioFallbackCore(audioState, version);
         }
     }
@@ -1939,7 +1961,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         catch (EntryPointNotFoundException ex)
         {
             audioMuteUnavailable = true;
-            logger.Write(AppLogLevel.Warning, "libVLC", "libVLC native mute is unavailable; relying on volume and audio-track selection for mute.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", "libVLC native mute is unavailable; relying on volume and audio-track selection for mute.", ex);
             return true;
         }
     }
@@ -2055,13 +2077,13 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         {
             if (LibVlcNative.libvlc_media_player_set_rate(player, requestedPlaybackRate) != 0)
             {
-                logger.Write(AppLogLevel.Warning, "libVLC",
+                logger.WriteSafely(AppLogLevel.Warning, "libVLC",
                     $"libVLC rejected playback rate {requestedPlaybackRate:0.##}x while opening media.");
             }
         }
         catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException)
         {
-            logger.Write(AppLogLevel.Warning, "libVLC", "The loaded libVLC build does not support playback rate changes.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", "The loaded libVLC build does not support playback rate changes.", ex);
         }
     }
 
@@ -2122,7 +2144,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Warning, "libVLC", "Audio state convergence failed.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "libVLC", "Audio state convergence failed.", ex);
             }
         });
     }
@@ -2194,7 +2216,7 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         var result = LibVlcNative.SetEnvironmentVariable(name, value);
         if (result != 0)
         {
-            logger.Write(AppLogLevel.Warning, "libVLC", $"Failed to set VLC C runtime environment variable {name}; native VLC plugins may not load.");
+            logger.WriteSafely(AppLogLevel.Warning, "libVLC", $"Failed to set VLC C runtime environment variable {name}; native VLC plugins may not load.");
         }
     }
 

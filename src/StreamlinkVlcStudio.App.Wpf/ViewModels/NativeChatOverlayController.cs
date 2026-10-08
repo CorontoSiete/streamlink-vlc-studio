@@ -18,6 +18,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
@@ -119,65 +120,71 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         nativeReplayOverlayFrameScheduler?.CancelPending();
     }
 
-    public ValueTask DisposeAsync()
-    {
-        if (disposalTask is not null) return new(disposalTask);
-        lock (nativeOverlayInputFocusGate) disposed = true;
-        lifetimeCancellation.Cancel();
-        AnimatedEmoteImage.ImageCacheEntryCompleted -= OnAnimatedEmoteImageCacheEntryCompleted;
-        DockedChatBadgeCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
-        DockedChatEmoteCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
-        CancelNativeReplayOverlayAnimationState();
-        CancelNativeReplayOverlayWarmupRefresh();
-        disposalTask = DisposeCoreAsync();
-        return new(disposalTask);
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(nativeOverlayInputFocusGate, ref disposed, ref disposalTask, DisposeCoreAsync));
+
     private async Task DisposeCoreAsync()
     {
         try
         {
-            await StopNativeOverlayChatAsync(clearOverlay: true).ConfigureAwait(false);
-            await nativeReplayOverlayEventHost.DisposeAsync();
-            Task<NativeReplayOverlayFrameScheduler>? schedulerCreationTask;
-            NativeReplayOverlayFrameScheduler? scheduler;
-            lock (nativeReplayOverlayFrameSchedulerGate)
+            CancellationSourceCleanup.Cancel(lifetimeCancellation);
+            AnimatedEmoteImage.ImageCacheEntryCompleted -= OnAnimatedEmoteImageCacheEntryCompleted;
+            DockedChatBadgeCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
+            DockedChatEmoteCatalog.Shared.CatalogChanged -= OnChatRenderCatalogChanged;
+            try
             {
-                schedulerCreationTask = nativeReplayOverlayFrameSchedulerCreationTask;
-                nativeReplayOverlayFrameSchedulerCreationTask = null;
-                scheduler = nativeReplayOverlayFrameScheduler;
-                nativeReplayOverlayFrameScheduler = null;
+                CancelNativeReplayOverlayAnimationState();
+                CancelNativeReplayOverlayWarmupRefresh();
+                await StopNativeOverlayChatAsync(clearOverlay: true).ConfigureAwait(false);
             }
-
-            if (schedulerCreationTask is not null)
+            finally
             {
-                try
-                {
-                    scheduler ??= await schedulerCreationTask.ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
-                {
-                }
-                catch (TimeoutException)
-                {
-                }
-                catch (Exception ex)
-                {
-                    logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native replay overlay renderer startup cleanup failed.", ex);
-                }
+                try { await nativeReplayOverlayEventHost.DisposeAsync().ConfigureAwait(false); }
+                finally { await DisposeNativeReplayOverlayFrameSchedulerAsync().ConfigureAwait(false); }
             }
-
-            if (scheduler is not null)
-            {
-                await scheduler.DisposeAsync();
-            }
-
         }
         finally
         {
-            await DrainNativeOverlayInputFocusReleasesAsync().ConfigureAwait(false);
-            await nativeReplayOverlayFrameWriteGate.DisposeAsync();
-            lifetimeCancellation.Dispose();
+            try { await DrainNativeOverlayInputFocusReleasesAsync().ConfigureAwait(false); }
+            finally
+            {
+                try { await nativeReplayOverlayFrameWriteGate.DisposeAsync().ConfigureAwait(false); }
+                finally { lifetimeCancellation.Dispose(); }
+            }
         }
+    }
+
+    private async Task DisposeNativeReplayOverlayFrameSchedulerAsync()
+    {
+        Task<NativeReplayOverlayFrameScheduler>? schedulerCreationTask;
+        NativeReplayOverlayFrameScheduler? scheduler;
+        lock (nativeReplayOverlayFrameSchedulerGate)
+        {
+            schedulerCreationTask = nativeReplayOverlayFrameSchedulerCreationTask;
+            nativeReplayOverlayFrameSchedulerCreationTask = null;
+            scheduler = nativeReplayOverlayFrameScheduler;
+            nativeReplayOverlayFrameScheduler = null;
+        }
+
+        if (schedulerCreationTask is not null)
+        {
+            try
+            {
+                scheduler ??= await schedulerCreationTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+            {
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Native replay overlay renderer startup cleanup failed.", ex);
+            }
+        }
+
+        if (scheduler is not null) await scheduler.DisposeAsync().ConfigureAwait(false);
     }
     internal static readonly TimeSpan ProcessStopTimeout = TimeSpan.FromSeconds(3);
     internal static readonly TimeSpan NativeOverlayGracefulStopTimeout = TimeSpan.FromSeconds(2);
@@ -341,22 +348,6 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         if (!suppressNotice)
         {
             AddSystemMessage("Native VLC chat overlay stopped.");
-        }
-    }
-
-    internal static void CancelCancellationSource(CancellationTokenSource? cancellation)
-    {
-        if (cancellation is null)
-        {
-            return;
-        }
-
-        try
-        {
-            cancellation.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
         }
     }
 
@@ -697,6 +688,9 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         CancellationToken cancellationToken,
         bool startCaptureChatClient = false)
     {
+        CancellationTokenSource? previousCancellation;
+        TaskCompletionSource operationReady;
+        Task<bool> task;
         lock (nativeOverlayStartupGate)
         {
             if (disposed)
@@ -704,14 +698,14 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                 return Task.FromResult(false);
             }
 
-            CancelCancellationSource(nativeOverlayStartupCancellation);
+            previousCancellation = nativeOverlayStartupCancellation;
             var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 lifetimeCancellation.Token,
                 cancellationToken);
             var version = ++nativeOverlayStartupVersion;
-            var operationReady = new TaskCompletionSource(
+            operationReady = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            var task = RunNativeOverlayChatStartupWhenReadyAsync(
+            task = RunNativeOverlayChatStartupWhenReadyAsync(
                 settings,
                 operationCancellation,
                 version,
@@ -719,9 +713,11 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                 operationReady.Task);
             nativeOverlayStartupCancellation = operationCancellation;
             nativeOverlayStartupTask = task;
-            operationReady.TrySetResult();
-            return task;
         }
+
+        CancellationSourceCleanup.Cancel(previousCancellation);
+        operationReady.TrySetResult();
+        return task;
     }
 
     internal async Task<bool> RunNativeOverlayChatStartupWhenReadyAsync(
@@ -781,7 +777,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Background chat startup failed for {Target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Background chat startup failed for {Target.DisplayName}.", ex);
             return false;
         }
         finally
@@ -826,7 +822,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         catch (Exception ex)
         {
             AddSystemMessage($"Native VLC chat overlay unavailable: {ex.Message}");
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Failed to start native VLC chat overlay for {Target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Failed to start native VLC chat overlay for {Target.DisplayName}.", ex);
             return false;
         }
     }
@@ -890,7 +886,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             startupCancellation = nativeOverlayStartupCancellation;
         }
 
-        CancelCancellationSource(startupCancellation);
+        CancellationSourceCleanup.Cancel(startupCancellation);
         if (startupTask is null)
         {
             return;
@@ -905,7 +901,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Native chat overlay startup cleanup failed for {Target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Native chat overlay startup cleanup failed for {Target.DisplayName}.", ex);
         }
     }
 
@@ -979,7 +975,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             }
             catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception)
             {
-                logger.Write(AppLogLevel.Warning, "ChatOverlay", "Failed to stop native VLC chat overlay.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Failed to stop native VLC chat overlay.", ex);
             }
             finally
             {
@@ -1073,7 +1069,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", timeoutMessage);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", timeoutMessage);
             return false;
         }
     }
@@ -1098,7 +1094,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             emptyScrollbarState);
         if (lastException is not null)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not blank the native VLC chat overlay.", lastException);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not blank the native VLC chat overlay.", lastException);
         }
     }
 
@@ -1184,7 +1180,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         if (!NativeOverlayProtocolCodec.TryValidateEncodedMessage(message, out var invalidReason))
         {
             var exception = new InvalidDataException($"Invalid native-overlay message: {invalidReason}.");
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", exception.Message);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", exception.Message);
             return (false, exception);
         }
 
@@ -1192,7 +1188,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             !NativeOverlayProtocolCodec.TryValidateEncodedMessage(followupMessage, out invalidReason))
         {
             var exception = new InvalidDataException($"Invalid native-overlay follow-up message: {invalidReason}.");
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", exception.Message);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", exception.Message);
             return (false, exception);
         }
 
@@ -1312,7 +1308,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Debug, "ChatOverlay", "Native overlay keyboard focus release failed.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Native overlay keyboard focus release failed.", ex);
         }
         finally
         {
@@ -1392,7 +1388,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             return;
         }
 
-        logger.Write(AppLogLevel.Info, "ChatOverlay", line);
+        logger.WriteSafely(AppLogLevel.Info, "ChatOverlay", line);
     }
 
     internal static string? WriteOverlayTokenFile(string platform, string? token)
@@ -1515,7 +1511,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Warning,
                     "ChatOverlay",
                     $"Twitch room ID lookup failed for {Target.Channel}: {(int)response.StatusCode} {response.ReasonPhrase}.");
@@ -1530,11 +1526,11 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                 if (IsAsciiDigits(roomId)) return CacheResolvedTwitchOverlayRoomId(roomId);
             }
 
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Twitch room ID lookup did not return a user ID for {Target.Channel}.");
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Twitch room ID lookup did not return a user ID for {Target.Channel}.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Twitch room ID lookup failed for {Target.Channel}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Twitch room ID lookup failed for {Target.Channel}.", ex);
         }
 
         return null;
@@ -1729,7 +1725,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Kick overlay metadata lookup failed for {Target.Channel}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Kick overlay metadata lookup failed for {Target.Channel}.", ex);
         }
 
         if (!sendAsBot && !hasConfiguredBroadcasterUserId)
@@ -1786,7 +1782,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", $"Kick metadata lookup failed for {channel}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", $"Kick metadata lookup failed for {channel}.", ex);
         }
 
         return new KickOverlayChannelInfo(null, null);
@@ -2239,7 +2235,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             warmupVersion = ++nativeReplayOverlayWarmupVersion;
         }
 
-        CancelCancellationSource(previousCancellation);
+        CancellationSourceCleanup.Cancel(previousCancellation);
         _ = RunNativeReplayOverlayWarmupRefreshAsync(cancellation, warmupVersion);
     }
 
@@ -2330,7 +2326,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             nativeReplayOverlayWarmupVersion++;
         }
 
-        CancelCancellationSource(cancellation);
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     internal void ResetNativeReplayOverlayFrameState()
@@ -2378,7 +2374,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not start the native VLC replay overlay renderer.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not start the native VLC replay overlay renderer.", ex);
         }
     }
 
@@ -2466,12 +2462,12 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             var result = await clipboardService.TrySetTextAsync(text);
             if (!result.Succeeded && result.Error is not null)
             {
-                logger.Write(AppLogLevel.Debug, "ChatOverlay", "Could not copy selected replay-overlay chat text.", result.Error);
+                logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Could not copy selected replay-overlay chat text.", result.Error);
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            logger.Write(AppLogLevel.Debug, "ChatOverlay", "Could not copy selected replay-overlay chat text.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Could not copy selected replay-overlay chat text.", ex);
         }
     }
 
@@ -2568,7 +2564,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            logger.Write(AppLogLevel.Debug, "ChatOverlay", "Could not update replay-overlay chat text selection.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Could not update replay-overlay chat text selection.", ex);
         }
     }
 
@@ -2601,7 +2597,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                     }
                     catch (Exception ex) when (ex is not OutOfMemoryException)
                     {
-                        logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not open a link from replay chat.", ex);
+                        logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not open a link from replay chat.", ex);
                     }
                 }
 
@@ -2610,7 +2606,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            logger.Write(AppLogLevel.Debug, "ChatOverlay", "Could not resolve a clicked replay-overlay chat link.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Could not resolve a clicked replay-overlay chat link.", ex);
         }
     }
 
@@ -2645,7 +2641,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
     internal void OnNativeReplayOverlayFrameWriteFailed(Exception exception)
     {
         nativeReplayOverlayRenderState.InvalidateFrameKey();
-        logger.Write(AppLogLevel.Warning, "ChatOverlay", "Could not update the native VLC replay chat overlay.", exception);
+        logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Could not update the native VLC replay chat overlay.", exception);
         if (IsReplayMode || IsBehindLive)
         {
             dispatch(InvalidateNativeReplayOverlayFrame);
@@ -2792,7 +2788,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             return;
         }
 
-        cancellation.Cancel();
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     internal void ScheduleNativeReplayOverlayAnimationFrame(
@@ -2810,10 +2806,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             timerVersion = ++nativeReplayOverlayAnimationTimerVersion;
         }
 
-        if (previousCancellation is not null)
-        {
-            previousCancellation.Cancel();
-        }
+        CancellationSourceCleanup.Cancel(previousCancellation);
 
         _ = RunNativeReplayOverlayAnimationTimerAsync(
             cancellation,

@@ -1,13 +1,36 @@
 namespace StreamlinkVlcStudio.Infrastructure.Io;
 
 /// <summary>
-/// Writes a file through a temporary sibling and then replaces the destination in one
+/// Reads complete snapshots and writes through a temporary sibling, replacing the destination in one
 /// filesystem operation, so a reader never observes a partially written file. The temporary
 /// file always lives in the same directory as the destination (a cross-volume rename is not
-/// atomic) and is removed when the write fails.
+/// atomic) and is removed when the write fails. Reads allow replacement and briefly retry its locks.
 /// </summary>
 internal static class AtomicFile
 {
+    private const int SharingViolation = unchecked((int)0x80070020);
+    private const int ReadRetryCount = 20;
+    private static readonly TimeSpan ReadRetryDelay = TimeSpan.FromMilliseconds(25);
+
+    /// <summary>Opens a complete snapshot, allowing replacement and retrying its brief exclusive lock.</summary>
+    internal static async Task<FileStream> OpenReadAsync(string path, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        for (var attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
+                    bufferSize: 81_920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            }
+            catch (IOException exception) when (exception.HResult == SharingViolation && attempt < ReadRetryCount)
+            {
+                await Task.Delay(ReadRetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     internal static async Task WriteAsync(
         string destinationPath,
         Func<Stream, CancellationToken, Task> writeAsync,
@@ -63,12 +86,12 @@ internal static class AtomicFile
         }
         catch
         {
-            TryDelete(temporaryPath);
+            TryDeleteTemporaryFile(temporaryPath);
             throw;
         }
     }
 
-    private static void TryDelete(string path)
+    internal static void TryDeleteTemporaryFile(string path)
     {
         try
         {

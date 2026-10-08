@@ -171,7 +171,9 @@ public sealed class HomeCardWrapPanel : Panel
         var columns = KeepRightGap
             ? (int)Math.Floor(availableWidth / slotWidth)
             : (int)Math.Floor((availableWidth + horizontalGap) / slotWidth);
-        return Math.Clamp(columns, 1, visibleChildCount);
+        // Sparse rows use the same viewport columns as a populated grid, so
+        // filling the row does not stretch a lone card across the whole panel.
+        return Math.Max(1, columns);
     }
 
     private double GetArrangeItemWidth(double availableWidth, int columns, double horizontalGap)

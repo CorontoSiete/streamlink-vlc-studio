@@ -140,7 +140,7 @@ summary = {
         ("cpu_cores", "gpu_3d_percent", "gpu_dedicated_mib", "gpu_shared_mib")
     },
 }
-(args.directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+(args.directory / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
 print("| Build | CPU cores | Dedicated GPU MiB | Shared GPU MiB | GPU 3D % | Video decode % | Minimum displayed FPS |")
 print("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")

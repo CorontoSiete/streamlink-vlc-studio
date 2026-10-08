@@ -42,6 +42,8 @@ for streams in a.streams:
                 renderer_hashes.add(trial['rendererSha256'])
                 require(all(f['lost'] == 0 for f in trial['frames']),
                         'A trial lost pictures; do not silently exclude it.')
+                require(all(f['audioLost'] == 0 for f in trial['frames']),
+                        'A trial lost audio buffers; do not silently exclude it.')
                 samples = trial['samples']
                 require(len(samples) >= a.seconds * 0.9, 'Too few measurement samples.')
                 if a.require_gpu_memory:
@@ -91,7 +93,7 @@ for streams in a.streams:
                          private_mib_reduction=before['private_mib'] - after['private_mib']))
 require(all(len(hashes) == 1 for hashes in binary_hashes.values()), 'Production binaries changed between workloads.')
 require(len(renderer_hashes) == 1, 'Both versions must receive the same native chat workload.')
-(a.directory / 'summary.json').write_text(json.dumps(rows, indent=2) + '\n', encoding='utf-8')
+(a.directory / 'summary.json').write_text(json.dumps(rows, indent=2, allow_nan=False) + '\n', encoding='utf-8')
 print('| Streams | Chat | CPU cores before / after | Private MiB before / after | CPU change |')
 print('| --- | --- | --- | --- | --- |')
 for row in rows:

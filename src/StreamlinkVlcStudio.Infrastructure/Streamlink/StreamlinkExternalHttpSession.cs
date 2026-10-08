@@ -5,6 +5,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Processes;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Streamlink;
@@ -20,6 +21,7 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
     private readonly object disposeGate = new();
     private Uri? playbackUri;
     private Task? disposeTask;
+    private bool disposed;
     private Task standardOutputPump = Task.CompletedTask;
     private Task standardErrorPump = Task.CompletedTask;
 
@@ -69,24 +71,18 @@ internal sealed class StreamlinkExternalHttpSession : IStreamTransportSession
         standardErrorPump = standardError ?? throw new ArgumentNullException(nameof(standardError));
     }
 
-    public ValueTask DisposeAsync()
-    {
-        lock (disposeGate)
-        {
-            return new ValueTask(disposeTask ??= DisposeCoreAsync());
-        }
-    }
+    public ValueTask DisposeAsync() => new(AsyncDisposal.Begin(disposeGate, ref disposed, ref disposeTask, DisposeCoreAsync));
 
     private async Task DisposeCoreAsync()
     {
         try
         {
             await StopProcessAsync().ConfigureAwait(false);
-            await ObserveOutputReadsAsync(standardOutputPump, standardErrorPump).ConfigureAwait(false);
         }
         finally
         {
-            owner.Dispose();
+            try { await ObserveOutputReadsAsync(standardOutputPump, standardErrorPump).ConfigureAwait(false); }
+            finally { owner.Dispose(); }
         }
     }
 

@@ -65,7 +65,7 @@ internal sealed class KickWebsiteJsonReader
         {
             if (body is not null)
             {
-                logger.Write(AppLogLevel.Warning, logSource, "curl.exe returned blank, invalid, or oversized Kick website content.");
+                logger.WriteSafely(AppLogLevel.Warning, logSource, "curl.exe returned blank, invalid, or oversized Kick website content.");
             }
 
             return null;
@@ -93,7 +93,7 @@ internal sealed class KickWebsiteJsonReader
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Info,
                     logSource,
                     $"Kick website request returned {(int)response.StatusCode} {response.ReasonPhrase}; trying curl fallback.");
@@ -108,7 +108,7 @@ internal sealed class KickWebsiteJsonReader
                 return new KickWebsiteDirectReadResult(normalizedBody, response.StatusCode);
             }
 
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Info,
                 logSource,
                 "Kick website returned blank, invalid, or oversized JSON; trying curl fallback.");
@@ -116,12 +116,12 @@ internal sealed class KickWebsiteJsonReader
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Info, logSource, "Kick website HTTP request timed out; trying curl fallback.");
+            logger.WriteSafely(AppLogLevel.Info, logSource, "Kick website HTTP request timed out; trying curl fallback.");
             return default;
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or DecoderFallbackException or InvalidDataException)
         {
-            logger.Write(AppLogLevel.Info, logSource, "Kick website HTTP response could not be read; trying curl fallback.", ex);
+            logger.WriteSafely(AppLogLevel.Info, logSource, "Kick website HTTP response could not be read; trying curl fallback.", ex);
             return default;
         }
     }
@@ -148,13 +148,13 @@ internal sealed class KickWebsiteJsonReader
                 .ConfigureAwait(false);
             if (result.TimedOut)
             {
-                logger.Write(AppLogLevel.Warning, logSource, "curl.exe timed out loading Kick website JSON.");
+                logger.WriteSafely(AppLogLevel.Warning, logSource, "curl.exe timed out loading Kick website JSON.");
                 return null;
             }
 
             if (result.ExitCode != 0 || result.OutputWasTruncated)
             {
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Warning,
                     logSource,
                     $"curl.exe failed loading Kick website JSON: {result.StandardError.Trim()}");
@@ -165,7 +165,7 @@ internal sealed class KickWebsiteJsonReader
         }
         catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
         {
-            logger.Write(AppLogLevel.Warning, logSource, "curl.exe could not start while loading Kick website JSON.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, logSource, "curl.exe could not start while loading Kick website JSON.", ex);
             return null;
         }
     }

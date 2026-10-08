@@ -1,9 +1,17 @@
 namespace StreamlinkVlcStudio.Core.Models;
 
+public enum StreamSearchMode
+{
+    Playback,
+    ChannelDiscovery
+}
+
 public sealed record StreamSearchRequest(
     string Query,
     string Quality = "best",
-    int PageSize = 10);
+    int PageSize = 10,
+    StreamSearchMode Mode = StreamSearchMode.Playback,
+    PlatformKind? Platform = null);
 
 public enum StreamSearchChannelState
 {

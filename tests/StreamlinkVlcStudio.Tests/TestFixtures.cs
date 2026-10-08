@@ -1234,6 +1234,16 @@ internal sealed class MemoryLogger : IAppLogger
 
     public event EventHandler<LogEntry>? EntryWritten;
 
+    internal static MemoryLogger WithWriteFailure()
+    {
+        var logger = new MemoryLogger();
+        logger.FailWrites();
+        return logger;
+    }
+
+    internal void FailWrites() => EntryWritten += static (_, _) =>
+        throw new IOException("Diagnostic output unavailable.");
+
     public IReadOnlyList<LogEntry> Entries
     {
         get
@@ -2331,6 +2341,7 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
     public Func<int, Task>? PlayCompletionOverride { get; init; }
     public TaskCompletionSource PlayStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task SeekCompletion { get; init; } = Task.CompletedTask;
+    public Func<TimeSpan, CancellationToken, Task>? SeekOverride { get; init; }
     public TaskCompletionSource SeekStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task StopCompletion { get; init; } = Task.CompletedTask;
     public TaskCompletionSource StopStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2436,7 +2447,8 @@ internal sealed class FakePlaybackEngine : IPlaybackEngine
 
     private async Task SeekCoreAsync(TimeSpan position, CancellationToken cancellationToken)
     {
-        await SeekCompletion.WaitAsync(cancellationToken);
+        await (SeekOverride?.Invoke(position, cancellationToken) ?? SeekCompletion.WaitAsync(cancellationToken));
+        cancellationToken.ThrowIfCancellationRequested();
         Position = position;
     }
 

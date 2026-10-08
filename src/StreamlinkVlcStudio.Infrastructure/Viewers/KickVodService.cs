@@ -151,56 +151,34 @@ public sealed class KickVodService : IKickVodService
 
     private static IEnumerable<KickVodItem> ReadVideos(JsonElement root, string channel, int pageSize)
     {
-        var videos = EnumerateVideoElements(root)
+        return ReadVideoArray(root).EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.Object)
             .Select(item => TryReadVideo(item, channel))
-            .Where(item => item is not null)
-            .Select(item => item!)
+            .OfType<KickVodItem>()
             .Take(pageSize);
-
-        foreach (var video in videos)
-        {
-            yield return video;
-        }
     }
 
-    private static IEnumerable<JsonElement> EnumerateVideoElements(JsonElement root)
+    private static JsonElement ReadVideoArray(JsonElement root)
     {
         if (root.ValueKind == JsonValueKind.Array)
         {
-            foreach (var item in root.EnumerateArray())
+            return root;
+        }
+
+        // Pagination can be wrapped in data alongside its collection. Resolve
+        // both from the same supported envelopes instead of losing that page.
+        foreach (var container in new[] { root, GetObjectProperty(root, "data") })
+        {
+            foreach (var propertyName in new[] { "data", "videos", "items" })
             {
-                if (item.ValueKind == JsonValueKind.Object)
+                if (TryGetArray(container, propertyName, out var array))
                 {
-                    yield return item;
+                    return array;
                 }
             }
-
-            yield break;
         }
 
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            yield break;
-        }
-
-        foreach (var propertyName in new[] { "data", "videos", "items" })
-        {
-            if (!root.TryGetProperty(propertyName, out var array) ||
-                array.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-
-            foreach (var item in array.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.Object)
-                {
-                    yield return item;
-                }
-            }
-
-            yield break;
-        }
+        throw new JsonException("Kick did not return a VOD video collection.");
     }
 
     private static KickVodItem? TryReadVideo(JsonElement item, string channel)

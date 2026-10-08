@@ -21,6 +21,8 @@ internal static class DependencyFreeTestRunner
     private static readonly HashSet<string> FreshProcessTests = new(StringComparer.Ordinal)
     {
         AppLifecycleTestCatalog.ExitSignalTestName,
+        CodeCleanupTestCatalog.HomeRefreshTimerFailureTestName,
+        CodeCleanupTestCatalog.PredictionClockTimerFailureTestName,
         ApplicationTestCatalog.TabContentInputTestName,
         "inactive window first click focuses docked chat input and accepts typing",
         "theatre chat input stays above the taskbar and accepts physical typing",

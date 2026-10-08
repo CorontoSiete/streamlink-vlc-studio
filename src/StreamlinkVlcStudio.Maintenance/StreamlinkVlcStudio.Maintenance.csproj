@@ -23,6 +23,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\shared\WindowsApplicationShutdown.cs" Link="Maintenance\WindowsApplicationShutdown.cs" />
+    <Compile Include="..\..\shared\BoundedFile.cs" Link="Io\BoundedFile.cs" />
     <InternalsVisibleTo Include="StreamlinkVlcStudio.Tests" />
   </ItemGroup>
 

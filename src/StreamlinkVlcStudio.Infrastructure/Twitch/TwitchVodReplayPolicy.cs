@@ -11,9 +11,6 @@ internal static class TwitchVodReplayPolicy
     internal static TimeSpan GetPreroll(string playlist, Version? version) =>
         GetSegmentDuration(playlist, version, completed: true);
 
-    internal static bool UseLiveReplayDemuxer(string playlist, Version? version) =>
-        GetLiveReplaySegmentDuration(playlist, version) > TimeSpan.Zero;
-
     internal static TimeSpan GetLiveReplaySegmentDuration(string playlist, Version? version) =>
         GetSegmentDuration(playlist, version, completed: false);
 
@@ -46,8 +43,7 @@ internal static class TwitchVodReplayPolicy
             }
             else if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
             {
-                if (pending || !decimal.TryParse(line[8..].Split(',')[0], NumberStyles.AllowDecimalPoint,
-                        CultureInfo.InvariantCulture, out var duration) || duration is <= 0 or > 30) return TimeSpan.Zero;
+                if (pending || !HlsPlaylistPolicy.TryReadSegmentDuration(line.AsSpan(8), 30, out var duration)) return TimeSpan.Zero;
                 maximumDuration = Math.Max(maximumDuration, duration);
                 pending = true;
             }

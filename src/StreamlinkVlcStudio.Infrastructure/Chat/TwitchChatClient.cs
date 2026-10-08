@@ -10,6 +10,7 @@ using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Limits;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
@@ -40,7 +41,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
     private string? predictionAccessToken;
     private string? predictionClientId;
     private TwitchPredictionEventSubClient? predictionEventSubClient;
-    private TaskCompletionSource predictionRequestsDrained = CreateCompletedTaskSource();
+    private TaskCompletionSource? predictionRequestsDrained;
     private int activePredictionRequests;
     private Task? disposalTask;
     private bool canSendMessages;
@@ -83,8 +84,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                 ObjectDisposedException.ThrowIf(disposed, this);
             }
 
-            await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-            await DisconnectCoreAsync().ConfigureAwait(false);
+            await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
             var supervisor = new LiveChatConnectionSupervisor(
                 logger,
                 "TwitchChat",
@@ -102,12 +102,11 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                 // returning the failure to the tab.
                 try
                 {
-                    await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-                    await DisconnectCoreAsync().ConfigureAwait(false);
+                    await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
                 }
                 catch (Exception cleanupException)
                 {
-                    logger.Write(AppLogLevel.Warning, "TwitchChat", "Twitch chat cleanup failed after a connection error.", cleanupException);
+                    logger.WriteSafely(AppLogLevel.Warning, "TwitchChat", "Twitch chat cleanup failed after a connection error.", cleanupException);
                 }
 
                 throw;
@@ -191,7 +190,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                logger.Write(AppLogLevel.Warning, "TwitchChat", "Twitch token validation failed; connecting read-only.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "TwitchChat", "Twitch token validation failed; connecting read-only.", ex);
                 RaiseStatusChanged($"Twitch token validation failed: {ex.Message}. Connecting read-only.");
                 SetPredictionAccess(new TwitchPredictionAccessState(
                     true,
@@ -240,57 +239,53 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         }
     }
 
-    public async Task DisconnectAsync(CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-            await DisconnectCoreAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
-    }
+    public Task DisconnectAsync(CancellationToken cancellationToken = default) =>
+        ChatConnectionCleanup.DisconnectAsync(lifecycleGate, ThrowIfDisposed,
+            () => ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync), cancellationToken);
 
     private async Task DisconnectCoreAsync()
     {
-        readCancellation?.Cancel();
-        await StopPredictionEventSubAsync();
-        if (readTask is not null)
+        try
         {
             try
             {
-                await readTask.WaitAsync(TimeSpan.FromSeconds(2));
+                readCancellation?.Cancel();
             }
-            catch (Exception)
+            finally
             {
+                await StopPredictionEventSubAsync().ConfigureAwait(false);
+            }
+            if (readTask is not null)
+            {
+                try
+                {
+                    await readTask.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+                catch (Exception)
+                {
+                }
             }
         }
-
-        writer?.Dispose();
-        reader?.Dispose();
-        sslStream?.Dispose();
-        tcpClient?.Dispose();
-        readCancellation?.Dispose();
-
-        writer = null;
-        reader = null;
-        sslStream = null;
-        tcpClient = null;
-        readTask = null;
-        readCancellation = null;
-        connectedChannel = null;
-        predictionBroadcasterId = null;
-        predictionAccessToken = null;
-        predictionClientId = null;
-        canSendMessages = false;
-        CurrentUsername = null;
-        if (PredictionAccess != TwitchPredictionAccessState.Pending)
+        finally
         {
-            SetPredictionAccess(TwitchPredictionAccessState.Pending);
+            IDisposable?[] resources = [writer, reader, sslStream, tcpClient, readCancellation];
+            writer = null;
+            reader = null;
+            sslStream = null;
+            tcpClient = null;
+            readTask = null;
+            readCancellation = null;
+            connectedChannel = null;
+            predictionBroadcasterId = null;
+            predictionAccessToken = null;
+            predictionClientId = null;
+            canSendMessages = false;
+            CurrentUsername = null;
+            ChatConnectionCleanup.DisposeResources(logger, "TwitchChat", resources);
+            if (PredictionAccess != TwitchPredictionAccessState.Pending)
+            {
+                SetPredictionAccess(TwitchPredictionAccessState.Pending);
+            }
         }
     }
 
@@ -327,16 +322,6 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         finally
         {
             lifecycleGate.Release();
-        }
-    }
-
-    private async Task StopConnectionSupervisorCoreAsync()
-    {
-        var supervisor = connectionSupervisor;
-        connectionSupervisor = null;
-        if (supervisor is not null)
-        {
-            await supervisor.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -382,24 +367,18 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         }
     }
 
-    public ValueTask DisposeAsync()
-    {
-        lock (disposalGate)
-        {
-            disposalTask ??= DisposeCoreAsync();
-            return new ValueTask(disposalTask);
-        }
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
     private async Task DisposeCoreAsync()
     {
-        lock (disposalGate)
-        {
-            disposed = true;
-        }
-
         Task predictionRequestsTask;
         lock (predictionRequestLifecycleGate)
+        {
+            predictionRequestsTask = predictionRequestsDrained?.Task ?? Task.CompletedTask;
+        }
+
+        try
         {
             try
             {
@@ -408,25 +387,24 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
             catch (ObjectDisposedException)
             {
             }
-
-            predictionRequestsTask = predictionRequestsDrained.Task;
-        }
-
-        await lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-            await DisconnectCoreAsync().ConfigureAwait(false);
-            await predictionRequestsTask.ConfigureAwait(false);
+            finally
+            {
+                await lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
+                }
+                finally
+                {
+                    lifecycleGate.Release();
+                    await predictionRequestsTask.ConfigureAwait(false);
+                }
+            }
         }
         finally
         {
-            lifecycleGate.Release();
-            predictionLifetimeCancellation.Dispose();
-            if (ownsHttpClient)
-            {
-                httpClient.Dispose();
-            }
+            ChatConnectionCleanup.DisposeResources(logger, "TwitchChat",
+                predictionLifetimeCancellation, ownsHttpClient ? httpClient : null);
         }
     }
 
@@ -529,7 +507,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
             activePredictionRequests--;
             if (activePredictionRequests == 0)
             {
-                predictionRequestsDrained.TrySetResult();
+                predictionRequestsDrained?.TrySetResult();
             }
         }
     }
@@ -576,7 +554,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Warning, "TwitchPredictions", $"Could not resolve Twitch broadcaster ID for {target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchPredictions", $"Could not resolve Twitch broadcaster ID for {target.DisplayName}.", ex);
             SetPredictionAccess(new TwitchPredictionAccessState(
                 true,
                 false,
@@ -666,7 +644,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Warning, "TwitchPredictions", $"Twitch prediction setup failed for {target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchPredictions", $"Twitch prediction setup failed for {target.DisplayName}.", ex);
             RaiseStatusChanged($"Twitch prediction updates unavailable: {ex.Message}");
         }
     }
@@ -778,7 +756,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "TwitchChat", "Twitch chat disconnected.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "TwitchChat", "Twitch chat disconnected.", ex);
             RaiseStatusChanged($"Twitch chat disconnected: {ex.Message}");
         }
         finally
@@ -792,7 +770,9 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                 ReferenceEquals(writer, connectedWriter))
             {
                 canSendMessages = false;
-                readCancellation?.Cancel();
+                CancellationSourceCleanup.Cancel(readCancellation,
+                    exception => logger.WriteSafely(AppLogLevel.Warning, "TwitchChat",
+                        "Twitch read cancellation failed after an IRC disconnect.", exception));
                 SetPredictionAccess(TwitchPredictionAccessState.Pending);
                 try
                 {
@@ -800,7 +780,7 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
                 }
                 catch (Exception ex)
                 {
-                    logger.Write(AppLogLevel.Debug, "TwitchChat", "Twitch prediction EventSub cleanup after an IRC disconnect failed.", ex);
+                    logger.WriteSafely(AppLogLevel.Debug, "TwitchChat", "Twitch prediction EventSub cleanup after an IRC disconnect failed.", ex);
                 }
             }
 
@@ -986,13 +966,6 @@ public sealed class TwitchChatClient : IChatClient, ITwitchPredictionClient
         }
 
         return line[(markerIndex + 2)..].Trim();
-    }
-
-    private static TaskCompletionSource CreateCompletedTaskSource()
-    {
-        var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        source.SetResult();
-        return source;
     }
 
     private sealed record PredictionContext(string BroadcasterId, string AccessToken, string ClientId);

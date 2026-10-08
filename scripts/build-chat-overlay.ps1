@@ -40,7 +40,8 @@ foreach ($name in @('wingdi.c', 'common.c', 'events.c', 'win32touch.c', 'sensors
 if ($LASTEXITCODE -ne 0) { throw "Overlay plugin build failed ($LASTEXITCODE)." }
 foreach ($objectPath in $objects) { Remove-Item -LiteralPath $objectPath }
 Remove-Item -LiteralPath $objectsDirectory
-& $Gcc -O2 -Wall -Wextra -Werror -static-libgcc "-ffile-prefix-map=$repositoryRoot=." `
+# Thread-local TLS diagnostics use GCC's threading support; keep it inside the executable.
+& $Gcc -O2 -Wall -Wextra -Werror -static -static-libgcc "-ffile-prefix-map=$repositoryRoot=." `
     (Join-Path $source 'vlc_chat_overlay.c') (Join-Path $source 'tls.c') `
     -o (Join-Path $OutputDirectory 'vlc_chat_overlay.exe') `
     -lws2_32 -lsecur32 -lcrypt32 -lgdi32 -luser32 -lwinhttp -lole32 -lgdiplus -ld2d1 -ldwrite -luuid -lshell32 `

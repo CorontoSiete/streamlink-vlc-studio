@@ -999,7 +999,8 @@ internal static class TestSubsystemCatalog
         var safeNotificationCount = 0;
         EventHandler throwing = (_, _) => throw new InvalidOperationException("expected subscriber failure");
         EventHandler succeeding = (_, _) => Interlocked.Increment(ref safeNotificationCount);
-        CatalogLoadCoordinator.RaiseSafely(throwing + succeeding, coordinator);
+        var notifier = new CatalogChangeNotifier(coordinator, deliver => deliver());
+        notifier.Queue(() => throwing + succeeding);
         Assert.Equal(1, safeNotificationCount);
     }
 
@@ -1346,6 +1347,28 @@ internal static class TestSubsystemCatalog
             Assert.Equal(false, VlcOverlayPluginRuntimeFactory.IsCurrentCacheManifestForTest(
                 vlcDirectory,
                 pluginRoot));
+            VlcOverlayPluginRuntimeFactory.WriteCurrentCacheManifestForTest(vlcDirectory, pluginRoot);
+            var manifestPath = Path.Combine(pluginRoot, VlcOverlayPluginRuntimeFactory.CacheManifestFileName);
+            var validManifest = File.ReadAllText(manifestPath);
+            foreach (var malformedInventory in new[] { "null", "{}", "\"invalid\"" })
+            {
+                var manifest = System.Text.Json.Nodes.JsonNode.Parse(validManifest)!.AsObject();
+                manifest["PluginIdentities"] = System.Text.Json.Nodes.JsonNode.Parse(malformedInventory);
+                File.WriteAllText(manifestPath, manifest.ToJsonString());
+                Assert.Equal(false, VlcOverlayPluginRuntimeFactory.IsCurrentCacheManifestForTest(
+                    vlcDirectory, pluginRoot));
+            }
+            var missingInventory = System.Text.Json.Nodes.JsonNode.Parse(validManifest)!.AsObject();
+            missingInventory.Remove("PluginIdentities");
+            File.WriteAllText(manifestPath, missingInventory.ToJsonString());
+            Assert.Equal(false, VlcOverlayPluginRuntimeFactory.IsCurrentCacheManifestForTest(
+                vlcDirectory, pluginRoot));
+            File.WriteAllText(manifestPath, validManifest.PadRight(1024 * 1024 + 1));
+            Assert.Equal(false, VlcOverlayPluginRuntimeFactory.IsCurrentCacheManifestForTest(
+                vlcDirectory, pluginRoot));
+            VlcOverlayPluginRuntimeFactory.WriteCurrentCacheManifestForTest(vlcDirectory, pluginRoot);
+            Assert.True(VlcOverlayPluginRuntimeFactory.IsCurrentCacheManifestForTest(vlcDirectory, pluginRoot));
+            Assert.Equal(0, Directory.GetFiles(pluginRoot, "*.tmp").Length);
         }
         finally
         {

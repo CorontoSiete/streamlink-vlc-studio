@@ -16,6 +16,10 @@ internal static partial class VodDownloadTestCatalog
         ("VOD downloads: retry transient segment errors without skipping any segment", TransientAsync),
         ("VOD downloads: failed segments cannot produce a completed offline VOD", MissingSegmentAsync),
         ("VOD downloads: reject ignored range requests, error pages, and truncated media", InvalidResponsesAsync),
+        ("VOD downloads: mixed-case HTML error documents cannot complete media downloads", () => ErrorDocumentMediaAsync("TeXt/HtMl")),
+        ("VOD downloads: mixed-case JSON error documents cannot complete media downloads", () => ErrorDocumentMediaAsync("Application/JSON")),
+        ("VOD downloads: structured JSON error documents cannot complete media downloads", () => ErrorDocumentMediaAsync("Application/Problem+JSON")),
+        ("VOD download profile images: error documents cannot replace saved avatars", ErrorDocumentProfileImagesAsync),
         ("VOD downloads: deduplicate queued VODs and preserve quality and authentication options", DuplicateAndOptionsAsync),
         ("VOD downloads: cancel active and queued work and delete partial data", CancelAsync),
         ("VOD downloads: retry Kick with a refreshed page URL and current credentials", RetryAsync),
@@ -723,6 +727,7 @@ internal static partial class VodDownloadTestCatalog
         internal Uri PlaylistUri { get; }
         internal DownloadHttpHandler Handler { get; } = new();
         internal FakeStreamlinkService Resolver { get; } = new();
+        internal MemoryLogger Logger { get; } = new();
         internal VodDownloadOptions Options { get; } = new("fixture-streamlink.exe", []);
         internal HttpClient Client { get; }
         internal VodDownloadService Service { get; private set; }
@@ -743,7 +748,7 @@ internal static partial class VodDownloadTestCatalog
             Service = CreateService();
         }
 
-        private VodDownloadService CreateService() => new(Library, Resolver, new MemoryLogger(), TwitchFallback, Client,
+        private VodDownloadService CreateService() => new(Library, Resolver, Logger, TwitchFallback, Client,
             new ReplayUrlSecurityValidator((_, _) => Task.FromResult(new[] { IPAddress.Parse("8.8.8.8") })), KickResolver);
         internal string Record(Guid id) => Path.Combine(Library, id.ToString("N"), "download.json");
         internal Task<VodDownloadItem> EnqueueAsync(StreamTarget? target = null) =>
@@ -785,12 +790,15 @@ internal static partial class VodDownloadTestCatalog
 
         public async ValueTask DisposeAsync()
         {
-            await Service.DisposeAsync();
-            Client.Dispose();
-            var parent = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "StreamStudioTests")) + Path.DirectorySeparatorChar;
-            if (!Root.StartsWith(parent, StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(Root).StartsWith("VodDownloads-", StringComparison.Ordinal))
-                throw new InvalidOperationException("Unsafe download fixture cleanup path.");
-            if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
+            try { await Service.DisposeAsync(); }
+            finally
+            {
+                Client.Dispose();
+                var parent = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "StreamStudioTests")) + Path.DirectorySeparatorChar;
+                if (!Root.StartsWith(parent, StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(Root).StartsWith("VodDownloads-", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Unsafe download fixture cleanup path.");
+                if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
+            }
         }
     }
 

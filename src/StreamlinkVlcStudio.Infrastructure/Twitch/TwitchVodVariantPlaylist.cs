@@ -20,21 +20,21 @@ internal static partial class TwitchVodVariantPlaylist
         var groups = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var line in lines.Where(line => line.StartsWith("#EXT-X-MEDIA:", StringComparison.Ordinal)))
         {
-            var attributes = ParseAttributes(line[(line.IndexOf(':') + 1)..]);
+            if (!HlsAttributeList.TryParse(line.AsSpan(line.IndexOf(':') + 1), out var attributes)) throw Unsupported();
             // External audio requires Streamlink's muxing and language selection.
             if (attributes.ContainsKey("URI")) throw Unsupported();
-            if (attributes.GetValueOrDefault("TYPE") == "VIDEO" &&
+            if (attributes.TryGetValue("TYPE", out var type) && type.Value == "VIDEO" &&
                 attributes.TryGetValue("GROUP-ID", out var group) && attributes.TryGetValue("NAME", out var name))
-                if (!groups.TryAdd(group, name)) throw Unsupported();
+                if (!groups.TryAdd(group.Value, name.Value)) throw Unsupported();
         }
 
         var variants = new List<(string Name, int Weight, Uri Uri)>();
         for (var i = 0; i < lines.Length; i++)
         {
             if (!lines[i].StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal)) continue;
-            var attributes = ParseAttributes(lines[i][18..]);
-            var name = attributes.TryGetValue("VIDEO", out var group) && groups.TryGetValue(group, out var groupName)
-                ? groupName : attributes.GetValueOrDefault("IVS-NAME");
+            if (!HlsAttributeList.TryParse(lines[i].AsSpan(18), out var attributes)) throw Unsupported();
+            var name = attributes.TryGetValue("VIDEO", out var group) && groups.TryGetValue(group.Value, out var groupName)
+                ? groupName : attributes.TryGetValue("IVS-NAME", out var identifier) ? identifier.Value : null;
             if (name is null) throw Unsupported();
             // Streamlink lowercases names and retains their leading identifier. In the
             // current VOD master, "Audio Only" therefore becomes "audio".
@@ -70,24 +70,7 @@ internal static partial class TwitchVodVariantPlaylist
         throw Unsupported();
     }
 
-    private static Dictionary<string, string> ParseAttributes(string text)
-    {
-        var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
-        var offset = 0;
-        foreach (Match match in Attribute().Matches(text))
-        {
-            if (match.Index != offset || !attributes.TryAdd(match.Groups[1].Value,
-                    match.Groups[2].Success ? match.Groups[2].Value : match.Groups[3].Value)) throw Unsupported();
-            offset += match.Length;
-        }
-        if (offset != text.Length || attributes.Count == 0 || text.EndsWith(',')) throw Unsupported();
-        return attributes;
-    }
-
     private static InvalidDataException Unsupported() => new("The Twitch master playlist or requested quality requires Streamlink resolution.");
-
-    [GeneratedRegex("([A-Z0-9-]+)=(?:\"([^\"]*)\"|([^,\"]+))(?:,|$)", RegexOptions.CultureInvariant)]
-    private static partial Regex Attribute();
 
     [GeneratedRegex(@"^(\d+)p(\d+)?$", RegexOptions.CultureInvariant)]
     private static partial Regex ResolutionName();

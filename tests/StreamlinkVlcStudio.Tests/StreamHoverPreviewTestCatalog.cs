@@ -1,4 +1,4 @@
-internal static class StreamHoverPreviewTestCatalog
+internal static partial class StreamHoverPreviewTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All =>
     [
@@ -15,6 +15,7 @@ internal static class StreamHoverPreviewTestCatalog
         ("stream hover preview: missing VLC releases the opened transport", () => TransportCleanupAsync(false)),
         ("stream hover preview: canceled transport arrival is disposed before decoding", () => TransportCleanupAsync(true)),
         ("stream hover preview: native VLC presents changing video and releases transport", NativePlaybackAsync),
+        .. CleanupTests,
         .. StreamHoverPreviewSourceTestCatalog.All,
         .. string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_HOVER_CHANNEL"))
             ? Array.Empty<(string, Func<Task>)>()
@@ -235,7 +236,7 @@ internal static class StreamHoverPreviewTestCatalog
 
     private static Task MailboxAsync()
     {
-        var session = new StreamHoverPreviewSession(Target());
+        var session = new StreamHoverPreviewSession(Target(), new MemoryLogger());
         for (var index = 0; index < 100; index++) session.Present(Frame((byte)index));
         Assert.Equal((byte)99, session.TakeFrame()!.Pixels[0]);
         Assert.True(session.TakeFrame() is null);

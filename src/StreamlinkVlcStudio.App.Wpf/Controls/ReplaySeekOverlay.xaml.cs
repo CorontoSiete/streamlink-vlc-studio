@@ -361,7 +361,8 @@ public partial class ReplaySeekOverlay : UserControl
         var pointerParkedOverReplayControls = position.HasValue && overReplayOverlay;
         if (OverlayHost.IsOpen && !fading && nowMilliseconds - lastActivity >= IdleDelay.TotalMilliseconds &&
             !pointerParkedOverReplayControls && !OverlayChrome.IsMouseCaptureWithin &&
-            !PlaybackRateComboBox.IsDropDownOpen && seekTab is null && !keyboardSeeking)
+            !PlaybackRateComboBox.IsDropDownOpen && seekTab is null && !keyboardSeeking &&
+            DataContext is not StreamTabViewModel { IsReplaySeekInProgress: true })
             FadeOut();
     }
 
@@ -552,12 +553,6 @@ public partial class ReplaySeekOverlay : UserControl
         tab?.CancelReplaySeekPreview();
         if (ReplaySeekSlider.IsMouseCaptureWithin) Mouse.Capture(null);
     }
-
-    internal bool ContainsScreenPoint(int x, int y) => OverlayHost.IsOpen &&
-        PresentationSource.FromVisual(OverlayChrome) is not null &&
-        new Rect(OverlayChrome.PointToScreen(new Point()),
-            OverlayChrome.PointToScreen(new Point(OverlayChrome.ActualWidth, OverlayChrome.ActualHeight)))
-            .Contains(new Point(x, y));
 
     internal static bool IsReplayOverlayWindow(IntPtr hwnd) =>
         HwndSource.FromHwnd(hwnd)?.RootVisual is { } root && ContainsOverlay(root);

@@ -427,7 +427,7 @@ public sealed class TwitchVodService : ITwitchVodService
     {
         if (!JsonElementReader.TryGetArray(root, "data", out var data))
         {
-            yield break;
+            throw new JsonException("Twitch did not return a VOD video collection.");
         }
 
         foreach (var item in data.EnumerateArray())

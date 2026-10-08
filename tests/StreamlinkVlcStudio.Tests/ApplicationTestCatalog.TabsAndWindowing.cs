@@ -1290,7 +1290,7 @@ internal static partial class ApplicationTestCatalog
             DeleteTempTestDirectory(root);
         }
     }),
-    ("installer excludes setup assets and confines temporary download paths", async () =>
+    ("installer selects one exact HTTPS app asset and confines temporary download paths", async () =>
     {
         var repoRoot = FindRepoRoot();
         var installScriptPath = Path.Combine(repoRoot, "scripts", "install.ps1");
@@ -1301,16 +1301,19 @@ internal static partial class ApplicationTestCatalog
             "$tokens = $null",
             "$errors = $null",
             $"$ast = [System.Management.Automation.Language.Parser]::ParseFile({QuotePowerShellLiteral(installScriptPath)}, [ref]$tokens, [ref]$errors)",
-            "$patternsParameter = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'AppAssetPatterns' } | Select-Object -First 1",
-            "$patterns = @(Invoke-Expression $patternsParameter.DefaultValue.Extent.Text)",
-            "$selectDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Select-ReleaseAsset' }, $true)",
+            "$selectDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Select-UniqueReleaseAssetExact' }, $true)",
             "$pathDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-TempDownloadPath' }, $true)",
             "Invoke-Expression $selectDefinition.Extent.Text",
             "Invoke-Expression $pathDefinition.Extent.Text",
             "$release = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'StreamlinkVlcStudio-Setup.exe' }) }",
             "$setupRejected = $false",
-            "try { Select-ReleaseAsset $release $patterns 'app' | Out-Null } catch { $setupRejected = $true }",
-            "if (-not $setupRejected) { throw 'Setup bootstrap matched the default app asset patterns.' }",
+            "try { Select-UniqueReleaseAssetExact $release 'StreamlinkVlcStudio-release.zip' | Out-Null } catch { $setupRejected = $true }",
+            "if (-not $setupRejected) { throw 'Setup bootstrap was accepted as the app release asset.' }",
+            "$asset = [pscustomobject]@{ name = 'StreamlinkVlcStudio-release.zip'; url = 'https://api.github.com/assets/1'; browser_download_url = 'https://github.com/release/app.zip' }",
+            "Select-UniqueReleaseAssetExact ([pscustomobject]@{ assets = @($asset) }) $asset.name | Out-Null",
+            "$invalidReleases = @([pscustomobject]@{ assets = @($asset, $asset) })",
+            "foreach ($propertyName in @('url', 'browser_download_url')) { $unsafeAsset = $asset.psobject.Copy(); $unsafeAsset.$propertyName = 'http://unsafe.invalid/app.zip'; $invalidReleases += [pscustomobject]@{ assets = @($unsafeAsset) } }",
+            "foreach ($invalidRelease in $invalidReleases) { $rejected = $false; try { Select-UniqueReleaseAssetExact $invalidRelease $asset.name | Out-Null } catch { $rejected = $true }; if (-not $rejected) { throw 'An ambiguous or non-HTTPS release asset was accepted.' } }",
             "$script:TempRoot = 'C:\\safe-temp'",
             "$traversalRejected = $false",
             "try { Get-TempDownloadPath '..\\escape.exe' | Out-Null } catch { $traversalRejected = $true }",
@@ -2840,7 +2843,7 @@ internal static partial class ApplicationTestCatalog
     }),
     ("fullscreen button targets multi-view when current video view has multiple streams", () =>
     {
-        return TestSta.RunAsync(() =>
+        return TestSta.RunOffscreenAsync(() =>
         {
             var streamlink = new FakeStreamlinkService();
             var playbackFactory = new FakePlaybackEngineFactory();
@@ -2887,21 +2890,23 @@ internal static partial class ApplicationTestCatalog
 
             try
             {
-                var getMode = typeof(MainWindow).GetMethod(
+                var controller = GetMainWindowController(window, "windowMode");
+                var getMode = controller.GetType().GetMethod(
                     "GetFullscreenButtonMode",
                     BindingFlags.Instance | BindingFlags.NonPublic);
                 Assert.NotNull(getMode);
 
-                Assert.Equal("MultiView", getMode!.Invoke(window, [])?.ToString());
+                Assert.Equal("MultiView", getMode!.Invoke(controller, [])?.ToString());
 
                 viewModel.IsMultiStreamEnabled = false;
 
-                Assert.Equal("StreamOnly", getMode.Invoke(window, [])?.ToString());
+                Assert.Equal("StreamOnly", getMode.Invoke(controller, [])?.ToString());
             }
             finally
             {
                 window.Close();
             }
+            return Task.CompletedTask;
         });
     }),
     ("main fullscreen stays below other windows and restores prior topmost state", () =>

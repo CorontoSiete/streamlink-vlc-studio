@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using StreamlinkVlcStudio.Core.Commands;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
@@ -492,7 +493,8 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
 
             if (result.IsAvailable)
             {
-                IEnumerable<BrowseCategory> categories = platform == PlatformKind.Kick && reset
+                var sortByViewerCount = platform == PlatformKind.Kick || !string.IsNullOrWhiteSpace(query);
+                IEnumerable<BrowseCategory> categories = sortByViewerCount && reset
                     ? OrderBrowseCategories(
                         result.Items.DistinctBy(category => $"{category.Platform}:{category.Id}", StringComparer.OrdinalIgnoreCase),
                         category => category.ViewerCount,
@@ -503,7 +505,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
                     card => $"{card.Platform}:{card.Id}", category => $"{category.Platform}:{category.Id}",
                     category => new BrowseCategoryViewModel(category, SelectBrowseCategoryAsync),
                     (card, category) => card.Update(category), cursor, result.NextCursor);
-                if (platform == PlatformKind.Kick && !reset)
+                if (sortByViewerCount && !reset)
                 {
                     SortBrowseCategoriesByViewerCount();
                 }
@@ -567,7 +569,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
 
     internal void StartBrowseCategoryViewerCountLoad(PlatformKind platform, string query)
     {
-        if (browseService is null || platform != PlatformKind.Twitch)
+        if (disposed || browseService is null || platform != PlatformKind.Twitch)
         {
             return;
         }
@@ -587,6 +589,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
         CancellationTokenSource cancellation;
         lock (browseCategoryViewerCountGate)
         {
+            if (disposed) return;
             if (browseCategoryViewerCountCancellation is not null)
             {
                 browseCategoryViewerCountLoadPending = true;
@@ -730,6 +733,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
                         {
                             ApplyBrowseCategoryViewerCount(platform, viewerCount.CategoryId, viewerCount.ViewerCount);
                         }
+                        if (!string.IsNullOrWhiteSpace(query)) SortBrowseCategoriesByViewerCount();
                     }
                 });
             }
@@ -771,7 +775,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
 
         if (cancelRemaining)
         {
-            cancellation.Cancel();
+            CancelOperation(cancellation);
         }
 
         dispatch(() =>
@@ -1061,12 +1065,15 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
     internal void CancelActiveBrowseCategoryViewerCountLoad()
     {
         vodBrowseController.AdvanceBrowseCategoryViewerCountGeneration();
+        CancellationTokenSource? cancellation;
         lock (browseCategoryViewerCountGate)
         {
-            browseCategoryViewerCountCancellation?.Cancel();
+            cancellation = browseCategoryViewerCountCancellation;
             browseCategoryViewerCountCancellation = null;
             browseCategoryViewerCountLoadPending = false;
         }
+
+        CancelOperation(cancellation);
     }
 
     internal void CancelActiveBrowseStreamSearch()

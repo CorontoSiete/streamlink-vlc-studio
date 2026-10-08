@@ -11,6 +11,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 using static StreamlinkVlcStudio.Infrastructure.Chat.OAuthTokenHelpers;
 
@@ -70,8 +71,7 @@ public sealed class KickChatClient : IChatClient
                 ObjectDisposedException.ThrowIf(disposed, this);
             }
 
-            await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-            await DisconnectCoreAsync().ConfigureAwait(false);
+            await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
             var supervisor = new LiveChatConnectionSupervisor(
                 logger,
                 "KickChat",
@@ -89,12 +89,11 @@ public sealed class KickChatClient : IChatClient
                 // returning the failure to the tab.
                 try
                 {
-                    await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-                    await DisconnectCoreAsync().ConfigureAwait(false);
+                    await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
                 }
                 catch (Exception cleanupException)
                 {
-                    logger.Write(AppLogLevel.Warning, "KickChat", "Kick chat cleanup failed after a connection error.", cleanupException);
+                    logger.WriteSafely(AppLogLevel.Warning, "KickChat", "Kick chat cleanup failed after a connection error.", cleanupException);
                 }
 
                 throw;
@@ -125,7 +124,7 @@ public sealed class KickChatClient : IChatClient
             ? settings.KickSendAsBot ? "bot" : "me"
             : settings.KickUsername.Trim();
 
-        var token = await ResolveSendTokenAsync(cancellationToken);
+        var token = await KickOAuthService.GetUsableAccessTokenAsync(settings, logger, cancellationToken);
         if (!string.IsNullOrWhiteSpace(token))
         {
             try
@@ -135,7 +134,7 @@ public sealed class KickChatClient : IChatClient
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                logger.Write(AppLogLevel.Warning, "KickChat", "Kick token validation failed; chat will be read-only.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "KickChat", "Kick token validation failed; chat will be read-only.", ex);
                 RaiseStatusChanged($"Kick token validation failed: {ex.Message}");
             }
         }
@@ -180,71 +179,65 @@ public sealed class KickChatClient : IChatClient
         StartRecentChatBackfill(target.Channel, channelInfo.ChatroomId, connectedReadCancellation.Token);
     }
 
-    public async Task DisconnectAsync(CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-            await DisconnectCoreAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
-    }
+    public Task DisconnectAsync(CancellationToken cancellationToken = default) =>
+        ChatConnectionCleanup.DisconnectAsync(lifecycleGate, ThrowIfDisposed,
+            () => ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync), cancellationToken);
 
     private async Task DisconnectCoreAsync()
     {
-        readCancellation?.Cancel();
-
-        if (webSocket is { State: WebSocketState.Open })
+        try
         {
-            try
+            readCancellation?.Cancel();
+
+            if (webSocket is { State: WebSocketState.Open })
             {
-                using var closeTimeout = new CancellationTokenSource(DisconnectCleanupTimeout);
-                await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", closeTimeout.Token);
+                try
+                {
+                    using var closeTimeout = new CancellationTokenSource(DisconnectCleanupTimeout);
+                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", closeTimeout.Token);
+                }
+                catch (Exception ex) when (ex is WebSocketException or OperationCanceledException)
+                {
+                }
             }
-            catch (Exception ex) when (ex is WebSocketException or OperationCanceledException)
+
+            if (readTask is not null)
             {
+                try
+                {
+                    await readTask.WaitAsync(DisconnectCleanupTimeout);
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            if (recentChatBackfillTask is not null)
+            {
+                try
+                {
+                    await recentChatBackfillTask.WaitAsync(DisconnectCleanupTimeout).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.WriteSafely(AppLogLevel.Info, "KickChat", "Kick recent chat backfill cleanup failed.", ex);
+                }
             }
         }
-
-        if (readTask is not null)
+        finally
         {
-            try
-            {
-                await readTask.WaitAsync(DisconnectCleanupTimeout);
-            }
-            catch (Exception)
-            {
-            }
-        }
-
-        if (recentChatBackfillTask is not null)
-        {
-            try
-            {
-                await recentChatBackfillTask.WaitAsync(DisconnectCleanupTimeout).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                logger.Write(AppLogLevel.Info, "KickChat", "Kick recent chat backfill cleanup failed.", ex);
-            }
+            IDisposable?[] resources = [webSocket, readCancellation];
+            webSocket = null;
+            readTask = null;
+            readCancellation = null;
             recentChatBackfillTask = null;
+            connectedChannel = null;
+            currentBroadcasterUserId = null;
+            validatedSendToken = null;
+            canSendMessages = false;
+            CurrentUsername = null;
+            ChatConnectionCleanup.DisposeResources(logger, "KickChat", resources);
         }
-
-        webSocket?.Dispose();
-        readCancellation?.Dispose();
-        webSocket = null;
-        readTask = null;
-        readCancellation = null;
-        connectedChannel = null;
-        currentBroadcasterUserId = null;
-        validatedSendToken = null;
-        canSendMessages = false;
-        CurrentUsername = null;
     }
 
     private async Task ReconnectCoreAsync(
@@ -283,16 +276,6 @@ public sealed class KickChatClient : IChatClient
         }
     }
 
-    private async Task StopConnectionSupervisorCoreAsync()
-    {
-        var supervisor = connectionSupervisor;
-        connectionSupervisor = null;
-        if (supervisor is not null)
-        {
-            await supervisor.DisposeAsync().ConfigureAwait(false);
-        }
-    }
-
     public async Task SendMessageAsync(string message, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -307,7 +290,7 @@ public sealed class KickChatClient : IChatClient
         {
             ThrowIfDisposed();
 
-            var token = await ResolveSendTokenAsync(cancellationToken).ConfigureAwait(false);
+            var token = await KickOAuthService.GetUsableAccessTokenAsync(settings, logger, cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(token))
             {
                 throw new InvalidOperationException("Connect Kick in Settings before sending chat.");
@@ -358,27 +341,15 @@ public sealed class KickChatClient : IChatClient
         }
     }
 
-    public ValueTask DisposeAsync()
-    {
-        lock (lifecycleStateGate)
-        {
-            disposalTask ??= DisposeCoreAsync();
-            return new ValueTask(disposalTask);
-        }
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(lifecycleStateGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
     private async Task DisposeCoreAsync()
     {
-        lock (lifecycleStateGate)
-        {
-            disposed = true;
-        }
-
         await lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await StopConnectionSupervisorCoreAsync().ConfigureAwait(false);
-            await DisconnectCoreAsync().ConfigureAwait(false);
+            await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -440,7 +411,7 @@ public sealed class KickChatClient : IChatClient
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Info, "KickChat", $"Kick recent chat backfill failed for {channel}.", ex);
+                logger.WriteSafely(AppLogLevel.Info, "KickChat", $"Kick recent chat backfill failed for {channel}.", ex);
             }
         }
     }
@@ -458,7 +429,7 @@ public sealed class KickChatClient : IChatClient
             .ConfigureAwait(false);
         if (loadedMessageCount > 0)
         {
-            logger.Write(AppLogLevel.Info, "KickChat", $"Loaded {loadedMessageCount} recent Kick chat messages for {channel}.");
+            logger.WriteSafely(AppLogLevel.Info, "KickChat", $"Loaded {loadedMessageCount} recent Kick chat messages for {channel}.");
         }
     }
 
@@ -576,7 +547,7 @@ public sealed class KickChatClient : IChatClient
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "KickChat", "Kick chat disconnected.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickChat", "Kick chat disconnected.", ex);
             RaiseStatusChanged($"Kick chat disconnected: {ex.Message}");
         }
         finally
@@ -589,7 +560,9 @@ public sealed class KickChatClient : IChatClient
             if (ReferenceEquals(connectedWebSocket, webSocket))
             {
                 canSendMessages = false;
-                readCancellation?.Cancel();
+                CancellationSourceCleanup.Cancel(readCancellation,
+                    exception => logger.WriteSafely(AppLogLevel.Warning, "KickChat",
+                        "Kick read cancellation failed after a websocket disconnect.", exception));
             }
 
             if (shouldReconnect)
@@ -738,15 +711,10 @@ public sealed class KickChatClient : IChatClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Warning, "KickChat", $"Kick API channel lookup failed for {channel}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickChat", $"Kick API channel lookup failed for {channel}.", ex);
         }
 
         return null;
-    }
-
-    private async Task<string?> ResolveSendTokenAsync(CancellationToken cancellationToken)
-    {
-        return await KickOAuthService.GetUsableAccessTokenAsync(settings, logger, cancellationToken);
     }
 
     private async Task<string> ValidateSendTokenAsync(string token, CancellationToken cancellationToken)
@@ -812,12 +780,12 @@ public sealed class KickChatClient : IChatClient
 
             validatedSendToken = refreshedToken;
             canSendMessages = true;
-            logger.Write(AppLogLevel.Info, "KickChat", "Refreshed expired Kick OAuth token.");
+            logger.WriteSafely(AppLogLevel.Info, "KickChat", "Refreshed expired Kick OAuth token.");
             return refreshedToken;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Warning, "KickChat", "Failed to refresh expired Kick OAuth token.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickChat", "Failed to refresh expired Kick OAuth token.", ex);
             return null;
         }
     }

@@ -84,6 +84,11 @@ public sealed class StreamSearchService : IStreamSearchService
             return new StreamSearchResult(StreamSearchResultStatus.NotFound, [], "Enter a Twitch or Kick channel.");
         }
 
+        if (request.Mode == StreamSearchMode.ChannelDiscovery)
+        {
+            return await DiscoverChannelsAsync(request, query, settings, cancellationToken).ConfigureAwait(false);
+        }
+
         IReadOnlyList<StreamTarget> exactCandidates;
         try
         {
@@ -169,6 +174,78 @@ public sealed class StreamSearchService : IStreamSearchService
 
         var resultMessage = FormatResultMessage(query, orderedChannels, messages);
         return new StreamSearchResult(StreamSearchResultStatus.Available, orderedChannels, resultMessage);
+    }
+
+    private async Task<StreamSearchResult> DiscoverChannelsAsync(
+        StreamSearchRequest request,
+        string query,
+        AppSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var platform = request.Platform;
+        if (StreamInputParser.TryParsePlatformUrl(query, out var target) && target is not null)
+        {
+            if (target.Kind != StreamTargetKind.Live || (platform is not null && platform != target.Platform))
+            {
+                return new StreamSearchResult(StreamSearchResultStatus.NotFound, [],
+                    "Enter a streamer name or a channel URL for the selected platform.");
+            }
+
+            platform ??= target.Platform;
+            query = target.Channel;
+        }
+
+        var discoveryQuery = NormalizeForMatch(query);
+        if (discoveryQuery.Length == 0)
+        {
+            return new StreamSearchResult(StreamSearchResultStatus.NotFound, [], "Enter a streamer name.");
+        }
+        if (platform == PlatformKind.Kick && discoveryQuery.Length < MinimumDiscoveryQueryLength)
+        {
+            return new StreamSearchResult(StreamSearchResultStatus.NotFound, [],
+                "Enter at least 3 characters to search Kick streamers.");
+        }
+
+        var twitchTask = platform is null or PlatformKind.Twitch
+            ? SearchTwitchChannelsAsync(discoveryQuery, request.PageSize, settings, cancellationToken)
+            : Task.FromResult(new TwitchSearchLoad([], []));
+        var kickTask = platform is null or PlatformKind.Kick
+            ? SearchKickChannelsAsync(discoveryQuery, request.PageSize, cancellationToken)
+            : Task.FromResult(new KickSearchLoad([], []));
+        await Task.WhenAll(twitchTask, kickTask).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var twitch = await twitchTask.ConfigureAwait(false);
+        var kick = await kickTask.ConfigureAwait(false);
+        var messages = twitch.Messages.Concat(kick.Messages).Distinct(StringComparer.Ordinal).ToArray();
+
+        // Broadcast browsing needs provider-confirmed channel identities, including
+        // offline channels. It never guesses an exact match or probes live playback.
+        var channels = twitch.Channels.Concat(kick.Channels)
+            .Select((channel, index) => channel with { Order = index })
+            .GroupBy(channel => $"{channel.Platform}:{channel.Channel}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => SelectBestDiscovery(group, discoveryQuery))
+            .OrderBy(channel => MatchRank(channel, discoveryQuery))
+            .ThenBy(channel => channel.Order)
+            .Take(NormalizePageSize(request.PageSize))
+            .Select(channel => ToSearchChannel(channel,
+                channel.IsLive == true ? StreamSearchChannelState.Live
+                    : channel.IsLive == false ? StreamSearchChannelState.Offline
+                    : StreamSearchChannelState.Unavailable,
+                StreamSearchSourceStatus.Available,
+                "Browse past broadcasts.",
+                canPlay: channel.IsLive == true))
+            .ToArray();
+        var platformText = platform?.ToString() ?? "Twitch or Kick";
+        if (channels.Length == 0)
+        {
+            return new StreamSearchResult(messages.Length > 0
+                    ? StreamSearchResultStatus.Unavailable : StreamSearchResultStatus.NotFound,
+                [], messages.Length > 0 ? string.Join(" ", messages)
+                    : $"No {platformText} streamers found for {query}. Try another part of their name.");
+        }
+
+        return new StreamSearchResult(StreamSearchResultStatus.Available, channels,
+            $"Choose a streamer to browse their broadcasts.{(messages.Length > 0 ? " " + string.Join(" ", messages) : "")}");
     }
 
     private async Task<TwitchSearchLoad> SearchTwitchChannelsAsync(
@@ -277,6 +354,8 @@ public sealed class StreamSearchService : IStreamSearchService
         int pageSize,
         CancellationToken cancellationToken)
     {
+        if (query.Length < MinimumDiscoveryQueryLength)
+            return new KickSearchLoad([], ["Enter at least 3 characters to search Kick streamers."]);
         var url = $"https://kick.com/api/search?searched_word={Uri.EscapeDataString(query)}";
         try
         {

@@ -7,7 +7,7 @@ internal sealed class PlaybackCleanupController(IAppLogger logger, Func<string> 
 {
     private readonly object gate = new();
     private readonly HashSet<Task> operations = [];
-    private TaskCompletionSource idle = CreateCompletedTaskCompletion();
+    private TaskCompletionSource? idle;
 
     public Task IdleTask
     {
@@ -15,7 +15,7 @@ internal sealed class PlaybackCleanupController(IAppLogger logger, Func<string> 
         {
             lock (gate)
             {
-                return idle.Task;
+                return idle?.Task ?? Task.CompletedTask;
             }
         }
     }
@@ -72,12 +72,5 @@ internal sealed class PlaybackCleanupController(IAppLogger logger, Func<string> 
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
-    }
-
-    private static TaskCompletionSource CreateCompletedTaskCompletion()
-    {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        completion.SetResult();
-        return completion;
     }
 }

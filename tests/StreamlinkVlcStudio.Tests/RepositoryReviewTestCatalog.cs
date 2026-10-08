@@ -283,14 +283,14 @@ internal static class RepositoryReviewTestCatalog
         settings.KickClientId = "client";
         settings.KickClientSecret = "secret";
         var applied = false;
-        var pending = KickOAuthService.GetUsableAccessTokenAsync(settings,
-            (_, _, _) => { applied = true; return Task.CompletedTask; },
-            async (snapshot, _) =>
-            {
-                await release.Task;
-                Assert.Equal("expired-token", snapshot.KickOAuthToken);
-                return new KickOAuthTokenResult("refreshed", "rotated", DateTimeOffset.UtcNow.AddHours(1), "Bearer", []);
-            }, null, default);
+        var coordinator = new KickUserTokenCoordinator(async (snapshot, _) =>
+        {
+            await release.Task;
+            Assert.Equal("expired-token", snapshot.KickOAuthToken);
+            return new KickOAuthTokenResult("refreshed", "rotated", DateTimeOffset.UtcNow.AddHours(1), "Bearer", []);
+        });
+        var pending = coordinator.ResolveAsync(settings,
+            (_, _, _) => { applied = true; return Task.CompletedTask; }, null, default);
         settings.KickOAuthToken = "new-account";
         release.SetResult();
         Assert.Equal<string?>(null, await pending);

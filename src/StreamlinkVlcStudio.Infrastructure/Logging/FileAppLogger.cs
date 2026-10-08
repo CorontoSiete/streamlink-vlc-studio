@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 
 namespace StreamlinkVlcStudio.Infrastructure.Logging;
 
@@ -109,7 +110,7 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
             Interlocked.Increment(ref droppedEntryCount);
         }
 
-        NotifySubscribers(entry);
+        SafeEventDispatcher.Invoke(EntryWritten, this, entry, null, nameof(FileAppLogger), nameof(EntryWritten));
     }
 
     public void Dispose()
@@ -410,27 +411,6 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-        }
-    }
-
-    private void NotifySubscribers(LogEntry entry)
-    {
-        var handlers = EntryWritten;
-        if (handlers is null)
-        {
-            return;
-        }
-
-        foreach (EventHandler<LogEntry> handler in handlers.GetInvocationList())
-        {
-            try
-            {
-                handler(this, entry);
-            }
-            catch (Exception)
-            {
-                // A diagnostic subscriber must not make logging fail or block other subscribers.
-            }
         }
     }
 

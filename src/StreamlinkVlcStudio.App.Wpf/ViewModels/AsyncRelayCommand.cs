@@ -7,25 +7,29 @@ public sealed class AsyncRelayCommand : ICommand
     private readonly Func<Task> execute;
     private readonly Func<bool>? canExecute;
     private readonly Action<Exception>? errorHandler;
+    private readonly bool allowConcurrentExecution;
     // ICommand can be invoked from both WPF's dispatcher and input/event callbacks. A plain bool
     // leaves a small but real race between CanExecute and ExecuteAsync, allowing two callers to
     // enter the same operation. Keep the gate as an integer so entry is one atomic operation.
+    // Commands which coalesce their own requests can explicitly opt out of this gate.
     private int isRunning;
 
     public AsyncRelayCommand(
         Func<Task> execute,
         Func<bool>? canExecute = null,
-        Action<Exception>? errorHandler = null)
+        Action<Exception>? errorHandler = null,
+        bool allowConcurrentExecution = false)
     {
         this.execute = execute;
         this.canExecute = canExecute;
         this.errorHandler = errorHandler;
+        this.allowConcurrentExecution = allowConcurrentExecution;
     }
 
     public event EventHandler? CanExecuteChanged;
 
     public bool CanExecute(object? parameter) =>
-        Volatile.Read(ref isRunning) == 0 && (canExecute?.Invoke() ?? true);
+        (allowConcurrentExecution || Volatile.Read(ref isRunning) == 0) && (canExecute?.Invoke() ?? true);
 
     public async void Execute(object? parameter)
     {
@@ -48,13 +52,13 @@ public sealed class AsyncRelayCommand : ICommand
 
     public async Task ExecuteAsync(object? parameter = null)
     {
-        if (Volatile.Read(ref isRunning) != 0 ||
+        if ((!allowConcurrentExecution && Volatile.Read(ref isRunning) != 0) ||
             (canExecute is not null && !canExecute()))
         {
             return;
         }
 
-        if (Interlocked.CompareExchange(ref isRunning, 1, 0) != 0)
+        if (!allowConcurrentExecution && Interlocked.CompareExchange(ref isRunning, 1, 0) != 0)
         {
             return;
         }
@@ -75,7 +79,7 @@ public sealed class AsyncRelayCommand : ICommand
         }
         finally
         {
-            Volatile.Write(ref isRunning, 0);
+            if (!allowConcurrentExecution) Volatile.Write(ref isRunning, 0);
             RaiseCanExecuteChanged();
         }
     }

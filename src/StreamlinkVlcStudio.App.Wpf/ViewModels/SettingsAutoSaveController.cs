@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Chat;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
@@ -45,7 +46,7 @@ internal sealed class SettingsAutoSaveController : IAsyncDisposable
                     if (disposed) return;
                     _ = SavePendingAsync();
                 }
-            }), error => reportResult(error));
+            }), ReportResult);
         }
     }
 
@@ -126,11 +127,11 @@ internal sealed class SettingsAutoSaveController : IAsyncDisposable
                 catch (Exception error)
                 {
                     // Keep the changes dirty so the next edit, explicit retry, or close retries them.
-                    reportResult(error);
+                    ReportResult(error);
                     return;
                 }
 
-                reportResult(null);
+                ReportResult(null);
                 lock (gate)
                 {
                     savedVersion = version;
@@ -150,4 +151,7 @@ internal sealed class SettingsAutoSaveController : IAsyncDisposable
             }
         }
     }
+
+    private void ReportResult(Exception? error) =>
+        SafeEventDispatcher.Invoke(reportResult, error, null, "Settings", nameof(reportResult));
 }

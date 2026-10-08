@@ -7,6 +7,7 @@ param(
     [string]$SetupFileName = "StreamStudio-Setup.msi",
     [string]$BootstrapperFileName = "StreamlinkVlcStudio-Setup.exe",
     [string]$DependencyManifest,
+    [string]$DependencyCacheDirectory,
     [ValidateRange(5, 600)]
     [int]$HttpTimeoutSeconds = 60,
     [Parameter(Mandatory = $true)]
@@ -185,6 +186,34 @@ function Save-DependencyFile {
         [Parameter(Mandatory = $true)][string]$DestinationPath,
         [Parameter(Mandatory = $true)]$Dependency)
 
+    if (-not [string]::IsNullOrWhiteSpace($DependencyCacheDirectory)) {
+        $cachedPath = Join-Path $DependencyCacheDirectory ([string]$Dependency.fileName)
+        Assert-NoReparsePointInExistingPath -Path $cachedPath
+        if (Test-Path -LiteralPath $cachedPath) {
+            if (-not (Test-Path -LiteralPath $cachedPath -PathType Leaf)) {
+                throw "Cached dependency must be a file: $cachedPath"
+            }
+            $destinationDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($DestinationPath))
+            Assert-NoReparsePointInExistingPath -Path $DestinationPath
+            New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+            Assert-NoReparsePointInExistingPath -Path $destinationDirectory
+            $temporaryPath = Join-Path $destinationDirectory (".dependency-{0}.exe" -f [Guid]::NewGuid().ToString('N'))
+            try {
+                Copy-Item -LiteralPath $cachedPath -Destination $temporaryPath
+                $result = Assert-PinnedInstallerDependency -Path $temporaryPath -Dependency $Dependency
+                Promote-ValidatedFileSetAtomically @(
+                    [pscustomobject]@{ Source = $temporaryPath; Destination = $DestinationPath }
+                )
+                Write-Info "Reused verified cached $($Dependency.fileName) ($($result.Length) bytes, SHA-256 $($result.Sha256))."
+                return
+            } finally {
+                if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $temporaryPath -Force
+                }
+            }
+        }
+    }
+
     Write-Info "Downloading $Uri..."
     $headers = @{
         "User-Agent" = "StreamStudioInstallerBuilder/1.0 (+https://github.com/CorontoSiete/streamlink-vlc-studio)"
@@ -265,6 +294,13 @@ if (-not (Test-Path -LiteralPath $dependencyManifestPath -PathType Leaf)) {
     throw "Locked installer dependency manifest missing: $dependencyManifestPath"
 }
 $dependencyManifestData = Read-WindowsDependencyManifest $dependencyManifestPath
+if (-not [string]::IsNullOrWhiteSpace($DependencyCacheDirectory)) {
+    $DependencyCacheDirectory = [IO.Path]::GetFullPath($DependencyCacheDirectory)
+    Assert-NoReparsePointInExistingPath -Path $DependencyCacheDirectory
+    if (-not (Test-Path -LiteralPath $DependencyCacheDirectory -PathType Container)) {
+        throw "DependencyCacheDirectory must be an existing directory: $DependencyCacheDirectory"
+    }
+}
 if ($dependencyManifestData.schemaVersion -ne 1 -or
     $null -eq $dependencyManifestData.dependencies.streamlink -or
     $null -eq $dependencyManifestData.dependencies.vlc -or
@@ -371,6 +407,10 @@ Assert-UnderDirectory -ChildPath $bootstrapperPath -ParentPath $outputRootPath
 if (Test-PathIsSameOrUnderDirectory -ChildPath $releaseZipPath -ParentPath $buildRoot) {
     throw "ReleaseZip cannot be inside the temporary installer build directory: $releaseZipPath"
 }
+if (-not [string]::IsNullOrWhiteSpace($DependencyCacheDirectory) -and
+    (Test-PathIsSameOrUnderDirectory -ChildPath $DependencyCacheDirectory -ParentPath $buildRoot)) {
+    throw "DependencyCacheDirectory cannot be inside the temporary installer build directory: $DependencyCacheDirectory"
+}
 
 Remove-DirectoryIfExists $buildRoot $outputRootPath
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
@@ -453,7 +493,7 @@ try {
     $dependencyRoot = Join-Path $buildRoot "dependencies"
     New-Item -ItemType Directory -Path $dependencyRoot -Force | Out-Null
 
-    Write-Info "Downloading the locked Streamlink Windows dependency..."
+    Write-Info "Preparing the locked Streamlink Windows dependency..."
     $streamlinkInfo = $dependencyManifestData.dependencies.streamlink
     $streamlinkMinimumVersion = Get-DependencyMinimumVersion $streamlinkInfo
     if ($streamlinkMinimumVersion -notmatch '^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?$') {
@@ -465,7 +505,7 @@ try {
         -DestinationPath $streamlinkInstallerPath `
         -Dependency $streamlinkInfo
 
-    Write-Info "Downloading the locked VLC Windows x64 dependency..."
+    Write-Info "Preparing the locked VLC Windows x64 dependency..."
     $vlcInfo = $dependencyManifestData.dependencies.vlc
     $vlcVersion = Get-DependencyMinimumVersion $vlcInfo
     if ($vlcVersion -notmatch '^\d+(?:\.\d+){1,3}$') {
@@ -477,7 +517,7 @@ try {
         -DestinationPath $vlcInstallerPath `
         -Dependency $vlcInfo
 
-    Write-Info "Downloading the locked WebView2 Evergreen standalone x64 dependency..."
+    Write-Info "Preparing the locked WebView2 Evergreen standalone x64 dependency..."
     $webView2Info = $dependencyManifestData.dependencies.webview2
     $webView2MinimumVersion = Get-DependencyMinimumVersion $webView2Info
     $webView2InstallerPath = Join-Path $dependencyRoot ([string]$webView2Info.fileName)

@@ -8,11 +8,13 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 
 - Refined native studio UI with a consistent palette, clearer cards and controls, responsive navigation, library counts, and visible settings autosave status. See the [UI refresh and validation](docs/ui-experience-2026-09-30.md).
 - The toolbar's **Back** button returns to the previous page or stream, including from Settings.
+- **Changelog** opens automatically on the first launch after an update and shows the installed version's release notes. Read it again or browse earlier versions in **Settings > Changelog** or **Settings > Advanced > Updates > View changelog**. Notes are included in the app and work offline; fresh installations keep the account setup flow. Each release must have a nonempty `docs/releases/v<version>.md`, used by both the app and GitHub publication.
 - Clip the selected live Twitch or Kick stream. Kick silently creates and publishes a 30-second clip with an automatic title, then opens it in your default browser. Twitch also creates a 30-second clip.
 - Streamlink external HTTP transport.
 - Embedded libVLC playback in a WPF HWND surface.
 - GPU decoding with the bundled native chat compositor, plus reuse of unchanged chat images and controls, reduces overhead when watching multiple streams. GDI presentation uses DXVA2 to avoid VLC 3's green frames after HLS decoder resets; replay preparation remains black until the requested position is ready. Unchanged native overlays no longer allocate pixel buffers on every video frame. Stream quality, frame rate and chat filtering are preserved. Older/custom overlays retain software decoding. See [playback resource measurements](docs/stream-playback-resources-2026-09-26.md) and the [replay fix diagnosis](docs/replay-green-screen-2026-09-26.md).
 - Quality presets: `best`, `source`, `1080p60`, `1080p`, `720p60`, `720p`, `480p`, `audio_only`, `worst`.
+- Twitch broadcasts with no video available anonymously reuse the saved Twitch website session from **Settings > Accounts > Channel-point bonuses > Sign in for bonuses**. The requested quality is preserved. If video remains unavailable, the app explains the sign-in requirement before starting an audio-only transport. **Audio only** remains an intentional playback choice. See the [SableOC diagnosis and verification](docs/sableoc-black-screen-2026-10-07.md).
 - Native Twitch/Kick chat uses indexed emote lookups, reuses unchanged frames, and keeps pixel buffers near the panel size. Cached text measurements release their references. Controlled tests measured about 70% less native chat rendering CPU for busy and animated chat, with identical output pixels. See [multistream chat resource measurements](docs/multistream-chat-resources-2026-09-27.md) for scope and validation.
 - Hidden docked chat releases its visual rows, and unchanged video layouts avoid repeated native-window scans. See the [live Twitch/Kick resource measurements](docs/live-multistream-resources-2026-09-27.md) for the before/after comparison and playback checks.
 - Low-latency Streamlink defaults for Twitch/HLS.
@@ -23,8 +25,10 @@ Windows-first desktop app for watching Twitch and Kick streams through Streamlin
 - Multiple tabs with add, close, rename, move left/right, reload, stop, pause, mute, volume, fullscreen, chat visibility, and an optional multi-stream grid for up to 16 streams. By default, the selected main stream keeps its audio when a picture-in-picture window is focused; inactive visible streams stay muted. Clicking a picture-in-picture window leaves the main tab and layout in place. When no stream is selected in the main window, audio follows the activated picture-in-picture stream. Tabs outside the visible grid pause by default to reduce resource use, with an option to keep them running muted. Enable **Never mute** beside the mute button to keep that tab unmuted and playing when switching tabs or opening Home. It clears manual mute and disables the mute button until turned off; volume, manual pause, and stop still work. A speaker icon beside the tab title marks tabs with Never mute enabled, including in the compact tab selector; for grouped tabs, its tooltip names the protected streams. The toggle is separate for each open tab, survives playback reloads, and resets when the tab is closed. Turning it off restores the normal inactive-tab mute and pause behavior.
 - **Settings > Playback > Pause unselected VOD tabs** controls hidden Twitch, Kick, and offline VOD playback independently of **Keep inactive live tabs running**. Enabled VOD pausing preserves the current position and resumes automatically when the VOD becomes visible; manual pauses remain paused. Visible grid, picture-in-picture, and Never mute VODs keep playing. Changes apply immediately and save automatically. Existing settings retain their previous VOD behavior.
 - Home page search for partial Twitch/Kick channel matches by streamer name, exact channel name, or channel URL. Use Up/Down to choose a result, Enter to open it, and Escape to close results while keeping your query. Arrow keys can reopen retained results and skip unavailable channels.
+- **Past broadcasts** searches partial streamer names on the selected Twitch or Kick platform and shows matching channels with their display names and avatars. Click a result, or use Up/Down and Enter, to browse that streamer's videos. Offline channels remain selectable. A single confirmed exact login and channel URLs still load broadcasts automatically; multiple matches remain choices even when one login exactly matches the query. Escape hides matches while keeping the query, and the clear button resets the search.
 - Home page showing live and offline followed Twitch channels, imported Kick follows and additional Kick channels, Twitch/Kick VOD browsing, and recently watched streams.
 - Each library page remembers its own scroll position. New broadcast or category searches start at the top; returning from a category restores your place in Discover.
+- Kick category search finds words inside category names, including `hot tubs` for `Pools, Hot Tubs & Bikinis`, and preserves pagination, thumbnails, tags, and viewer counts. See [verified search behavior](docs/kick-category-search.md).
 - The Downloads URL field supports Enter, shows errors beside the input, and clears them when you edit the link. The empty library offers a direct route to Past broadcasts.
 - Optional **Live stream previews on hover** in **Settings > General > Appearance & behavior** plays muted live video inside Followed and Browse cards, live search results, and Recent rows confirmed live. It is off by default; changes are saved automatically across restarts. A brief hover starts one preview at a time, using a lower video quality when available. Moving away, opening the stream, hiding the page, or disabling the setting stops the preview and releases its transport. Unavailable streams keep their thumbnail with a preview-unavailable label.
 - Per-tab state: target, quality, status, mute, never mute, chat visibility, logs, chat messages.
@@ -68,6 +72,8 @@ The full installer uses `C:\Program Files\Streamlink VLC Studio` for the app. It
 Uninstall Stream Studio from Apps & features / Control Panel. The bundle removes the app, shortcut, Windows notification registration, and this Windows account's product data under `%APPDATA%\StreamStudio`, `%LOCALAPPDATA%\StreamStudio`, and the product-owned temp folders. Shared Streamlink, VLC, and WebView2 installations are retained. To intentionally keep user data, clear the setup UI's data-removal checkbox or run the bundle with `PurgeUserData=0`.
 
 For a ZIP/PowerShell installation, run `Uninstall.exe` in the installed app folder. Use `Uninstall.exe --preserve-user-data` to keep settings and cache, or add `/quiet` for unattended removal. The uninstaller removes its temporary helper after it exits and removes empty folders created for managed app files; files and folders you added to the installation folder are preserved.
+
+Setup can repair or uninstall a missing or damaged application executable. ZIP installation and removal coordinate access to the application folder, and a failed shutdown preserves the installation for retry. Interrupted managed updates retain a repair notice even when the helper cannot report completion. See [installation and maintenance recovery](docs/installer-updater-uninstaller-2026-10-05.md).
 
 The release zip also provides the advanced PowerShell installer. It can install or update the app and its version-locked dependencies from the latest final GitHub release, install the adjacent extracted payload, or install dependencies only. A GitHub app download requires both `StreamlinkVlcStudio-release.zip` and `SHA256SUMS.txt`; the script verifies the zip before installing it. Normal `Auto`, `Release`, and `GitHub` modes never fall back to an arbitrary Actions artifact. `Auto` falls back only to an app payload beside `install.ps1`; the explicit developer artifact mode additionally requires a trusted 40-character main-branch commit. For a private repository, set `GITHUB_TOKEN` to a token with release-content read access (and Actions read access only when using developer artifact mode).
 
@@ -156,7 +162,7 @@ caller's environment and working directory on success or failure.
 .\scripts\dev.ps1 Test -Interactive
 ```
 
-`Test` and `Check` use the current CI headless skip ceiling of 276; interactive
+`Test` and `Check` use the current CI headless skip ceiling of 277; interactive
 runs allow zero skips by default. `-ExpectedMaxSkips` provides an explicit override.
 CI includes two optional native hover-preview skips because its validation runner
 does not have VLC installed; those tests run locally when VLC is available.
@@ -205,6 +211,11 @@ to run the provider and visible-player integration checks using your existing ap
 load real preview frames at several points in the current broadcast and verify that playback stays
 live. `SVS_TEST_ARTIFACT_DIR` retains the decoded previews and screenshots. The ordinary offline suite
 also covers the fragmented MP4 playlist format observed on Twitch, including initialization changes.
+
+Set `SVS_TEST_VOD_CHANNEL_SEARCH_LIVE=1` and run
+`.\scripts\dev.ps1 Test -Filter 'past broadcast search:' -Interactive` to include
+live Twitch/Kick partial-name lookup, selection from the real provider responses,
+and Windows keyboard navigation of the broadcast search results.
 
 Headless CI enforces its reviewed interactive-test skip ceiling. The manually dispatched
 `Interactive desktop tests` workflow is reserved for a signed-in self-hosted Windows runner labeled
@@ -285,6 +296,13 @@ separate: the public-API token used for chat and follows is not accepted by Twit
 website bonus-claim endpoint. The website session can use a different Twitch account;
 channels come from the connected account's follows, and bonuses belong to the
 account signed in to the bonus website session.
+
+That website sign-in also authorizes live video when Twitch exposes only audio to
+logged-out viewers, for example a broadcast with only a 1440p source rendition.
+The player tries the existing Streamlink configuration first, then retries once
+with this website session when a video request returns only audio. The website
+token stays out of settings and logs. The app's **Connect Twitch** token is a
+separate public-API credential and cannot replace this website session.
 
 The app keeps one Twitch **chat popout** per distinct live followed Twitch channel,
 running silently in the background without opening a window or taking focus. After
@@ -443,6 +461,8 @@ The seekbar depends on platform VOD/replay availability. It does not record a lo
 
 Replay controls are embedded over the bottom of each video in the main player and picture-in-picture windows. Their transparent native child surface moves and clips with the video host, including during window dragging; placement does not depend on pointer polling. Move the mouse over a stream to reveal them; they fade away after two seconds without movement when the pointer is off the controls, while resting the pointer on the controls keeps them visible. Scrubbing keeps the overlay visible until the seek is released. The overlay does not resize the video. Use the timeline, the 30-second step buttons, or **Go live** to navigate; explicit VODs omit the live action.
 
+The timeline and skip buttons remain usable while a seek loads. The timestamp shows your newest target, with a small progress indicator until playback is ready. Rapid clicks replace older waiting targets, and repeated skips accumulate from the requested position. Requesting the same loading position again reuses that seek. Canceling a preview restores the current playback position or newest waiting target. Seeking keeps paused playback paused. **Go live**, Stop, restarting playback, and closing the tab cancel pending seeks.
+
 Hover over the timeline to preview its timestamp without seeking. Twitch archive replays show the nearest available storyboard thumbnail. Live streams also show thumbnails over available DVR history: when a storyboard is unavailable or has not caught up, the app downloads the short DVR segment at that timestamp and decodes a small frame locally with audio disabled. Both MPEG-TS and fragmented MP4 segments are supported; fragmented MP4 previews include the matching initialization section from the playlist. This uses the existing VLC installation and leaves playback untouched. DVR manifests refresh as the stream grows, and a bounded cache reuses decoded frames. Unsupported or unavailable segments keep the timestamp alone. The preview follows the pointer, stays within the video edges, and scales down for picture-in-picture. Very short video windows hide it when there is no space above the controls. Thumbnail requests are delayed briefly during pointer movement.
 
 - Twitch replay lookup uses the saved Twitch OAuth token and Client ID to match the current live stream to a public `archive` VOD by stream ID or start time. If Twitch does not expose a public archive for the current stream, the seekbar stays disabled with the reason in its tooltip/status text.
@@ -475,6 +495,7 @@ Hover over the timeline to preview its timestamp without seeking. Twitch archive
 ## Home Page VODs
 
 - The VODs segment can search Twitch or Kick for the streamer shown in the search box.
+- Type part of a streamer name to see matching channels on the selected platform. Kick search needs at least three characters. Select a channel to load its videos; a single confirmed exact login and channel URLs retain automatic loading. When multiple channels match, all remain selectable even if one login matches exactly (for example, `timmy` alongside `iiTzTimmy`). Changing the query or platform cancels older searches, and filters, refresh, and pagination use the selected channel's canonical login or slug.
 - Twitch VOD browsing searches Helix by streamer login, resolves the broadcaster through `users`, and lists public Twitch videos through `videos`. Filters are `Past broadcasts`, `Highlights`, `Uploads`, and `All`; `Load More` appends older results using Twitch's pagination cursor.
 - Kick VOD browsing reads Kick's website videos endpoint for the channel slug. It is best-effort and can fail if Kick blocks or changes the website response. Kick pagination is not exposed in the same way as Twitch, so only the returned page is listed.
 - VOD cards show thumbnails, title, streamer, publish date, duration, view count, and video type/source where available.

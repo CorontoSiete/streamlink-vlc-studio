@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
@@ -279,7 +280,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
             }
         }
 
-        CancelActiveWrite(activeCancellation);
+        CancellationSourceCleanup.Cancel(activeCancellation);
     }
 
     // A loaded chat frame supersedes both the startup clear and renderer-produced blank frames.
@@ -301,7 +302,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
             }
         }
 
-        CancelActiveWrite(activeCancellation);
+        CancellationSourceCleanup.Cancel(activeCancellation);
     }
 
     public void Dispose()
@@ -340,8 +341,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         Interlocked.Increment(ref criticalGeneration);
         Interlocked.Increment(ref emptyCriticalGeneration);
         Interlocked.Increment(ref persistentCriticalClearGeneration);
-        lifetimeCancellation.Cancel();
-        CancelActiveWrite(activeCancellation);
+        CancellationSourceCleanup.Cancel(lifetimeCancellation);
+        CancellationSourceCleanup.Cancel(activeCancellation);
         _ = CompleteDisposalAsync(activeLoop, completion);
         return completion.Task;
     }
@@ -357,7 +358,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Debug, "Native VLC replay overlay write-loop disposal failed.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, "ChatOverlay", "Native VLC replay overlay write-loop disposal failed.", ex);
         }
         finally
         {
@@ -500,7 +501,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Warning, "Native VLC replay overlay write gate failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay write gate failed.", ex);
         }
         finally
         {
@@ -542,22 +543,6 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
             }
 
             TrimQueuedBytesLocked(protectedRequest: null);
-        }
-    }
-
-    private static void CancelActiveWrite(CancellationTokenSource? cancellation)
-    {
-        if (cancellation is null)
-        {
-            return;
-        }
-
-        try
-        {
-            cancellation.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
         }
     }
 
@@ -717,8 +702,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
                 RemoveSpecificQueuedWriteLocked(protectedRequest))
             {
                 CountDroppedWrite();
-                SafeLog(
-                    AppLogLevel.Warning,
+                logger.WriteSafely(
+                    AppLogLevel.Warning, "ChatOverlay",
                     "A valid native-overlay frame could not be admitted because the reserved control capacity was exhausted.");
                 continue;
             }
@@ -758,8 +743,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
             if (protectedRequest is not null && RemoveSpecificQueuedWriteLocked(protectedRequest))
             {
                 CountDroppedWrite();
-                SafeLog(
-                    AppLogLevel.Warning,
+                logger.WriteSafely(
+                    AppLogLevel.Warning, "ChatOverlay",
                     "A valid native-overlay request could not be retained within the 64 MiB write queue.");
                 continue;
             }
@@ -1031,8 +1016,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         var droppedSuffix = dropped > 0
             ? $" Dropped {dropped} stale replay overlay frame write{(dropped == 1 ? "" : "s")}."
             : "";
-        SafeLog(
-            AppLogLevel.Debug,
+        logger.WriteSafely(
+            AppLogLevel.Debug, "ChatOverlay",
             $"Native VLC replay overlay pipe write took {elapsed.TotalMilliseconds:0} ms.{droppedSuffix}");
     }
 
@@ -1041,8 +1026,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         Exception? exception,
         TimeSpan delay)
     {
-        SafeLog(
-            AppLogLevel.Debug,
+        logger.WriteSafely(
+            AppLogLevel.Debug, "ChatOverlay",
             BuildWriteFailureMessage(
                 request,
                 $"Native VLC replay overlay write failed; retrying in {delay.TotalMilliseconds:0} ms."),
@@ -1053,8 +1038,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         NativeReplayOverlayFrameWriteRequest request,
         Exception? exception)
     {
-        SafeLog(
-            AppLogLevel.Warning,
+        logger.WriteSafely(
+            AppLogLevel.Warning, "ChatOverlay",
             BuildWriteFailureMessage(
                 request,
                 "Native VLC replay overlay write retries were exhausted; parked the latest state until reconnect."),
@@ -1063,16 +1048,16 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
 
     private void LogFinalWriteFailure(NativeReplayOverlayFrameWriteRequest request, Exception exception)
     {
-        SafeLog(
-            AppLogLevel.Warning,
+        logger.WriteSafely(
+            AppLogLevel.Warning, "ChatOverlay",
             BuildWriteFailureMessage(request, "Native VLC replay overlay write failed."),
             exception);
     }
 
     private void LogInvalidRequest(string reason)
     {
-        SafeLog(
-            AppLogLevel.Warning,
+        logger.WriteSafely(
+            AppLogLevel.Warning, "ChatOverlay",
             $"Rejected invalid native VLC replay overlay write request: {reason}.");
     }
 
@@ -1084,7 +1069,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Warning, "Native VLC replay overlay success callback failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay success callback failed.", ex);
         }
     }
 
@@ -1096,7 +1081,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Warning, "Native VLC replay overlay failure callback failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay failure callback failed.", ex);
         }
     }
 
@@ -1108,7 +1093,7 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Warning, "Native VLC replay overlay version callback failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay version callback failed.", ex);
             return long.MinValue;
         }
     }
@@ -1121,19 +1106,8 @@ internal sealed class NativeReplayOverlayFrameWriteGate : IDisposable, IAsyncDis
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Warning, "Native VLC replay overlay pipe callback failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay pipe callback failed.", ex);
             return null;
-        }
-    }
-
-    private void SafeLog(AppLogLevel level, string message, Exception? exception = null)
-    {
-        try
-        {
-            logger.Write(level, "ChatOverlay", message, exception);
-        }
-        catch (Exception)
-        {
         }
     }
 

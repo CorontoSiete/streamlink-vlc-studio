@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Windows;
 using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 
@@ -34,23 +35,9 @@ internal sealed class KickClipService(
                 Height = 800,
                 WindowStyle = 0
             });
-            Task<CoreWebView2Controller> creation;
-            try
-            {
-                creation = controllerFactory is null
-                    ? environment!.CreateCoreWebView2ControllerAsync(host.Handle)
-                    : controllerFactory(host.Handle);
-            }
-            catch { host.Dispose(); throw; }
-
-            CoreWebView2Controller controller;
-            try { controller = await creation.WaitAsync(TimeSpan.FromSeconds(30), token); }
-            catch
-            {
-                // Native creation cannot be canceled. Retain its parent until the late controller is closed.
-                _ = CloseLateControllerAsync(creation, host);
-                throw;
-            }
+            var controller = await WebView2ControllerLifetime.CreateAsync(host,
+                controllerFactory ?? (handle => environment!.CreateCoreWebView2ControllerAsync(handle)),
+                TimeSpan.FromSeconds(30), token);
 
             try
             {
@@ -85,11 +72,4 @@ internal sealed class KickClipService(
 
     private const string TimeoutMessage = "Kick clip creation timed out. Check your channel clips before retrying. " +
         "If sign-in or a browser check is needed, open Detect Kick follows in Settings first.";
-
-    private static async Task CloseLateControllerAsync(Task<CoreWebView2Controller> creation, HwndSource host)
-    {
-        try { (await creation).Close(); }
-        catch (Exception) { /* A failed native creation has no controller to close. */ }
-        finally { host.Dispose(); }
-    }
 }

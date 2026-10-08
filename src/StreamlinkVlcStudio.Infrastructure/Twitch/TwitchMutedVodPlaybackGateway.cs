@@ -7,6 +7,7 @@ using StreamlinkVlcStudio.Core.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 using StreamlinkVlcStudio.Infrastructure.Replay;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
@@ -36,7 +37,9 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
     private readonly TimeSpan probeTimeout;
     private readonly TwitchMutedVodRepairProxy proxy;
     private readonly TwitchVodPlaylistHandoff playlistHandoff;
-    private int disposed;
+    private readonly object disposalGate = new();
+    private bool disposed;
+    private Task? disposalTask;
 
     internal TwitchMutedVodPlaybackGateway(IAppLogger logger, TwitchVodPlaylistHandoff? playlistHandoff = null)
         : this(
@@ -81,7 +84,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
         CancellationToken cancellationToken, bool preferFastReplay = false)
     {
         ArgumentNullException.ThrowIfNull(mediaUri);
-        if (Volatile.Read(ref disposed) != 0 ||
+        if (Volatile.Read(ref disposed) ||
             !IsTwitchVodPlaylist(mediaUri))
         {
             return PlaybackMediaSource.Direct(mediaUri);
@@ -110,7 +113,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             var liveReplaySegmentDuration = TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(playlist, libVlcVersion);
             var liveReplay = liveReplaySegmentDuration > TimeSpan.Zero;
             if (liveReplay)
-                logger.Write(AppLogLevel.Debug, "Replay", "Using the live replay demuxer for a growing MPEG-TS playlist.");
+                logger.WriteSafely(AppLogLevel.Debug, "Replay", "Using the live replay demuxer for a growing MPEG-TS playlist.");
             if (inspection.MutedSegments == 0 && !fastReplay)
             {
                 LogDirectPlayback(media, player, inspection);
@@ -121,13 +124,13 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             // Reject a playlist the proxy could not serve now, while falling back is still possible.
             _ = TwitchMutedVodPlaylist.RewriteForRepair(playlist, mediaUri, static uri => uri.AbsoluteUri);
             var session = proxy.OpenSession(source, playlist, proxyAllSegments: fastReplay);
-            if (inspection.MutedSegments > 0) logger.Write(
+            if (inspection.MutedSegments > 0) logger.WriteSafely(
                 AppLogLevel.Info,
                 TwitchMutedVodRepairLog.Source,
                 $"{media} lists {inspection.MutedSegments} muted segment(s); removing invalid timestamps " +
                 $"through the local repair proxy for {player}. These can prevent end-of-media even in VLC 3.0.23.");
             if (fastReplay)
-                logger.Write(AppLogLevel.Info, "VOD resume", "Using VLC's FFmpeg demuxer for a completed MPEG-TS replay through the validated local transport.");
+                logger.WriteSafely(AppLogLevel.Info, "VOD resume", "Using VLC's FFmpeg demuxer for a completed MPEG-TS replay through the validated local transport.");
             return new PlaybackMediaSource(session.PlaylistUri, session, useAvformatDemuxer: fastReplay,
                 replaySeekPreroll: preroll, useLiveReplayDemuxer: liveReplay,
                 liveReplaySegmentDuration: liveReplaySegmentDuration);
@@ -138,7 +141,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
         }
         catch (Exception ex) when (IsInspectionFailure(ex))
         {
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 TwitchMutedVodRepairLog.Source,
                 $"Could not inspect {media} for muted segments within {probeTimeout.TotalSeconds:0.#} seconds; playing it directly. " +
@@ -148,17 +151,18 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
         }
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
-        {
-            return;
-        }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
-        await proxy.DisposeAsync().ConfigureAwait(false);
-        if (ownsHttpClient)
+    private async Task DisposeCoreAsync()
+    {
+        try
         {
-            httpClient.Dispose();
+            await proxy.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (ownsHttpClient) httpClient.Dispose();
         }
     }
 
@@ -195,7 +199,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
     {
         if (inspection.UnsupportedMutedSegments > 0)
         {
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 TwitchMutedVodRepairLog.Source,
                 $"{media} lists {inspection.UnsupportedMutedSegments} muted segment(s) in a container the repair does not handle; " +
@@ -208,7 +212,7 @@ internal sealed class TwitchMutedVodPlaybackGateway : IPlaybackMediaSourceGatewa
             : inspection.IsComplete
                 ? "is complete and lists no muted segments"
                 : "lists no muted segments yet but is still growing, so it may gain some that are not repaired";
-        logger.Write(
+        logger.WriteSafely(
             AppLogLevel.Debug,
             TwitchMutedVodRepairLog.Source,
             $"{media} {state}; playing it directly on {player}.");

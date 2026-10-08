@@ -67,7 +67,11 @@ struct tls_conn {
     char                    host[MAX_HOST_LEN + 1];
 };
 
-static char g_last_error[256];
+#ifdef _MSC_VER
+static __declspec(thread) char g_last_error[256];
+#else
+static _Thread_local char g_last_error[256];
+#endif
 
 static void set_error(const char *fmt, ...) {
     va_list ap;

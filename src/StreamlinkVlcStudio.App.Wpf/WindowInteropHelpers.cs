@@ -57,6 +57,12 @@ internal static partial class WindowInteropHelpers
 {
     internal const uint MonitorDefaultToNearest = 0x00000002;
 
+    internal static int GetSignedLowWord(IntPtr value) =>
+        unchecked((short)(value.ToInt64() & 0xFFFF));
+
+    internal static int GetSignedHighWord(IntPtr value) =>
+        unchecked((short)((value.ToInt64() >> 16) & 0xFFFF));
+
     [LibraryImport("dwmapi.dll")]
     private static partial int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref DwmMargins margins);
 

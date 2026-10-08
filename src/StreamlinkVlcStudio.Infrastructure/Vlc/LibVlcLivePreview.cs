@@ -61,7 +61,7 @@ public sealed class LibVlcLivePreview
                 lookup.Token.ThrowIfCancellationRequested();
             }
             if (source is null) return false;
-            logger?.Write(AppLogLevel.Debug, "Hover preview", $"Direct preview source ready in {elapsed.ElapsedMilliseconds} ms ({request.Target.Platform}).");
+            logger.WriteSafely(AppLogLevel.Debug, "Hover preview", $"Direct preview source ready in {elapsed.ElapsedMilliseconds} ms ({request.Target.Platform}).");
             using var playback = CancellationTokenSource.CreateLinkedTokenSource(token, source.FallbackToken);
             // The deadline applies only to first video; a successful preview can run
             // as long as it is hovered. A failed direct path retains Streamlink fallback.
@@ -79,7 +79,7 @@ public sealed class LibVlcLivePreview
         catch (Exception ex) when (LivePreviewPlaylistSession.IsSourceFailure(ex))
         {
             // Token payloads, signed URLs and provider diagnostics must not enter logs.
-            logger?.Write(AppLogLevel.Debug, "Hover preview", $"Using Streamlink preview transport ({ex.GetType().Name}).");
+            logger.WriteSafely(AppLogLevel.Debug, "Hover preview", $"Using Streamlink preview transport ({ex.GetType().Name}).");
             return false;
         }
         finally

@@ -234,25 +234,6 @@ internal sealed class CatalogLoadCoordinator
         }
     }
 
-    internal static void RaiseSafely(EventHandler? handlers, object sender, EventArgs? changes = null)
-    {
-        if (handlers is null)
-        {
-            return;
-        }
-
-        foreach (EventHandler handler in handlers.GetInvocationList())
-        {
-            try
-            {
-                handler(sender, changes ?? EventArgs.Empty);
-            }
-            catch (Exception)
-            {
-            }
-        }
-    }
-
     private sealed class Entry(bool preserveFromEviction)
     {
         internal bool PreserveFromEviction { get; } = preserveFromEviction;

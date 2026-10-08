@@ -46,6 +46,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     private readonly bool disposeClient;
     private readonly TimeSpan downloadIdleTimeout;
     private readonly Func<CancellationToken, Task<bool>> verifyInstallation;
+    private readonly Action<ProcessStartInfo> startUpdateHelper;
     private readonly Threading.AsyncOperationGate operationGate = new();
     private readonly HashSet<Guid> consumedCompletions = [];
     private readonly HashSet<Guid> failedOperations = [];
@@ -70,7 +71,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         RSAParameters? trustedKey = null,
         string? trustedKeyId = null,
         TimeSpan? downloadIdleTimeout = null,
-        Func<CancellationToken, Task<bool>>? verifyInstallation = null)
+        Func<CancellationToken, Task<bool>>? verifyInstallation = null,
+        Action<ProcessStartInfo>? startUpdateHelper = null)
     {
         this.logger = logger;
         this.httpClient = httpClient;
@@ -80,6 +82,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         this.detectInstallKind = detectInstallKind ?? (() => DetectInstallKind(this.applicationDirectory));
         this.getCurrentVersion = getCurrentVersion ?? GetCurrentVersion;
         this.verifyInstallation = verifyInstallation ?? VerifyInstalledRuntimeAsync;
+        this.startUpdateHelper = startUpdateHelper ?? StartUpdateHelper;
         this.trustedKey = trustedKey ?? new RSAParameters { Modulus = PublicModulus, Exponent = PublicExponent };
         this.trustedKeyId = trustedKeyId ?? (trustedKey is null ? TrustedKeyId : ComputeKeyId(this.trustedKey));
         if (!string.Equals(ComputeKeyId(this.trustedKey), this.trustedKeyId, StringComparison.Ordinal))
@@ -96,6 +99,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
 
     public event EventHandler<AppUpdateStateChangedEventArgs>? StateChanged;
     public AppUpdateState State => state;
+    public Version? PendingRepairVersion { get; private set; }
 
     public async Task<AppUpdateCheckResult> CheckAsync(UpdateCheckReason reason, CancellationToken cancellationToken = default)
     {
@@ -157,6 +161,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 await ResolveRepairAsync(current, cancellationToken).ConfigureAwait(false);
                 repairing = false;
                 TryCleanupCache();
+                PendingRepairVersion = ReadPendingRepair()?.TargetVersion;
             }
             var available = release.Version > current || repairing;
             var notifyOnly = available && kind is AppInstallKind.Zip or AppInstallKind.Unmanaged;
@@ -300,10 +305,10 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     public async Task<AppUpdateLaunchResult> ApplyAndRestartAsync(PreparedAppUpdate update, CancellationToken cancellationToken = default)
     {
         using var lease = await operationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
-        return await Task.Run(() => ApplyAndRestartCore(update, cancellationToken), cancellationToken).ConfigureAwait(false);
+        return await Task.Run(() => ApplyAndRestartCoreAsync(update, cancellationToken), cancellationToken).ConfigureAwait(false);
     }
 
-    private AppUpdateLaunchResult ApplyAndRestartCore(PreparedAppUpdate update, CancellationToken cancellationToken)
+    private async Task<AppUpdateLaunchResult> ApplyAndRestartCoreAsync(PreparedAppUpdate update, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try
@@ -333,18 +338,36 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             info.ArgumentList.Add(argument);
         }
 
-        SetState(new(AppUpdatePhase.Launching, "Restarting to install the update...", update.Release, update));
         try
         {
-            var process = Process.Start(info) ?? throw new InvalidOperationException("The update helper did not start.");
-            process.Dispose();
+            // Record intent before the helper can replace the application. Power
+            // loss or a terminated helper may prevent any completion from being
+            // written; the persistent notice keeps same-version repair available
+            // after the verified package expires or is damaged.
+            var pending = new AppUpdateCompletion(update.OperationId, AppUpdateCompletionOutcome.Failed, 1603, logPath,
+                "Setup has not yet reported completion. Check for updates to finish or repair this version.", utcNow(), update.Release.Version);
+            var failurePath = Path.Combine(update.OperationDirectory, "failure.json");
+            var repairPath = Path.Combine(updateRoot, "pending-repair.json");
+            AssertPathNoReparsePoints(failurePath);
+            AssertPathNoReparsePoints(repairPath);
+            await WriteAtomicJsonAsync(failurePath, pending, cancellationToken, flushToDisk: true).ConfigureAwait(false);
+            await WriteAtomicJsonAsync(repairPath, pending, cancellationToken, flushToDisk: true).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            failedOperations.Add(update.OperationId);
+            SetState(new(AppUpdatePhase.Launching, "Restarting to install the update...", update.Release, update));
+            startUpdateHelper(info);
             return new AppUpdateLaunchResult(true, "Update helper started. The application will now close.", logPath);
         }
         catch (Exception ex)
         {
-            SetState(new(AppUpdatePhase.Ready, $"Could not start the update helper. Try Restart and install again. {ex.Message}", update.Release, update));
+            SetState(new(AppUpdatePhase.Ready, $"Could not start installation. Try Restart and install again. {ex.Message}", update.Release, update));
             throw;
         }
+    }
+
+    private static void StartUpdateHelper(ProcessStartInfo info)
+    {
+        using var process = Process.Start(info) ?? throw new InvalidOperationException("The update helper did not start.");
     }
 
     public async Task<AppUpdateCompletion?> ConsumeCompletionAsync(CancellationToken cancellationToken = default)
@@ -357,7 +380,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             {
                 // An unreadable completion must not prevent independent cache cleanup.
                 // Keep file traversal and deletion retries off the application's UI thread.
-                TryCleanupCache();
+                try { TryCleanupCache(); }
+                finally { PendingRepairVersion = ReadPendingRepair()?.TargetVersion; }
             }
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -518,7 +542,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
             throw new InvalidDataException("The signed dependency minimums are invalid.");
         var setup = ManifestAsset(manifest.Setup, SelectAsset(github, SetupAssetName));
         var zip = ManifestAsset(manifest.Zip, SelectAsset(github, ZipAssetName));
-        return new(version, manifest.Tag, manifest.Commit, manifest.Repository, page, manifest.ProtocolVersion, setup, zip, manifest.DependencyMinimums ?? new Dictionary<string, string>());
+        return new(version, manifest.Tag, manifest.Commit, manifest.Repository, page, manifest.ProtocolVersion, setup, zip, manifest.DependencyMinimums);
     }
 
     private static bool IsDependencyVersion(string? value)
@@ -1196,11 +1220,12 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         }
     }
 
-    private static Task WriteAtomicJsonAsync<T>(string path, T value, CancellationToken token) =>
+    private static Task WriteAtomicJsonAsync<T>(string path, T value, CancellationToken token, bool flushToDisk = false) =>
         AtomicFile.WriteAsync(
             path,
             (stream, cancellationToken) => JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken),
-            token);
+            token,
+            flushToDisk);
 
     private void SetState(AppUpdateState value)
     {

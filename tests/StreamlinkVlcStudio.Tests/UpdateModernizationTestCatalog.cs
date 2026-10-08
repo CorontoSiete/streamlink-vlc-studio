@@ -42,6 +42,8 @@ internal static partial class UpdateModernizationTestCatalog
 
     internal static IReadOnlyList<(string Name, Func<Task> Run)> RefreshTests { get; } =
     [
+        ("review robustness: automatic updater survives completion diagnostics failures", () => AutomaticUpdateDiagnosticsAsync(true)),
+        ("review robustness: automatic updater survives retry diagnostics failures", () => AutomaticUpdateDiagnosticsAsync(false)),
         ("signed updater refreshes cached release metadata when retrying a failed download", RetryRefreshesReleaseAsync),
         ("signed updater preserves available download retry and notification actions after failed refresh", FailedRefreshPreservesActionsAsync),
         ("signed updater retry rejects invalid replacement metadata and preserves prior trust", RetryRejectsInvalidReplacementAsync),
@@ -1269,10 +1271,11 @@ internal static partial class UpdateModernizationTestCatalog
     }
 
     private static StagedAppUpdateService ManagedService(HttpClient client, string root, RSA rsa, Func<DateTimeOffset>? now = null, Version? version = null,
-        Func<CancellationToken, Task<bool>>? verifyInstallation = null) =>
+        Func<CancellationToken, Task<bool>>? verifyInstallation = null, Action<ProcessStartInfo>? startUpdateHelper = null) =>
         new(new MemoryLogger(), client, root, Path.Combine(root, "updates"), now,
             detectInstallKind: () => AppInstallKind.Managed,
-            getCurrentVersion: () => version ?? new Version(1, 7, 0), trustedKey: rsa.ExportParameters(false), verifyInstallation: verifyInstallation);
+            getCurrentVersion: () => version ?? new Version(1, 7, 0), trustedKey: rsa.ExportParameters(false),
+            verifyInstallation: verifyInstallation, startUpdateHelper: startUpdateHelper);
 
     private static async Task RestoresPreparedDownloadAsync()
     {

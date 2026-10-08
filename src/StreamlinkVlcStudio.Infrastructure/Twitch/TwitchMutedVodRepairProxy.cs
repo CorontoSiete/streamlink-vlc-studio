@@ -10,6 +10,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Twitch;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Replay;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Twitch;
 
@@ -82,6 +83,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
     private TcpListener? listener;
     private Task? acceptLoop;
     private Task? disposalTask;
+    private bool disposed;
     private int port;
     private long lastRejectionLogTicks = long.MinValue / 2;
 
@@ -109,7 +111,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(source);
         lock (lifecycleGate)
         {
-            ObjectDisposedException.ThrowIf(disposalTask is not null, this);
+            ObjectDisposedException.ThrowIf(disposed, this);
             EnsureListeningCore();
             var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(TokenByteLength));
             var session = new Session(token, source, initialPlaylist, proxyAllSegments);
@@ -120,14 +122,8 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         }
     }
 
-    public ValueTask DisposeAsync()
-    {
-        lock (lifecycleGate)
-        {
-            disposalTask ??= DisposeCoreAsync();
-            return new ValueTask(disposalTask);
-        }
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(lifecycleGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
     private void EnsureListeningCore()
     {
@@ -148,7 +144,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         Volatile.Write(ref port, ((IPEndPoint)nextListener.LocalEndpoint).Port);
         listener = nextListener;
         acceptLoop = AcceptLoopAsync(nextListener, cancellation.Token);
-        logger.Write(
+        logger.WriteSafely(
             AppLogLevel.Info,
             TwitchMutedVodRepairLog.Source,
             previousPort == 0
@@ -191,13 +187,13 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         {
             return;
         }
-        session.Revoke();
+        session.Revoke(ReportCancellationFailure);
 
         var statistics = session.Statistics;
         var unrepaired = statistics.UnrepairedSegments == 0
             ? ""
             : $" ({statistics.UnrepairedSegments} of them had nothing to repair)";
-        logger.Write(
+        logger.WriteSafely(
             AppLogLevel.Info,
             TwitchMutedVodRepairLog.Source,
             $"Released the muted VOD repair session for {TwitchMutedVodRepairLog.Describe(session.Source.PlaylistUri)} " +
@@ -206,36 +202,50 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
-        // Runs once disposalTask is set, after which OpenSession refuses to touch listener and
+        // Runs once disposal is published, after which OpenSession refuses to touch listener and
         // acceptLoop; that is what makes reading them here without lifecycleGate safe.
-        foreach (var session in sessions.Values) session.Revoke();
-        await cancellation.CancelAsync().ConfigureAwait(false);
-        listener?.Dispose();
+        try
+        {
+            foreach (var session in sessions.Values) session.Revoke(ReportCancellationFailure);
+            CancellationSourceCleanup.Cancel(cancellation, ReportCancellationFailure);
+            listener?.Dispose();
 
-        var loop = acceptLoop;
-        if (loop is not null)
+            var loop = acceptLoop;
+            if (loop is not null)
+            {
+                try
+                {
+                    await loop.ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException)
+                {
+                }
+            }
+        }
+        finally
         {
             try
             {
-                await loop.ConfigureAwait(false);
+                await DrainBackgroundTasksAsync().ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException)
+            finally
             {
+                sessions.Clear();
+                cancellation.Dispose();
+                connectionSlots.Dispose();
+                transferSlots.Dispose();
+                lock (lifecycleGate)
+                {
+                    listener = null;
+                    acceptLoop = null;
+                }
             }
-        }
-
-        await DrainBackgroundTasksAsync().ConfigureAwait(false);
-        sessions.Clear();
-        cancellation.Dispose();
-        connectionSlots.Dispose();
-        transferSlots.Dispose();
-
-        lock (lifecycleGate)
-        {
-            listener = null;
-            acceptLoop = null;
         }
     }
+
+    private void ReportCancellationFailure(AggregateException exception) =>
+        logger.WriteSafely(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source,
+            "A muted VOD repair cancellation callback failed.", exception);
 
     private async Task AcceptLoopAsync(TcpListener activeListener, CancellationToken cancellationToken)
     {
@@ -247,7 +257,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         {
             // Nothing awaits this task once a restart replaced it, so a failure that the loop did
             // not anticipate has to be reported here or it would strand muted VODs without a trace.
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Error,
                 TwitchMutedVodRepairLog.Source,
                 "The muted VOD repair proxy listener failed unexpectedly; muted VODs that are playing will stall. It restarts with the next muted VOD.",
@@ -280,7 +290,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
                 if (ex is not SocketException || consecutiveFailures >= MaxConsecutiveAcceptFailures)
                 {
                     // OpenSession notices the finished loop and starts a new listener.
-                    logger.Write(
+                    logger.WriteSafely(
                         AppLogLevel.Error,
                         TwitchMutedVodRepairLog.Source,
                         "The muted VOD repair proxy listener stopped unexpectedly; muted VODs that are playing will stall. It restarts with the next muted VOD.",
@@ -288,7 +298,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
                     return;
                 }
 
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Debug,
                     TwitchMutedVodRepairLog.Source,
                     "The muted VOD repair proxy could not accept a connection; retrying.",
@@ -326,7 +336,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             return;
         }
 
-        logger.Write(
+        logger.WriteSafely(
             AppLogLevel.Warning,
             TwitchMutedVodRepairLog.Source,
             $"The muted VOD repair proxy refused a request because {reason}; playback of muted VODs may stall.");
@@ -352,7 +362,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         {
             // HandleClientAsync handles its own failures; this only keeps a future regression
             // there from becoming an unobserved task fault.
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Error,
                 TwitchMutedVodRepairLog.Source,
                 "A muted VOD repair connection handler faulted unexpectedly.",
@@ -423,7 +433,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source, "Muted VOD repair request failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source, "Muted VOD repair request failed.", ex);
         }
         finally
         {
@@ -504,7 +514,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 TwitchMutedVodRepairLog.Source,
                 $"Could not load the playlist {TwitchMutedVodRepairLog.Describe(session.Source.PlaylistUri)} for the muted VOD repair proxy.",
@@ -561,7 +571,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.Write(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source, $"Could not fetch the muted segment {segment}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source, $"Could not fetch the muted segment {segment}.", ex);
             await WriteTextResponseAsync(stream, 502, "Bad Gateway", "The segment is unavailable.", cancellationToken)
                 .ConfigureAwait(false);
             return;
@@ -588,7 +598,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
                 {
                     // Every muted segment seen so far carried the invalid timestamps. One without
                     // them is either harmless or uses a layout the repair does not recognize.
-                    logger.Write(
+                    logger.WriteSafely(
                         AppLogLevel.Warning,
                         TwitchMutedVodRepairLog.Source,
                         $"Found nothing to repair in the muted segment {segment}. If playback freezes there, Twitch changed how muted segments are written.");
@@ -599,7 +609,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             {
                 // The response has started, so the only remaining signal is closing the connection.
                 // A player that simply went away surfaces as a plain IOException and is not logged.
-                logger.Write(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source, $"The muted segment {segment} was interrupted.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, TwitchMutedVodRepairLog.Source, $"The muted segment {segment} was interrupted.", ex);
             }
         }
     }
@@ -742,7 +752,7 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             }
         }
 
-        internal void Revoke()
+        internal void Revoke(Action<AggregateException> reportFailure)
         {
             TcpClient[] active;
             lock (gate)
@@ -755,12 +765,18 @@ internal sealed class TwitchMutedVodRepairProxy : IAsyncDisposable
             // FFmpeg owns its nested HTTP reads; VLC cannot interrupt those reads.
             // Closing this session's sockets lets input teardown finish even if an
             // upstream request is still waiting on its bounded timeout.
-            requestsCancellation.Cancel();
-            foreach (var client in active) client.Dispose();
-            lock (gate)
+            try
             {
-                revoking = false;
-                if (clients.Count == 0) requestsCancellation.Dispose();
+                CancellationSourceCleanup.Cancel(requestsCancellation, reportFailure);
+                foreach (var client in active) client.Dispose();
+            }
+            finally
+            {
+                lock (gate)
+                {
+                    revoking = false;
+                    if (clients.Count == 0) requestsCancellation.Dispose();
+                }
             }
         }
 

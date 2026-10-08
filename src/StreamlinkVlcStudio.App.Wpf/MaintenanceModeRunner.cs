@@ -1,10 +1,11 @@
 using Microsoft.Toolkit.Uwp.Notifications;
+using StreamStudio.Installation;
 
 namespace StreamlinkVlcStudio.App.Wpf;
 
 internal static class MaintenanceModeRunner
 {
-    internal const string ShutdownEventName = "Local\\StreamStudio.App.MaintenanceShutdown";
+    internal const string ShutdownEventName = WindowsApplicationShutdown.ShutdownEventName;
 
     public static bool TryRun(string[] args, out int exitCode)
     {
@@ -42,30 +43,11 @@ internal static class MaintenanceModeRunner
         }
     }
 
-    private static bool RequestShutdown()
-    {
-        try
-        {
-            using var signal = EventWaitHandle.OpenExisting(ShutdownEventName);
-            signal.Set();
-        }
-        catch (WaitHandleCannotBeOpenedException) { return true; }
-        catch (UnauthorizedAccessException) { return false; }
+    private static bool RequestShutdown() => WindowsApplicationShutdown.Request(TimeSpan.FromSeconds(20));
 
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
-        while (DateTime.UtcNow < deadline)
-        {
-            using var mutex = new Mutex(false, App.SingleInstanceMutexName);
-            try
-            {
-                if (mutex.WaitOne(TimeSpan.FromMilliseconds(200)))
-                {
-                    mutex.ReleaseMutex();
-                    return true;
-                }
-            }
-            catch (AbandonedMutexException) { return true; }
-        }
-        return false;
-    }
+    internal static bool RequestShutdown(TimeSpan timeout, string shutdownEventName, string instanceMutexName) =>
+        WindowsApplicationShutdown.Request(timeout, shutdownEventName, instanceMutexName);
+
+    internal static bool RequestShutdown(TimeSpan timeout, params (string EventName, string MutexName)[] instances) =>
+        WindowsApplicationShutdown.Request(timeout, instances);
 }

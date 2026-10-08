@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using StreamlinkVlcStudio.Core.Commands;
 using StreamlinkVlcStudio.Core.Models;
 using static StreamlinkVlcStudio.Core.Text.StringValues;
 

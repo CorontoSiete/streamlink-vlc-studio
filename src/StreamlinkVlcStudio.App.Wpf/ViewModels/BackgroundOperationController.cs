@@ -32,6 +32,13 @@ internal sealed class BackgroundOperationController(IAppLogger logger)
             TaskScheduler.Default);
     }
 
+    internal Task WaitForCurrentAsync()
+    {
+        Task[] pending;
+        lock (gate) pending = operations.ToArray();
+        return WaitForCompletionAsync(pending);
+    }
+
     internal async Task WaitForIdleAsync()
     {
         while (true)
@@ -39,11 +46,16 @@ internal sealed class BackgroundOperationController(IAppLogger logger)
             Task[] pending;
             lock (gate) pending = operations.ToArray();
             if (pending.Length == 0) return;
-            try { await Task.WhenAll(pending).ConfigureAwait(false); }
-            catch { /* Track observes failures; shutdown still waits for every operation. */ }
+            await WaitForCompletionAsync(pending).ConfigureAwait(false);
             lock (gate)
                 foreach (var task in pending) operations.Remove(task);
         }
+    }
+
+    private static async Task WaitForCompletionAsync(Task[] pending)
+    {
+        try { await Task.WhenAll(pending).ConfigureAwait(false); }
+        catch { /* Track observes failures; shutdown still waits for every operation. */ }
     }
 
     public async Task DrainAsync(TimeSpan timeout)
@@ -65,7 +77,7 @@ internal sealed class BackgroundOperationController(IAppLogger logger)
             var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
             if (remaining <= TimeSpan.Zero)
             {
-                logger.Write(AppLogLevel.Warning, "UI", "Timed out waiting for background UI operations during shutdown.");
+                logger.WriteSafely(AppLogLevel.Warning, "UI", "Timed out waiting for background UI operations during shutdown.");
                 return;
             }
 
@@ -75,7 +87,7 @@ internal sealed class BackgroundOperationController(IAppLogger logger)
             }
             catch (TimeoutException)
             {
-                logger.Write(AppLogLevel.Warning, "UI", "Timed out waiting for background UI operations during shutdown.");
+                logger.WriteSafely(AppLogLevel.Warning, "UI", "Timed out waiting for background UI operations during shutdown.");
                 return;
             }
             catch (OperationCanceledException)
@@ -84,7 +96,7 @@ internal sealed class BackgroundOperationController(IAppLogger logger)
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Warning, "UI", "A background UI operation failed during shutdown.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "UI", "A background UI operation failed during shutdown.", ex);
             }
         }
     }

@@ -82,8 +82,7 @@ internal sealed class TwitchVodUrlResolver
         {
             if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
             {
-                if (pendingSegment || !decimal.TryParse(line[8..].Split(',')[0], NumberStyles.AllowDecimalPoint,
-                        CultureInfo.InvariantCulture, out var duration) || duration <= 0 || duration > 3600)
+                if (pendingSegment || !HlsPlaylistPolicy.TryReadSegmentDuration(line.AsSpan(8), 3600, out _))
                     throw new InvalidDataException("The selected VOD playlist has an invalid segment duration.");
                 pendingSegment = true;
             }

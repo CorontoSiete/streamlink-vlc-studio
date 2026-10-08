@@ -102,7 +102,7 @@ $global:LASTEXITCODE = if ($args[0] -eq $env:STUDIO_DEV_TEST_FAIL) { 19 } else {
     Assert-Development ($child.Path.StartsWith($expectedRoot + [IO.Path]::PathSeparator)) 'Child PATH did not prefer the selected SDK.'
     Assert-Development ($child.DotNetRoot -ceq $expectedRoot -and $child.DotNetRootX64 -ceq $expectedRoot) 'Child SDK roots differ from the selected host.'
     Assert-Development ($child.HostPath -ceq (Join-Path $expectedRoot 'dotnet.ps1')) 'Child host override differs from the selected SDK.'
-    Assert-Development ($child.Filter -ceq $filter -and $child.SkipInteractive -ceq 'true' -and $child.MaximumSkips -ceq '276') 'Explicit test selection or headless defaults were lost.'
+    Assert-Development ($child.Filter -ceq $filter -and $child.SkipInteractive -ceq 'true' -and $child.MaximumSkips -ceq '277') 'Explicit test selection or headless defaults were lost.'
     Assert-Development ([string]::IsNullOrEmpty($child.IsolatedChild)) 'Stale child marker disabled test isolation.'
     Write-Host 'PASS development: SDK propagation, focused tests, build ordering, and shell restoration'
 

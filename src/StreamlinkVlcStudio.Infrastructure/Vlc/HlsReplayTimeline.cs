@@ -4,6 +4,7 @@ using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Infrastructure.Hls;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 using StreamlinkVlcStudio.Infrastructure.Replay;
 
@@ -70,8 +71,7 @@ internal static class HlsReplayTimeline
             if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
             {
                 if (pending.HasValue ||
-                    !decimal.TryParse(line[8..].Split(',')[0], NumberStyles.AllowDecimalPoint,
-                        CultureInfo.InvariantCulture, out var duration) || duration is <= 0 or > 3600) return null;
+                    !HlsPlaylistPolicy.TryReadSegmentDuration(line.AsSpan(8), 3600, out var duration)) return null;
                 pending = duration;
             }
             else if (line[0] != '#')
@@ -132,7 +132,7 @@ internal static class HlsReplayTimeline
         }
         catch
         {
-            TryDelete(path);
+            AtomicFile.TryDeleteTemporaryFile(path);
             throw;
         }
     }
@@ -165,8 +165,7 @@ internal static class HlsReplayTimeline
             else if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
             {
                 if (pendingStart >= 0) throw new InvalidDataException("Replay playlist has a missing media segment.");
-                if (!decimal.TryParse(line[8..].Split(',')[0], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture,
-                    out var seconds) || seconds <= 0 || seconds > 3600)
+                if (!HlsPlaylistPolicy.TryReadSegmentDuration(line.AsSpan(8), 3600, out var seconds))
                     throw new InvalidDataException("Replay playlist has an invalid segment duration.");
                 duration = TimeSpan.FromTicks(checked((long)(seconds * TimeSpan.TicksPerSecond)));
                 pendingStart = i;
@@ -193,18 +192,20 @@ internal static class HlsReplayTimeline
         var boundary = segments[selected - 1].End + 1;
         discontinuitySequence = checked(discontinuitySequence + lines.Take(boundary).Count(line => line == "#EXT-X-DISCONTINUITY"));
         var result = new StringBuilder("#EXTM3U\n");
-        foreach (var line in lines.Take(segments[0].Start))
-        {
-            if (line.StartsWith("#EXT-X-VERSION:", StringComparison.Ordinal) ||
-                line.StartsWith("#EXT-X-TARGETDURATION:", StringComparison.Ordinal) || line == "#EXT-X-INDEPENDENT-SEGMENTS")
-                result.AppendLine(line);
-        }
+        foreach (var line in lines.Where(IsPlaybackHeader)) result.AppendLine(line);
         result.AppendLine("#EXT-X-PLAYLIST-TYPE:VOD");
         result.AppendLine("#EXT-X-MEDIA-SEQUENCE:" + checked(sequence + selected).ToString(CultureInfo.InvariantCulture));
         result.AppendLine("#EXT-X-DISCONTINUITY-SEQUENCE:" + discontinuitySequence.ToString(CultureInfo.InvariantCulture));
-        foreach (var line in lines.Skip(boundary)) result.AppendLine(line);
+        foreach (var line in lines.Skip(boundary))
+            if (!IsPlaybackHeader(line) && line != "#EXT-X-ENDLIST" &&
+                !line.StartsWith("#EXT-X-PLAYLIST-TYPE:", StringComparison.Ordinal)) result.AppendLine(line);
+        result.AppendLine("#EXT-X-ENDLIST");
         return (result.ToString(), first.Time);
     }
+
+    private static bool IsPlaybackHeader(string line) =>
+        line.StartsWith("#EXT-X-VERSION:", StringComparison.Ordinal) ||
+        line.StartsWith("#EXT-X-TARGETDURATION:", StringComparison.Ordinal) || line == "#EXT-X-INDEPENDENT-SEGMENTS";
 
     private static void ValidateSegment(Uri playlist, Uri segment)
     {
@@ -217,15 +218,8 @@ internal static class HlsReplayTimeline
         throw new InvalidDataException("Replay playlist contains an unapproved media URL.");
     }
 
-    private static void TryDelete(string path)
-    {
-        try { File.Delete(path); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-    }
-
     private sealed class TimelineLease(string path, PlaybackMediaSource source) : IDisposable
     {
-        public void Dispose() { TryDelete(path); source.Dispose(); }
+        public void Dispose() { AtomicFile.TryDeleteTemporaryFile(path); source.Dispose(); }
     }
 }

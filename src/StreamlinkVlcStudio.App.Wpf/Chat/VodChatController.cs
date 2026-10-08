@@ -2,6 +2,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
@@ -155,6 +156,7 @@ internal sealed class VodChatController : IAsyncDisposable
             if (session is { } current && current.Matches(replay) &&
                 (current.Unsupported || !timeline.HasDiscardedMessagesFrom(resumeFrom)))
             {
+                current.Replay = replay;
                 current.Settings = settings;
                 current.GetDuration = getDuration;
                 if (isGrowing && !current.IsGrowing)
@@ -187,7 +189,7 @@ internal sealed class VodChatController : IAsyncDisposable
             started.Pump = Task.Run(() => RunPumpAsync(started, token));
         }
 
-        replaced?.Cancel();
+        CancellationSourceCleanup.Cancel(replaced?.Cancellation);
     }
 
     /// <summary>
@@ -225,7 +227,7 @@ internal sealed class VodChatController : IAsyncDisposable
             bufferedLiveMessages.Clear();
         }
 
-        stopped?.Cancel();
+        CancellationSourceCleanup.Cancel(stopped?.Cancellation);
     }
 
     /// <summary>Records the latest playback position so the pump knows how far ahead to stay.</summary>
@@ -321,46 +323,26 @@ internal sealed class VodChatController : IAsyncDisposable
         }
     }
 
-    public ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(gate, ref disposed, ref disposalTask, DisposeCoreAsync));
+
+    private async Task DisposeCoreAsync()
     {
         Session[] stopped;
-        TaskCompletionSource completion;
         lock (gate)
         {
-            if (disposalTask is not null)
-            {
-                return new ValueTask(disposalTask);
-            }
-
-            disposed = true;
             stopped = activeSessions.ToArray();
             session = null;
             timeline.Clear();
             bufferedLiveMessages.Clear();
-            completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            disposalTask = completion.Task;
         }
 
-        _ = CompleteDisposalAsync(stopped, completion);
-        return new ValueTask(completion.Task);
-    }
-
-    private static async Task CompleteDisposalAsync(Session[] stopped, TaskCompletionSource completion)
-    {
-        try
+        foreach (var state in stopped)
         {
-            foreach (var state in stopped)
-            {
-                state.Cancel();
-            }
+            CancellationSourceCleanup.Cancel(state.Cancellation);
+        }
 
-            await Task.WhenAll(stopped.Select(state => state.Pump)).ConfigureAwait(false);
-            completion.TrySetResult();
-        }
-        catch (Exception ex)
-        {
-            completion.TrySetException(ex);
-        }
+        await Task.WhenAll(stopped.Select(state => state.Pump)).ConfigureAwait(false);
     }
 
     private async Task RunPumpAsync(Session state, CancellationToken cancellationToken)
@@ -395,7 +377,7 @@ internal sealed class VodChatController : IAsyncDisposable
                 catch (Exception ex)
                 {
                     result = VodChatFetchResult.Failed($"VOD chat request failed: {ex.Message}");
-                    logger.Write(AppLogLevel.Debug, "VodChat", "VOD chat request threw.", ex);
+                    logger.WriteSafely(AppLogLevel.Debug, "VodChat", "VOD chat request threw.", ex);
                 }
 
                 var applied = ApplyResult(state, result, request.FromOffset, request.Epoch);
@@ -410,7 +392,7 @@ internal sealed class VodChatController : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "VodChat", "The VOD chat pump stopped unexpectedly.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VodChat", "The VOD chat pump stopped unexpectedly.", ex);
         }
         finally
         {
@@ -477,7 +459,7 @@ internal sealed class VodChatController : IAsyncDisposable
 
                     if (state.TailRetryAtUtc is null)
                     {
-                        logger.Write(AppLogLevel.Debug, "VodChat",
+                        logger.WriteSafely(AppLogLevel.Debug, "VodChat",
                             $"VOD chat caught up with published comments for {state.Replay.Channel} " +
                             $"({state.Replay.ReplayId}); retrying at {state.Frontier.TotalSeconds:0.###}s while the broadcast can grow.");
                     }
@@ -490,7 +472,7 @@ internal sealed class VodChatController : IAsyncDisposable
                 if (result.Outcome == VodChatFetchOutcome.Completed)
                 {
                     state.Exhausted = true;
-                    logger.Write(
+                    logger.WriteSafely(
                         AppLogLevel.Debug,
                         "VodChat",
                         $"VOD chat reached the end of {state.Replay.Channel} ({state.Replay.ReplayId}).");
@@ -501,7 +483,7 @@ internal sealed class VodChatController : IAsyncDisposable
             case VodChatFetchOutcome.Unsupported:
                 state.Unsupported = true;
                 SetNotice(state, result.Reason);
-                logger.Write(AppLogLevel.Info, "VodChat", result.Reason);
+                logger.WriteSafely(AppLogLevel.Info, "VodChat", result.Reason);
                 return;
 
             default:
@@ -512,7 +494,7 @@ internal sealed class VodChatController : IAsyncDisposable
                     SetNotice(state, result.Reason);
                 }
 
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Info,
                     "VodChat",
                     $"VOD chat fetch attempt {state.ConsecutiveFailures} failed: {result.Reason}");
@@ -552,7 +534,7 @@ internal sealed class VodChatController : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Debug, "VodChat", "Could not read the replay duration.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, "VodChat", "Could not read the replay duration.", ex);
             return TimeSpan.Zero;
         }
     }
@@ -753,17 +735,6 @@ internal sealed class VodChatController : IAsyncDisposable
             if (next > Frontier)
             {
                 Frontier = next;
-            }
-        }
-
-        public void Cancel()
-        {
-            try
-            {
-                Cancellation.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
             }
         }
 

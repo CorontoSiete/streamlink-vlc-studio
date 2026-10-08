@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Infrastructure.Hls;
 
@@ -9,7 +8,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Previews;
 internal sealed record LivePreviewPlaybackOptions(bool LowLatency, int LiveDelayMilliseconds);
 
 /// <summary>Validates live TS and fragmented MP4; provider-specific handling stays with Streamlink.</summary>
-internal static partial class LivePreviewPlaylist
+internal static class LivePreviewPlaylist
 {
     internal static LivePreviewPlaybackOptions GetPlaybackOptions(string validatedPlaylist, StreamTransportRequest request)
     {
@@ -22,9 +21,6 @@ internal static partial class LivePreviewPlaylist
         // Native HLS still enforces its own minimum buffer for continuity.
         return new(request.LowLatency && request.Target.Platform == PlatformKind.Twitch, checked((segments - 1) * seconds * 1000));
     }
-
-    internal static string Rewrite(string content, Uri origin, PlatformKind platform)
-        => Rewrite(content, origin, platform, out _);
 
     internal static string Rewrite(string content, Uri origin, PlatformKind platform, out Uri? initializationUri)
     {
@@ -53,8 +49,8 @@ internal static partial class LivePreviewPlaylist
             {
                 // Accept a whole, unencrypted initialization file on the same approved
                 // provider endpoints as segments. Ranges and changing maps stay on Streamlink.
-                var attributes = MapAttributes().Match(line[11..]);
-                if (!attributes.Success || !Uri.TryCreate(origin, attributes.Groups["uri"].Value, out var map) ||
+                if (!HlsPlaylistPolicy.TryReadWholeMapUri(line[11..], out var mapUri) ||
+                    !Uri.TryCreate(origin, mapUri, out var map) ||
                     !LivePreviewPolicy.IsAllowedUri(map, platform) ||
                     !map.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) ||
                     initializationUri is null && segments != 0 || initializationUri is not null && initializationUri != map)
@@ -80,8 +76,7 @@ internal static partial class LivePreviewPlaylist
             }
             if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
             {
-                if (pendingSegment || !decimal.TryParse(line[8..].Split(',')[0], NumberStyles.AllowDecimalPoint,
-                        CultureInfo.InvariantCulture, out var duration) || duration <= 0 || duration > 3600) throw Unsupported();
+                if (pendingSegment || !HlsPlaylistPolicy.TryReadSegmentDuration(line.AsSpan(8), 3600, out _)) throw Unsupported();
                 pendingSegment = true;
             }
             if (!line.StartsWith('#'))
@@ -105,6 +100,4 @@ internal static partial class LivePreviewPlaylist
 
     private static InvalidDataException Unsupported() => new("The live playlist requires Streamlink transport.");
 
-    [GeneratedRegex("^URI=\"(?<uri>[^\"\\r\\n]+)\"$", RegexOptions.CultureInvariant)]
-    private static partial Regex MapAttributes();
 }

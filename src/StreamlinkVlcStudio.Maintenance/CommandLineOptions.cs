@@ -24,7 +24,7 @@ internal sealed record CommandLineOptions(
         for (var index = 0; index < args.Length; index++)
         {
             var argument = args[index];
-            if (Matches(argument, "/q", "/quiet", "--quiet"))
+            if (IsQuietSwitch(argument))
             {
                 quiet = true;
             }
@@ -94,6 +94,8 @@ internal sealed record CommandLineOptions(
             stageNonce,
             logPath);
     }
+
+    internal static bool IsQuietSwitch(string value) => Matches(value, "/q", "/quiet", "--quiet");
 
     private static bool Matches(string value, params string[] expected)
     {

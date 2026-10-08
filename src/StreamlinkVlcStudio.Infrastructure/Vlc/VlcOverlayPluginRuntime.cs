@@ -1,12 +1,12 @@
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Processes;
+using StreamStudio.Io;
 using static StreamlinkVlcStudio.Infrastructure.Processes.ProcessExtensions;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vlc;
@@ -194,7 +194,7 @@ public static class VlcOverlayBundledResourceExtractor
     {
         if (!HasBundledOverlayResources())
         {
-            logger.Write(AppLogLevel.Warning, "VlcOverlay", "Embedded VLC overlay plugin/controller resources were not found.");
+            logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "Embedded VLC overlay plugin/controller resources were not found.");
             return null;
         }
 
@@ -210,7 +210,7 @@ public static class VlcOverlayBundledResourceExtractor
 
                 if (!VlcOverlayDirectoryResolver.IsValidOverlayDirectory(overlayDirectory))
                 {
-                    logger.Write(AppLogLevel.Warning, "VlcOverlay", $"Extracted VLC overlay directory is incomplete: {overlayDirectory}");
+                    logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", $"Extracted VLC overlay directory is incomplete: {overlayDirectory}");
                     return null;
                 }
 
@@ -219,7 +219,7 @@ public static class VlcOverlayBundledResourceExtractor
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
-            logger.Write(AppLogLevel.Warning, "VlcOverlay", "Could not extract the embedded VLC overlay plugin/controller.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "Could not extract the embedded VLC overlay plugin/controller.", ex);
             return null;
         }
     }
@@ -247,7 +247,7 @@ public static class VlcOverlayBundledResourceExtractor
         }
         finally
         {
-            TryDeleteTempFile(tempPath);
+            AtomicFile.TryDeleteTemporaryFile(tempPath);
         }
     }
 
@@ -281,20 +281,6 @@ public static class VlcOverlayBundledResourceExtractor
     private static string GetTargetPath(string overlayDirectory, BundledOverlayFile file) =>
         Path.Combine(overlayDirectory, file.RelativePath);
 
-    private static void TryDeleteTempFile(string tempPath)
-    {
-        try
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
-
     private sealed record BundledOverlayFile(string RelativePath, string ResourceName);
 }
 
@@ -302,6 +288,7 @@ internal static class VlcOverlayPluginRuntimeFactory
 {
     internal const string CacheManifestFileName = "plugins.manifest.json";
     private const int CacheManifestFormatVersion = 1;
+    private const int MaximumCacheManifestBytes = 1024 * 1024;
     private static readonly SemaphoreSlim PrepareGate = new(1, 1);
     private static readonly TimeSpan CacheGenerationTimeout = TimeSpan.FromSeconds(30);
     private static readonly JsonSerializerOptions CacheManifestJsonOptions = new()
@@ -323,7 +310,7 @@ internal static class VlcOverlayPluginRuntimeFactory
                 VlcOverlayBundledResourceExtractor.TryExtract(logger, appDataDirectory);
             if (string.IsNullOrWhiteSpace(resolvedOverlayDirectory))
             {
-                logger.Write(AppLogLevel.Warning, "VlcOverlay", "VLC overlay plugin/controller files were not found; falling back to basic overlay.");
+                logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "VLC overlay plugin/controller files were not found; falling back to basic overlay.");
                 return null;
             }
 
@@ -331,7 +318,7 @@ internal static class VlcOverlayPluginRuntimeFactory
             var sourceController = VlcOverlayDirectoryResolver.GetControllerPath(resolvedOverlayDirectory);
             if (!File.Exists(sourcePlugin))
             {
-                logger.Write(AppLogLevel.Warning, "VlcOverlay", $"VLC overlay plugin was not found at {sourcePlugin}.");
+                logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", $"VLC overlay plugin was not found at {sourcePlugin}.");
                 return null;
             }
 
@@ -378,7 +365,7 @@ internal static class VlcOverlayPluginRuntimeFactory
 
             var pluginHash = FileHash.GetSha256(targetPlugin);
             var controllerHash = FileHash.GetSha256(sourceController);
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Info,
                 "VlcOverlay",
                 $"Prepared VLC overlay plugin cache plugin={targetPlugin} pluginSha256={pluginHash} controller={sourceController} controllerSha256={controllerHash} source={resolvedOverlayDirectory} copied={copiedPlugin.ToString().ToLowerInvariant()}.");
@@ -397,7 +384,7 @@ internal static class VlcOverlayPluginRuntimeFactory
         }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "VlcOverlay", "VLC overlay plugin preparation failed; falling back to basic overlay.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "VLC overlay plugin preparation failed; falling back to basic overlay.", ex);
             return null;
         }
         finally
@@ -485,13 +472,13 @@ internal static class VlcOverlayPluginRuntimeFactory
 
         try
         {
-            var json = File.ReadAllText(manifestPath);
+            var json = BoundedFile.ReadAllText(manifestPath, MaximumCacheManifestBytes);
             var actual = JsonSerializer.Deserialize<VlcPluginCacheManifest>(
                 json,
                 CacheManifestJsonOptions);
             return actual is not null && CacheManifestsEqual(actual, expected);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or NotSupportedException)
         {
             return false;
         }
@@ -504,40 +491,20 @@ internal static class VlcOverlayPluginRuntimeFactory
         return actual.FormatVersion == expected.FormatVersion &&
             string.Equals(actual.VlcIdentity, expected.VlcIdentity, StringComparison.Ordinal) &&
             string.Equals(actual.CacheGeneratorIdentity, expected.CacheGeneratorIdentity, StringComparison.Ordinal) &&
+            actual.PluginIdentities is not null &&
             actual.PluginIdentities.Count == expected.PluginIdentities.Count &&
             expected.PluginIdentities.All(pair =>
                 actual.PluginIdentities.TryGetValue(pair.Key, out var identity) &&
                 string.Equals(identity, pair.Value, StringComparison.Ordinal));
     }
 
-    private static async Task WriteCacheManifestAtomicallyAsync(
+    private static Task WriteCacheManifestAtomicallyAsync(
         string manifestPath,
         VlcPluginCacheManifest manifest,
-        CancellationToken cancellationToken)
-    {
-        var temporaryPath = $"{manifestPath}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            var json = JsonSerializer.Serialize(manifest, CacheManifestJsonOptions);
-            await File.WriteAllTextAsync(
-                    temporaryPath,
-                    json,
-                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                    cancellationToken)
-                .ConfigureAwait(false);
-            File.Move(temporaryPath, manifestPath, overwrite: true);
-        }
-        finally
-        {
-            try
-            {
-                File.Delete(temporaryPath);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-            }
-        }
-    }
+        CancellationToken cancellationToken) =>
+        AtomicFile.WriteAsync(manifestPath,
+            (stream, token) => JsonSerializer.SerializeAsync(stream, manifest, CacheManifestJsonOptions, token),
+            cancellationToken);
 
     private static bool FileHashesMatch(string first, string second)
     {
@@ -570,7 +537,7 @@ internal static class VlcOverlayPluginRuntimeFactory
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            logger.Write(AppLogLevel.Warning, "VlcOverlay", $"Could not delete {description} {path}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", $"Could not delete {description} {path}.", ex);
         }
     }
 
@@ -584,7 +551,7 @@ internal static class VlcOverlayPluginRuntimeFactory
         var cacheGenerator = Path.Combine(vlcDirectory, "vlc-cache-gen.exe");
         if (!File.Exists(cacheGenerator))
         {
-            logger.Write(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe was not found; VLC may need to scan the overlay plugin at startup.");
+            logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe was not found; VLC may need to scan the overlay plugin at startup.");
             return false;
         }
 
@@ -605,7 +572,7 @@ internal static class VlcOverlayPluginRuntimeFactory
             }
             catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                logger.Write(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe could not be started.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe could not be started.", ex);
                 return false;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -615,20 +582,20 @@ internal static class VlcOverlayPluginRuntimeFactory
 
             if (result.TimedOut)
             {
-                logger.Write(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe timed out while rebuilding the VLC plugin cache.");
+                logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe timed out while rebuilding the VLC plugin cache.");
                 return false;
             }
 
             if (result.ExitCode != 0 || result.OutputWasTruncated)
             {
-                logger.Write(AppLogLevel.Warning, "VlcOverlay", $"vlc-cache-gen.exe failed: {result.StandardOutput} {result.StandardError}".Trim());
+                logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", $"vlc-cache-gen.exe failed: {result.StandardOutput} {result.StandardError}".Trim());
                 return false;
             }
 
             var stagedCachePath = Path.Combine(stagingRoot, "plugins.dat");
             if (!File.Exists(stagedCachePath))
             {
-                logger.Write(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe completed without producing plugins.dat.");
+                logger.WriteSafely(AppLogLevel.Warning, "VlcOverlay", "vlc-cache-gen.exe completed without producing plugins.dat.");
                 return false;
             }
 
@@ -656,7 +623,7 @@ internal static class VlcOverlayPluginRuntimeFactory
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                logger.Write(AppLogLevel.Debug, "VlcOverlay", $"Could not remove temporary plugin-cache directory {stagingRoot}.", ex);
+                logger.WriteSafely(AppLogLevel.Debug, "VlcOverlay", $"Could not remove temporary plugin-cache directory {stagingRoot}.", ex);
             }
         }
     }

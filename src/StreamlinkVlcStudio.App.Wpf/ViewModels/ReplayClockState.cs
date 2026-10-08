@@ -421,7 +421,7 @@ internal sealed class ReplayClockState
         return left + right;
     }
 
-    private static TimeSpan ScaleElapsed(TimeSpan elapsed, float rate)
+    internal static TimeSpan ScaleElapsed(TimeSpan elapsed, float rate)
     {
         if (elapsed <= TimeSpan.Zero || !float.IsFinite(rate) || rate <= 0f)
         {

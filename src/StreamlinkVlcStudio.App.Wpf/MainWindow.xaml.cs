@@ -47,6 +47,7 @@ public partial class MainWindow : Window
     private readonly PictureInPictureController pictureInPicture;
     private readonly WindowModeController windowMode;
     private TwitchChannelPointsController? twitchChannelPoints;
+    private TwitchBonusBrowser? twitchWebsiteBrowser;
     internal enum FullscreenMode
     {
         None,
@@ -362,6 +363,17 @@ public partial class MainWindow : Window
         }
 
         if (TryNavigateHomeSearch(input, focusedElement)) return true;
+        if (TryNavigateVodChannelSearch(input, focusedElement)) return true;
+
+        if (input is { Key: Key.Escape, Modifiers: ModifierKeys.None, MouseButton: null } &&
+            viewModel?.IsTwitchVodsHomePageVisible == true && viewModel.IsVodChannelSearchVisible &&
+            (ReferenceEquals(focusedElement, VodStreamerSearchTextBox) ||
+             focusedElement is Button button && VodChannelSearchResultsList.IsAncestorOf(button)))
+        {
+            VodStreamerSearchTextBox.Focus();
+            viewModel.DismissVodChannelSearchResults();
+            return true;
+        }
 
         if (input is { Key: Key.Escape, Modifiers: ModifierKeys.None, MouseButton: null } &&
             viewModel?.IsStreamSearchPanelVisible == true)
@@ -503,7 +515,7 @@ public partial class MainWindow : Window
 
         var direction = volumeAction == AppHotkeyAction.VolumeUp ? 1 : -1;
         tab.Volume += direction * VolumeOverlay.WheelStep;
-        VolumeOsd.Show(ResolveVolumeOsdTarget(tab), tab.Volume, tab.IsMuted);
+        VolumeOsd.Show(VolumeOverlay.ResolveTarget(tab, videoSurfaces, VideoViewport), tab.Volume, tab.IsMuted);
         return true;
     }
 
@@ -990,7 +1002,10 @@ public partial class MainWindow : Window
         settings.StreamlinkPath ??= ExecutableResolver.FindStreamlink();
         settings.VlcDirectory ??= ExecutableResolver.FindVlcDirectory();
 
-        var streamlinkService = new StreamlinkService(logger);
+        var websiteBrowser = new TwitchBonusBrowser(this);
+        twitchWebsiteBrowser = websiteBrowser;
+        var streamlinkService = StreamlinkService.WithTwitchWebsiteSession(logger, cancellationToken => Dispatcher.InvokeAsync(
+            () => websiteBrowser.GetPlaybackOAuthTokenAsync(cancellationToken), DispatcherPriority.Normal, cancellationToken).Task.Unwrap());
         // Twitch VODs with muted segments freeze libVLC; the gateway routes only those through a
         // local repair proxy. It outlives the tabs, so it is disposed after the view model.
         var mutedVodPlaybackGateway = new TwitchMutedVodPlaybackGateway(logger);
@@ -1049,9 +1064,8 @@ public partial class MainWindow : Window
             TryDispatch = TryDispatchToUi
         });
 
-        viewModel.Initialize();
         twitchChannelPoints = new TwitchChannelPointsController(
-            settings, viewModel.LiveFollowedChannels, () => viewModel.SelectedTab, new TwitchBonusBrowser(this), logger,
+            settings, viewModel.LiveFollowedChannels, () => viewModel.SelectedTab, websiteBrowser, logger,
             settingsService: settingsService);
         TwitchBonusesPanel.DataContext = twitchChannelPoints;
         if (!string.IsNullOrWhiteSpace(settingsLoadWarning))
@@ -1069,6 +1083,10 @@ public partial class MainWindow : Window
             };
             setupWizard.ShowDialog();
         }
+
+        // Present post-update notes after any setup dialog has finished, so the
+        // dialog cannot cover the changelog while its viewed version is saved.
+        if (!shutdownStarted) viewModel.Initialize();
     }
 
     private async void MainWindowClosing(object? sender, CancelEventArgs e)
@@ -1103,6 +1121,8 @@ public partial class MainWindow : Window
         shutdownStarted = true;
         twitchChannelPoints?.Dispose();
         twitchChannelPoints = null;
+        twitchWebsiteBrowser?.Dispose();
+        twitchWebsiteBrowser = null;
         Hide();
         DisposeTrayIcon();
         var forceExit = false;
@@ -1148,6 +1168,8 @@ public partial class MainWindow : Window
     {
         twitchChannelPoints?.Dispose();
         twitchChannelPoints = null;
+        twitchWebsiteBrowser?.Dispose();
+        twitchWebsiteBrowser = null;
         ClearTaskbarFullscreen();
 
         if (viewModel is not null)
@@ -2178,9 +2200,8 @@ public partial class MainWindow : Window
 
     private NativePoint ClientMessagePointToNativeScreenPoint(IntPtr lParam)
     {
-        var value = lParam.ToInt32();
-        var clientX = (short)(value & 0xFFFF);
-        var clientY = (short)((value >> 16) & 0xFFFF);
+        var clientX = WindowInteropHelpers.GetSignedLowWord(lParam);
+        var clientY = WindowInteropHelpers.GetSignedHighWord(lParam);
         var hwnd = windowHandle != IntPtr.Zero
             ? windowHandle
             : new WindowInteropHelper(this).Handle;
@@ -2220,10 +2241,6 @@ public partial class MainWindow : Window
     }
 
     internal void DetachTabToPictureInPicture(StreamTabViewModel tab, Point screenPoint, bool continueDrag) => pictureInPicture.DetachTabToPictureInPicture(tab, screenPoint, continueDrag);
-
-    internal bool PositionDetachedWindow(DetachedVideoWindow window, Point screenPoint, bool useSavedLocation) => pictureInPicture.PositionDetachedWindow(window, screenPoint, useSavedLocation);
-
-    internal Task RememberPictureInPictureWindowBoundsAsync(DetachedVideoWindow window) => pictureInPicture.RememberPictureInPictureWindowBoundsAsync(window);
 
     internal void ViewModelTabsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => pictureInPicture.ViewModelTabsCollectionChanged(sender, e);
 
@@ -2414,19 +2431,7 @@ public partial class MainWindow : Window
 
     private void AdjustVolume(StreamTabViewModel tab, int delta)
     {
-        VolumeOverlay.AdjustVolume(tab, delta, VolumeOsd, ResolveVolumeOsdTarget(tab));
-    }
-
-    private UIElement ResolveVolumeOsdTarget(StreamTabViewModel tab)
-    {
-        if (tab.IsVodFinished && tab.VideoSurfacePresenterOwner?.Parent is UIElement { IsVisible: true } finishedScreen)
-        {
-            return finishedScreen;
-        }
-
-        return videoSurfaces.TryGetValue(tab, out var surface) && surface.IsVisible
-            ? surface
-            : VideoViewport;
+        VolumeOverlay.AdjustVolume(tab, delta, VolumeOsd, VolumeOverlay.ResolveTarget(tab, videoSurfaces, VideoViewport));
     }
 
     private StreamTabViewModel? GetVideoTabAtScreenPoint(NativePoint screenPoint)
@@ -2467,7 +2472,7 @@ public partial class MainWindow : Window
         var y = DefaultOverlayChatY;
         var hidden = false;
         if (!string.IsNullOrWhiteSpace(tab.NativeOverlayPositionStatePath) &&
-            TryReadIntFile(tab.NativeOverlayPositionStatePath, out var positionValues))
+            NativeOverlaySizing.TryReadIntFile(tab.NativeOverlayPositionStatePath, out var positionValues))
         {
             if (positionValues.Length >= 2)
             {
@@ -2617,29 +2622,6 @@ public partial class MainWindow : Window
     private static int ScaleOverlayReferencePixels(int videoHeight, int value)
     {
         return NativeOverlaySizing.ScaleReferencePixels(videoHeight, value);
-    }
-
-    private static bool TryReadIntFile(string path, out int[] values)
-    {
-        values = [];
-        try
-        {
-            if (!File.Exists(path))
-            {
-                return false;
-            }
-
-            values = NativeOverlaySizing.ParseInts(File.ReadAllText(path));
-            return values.Length > 0;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
     }
 
     private static void SendNativeOverlayScroll(StreamTabViewModel tab, int delta)
@@ -2905,13 +2887,9 @@ public partial class MainWindow : Window
 
     private void TheatreButton_Click(object sender, RoutedEventArgs e) => windowMode.TheatreButton_Click(sender, e);
 
-    internal FullscreenMode GetFullscreenButtonMode() => windowMode.GetFullscreenButtonMode();
-
     internal void ToggleFullscreenMode(FullscreenMode requestedMode) => windowMode.ToggleFullscreenMode(requestedMode);
 
     private void ApplyFullscreenSelectedTabState() => windowMode.ApplyFullscreenSelectedTabState();
-
-    internal void ApplyTheatreModeChatToSelectedTab() => windowMode.ApplyTheatreModeChatToSelectedTab();
 
     internal void ExitFullscreenMode() => windowMode.ExitFullscreenMode();
 

@@ -1,4 +1,5 @@
 using StreamlinkVlcStudio.App.Wpf.Notifications;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
@@ -41,6 +42,7 @@ internal sealed record MainViewModelDependencies
     public ITwitchClipService? TwitchClipService { get; init; }
     public IKickClipService? KickClipService { get; init; }
     public IAppUpdateService? AppUpdateService { get; init; }
+    public ReleaseNotesCatalog? ReleaseNotesCatalog { get; init; }
     public Action<Uri>? OpenBrowser { get; init; }
     public Action? RequestShutdown { get; init; }
     public Func<Action, bool>? TryDispatch { get; init; }

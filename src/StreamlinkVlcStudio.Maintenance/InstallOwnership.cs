@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using StreamStudio.Io;
 
 namespace StreamlinkVlcStudio.Maintenance;
 
@@ -57,8 +58,8 @@ public sealed class InstallOwnership
         AssertPlainStateFile(ownerPath);
         AssertPlainStateFile(manifestPath);
 
-        var ownerBytes = ReadBounded(ownerPath);
-        var manifestBytes = ReadBounded(manifestPath);
+        var ownerBytes = BoundedFile.ReadAllBytes(ownerPath, MaximumStateBytes);
+        var manifestBytes = BoundedFile.ReadAllBytes(manifestPath, MaximumStateBytes);
         using var ownerDocument = JsonDocument.Parse(ownerBytes);
         using var manifestDocument = JsonDocument.Parse(manifestBytes);
         var owner = ownerDocument.RootElement;
@@ -95,6 +96,7 @@ public sealed class InstallOwnership
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var files = new List<ManagedInstallFile>(filesElement.GetArrayLength());
+        var ownership = new InstallOwnership(root, ownerPath, manifestPath, files);
         foreach (var element in filesElement.EnumerateArray())
         {
             var relativePath = RequiredString(element, "path").Replace('\\', '/');
@@ -118,12 +120,11 @@ public sealed class InstallOwnership
             }
 
             var managedFile = new ManagedInstallFile(relativePath, length, sha256);
-            _ = new InstallOwnership(root, ownerPath, manifestPath, Array.Empty<ManagedInstallFile>())
-                .GetManagedPath(managedFile);
+            _ = ownership.GetManagedPath(managedFile);
             files.Add(managedFile);
         }
 
-        return new InstallOwnership(root, ownerPath, manifestPath, files);
+        return ownership;
     }
 
     private static void AssertHeader(JsonElement element, string description)
@@ -150,17 +151,6 @@ public sealed class InstallOwnership
         }
 
         return property.GetString()!;
-    }
-
-    private static byte[] ReadBounded(string path)
-    {
-        var length = new FileInfo(path).Length;
-        if (length <= 0 || length > MaximumStateBytes)
-        {
-            throw new InvalidDataException($"Installation state file has an invalid size: {path}");
-        }
-
-        return File.ReadAllBytes(path);
     }
 
     private static void AssertPlainStateFile(string path)

@@ -11,21 +11,27 @@ internal sealed class AutomaticUpdateController(
     Action<AppUpdateCompletion> onCompleted,
     IAppLogger logger,
     Func<TimeSpan, CancellationToken, Task>? delay = null,
-    Func<AppUpdateCheckResult, CancellationToken, Task>? prepareUpdate = null)
+    Func<AppUpdateCheckResult, CancellationToken, Task>? prepareUpdate = null,
+    Action<AppUpdateCompletion?>? onStartupCompleted = null)
 {
     internal async Task RunAsync(CancellationToken token)
     {
         var wait = delay ?? Task.Delay;
         try
         {
+            AppUpdateCompletion? completion = null;
             try
             {
-                if (await service.ConsumeCompletionAsync(token) is { } completion) onCompleted(completion);
+                completion = await service.ConsumeCompletionAsync(token);
+                if (completion is not null) onCompleted(completion);
             }
             catch (Exception ex) when (!token.IsCancellationRequested)
             {
-                logger.Write(AppLogLevel.Warning, "Updater", "Could not read the previous update result; update checks will continue.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "Updater", "Could not read the previous update result; update checks will continue.", ex);
             }
+
+            token.ThrowIfCancellationRequested();
+            onStartupCompleted?.Invoke(completion);
 
             var nextDelay = TimeSpan.FromSeconds(20);
             var failures = 0;
@@ -57,7 +63,7 @@ internal sealed class AutomaticUpdateController(
                 catch (Exception ex) when (!token.IsCancellationRequested)
                 {
                     nextDelay = TimeSpan.FromMinutes(Math.Min(360, 15 * Math.Pow(2, Math.Min(failures++, 5))));
-                    logger.Write(AppLogLevel.Warning, "Updater", $"Automatic update failed; retrying in {nextDelay.TotalMinutes:0} minutes.", ex);
+                    logger.WriteSafely(AppLogLevel.Warning, "Updater", $"Automatic update failed; retrying in {nextDelay.TotalMinutes:0} minutes.", ex);
                 }
             }
         }

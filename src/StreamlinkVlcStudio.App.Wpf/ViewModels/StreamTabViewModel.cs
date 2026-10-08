@@ -6,6 +6,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using StreamlinkVlcStudio.App.Wpf.Chat;
 using StreamlinkVlcStudio.App.Wpf.Controls;
+using StreamlinkVlcStudio.Core.Commands;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
@@ -13,6 +14,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
@@ -185,7 +187,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private bool isReplaySeekBarVisible;
     private bool isReplaySeekEnabled;
     private bool isReplaySeekInProgress;
-    private bool isReplaySkipInProgress;
     private bool isReplaySeekPreviewActive;
     private bool isReplayMode;
     private bool isBehindLive;
@@ -270,14 +271,14 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         volume = NormalizeVolume(initialVolume);
         PauseOrResumeCommand = CreateCommand(PauseOrResumeAsync, () => !disposed);
         SendChatMessageCommand = CreateCommand(SendChatMessageAsync, () => !string.IsNullOrWhiteSpace(OutgoingChatText) && CanSendChatMessages);
-        RewindReplay30SecondsCommand = CreateCommand(RewindReplay30SecondsAsync, () => CanStepReplay);
-        FastForwardReplay30SecondsCommand = CreateCommand(FastForwardReplay30SecondsAsync, () => CanStepReplay);
+        RewindReplay30SecondsCommand = CreateCommand(RewindReplay30SecondsAsync, () => CanStepReplay, allowConcurrentExecution: true);
+        FastForwardReplay30SecondsCommand = CreateCommand(FastForwardReplay30SecondsAsync, () => CanStepReplay, allowConcurrentExecution: true);
         SkipBackwardCommand = CreateCommand(
-            () => SkipReplayAsync(-TimeSpan.FromSeconds(currentSettings?.Hotkeys.SkipBackwardSeconds ?? HotkeySettings.DefaultSkipSeconds)),
-            () => CanStepReplay && !isReplaySkipInProgress);
+            () => SeekReplayByAsync(-TimeSpan.FromSeconds(currentSettings?.Hotkeys.SkipBackwardSeconds ?? HotkeySettings.DefaultSkipSeconds), useExactStep: true),
+            () => CanStepReplay, allowConcurrentExecution: true);
         SkipForwardCommand = CreateCommand(
-            () => SkipReplayAsync(TimeSpan.FromSeconds(currentSettings?.Hotkeys.SkipForwardSeconds ?? HotkeySettings.DefaultSkipSeconds)),
-            () => CanStepReplay && !isReplaySkipInProgress);
+            () => SeekReplayByAsync(TimeSpan.FromSeconds(currentSettings?.Hotkeys.SkipForwardSeconds ?? HotkeySettings.DefaultSkipSeconds), useExactStep: true),
+            () => CanStepReplay, allowConcurrentExecution: true);
         ReturnToLiveCommand = CreateCommand(ReturnToLiveAsync, () => CanReturnToLive);
         StartTwitchPredictionCommand = CreateCommand(StartTwitchPredictionAsync, () => CanStartTwitchPrediction);
         AddTwitchPredictionOutcomeCommand = new RelayCommand(AddTwitchPredictionOutcome, () => CanAddTwitchPredictionOutcome);
@@ -519,11 +520,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     }
 
     public bool CanReturnToLive => !Target.IsExplicitVod &&
-        (IsBehindLive || IsReplayMode) &&
-        !IsReplaySeekInProgress;
+        !disposed && (IsBehindLive || IsReplayMode || IsReplaySeekInProgress);
 
-    public bool CanSeekReplay => IsReplaySeekEnabled &&
-        !IsReplaySeekInProgress &&
+    public bool CanSeekReplay => !disposed && IsReplaySeekEnabled &&
         IsCurrentReplayPlaybackUrlReadyForSeeking();
 
     public bool CanStepReplay => CanSeekReplay;
@@ -588,7 +587,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         }
 
         // Cancellation callbacks must run outside the selection lock.
-        CancelCancellationSource(previousCancellation);
+        CancellationSourceCleanup.Cancel(previousCancellation);
         if (selectionChanged)
         {
             dispatch(() =>
@@ -777,7 +776,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         {
             var normalizedValue = Math.Clamp(value, 0, ReplaySeekMaximum);
             if (SetProperty(ref replaySeekValue, normalizedValue) &&
-                !isReplaySeekPreviewActive)
+                !isReplaySeekPreviewActive && RequestedReplaySeekOffset is null)
             {
                 ReplaySeekSliderValue = normalizedValue;
                 ReplayElapsedText = StreamViewModelHelpers.FormatClockTime(TimeSpan.FromSeconds(normalizedValue));
@@ -1483,6 +1482,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             throw new InvalidOperationException("Configure the VLC directory in Settings.");
         }
 
+        CancelReplaySeekRequests();
         using var activeStart = CancellationTokenSource.CreateLinkedTokenSource(
             lifetimeCancellation.Token,
             cancellationToken);
@@ -1771,7 +1771,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         {
             if (pendingStreamSessionNeedsCleanup && pendingStreamSession is not null)
             {
-                streamStartCancellation?.Cancel();
+                CancellationSourceCleanup.Cancel(streamStartCancellation);
                 playbackCleanupController.Observe(DisposeUnclaimedStreamSessionAsync(pendingStreamSession, streamStartCancellation));
                 streamStartCancellation = null;
             }
@@ -1786,7 +1786,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         {
             if (pendingStreamSessionNeedsCleanup && pendingStreamSession is not null)
             {
-                streamStartCancellation?.Cancel();
+                CancellationSourceCleanup.Cancel(streamStartCancellation);
                 playbackCleanupController.Observe(DisposeUnclaimedStreamSessionAsync(pendingStreamSession, streamStartCancellation));
                 streamStartCancellation = null;
             }
@@ -2272,6 +2272,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         // The start owns lifecycleGate until its transport/player is ready. Cancel
         // it before waiting for that gate, including a wait for the video surface.
+        CancelReplaySeekRequests();
         CancelActiveStart();
         CancelReplayAvailabilityRefresh();
         try
@@ -2320,11 +2321,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         }
     }
 
-    public void BeginReplaySeekPreview()
-    {
-        BeginReplaySeekPreview(ReplaySeekSliderValue);
-    }
-
     public void BeginReplaySeekPreview(double sliderOffsetSeconds)
     {
         if (!CanSeekReplay)
@@ -2339,6 +2335,12 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     public Task CommitReplaySeekPreviewAsync(double sliderOffsetSeconds, CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            CancelReplaySeekPreview();
+            return Task.CompletedTask;
+        }
+
         // Ending the preview permits clock updates to replace the slider value.
         // Capture the bounded user input before raising those notifications.
         var offset = TimeSpan.FromSeconds(Math.Clamp(sliderOffsetSeconds, 0, ReplaySeekMaximum));
@@ -2350,8 +2352,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     public void CancelReplaySeekPreview()
     {
         IsReplaySeekPreviewActive = false;
-        ReplaySeekSliderValue = ReplaySeekValue;
-        ReplayElapsedText = StreamViewModelHelpers.FormatClockTime(TimeSpan.FromSeconds(ReplaySeekValue));
+        RestoreReplaySeekDisplay();
     }
 
     public Task RewindReplay30SecondsAsync()
@@ -2362,24 +2363,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     public Task FastForwardReplay30SecondsAsync()
     {
         return SeekReplayByAsync(ReplaySeekStep);
-    }
-
-    private async Task SkipReplayAsync(TimeSpan delta)
-    {
-        // Both directions share admission before the seek yields to the dispatcher.
-        // A second keypress must not queue a seek based on the old playback clock.
-        if (isReplaySkipInProgress || !CanStepReplay) return;
-        isReplaySkipInProgress = true;
-        try
-        {
-            await SeekReplayByAsync(delta, useExactStep: true);
-        }
-        finally
-        {
-            isReplaySkipInProgress = false;
-            SkipBackwardCommand.RaiseCanExecuteChanged();
-            SkipForwardCommand.RaiseCanExecuteChanged();
-        }
     }
 
     private Task SeekReplayByAsync(TimeSpan delta, bool useExactStep = false)
@@ -2400,6 +2383,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private TimeSpan GetCurrentReplayStepOffset()
     {
+        if (RequestedReplaySeekOffset is { } requested) return requested;
         if (IsReplayMode &&
             replaySession is { IsAvailable: true } replay)
         {
@@ -2440,17 +2424,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private enum SeekCompletionIntent { PreservePlaybackState, Resume }
 
-    public Task SeekReplayAsync(
-        TimeSpan offset,
-        CancellationToken cancellationToken = default,
-        bool forceReload = false,
-        bool holdExactPosition = false) =>
-        SeekReplaySerializedAsync(
-            offset,
-            cancellationToken,
-            forceReload,
-            holdExactPosition,
-            playbackTransitionAlreadyHeld: false);
+    private readonly record struct ReplaySeekConfirmation(TimeSpan Offset, long OperationVersion, IPlaybackEngine Engine,
+        ReplaySeekRequest? WaitingRequest);
+    private readonly record struct ResolvedReplaySeekPlayback(ReplayPlaybackUrlKey Key, StreamlinkResolvedUrl Url);
 
     private async Task SeekReplaySerializedAsync(
         TimeSpan offset,
@@ -2458,7 +2434,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         bool forceReload,
         bool holdExactPosition,
         bool playbackTransitionAlreadyHeld,
-        SeekCompletionIntent completionIntent = SeekCompletionIntent.PreservePlaybackState)
+        SeekCompletionIntent completionIntent = SeekCompletionIntent.PreservePlaybackState,
+        CancellationToken? liveTransitionCancellationToken = null,
+        ReplaySeekRequest? seekRequest = null)
     {
         CancelLivePlaybackRecovery();
         if (disposed)
@@ -2466,17 +2444,15 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             return;
         }
 
-        // A seek can be started directly by a WPF mouse/key event.  Several of the setup steps below
-        // can complete synchronously (especially when the replay URL is already prefetched), which
-        // would keep the routed input event on the dispatcher while the replay transition starts.
-        // Yield before touching the seek state so the slider release is returned to WPF immediately.
+        // The request worker already yielded to WPF before selecting its newest target.
+        // Direct pause/resume transitions still yield before synchronous replay setup.
         if (cancellationToken.IsCancellationRequested)
         {
             return;
         }
 
-        await Task.Yield();
-        if (disposed || cancellationToken.IsCancellationRequested)
+        if (seekRequest is null) await Task.Yield();
+        if (disposed || cancellationToken.IsCancellationRequested || IsReplaySeekRequestSuperseded(seekRequest))
         {
             return;
         }
@@ -2521,9 +2497,12 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         if (!holdExactPosition && Status != PlaybackStatus.Paused && !Target.IsExplicitVod && duration - targetOffset <= ReplayLiveEdgeThreshold)
         {
+            if (HasPendingReplaySeekRequest) return;
             // Return-to-live starts a fresh Streamlink transport and therefore must run before this
             // seek acquires the player transition gate.
-            await ReturnToLiveAsync(cancellationToken);
+            // Its new start owns cancellation separately: resetting replay controls
+            // cancels the queued seek which requested this transition.
+            await ReturnToLiveAsync(liveTransitionCancellationToken ?? cancellationToken);
             return;
         }
 
@@ -2546,6 +2525,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         try
         {
+            // Input can change while another playback action owns the gate. Avoid
+            // seeking an obsolete target before the newest request can reuse it.
+            if (disposed || cancellationToken.IsCancellationRequested || IsReplaySeekRequestSuperseded(seekRequest)) return;
             var startPaused = completionIntent == SeekCompletionIntent.PreservePlaybackState && Status == PlaybackStatus.Paused;
             var seekOperationVersion = BeginReplaySeekOperation();
             var targetReplayWindowHasMessages = false;
@@ -2566,7 +2548,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                         replay = promotedReplay;
                     }
 
-                    if (!IsCurrentReplaySession(replay) ||
+                    if (IsReplaySeekRequestSuperseded(seekRequest) || !IsCurrentReplaySession(replay) ||
                         playbackEngine is null)
                     {
                         return;
@@ -2585,28 +2567,27 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                     }
 
                     CancelActiveStart();
-                    // Re-anchor VOD chat first: it keeps everything already downloaded, so chat the
-                    // seek target is already covered by is republished immediately instead of after
-                    // a round trip.
-                    ClearChatForVodChatSeek();
-                    StartVodChat(replay, targetOffset);
-                    targetReplayWindowHasMessages = PumpVodChat(targetOffset) > 0;
-
                     var seekedInPlace = false;
+                    Uri? endedVodPlaybackUri = null;
                     if (!forceReload && !IsVodFinished && CanSeekCurrentReplayInPlace(replay))
                     {
                         var statusBeforeSeek = Status;
                         try
                         {
                             if (!startPaused) Status = PlaybackStatus.Starting;
+                            if (IsReplaySeekRequestSuperseded(seekRequest)) return;
+                            targetReplayWindowHasMessages = PrepareReplaySeekChat(replay, targetOffset);
                             await playbackEngine.SeekAsync(targetOffset, cancellationToken);
+                            ConfirmReplaySeekRequest(seekRequest, targetOffset, seekOperationVersion, playbackEngine);
                             CompleteReplaySeek(targetOffset, duration, seekOperationVersion, startPaused);
                             seekedInPlace = true;
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException &&
-                            !Target.IsExplicitVod &&
-                            CanResolveReplayPlaybackUrl(replay, settings))
+                            (Target.IsExplicitVod
+                                ? explicitVodPlaybackUri is not null && HasTerminalReplayInput()
+                                : CanResolveReplayPlaybackUrl(replay, settings)))
                         {
+                            if (Target.IsExplicitVod) endedVodPlaybackUri = explicitVodPlaybackUri;
                             currentReplayPlaybackKey = null;
                             CancelReplayPlaybackUrlResolution();
                             logger.Write(
@@ -2631,9 +2612,24 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                     {
                         var replayPlaybackKey = CreateReplayPlaybackUrlKey(replay, settings);
                         var urlWaitStopwatch = Stopwatch.StartNew();
-                        var resolved = await ResolveReplayPlaybackUrlForSeekAsync(replayPlaybackKey, cancellationToken);
+                        StreamlinkResolvedUrl resolved;
+                        if (seekRequest?.ResolvedPlayback is { } cached && cached.Key.Equals(replayPlaybackKey))
+                            resolved = cached.Url;
+                        else
+                            resolved = endedVodPlaybackUri is { } cachedVodUri
+                                ? new StreamlinkResolvedUrl(cachedVodUri, "Reopening the current VOD media.")
+                                : await ResolveReplayPlaybackUrlForSeekAsync(replayPlaybackKey, cancellationToken);
                         urlWaitStopwatch.Stop();
                         LogReplayFirstSeekStage("URL wait", urlWaitStopwatch.Elapsed);
+                        // URL resolution can outlast several input events. Keep its cached
+                        // result, but leave the current input/chat alone for an obsolete target.
+                        if (IsReplaySeekRequestSuperseded(seekRequest))
+                        {
+                            CacheResolvedReplaySeekPlaybackForPendingRequest(seekRequest, new(replayPlaybackKey, resolved));
+                            return;
+                        }
+                        if (cancellationToken.IsCancellationRequested) return;
+                        targetReplayWindowHasMessages = PrepareReplaySeekChat(replay, targetOffset);
                         var replayTransitionWork = PrepareReplayTransitionWork(settings);
                         var prePlaybackTransitionWork = replayTransitionWork
                             .Where(work => work.RunBeforePlayback)
@@ -2678,6 +2674,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
                             currentReplayPlaybackKey = replayPlaybackKey;
                             ApplyAudio();
+                            ConfirmReplaySeekRequest(seekRequest, targetOffset, seekOperationVersion, playbackEngine);
                             CompleteReplaySeek(targetOffset, duration, seekOperationVersion, startPaused);
                         }
                         catch (Exception ex)
@@ -2694,8 +2691,11 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                                 logger.Write(AppLogLevel.Warning, "Replay", "Failed to stop an unsuccessful replay restore.", stopException);
                             }
 
-                            Status = PlaybackStatus.Error;
-                            ErrorMessage = $"Replay position could not be restored: {ex.Message}";
+                            isDirectExplicitVodReplayPlayback = false;
+                            currentReplayPlaybackKey = null;
+                            var canceled = ex is OperationCanceledException && cancellationToken.IsCancellationRequested;
+                            Status = canceled ? PlaybackStatus.Stopped : PlaybackStatus.Error;
+                            ErrorMessage = canceled ? "" : $"Replay position could not be restored: {ex.Message}";
                             await RunReplayTransitionWorkAsync(
                                 deferredTransitionWork.Where(work => work.RunOnPlaybackFailure).ToArray());
                             throw;
@@ -2733,7 +2733,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             }
             finally
             {
-                if (IsLatestReplaySeekOperation(seekOperationVersion))
+                if (IsLatestReplaySeekOperation(seekOperationVersion) && !HasPendingReplaySeekRequest)
                 {
                     IsBusy = false;
                     IsReplaySeekInProgress = false;
@@ -2753,6 +2753,15 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         }
     }
 
+    private bool PrepareReplaySeekChat(ReplaySessionInfo replay, TimeSpan targetOffset)
+    {
+        // Re-anchor only when this target is ready for the player. Cached chat is
+        // republished immediately, without fetching it again for superseded targets.
+        ClearChatForVodChatSeek();
+        StartVodChat(replay, targetOffset);
+        return PumpVodChat(targetOffset) > 0;
+    }
+
     private void CompleteReplaySeek(TimeSpan position, TimeSpan duration, long generation, bool paused)
     {
         ExpectVodResumeSeek(position);
@@ -2761,6 +2770,10 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         IsBehindLive = !Target.IsExplicitVod;
         replayClock.CommitSeek(position, duration, paused);
         Status = paused ? PlaybackStatus.Paused : PlaybackStatus.Playing;
+        // A new drag can now overlap the previous seek's confirmation. Record the
+        // confirmed clock while keeping that drag's slider and preview text intact.
+        ReplaySeekMaximum = duration.TotalSeconds;
+        ReplaySeekValue = position.TotalSeconds;
         ApplyReplayClock(position, duration, isSeekable: true);
         StartReplayClockPolling();
     }
@@ -2788,7 +2801,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             return;
         }
 
-        if (!IsReplayMode && !IsBehindLive && Status != PlaybackStatus.Paused)
+        var wasSeeking = IsReplaySeekInProgress;
+        CancelReplaySeekRequests();
+        if (!wasSeeking && !IsReplayMode && !IsBehindLive && Status != PlaybackStatus.Paused)
         {
             IsBehindLive = false;
             ReplayLiveStateText = "Live";
@@ -2890,25 +2905,15 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         }
     }
 
-    public ValueTask DisposeAsync()
-    {
-        lock (disposalGate)
-        {
-            if (disposalTask is null)
-            {
-                CaptureVodResumePosition(closing: true);
-                disposed = true;
-                logBuffer.Dispose();
-                disposalTask = DisposeCoreAsync();
-            }
-
-            return new ValueTask(disposalTask);
-        }
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
     private async Task DisposeCoreAsync()
     {
-        lifetimeCancellation.Cancel();
+        CaptureVodResumePosition(closing: true);
+        logBuffer.Dispose();
+        CancelReplaySeekRequests();
+        CancellationSourceCleanup.Cancel(lifetimeCancellation);
         // Persist the frozen close snapshot before waiting for player/chat cleanup.
         await SaveVodResumePositionAsync(force: true);
         StopTwitchPredictionClock();
@@ -2936,8 +2941,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 lifecycleGate.Release();
             }
 
-            await nativeOverlay.DisposeAsync();
-            lifetimeCancellation.Dispose();
+            try { await nativeOverlay.DisposeAsync(); }
+            finally { lifetimeCancellation.Dispose(); }
         }
     }
 
@@ -3344,7 +3349,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             connectionCancellation = chatConnectionCancellation;
         }
 
-        CancelCancellationSource(connectionCancellation);
+        CancellationSourceCleanup.Cancel(connectionCancellation);
         if (connectionTask is not null)
         {
             try
@@ -3753,13 +3758,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         CancelReplayPlaybackUrlResolution();
 
-        try
-        {
-            cancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     private void CancelReplayAvailabilityPolling()
@@ -3771,13 +3770,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             Interlocked.Increment(ref replayAvailabilityRefreshVersion);
         }
 
-        try
-        {
-            cancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     private IReadOnlyList<ReplayTransitionWork> PrepareReplayTransitionWork(AppSettings settings)
@@ -3815,7 +3808,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         {
             work.Add(new(
                 "stop live Streamlink HTTP transport",
-                () => DisposeDetachedStreamSessionAsync(detachedStreamSession),
+                () => detachedStreamSession.DisposeAsync().AsTask(),
                 RunOnPlaybackFailure: true));
         }
 
@@ -4130,21 +4123,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         dispatch(RaiseReplaySeekAvailabilityChanged);
     }
 
-    private static void CancelReplayPlaybackUrlResolution(ReplayPlaybackUrlResolution? resolution)
-    {
-        if (resolution is null)
-        {
-            return;
-        }
-
-        try
-        {
-            resolution.Cancellation.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-    }
+    private static void CancelReplayPlaybackUrlResolution(ReplayPlaybackUrlResolution? resolution) =>
+        CancellationSourceCleanup.Cancel(resolution?.Cancellation);
 
     private async Task ObserveReplayPlaybackUrlResolutionAsync(ReplayPlaybackUrlResolution resolution)
     {
@@ -4213,7 +4193,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             replayInputPreparationUri = null;
             replayInputPreparationEngine = null;
         }
-        cancellation?.Cancel();
+        CancellationSourceCleanup.Cancel(cancellation);
         cancellation?.Dispose();
     }
 
@@ -4235,7 +4215,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
                 replayInputPreparationEngine = engine;
                 token = replayInputPreparationCancellation.Token;
             }
-            previous?.Cancel();
+            CancellationSourceCleanup.Cancel(previous);
             previous?.Dispose();
             _ = Task.Run(async () =>
             {
@@ -4417,8 +4397,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     /// Builds an async command whose unhandled failures are reported and logged.
     /// <see cref="AsyncRelayCommand"/> drops them silently when no error handler is supplied.
     /// </summary>
-    private AsyncRelayCommand CreateCommand(Func<Task> execute, Func<bool>? canExecute = null) =>
-        new(execute, canExecute, ReportCommandFailure);
+    private AsyncRelayCommand CreateCommand(Func<Task> execute, Func<bool>? canExecute = null, bool allowConcurrentExecution = false) =>
+        new(execute, canExecute, ReportCommandFailure, allowConcurrentExecution);
 
     private void ReportCommandFailure(Exception exception)
     {
@@ -4448,6 +4428,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void ResetReplayControls()
     {
+        CancelReplaySeekRequests();
         CancelLiveDvrPromotionPolling();
         StopVodChat();
         CancelReplaySeekPreview();
@@ -4477,7 +4458,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             selectedIndex = Interlocked.Exchange(ref selectedPlaybackRateIndex, DefaultPlaybackRateIndex);
         }
 
-        CancelCancellationSource(pendingCancellation);
+        CancellationSourceCleanup.Cancel(pendingCancellation);
         if (appliedIndex == DefaultPlaybackRateIndex && selectedIndex == DefaultPlaybackRateIndex)
         {
             return;
@@ -4490,7 +4471,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     {
         CancellationTokenSource? pendingCancellation;
         lock (playbackRateSelectionGate) pendingCancellation = playbackRateChangeCancellation;
-        CancelCancellationSource(pendingCancellation);
+        CancellationSourceCleanup.Cancel(pendingCancellation);
     }
 
     private void SetReplayUnavailable(string reason)
@@ -4563,7 +4544,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
         try
         {
-            cancellation.Cancel();
+            CancellationSourceCleanup.Cancel(cancellation,
+                exception => logger.Write(AppLogLevel.Warning, logCategory, failureMessage, exception));
             if (pollingTask is not null)
             {
                 await pollingTask;
@@ -4967,8 +4949,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         else
         {
             ReplaySeekValue = normalizedPosition.TotalSeconds;
-            ReplaySeekSliderValue = normalizedPosition.TotalSeconds;
-            ReplayElapsedText = StreamViewModelHelpers.FormatClockTime(normalizedPosition);
+            RestoreReplaySeekDisplay();
         }
 
         ReplayDurationText = StreamViewModelHelpers.FormatClockTime(normalizedDuration);
@@ -5053,21 +5034,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         return replayPlaybackKey.Equals(CreateReplayPlaybackUrlKey(replay, currentSettings));
     }
 
-    private static void CancelCancellationSource(CancellationTokenSource? cancellation)
-    {
-        if (cancellation is null)
-        {
-            return;
-        }
-
-        try
-        {
-            cancellation.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-    }
+    private bool HasTerminalReplayInput() => playbackEngine?.TryGetPlaybackHealth(out var health) == true &&
+        health.State is PlaybackEngineState.Ended or PlaybackEngineState.Stopped or PlaybackEngineState.Error;
 
     private static bool IsCurrentLiveDvrReplay(ReplaySessionInfo replay)
     {
@@ -5123,7 +5091,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
             liveDvrPromotionPollingTask = null;
         }
 
-        CancelCancellationSource(cancellation);
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     private async Task PollLiveDvrPromotionAsync(AppSettings settings, CancellationTokenSource cancellation)
@@ -5549,7 +5517,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         var session = DetachStreamSession();
         if (session is not null)
         {
-            await DisposeDetachedStreamSessionAsync(session);
+            await session.DisposeAsync();
         }
     }
 
@@ -5563,11 +5531,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         }
 
         return session;
-    }
-
-    private static async Task DisposeDetachedStreamSessionAsync(IStreamTransportSession session)
-    {
-        await session.DisposeAsync();
     }
 
     private void RaiseNativeOverlayProperties()
@@ -5628,11 +5591,13 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void RegisterActiveStartCancellation(CancellationTokenSource cancellation)
     {
+        CancellationTokenSource? previous;
         lock (videoSurfaceGate)
         {
-            activeStartCancellation?.Cancel();
+            previous = activeStartCancellation;
             activeStartCancellation = cancellation;
         }
+        CancellationSourceCleanup.Cancel(previous);
     }
 
     private void ClearActiveStartCancellation(CancellationTokenSource cancellation)
@@ -5648,10 +5613,12 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void CancelActiveStart()
     {
+        CancellationTokenSource? cancellation;
         lock (videoSurfaceGate)
         {
-            activeStartCancellation?.Cancel();
+            cancellation = activeStartCancellation;
         }
+        CancellationSourceCleanup.Cancel(cancellation);
     }
 
     private async Task<(IntPtr Handle, long Version)> WaitForVideoHandleAsync(CancellationToken cancellationToken)
@@ -5933,8 +5900,9 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void StartTwitchPredictionClock()
     {
+        Action refresh = () => dispatch(RefreshTwitchPredictionClock);
         twitchPredictionClockTimer ??= new System.Threading.Timer(
-            _ => dispatch(RefreshTwitchPredictionClock),
+            _ => SafeEventDispatcher.Invoke(refresh, logger, "TwitchPredictions", "prediction clock timer"),
             null,
             TimeSpan.FromSeconds(1),
             TimeSpan.FromSeconds(1));
@@ -5948,6 +5916,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
 
     private void RefreshTwitchPredictionClock()
     {
+        if (disposed) return;
         foreach (var card in DockedChatFeedItems.OfType<TwitchPredictionFeedItemViewModel>())
         {
             card.RefreshTiming();
@@ -6298,8 +6267,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private void InvalidateNativeReplayOverlayFrame() => nativeOverlay.InvalidateNativeReplayOverlayFrame();
 
     private void CancelNativeReplayOverlayAnimationState() => nativeOverlay.CancelNativeReplayOverlayAnimationState();
-
-    internal static TimeSpan CalculateNativeReplayOverlayAnimationDelay(TimeSpan animationClock, TimeSpan? nextAnimationFrameDelay, TimeSpan currentAnimationClock) => NativeChatOverlayController.CalculateNativeReplayOverlayAnimationDelay(animationClock, nextAnimationFrameDelay, currentAnimationClock);
 
     private bool ShouldUseNativeOverlayController(AppSettings settings) => !Target.IsOfflineVod && nativeOverlay.ShouldUseNativeOverlayController(settings);
 

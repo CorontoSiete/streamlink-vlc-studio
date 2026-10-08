@@ -9,6 +9,7 @@ using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Io;
 using StreamlinkVlcStudio.Infrastructure.Logging;
 using StreamlinkVlcStudio.Infrastructure.Replay;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vod;
 
@@ -53,7 +54,7 @@ public sealed class VodDownloadService : IVodDownloadService
             try { libraryDirectories.Add(NormalizeDownloadDirectory(previousDirectory)); }
             catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
             {
-                logger.Write(AppLogLevel.Warning, "VOD downloads", "An invalid previous download folder was ignored.", exception);
+                logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "An invalid previous download folder was ignored.", exception);
             }
         }
         this.streamlink = streamlink;
@@ -168,13 +169,14 @@ public sealed class VodDownloadService : IVodDownloadService
     public async Task CancelAsync(Guid id, CancellationToken cancellationToken = default)
     {
         VodDownloadItem? changed = null;
+        Job? jobToCancel = null;
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
             await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
             if (!items.TryGetValue(id, out var item) || !item.IsActive) return;
-            if (jobs.TryGetValue(id, out var job)) job.Cancellation.Cancel();
+            jobs.TryGetValue(id, out jobToCancel);
             if (item.State == VodDownloadState.Queued)
             {
                 changed = item with { State = VodDownloadState.Canceled, Revision = item.Revision + 1 };
@@ -182,7 +184,13 @@ public sealed class VodDownloadService : IVodDownloadService
                 items[id] = changed;
             }
         }
-        finally { gate.Release(); }
+        finally
+        {
+            gate.Release();
+            // Callbacks may read the library or enter another service. Invoke them
+            // after releasing its state lock, and cancel the captured job generation.
+            CancellationSourceCleanup.Cancel(jobToCancel?.Cancellation, ReportCancellationFailure);
+        }
         if (changed is not null) Publish(changed);
     }
 
@@ -282,7 +290,7 @@ public sealed class VodDownloadService : IVodDownloadService
             catch (Exception exception) when (exception is not OperationCanceledException &&
                 !directory.Equals(DownloadDirectory, StringComparison.OrdinalIgnoreCase))
             {
-                logger.Write(AppLogLevel.Warning, "VOD downloads", "A previous download folder is unavailable; its files have been preserved.", exception);
+                logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "A previous download folder is unavailable; its files have been preserved.", exception);
             }
         }
         loaded = true;
@@ -341,7 +349,7 @@ public sealed class VodDownloadService : IVodDownloadService
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
-                    logger.Write(AppLogLevel.Warning, "VOD downloads", $"Could not load download {id:N}; its files have been preserved.", exception);
+                    logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", $"Could not load download {id:N}; its files have been preserved.", exception);
                 }
                 finally
                 {
@@ -453,7 +461,7 @@ public sealed class VodDownloadService : IVodDownloadService
         }
         finally { gate.Release(); }
         Publish(item);
-        logger.Write(AppLogLevel.Info, "VOD downloads", $"Downloaded {item.Target.Platform} VOD {item.Target.MediaId}: {item.CompletedSegments} segments, {item.BytesDownloaded} bytes.");
+        logger.WriteSafely(AppLogLevel.Info, "VOD downloads", $"Downloaded {item.Target.Platform} VOD {item.Target.MediaId}: {item.CompletedSegments} segments, {item.BytesDownloaded} bytes.");
     }
 
     private async Task<Uri> ResolveKickPlaylistAsync(Job job, StreamTarget canonicalTarget,
@@ -464,7 +472,7 @@ public sealed class VodDownloadService : IVodDownloadService
             try { return (await streamlink.ResolveStreamUrlAsync(request, cancellationToken).ConfigureAwait(false)).StreamUri; }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                logger.Write(AppLogLevel.Info, "VOD downloads", "Refreshing the Kick VOD source after resolution failed: " + ErrorText(exception, job.Options));
+                logger.WriteSafely(AppLogLevel.Info, "VOD downloads", "Refreshing the Kick VOD source after resolution failed: " + ErrorText(exception, job.Options));
             }
         }
         StreamTarget resolvedTarget;
@@ -477,7 +485,7 @@ public sealed class VodDownloadService : IVodDownloadService
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            logger.Write(AppLogLevel.Info, "VOD downloads", "Kick website resolution failed; trying the configured Streamlink Kick plugin: " + ErrorText(exception, job.Options));
+            logger.WriteSafely(AppLogLevel.Info, "VOD downloads", "Kick website resolution failed; trying the configured Streamlink Kick plugin: " + ErrorText(exception, job.Options));
             try { return (await streamlink.ResolveStreamUrlAsync(request with { Target = canonicalTarget }, cancellationToken).ConfigureAwait(false)).StreamUri; }
             catch (Exception fallbackException) when (fallbackException is not OperationCanceledException)
             {
@@ -535,12 +543,12 @@ public sealed class VodDownloadService : IVodDownloadService
             var error = state == VodDownloadState.Failed ? ErrorText(exception, job.Options) :
                 state == VodDownloadState.Interrupted ? "The app closed before this download finished. Retry to download it again." : "";
             try { DeleteOwnedDirectory(job.Id, PartialDirectory(job.Id)); }
-            catch (Exception cleanupException) { logger.Write(AppLogLevel.Warning, "VOD downloads", "Partial VOD files could not be removed.", cleanupException); }
+            catch (Exception cleanupException) { logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "Partial VOD files could not be removed.", cleanupException); }
             changed = item with { State = state, Error = error, LocalMediaPath = "", Revision = item.Revision + 1 };
             items[job.Id] = changed;
             try { await SaveCoreAsync(changed, CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception saveException) { logger.Write(AppLogLevel.Error, "VOD downloads", "Could not save the download failure; the previous record remains recoverable.", saveException); }
-            if (state == VodDownloadState.Failed) logger.Write(AppLogLevel.Warning, "VOD downloads", $"Download {job.Id:N} failed: {error}");
+            catch (Exception saveException) { logger.WriteSafely(AppLogLevel.Error, "VOD downloads", "Could not save the download failure; the previous record remains recoverable.", saveException); }
+            if (state == VodDownloadState.Failed) logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", $"Download {job.Id:N} failed: {error}");
         }
         finally { gate.Release(); }
         if (changed is not null) Publish(changed);
@@ -669,22 +677,35 @@ public sealed class VodDownloadService : IVodDownloadService
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(disposed, this);
 
-    public ValueTask DisposeAsync()
-    {
-        lock (disposalGate) return new ValueTask(disposal ??= DisposeCoreAsync());
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposal, DisposeCoreAsync));
+
+    private void ReportCancellationFailure(AggregateException exception) =>
+        logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "A download cancellation callback failed; cleanup will continue.", exception);
 
     private async Task DisposeCoreAsync()
     {
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            disposed = true;
-            shutdown.Cancel();
             queue.Writer.TryComplete();
         }
         finally { gate.Release(); }
-        await worker.ConfigureAwait(false);
+        CancellationSourceCleanup.Cancel(shutdown, ReportCancellationFailure);
+        try { await worker.ConfigureAwait(false); }
+        finally
+        {
+            try { await ReleaseJobsAsync().ConfigureAwait(false); }
+            finally
+            {
+                try { if (ownsClient) client.Dispose(); }
+                finally { shutdown.Dispose(); }
+            }
+        }
+    }
+
+    private async Task ReleaseJobsAsync()
+    {
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -701,14 +722,12 @@ public sealed class VodDownloadService : IVodDownloadService
                 };
                 items[item.Id] = interrupted;
                 try { await SaveCoreAsync(interrupted, CancellationToken.None).ConfigureAwait(false); }
-                catch (Exception exception) { logger.Write(AppLogLevel.Warning, "VOD downloads", "Could not save an interrupted download.", exception); }
+                catch (Exception exception) { logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "Could not save an interrupted download.", exception); }
             }
             foreach (var job in jobs.Values) job.Cancellation.Dispose();
             jobs.Clear();
         }
         finally { gate.Release(); }
-        if (ownsClient) client.Dispose();
-        shutdown.Dispose();
     }
 
     private sealed class Job(Guid id, StreamTarget target, VodDownloadOptions options, CancellationToken shutdown)

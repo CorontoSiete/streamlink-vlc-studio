@@ -51,9 +51,18 @@ internal static class VodCompletionTestCatalog
         Assert.Equal(2, engine.PlayCount);
         Assert.Equal(TimeSpan.FromMinutes(10), engine.LastStartPosition!.Value);
 
-        engine.PlaybackHealthOverride = () => new(2, PlaybackEngineState.Ended, 0, 0, 0, 0);
-        tab.CheckVodPlaybackCompletion();
-        Assert.True(tab.IsVodFinished);
+        var transition = (SemaphoreSlim)typeof(StreamTabViewModel)
+            .GetField("playbackTransitionGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(tab)!;
+        await transition.WaitAsync();
+        try
+        {
+            engine.PlaybackHealthOverride = () => new(2, PlaybackEngineState.Ended, 0, 0, 0, 0);
+            tab.CheckVodPlaybackCompletion();
+            Assert.Equal(false, tab.IsVodFinished);
+        }
+        finally { transition.Release(); }
+        // Completion sampling is nonblocking while a playback transition owns the gate.
+        await TestWait.UntilAsync(() => tab.IsVodFinished, TimeSpan.FromSeconds(3));
         await StartAsync(tab);
         Assert.Equal(false, tab.IsVodFinished);
         factory.Engine!.PlaybackHealthOverride = () => new(3, PlaybackEngineState.Ended, 0, 0, 0, 0);

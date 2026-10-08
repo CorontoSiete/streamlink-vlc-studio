@@ -6,6 +6,7 @@ public sealed class UpdateSettings : NotifyPropertyChangedObject
     private bool automaticDownloadsEnabled;
     private string snoozedVersion = "";
     private DateTimeOffset? snoozedUntilUtc;
+    private string lastSeenChangelogVersion = "";
 
     public bool AutomaticChecksEnabled
     {
@@ -29,6 +30,12 @@ public sealed class UpdateSettings : NotifyPropertyChangedObject
     {
         get => snoozedUntilUtc;
         set => SetProperty(ref snoozedUntilUtc, value);
+    }
+
+    public string LastSeenChangelogVersion
+    {
+        get => lastSeenChangelogVersion;
+        set => SetProperty(ref lastSeenChangelogVersion, value?.Trim() ?? "");
     }
 
     public bool IsSnoozed(Version version, DateTimeOffset now) =>

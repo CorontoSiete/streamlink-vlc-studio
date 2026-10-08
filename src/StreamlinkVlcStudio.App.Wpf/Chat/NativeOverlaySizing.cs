@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamStudio.Io;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
@@ -8,6 +9,7 @@ internal readonly record struct NativeOverlaySourceSize(int Width, int Height);
 
 internal static class NativeOverlaySizing
 {
+    private const int MaximumStateFileBytes = 4096;
     internal const int ReferenceVideoHeight = 1080;
     internal const int MinWidth = (int)ChatSettings.MinimumDockWidth;
     internal const int MinHeight = 120;
@@ -28,8 +30,8 @@ internal static class NativeOverlaySizing
     {
         var sourceHeight = videoHeight > 0 ? videoHeight : ReferenceVideoHeight;
         return (
-            ClampReferenceWidth((int)Math.Round(width * ReferenceVideoHeight / (double)sourceHeight)),
-            ClampReferenceHeight((int)Math.Round(height * ReferenceVideoHeight / (double)sourceHeight)));
+            (int)Math.Clamp(Math.Round((double)width * ReferenceVideoHeight / sourceHeight), MinWidth, MaxWidth),
+            (int)Math.Clamp(Math.Round((double)height * ReferenceVideoHeight / sourceHeight), MinHeight, MaxHeight));
     }
 
     internal static double GetVideoScale(int videoHeight)
@@ -75,28 +77,46 @@ internal static class NativeOverlaySizing
         width = 0;
         height = 0;
         referenceSize = false;
+        if (!TryReadStateFile(path, out var text))
+        {
+            return false;
+        }
+
+        var values = ParseInts(text);
+        if (values.Length < 2)
+        {
+            return false;
+        }
+
+        width = values[0];
+        height = values[1];
+        referenceSize =
+            text.Contains("reference", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("normalized", StringComparison.OrdinalIgnoreCase);
+        return true;
+    }
+
+    internal static bool TryReadIntFile(string path, out int[] values)
+    {
+        values = [];
+        if (!TryReadStateFile(path, out var text))
+        {
+            return false;
+        }
+
+        values = ParseInts(text);
+        return values.Length > 0;
+    }
+
+    private static bool TryReadStateFile(string path, out string text)
+    {
+        text = "";
         try
         {
-            if (!File.Exists(path))
-            {
-                return false;
-            }
-
-            var text = File.ReadAllText(path);
-            var values = ParseInts(text);
-            if (values.Length < 2)
-            {
-                return false;
-            }
-
-            width = values[0];
-            height = values[1];
-            referenceSize =
-                text.Contains("reference", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("normalized", StringComparison.OrdinalIgnoreCase);
+            text = BoundedFile.ReadAllText(path, MaximumStateFileBytes);
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
             return false;
         }

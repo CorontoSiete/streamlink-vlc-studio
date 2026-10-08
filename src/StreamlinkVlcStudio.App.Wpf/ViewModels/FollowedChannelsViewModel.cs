@@ -52,12 +52,8 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     }
     protected override void StopOperations()
     {
-        followedChannelsRefreshCancellation.Cancel();
-        lock (followedChannelsRefreshTimerGate)
-        {
-            followedChannelsRefreshTimer?.Dispose();
-            followedChannelsRefreshTimer = null;
-        }
+        CancelOperation(followedChannelsRefreshCancellation);
+        StopRefreshTimer(followedChannelsRefreshTimerGate, ref followedChannelsRefreshTimer);
         LiveFollowedChannels.CollectionChanged -= LiveFollowedChannelsOnCollectionChanged;
         OfflineFollowedChannels.CollectionChanged -= OfflineFollowedChannelsOnCollectionChanged;
         Settings.PropertyChanged -= SettingsOnPropertyChanged;
@@ -498,26 +494,9 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
 
     internal void EnsureFollowedChannelsRefreshTimerStarted()
     {
-        if (followedStreamsService is null ||
-            followedChannelsRefreshInterval <= TimeSpan.Zero ||
-            disposed)
-        {
-            return;
-        }
-
-        lock (followedChannelsRefreshTimerGate)
-        {
-            if (followedChannelsRefreshTimer is not null || disposed)
-            {
-                return;
-            }
-
-            followedChannelsRefreshTimer = new System.Threading.Timer(
-                _ => RefreshFollowedChannelsOnUi(),
-                null,
-                followedChannelsRefreshInterval,
-                followedChannelsRefreshInterval);
-        }
+        if (followedStreamsService is not null)
+            EnsureRefreshTimerStarted(followedChannelsRefreshTimerGate, ref followedChannelsRefreshTimer,
+                followedChannelsRefreshInterval, RefreshFollowedChannelsOnUi);
     }
 
     internal void RefreshFollowedChannelsOnUi()

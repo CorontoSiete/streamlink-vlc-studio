@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Infrastructure.Http;
 
@@ -12,7 +13,8 @@ namespace StreamlinkVlcStudio.App.Wpf.Twitch;
 
 /// <summary>
 /// An isolated, persistent Twitch website session. Cookies stay in WebView2's
-/// profile; no website access token is copied into app settings or sent by us.
+/// profile. Playback can reuse the website token in memory when Twitch's anonymous
+/// stream resolution exposes only audio; it is never copied into app settings.
 /// All methods are called on the window's dispatcher.
 /// </summary>
 internal sealed class TwitchBonusBrowser(
@@ -30,14 +32,19 @@ internal sealed class TwitchBonusBrowser(
         AppIdentity.ProductDirectoryName, "TwitchBonusesWebView2");
 
     public async Task<bool> HasSessionAsync(CancellationToken cancellationToken)
+        => !string.IsNullOrEmpty(await GetPlaybackOAuthTokenAsync(cancellationToken));
+
+    internal async Task<string?> GetPlaybackOAuthTokenAsync(CancellationToken cancellationToken)
     {
+        owner.Dispatcher.VerifyAccess();
+        cancellationToken.ThrowIfCancellationRequested();
         var session = await GetSessionAsync().WaitAsync(BrowserOperationTimeout, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var cookies = await session.Core.CookieManager.GetCookiesAsync("https://www.twitch.tv/")
             .WaitAsync(BrowserOperationTimeout, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        // Presence is an initial sign-in check, not proof of a successful claim.
-        return cookies.Any(cookie => cookie.Name == "auth-token" && !string.IsNullOrEmpty(cookie.Value));
+        // Cookie presence is not proof of a successful claim or playback authorization.
+        return cookies.FirstOrDefault(cookie => cookie.Name == "auth-token" && !string.IsNullOrEmpty(cookie.Value))?.Value;
     }
 
     public async Task SignInAsync(CancellationToken cancellationToken)
@@ -54,7 +61,9 @@ internal sealed class TwitchBonusBrowser(
         var session = await GetSessionAsync().WaitAsync(BrowserOperationTimeout, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         session.Core.Navigate("about:blank");
-        await session.Core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
+        await session.Core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile)
+            .WaitAsync(BrowserOperationTimeout, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     public async Task<ITwitchBonusPage> OpenChannelAsync(string channel, CancellationToken cancellationToken)
@@ -132,27 +141,9 @@ internal sealed class TwitchBonusBrowser(
             Height = 800,
             WindowStyle = 0
         });
-        Task<CoreWebView2Controller> creation;
-        try
-        {
-            creation = controllerFactory is null
-                ? environment!.CreateCoreWebView2ControllerAsync(backgroundHost.Handle)
-                : controllerFactory(backgroundHost.Handle);
-        }
-        catch
-        {
-            backgroundHost.Dispose();
-            throw;
-        }
-        CoreWebView2Controller controller;
-        try { controller = await creation.WaitAsync(BrowserOperationTimeout, cancellationToken); }
-        catch
-        {
-            // The native creation call cannot be canceled; close its result if it
-            // finishes after a tab was closed, timed out, or the app shut down.
-            _ = CloseLateControllerAsync(creation, backgroundHost);
-            throw;
-        }
+        var controller = await WebView2ControllerLifetime.CreateAsync(backgroundHost,
+            controllerFactory ?? (handle => environment!.CreateCoreWebView2ControllerAsync(handle)),
+            BrowserOperationTimeout, cancellationToken);
         if (disposed || cancellationToken.IsCancellationRequested)
         {
             try { controller.Close(); }
@@ -212,13 +203,6 @@ internal sealed class TwitchBonusBrowser(
             finally { backgroundHost.Dispose(); }
             throw;
         }
-    }
-
-    private static async Task CloseLateControllerAsync(Task<CoreWebView2Controller> creation, HwndSource backgroundHost)
-    {
-        try { (await creation).Close(); }
-        catch (Exception) { /* A failed native creation has no controller to close. */ }
-        finally { backgroundHost.Dispose(); }
     }
 
     public void Dispose()

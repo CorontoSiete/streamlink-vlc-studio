@@ -2,6 +2,37 @@ $script:InstallOwnerFileName = ".stream-studio-owner.json"
 $script:InstallManifestFileName = ".stream-studio-files.json"
 $script:InstallProductId = "stream-studio"
 
+function Get-InstallOperationMutexName([string]$Directory) {
+    $identity = (Get-FullPathNormalized $Directory).ToUpperInvariant()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity))).Replace('-', '')
+        'Local\StreamStudio.Installation.' + $hash
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Enter-InstallOperation([string]$Directory) {
+    $mutex = [Threading.Mutex]::new($false, (Get-InstallOperationMutexName $Directory))
+    try {
+        $acquired = $false
+        try { $acquired = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }
+        if (-not $acquired) {
+            throw 'Another installation or uninstall is using this application folder. Wait for it to finish and try again.'
+        }
+        $mutex
+    } catch {
+        $mutex.Dispose()
+        throw
+    }
+}
+
+function Exit-InstallOperation([Threading.Mutex]$Mutex) {
+    if ($null -eq $Mutex) { return }
+    try { $Mutex.ReleaseMutex() } finally { $Mutex.Dispose() }
+}
+
 function Get-InstallRelativePath([string]$Root, [string]$Path) {
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/'))
     $pathFull = [IO.Path]::GetFullPath($Path)

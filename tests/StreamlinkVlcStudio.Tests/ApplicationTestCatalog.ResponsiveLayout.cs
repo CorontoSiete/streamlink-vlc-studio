@@ -279,6 +279,7 @@ internal static partial class ApplicationTestCatalog
                 }
             }
         })),
+        .. HomeCardLayoutTests,
         .. ResponsiveHomeControlTests,
         .. ResponsivePopupTests,
         .. ResponsiveScrollbarTests,

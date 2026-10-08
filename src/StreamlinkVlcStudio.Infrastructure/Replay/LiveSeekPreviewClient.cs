@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Security;
 using StreamlinkVlcStudio.Infrastructure.Hls;
@@ -50,7 +49,7 @@ internal sealed class LiveSeekPreviewClient
 
 internal sealed record LiveSeekSegment(Uri Uri, double Start, double Duration, Uri? InitializationUri = null);
 
-internal sealed partial record LiveSeekPlaylist(IReadOnlyList<LiveSeekSegment> Segments)
+internal sealed record LiveSeekPlaylist(IReadOnlyList<LiveSeekSegment> Segments)
 {
     internal LiveSeekSegment? GetSegment(double seconds) => double.IsFinite(seconds) && seconds >= 0
         ? Segments.FirstOrDefault(segment => seconds >= segment.Start && seconds < segment.Start + segment.Duration)
@@ -90,19 +89,22 @@ internal sealed partial record LiveSeekPlaylist(IReadOnlyList<LiveSeekSegment> S
             }
             else if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
             {
-                if (!TrySeconds(line[8..].Split(',')[0], out var length) || length is <= 0 or > 30) return null;
-                duration = length;
+                if (duration is not null || !HlsPlaylistPolicy.TryReadSegmentDuration(line.AsSpan(8), 30, out var length)) return null;
+                duration = (double)length;
             }
             else if (line.StartsWith("#EXT-X-KEY:", StringComparison.Ordinal))
             {
-                encrypted = !line[11..].Split(',').Contains("METHOD=NONE", StringComparer.Ordinal);
+                if (!HlsAttributeList.TryParse(line.AsSpan(11), out var key) ||
+                    !key.TryGetValue("METHOD", out var method) || method.IsQuoted) return null;
+                encrypted = method.Value != "NONE";
+                if (!encrypted && key.Count != 1) return null;
             }
             else if (line.StartsWith("#EXT-X-MAP:", StringComparison.Ordinal))
             {
                 // A fragmented MP4 media segment needs the EXT-X-MAP which applies to it.
                 // Keep that association per segment, including changes after discontinuities.
-                var map = MapAttributes().Match(line[11..]);
-                if (!map.Success || !ProviderUriPolicy.TryResolveReplayUri(map.Groups["uri"].Value,
+                if (!HlsPlaylistPolicy.TryReadWholeMapUri(line[11..], out var mapUri) ||
+                    !ProviderUriPolicy.TryResolveReplayUri(mapUri,
                     uri, platform, out initializationUri)) return null;
                 initializationEncrypted = encrypted;
             }
@@ -128,14 +130,11 @@ internal sealed partial record LiveSeekPlaylist(IReadOnlyList<LiveSeekSegment> S
                 gap = false;
             }
         }
-        return segments.Count > 0 ? new(segments) : null;
+        return segments.Count > 0 && duration is null ? new(segments) : null;
     }
 
     private static bool TrySeconds(string value, out double seconds) =>
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) &&
         double.IsFinite(seconds) && seconds >= 0;
 
-    // Byte-range maps require a separate ranged downloader; never treat a partial map as a whole file.
-    [GeneratedRegex("^URI=\"(?<uri>[^\"\\r\\n]+)\"$", RegexOptions.CultureInvariant)]
-    private static partial Regex MapAttributes();
 }

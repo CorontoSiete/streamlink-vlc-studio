@@ -253,7 +253,6 @@ Important settings:
 
 - `StreamlinkPath`
 - `VlcDirectory`
-- `DefaultPlatform`
 - `DefaultQuality`
 - `StreamVolumes`
 - `StreamVlcOverlayFontSizes`

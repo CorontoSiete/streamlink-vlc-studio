@@ -186,7 +186,7 @@ public static partial class StreamInputParser
             throw new ArgumentException("Channel name cannot be empty.", nameof(channel));
         }
 
-        if (normalized is "." or ".." || IsKnownNonChannelPath(platform, normalized))
+        if (normalized is "." or ".." || PlatformRoutePolicy.IsNonChannelRoute(platform, normalized))
         {
             throw new ArgumentException("The channel name points to a platform page, not a channel.", nameof(channel));
         }
@@ -232,7 +232,7 @@ public static partial class StreamInputParser
         if (!Enum.IsDefined(platform) ||
             normalized.Length == 0 ||
             normalized is "." or ".." ||
-            IsKnownNonChannelPath(platform, normalized))
+            PlatformRoutePolicy.IsNonChannelRoute(platform, normalized))
         {
             normalized = "";
             return false;
@@ -276,11 +276,6 @@ public static partial class StreamInputParser
     {
         return host.Equals("twitch.tv", StringComparison.OrdinalIgnoreCase) ||
             host.Equals("kick.com", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsKnownNonChannelPath(PlatformKind platform, string channel)
-    {
-        return PlatformRoutePolicy.IsNonChannelRoute(platform, channel);
     }
 
     [GeneratedRegex("^[A-Za-z0-9_.-]{1,80}$", RegexOptions.CultureInvariant)]

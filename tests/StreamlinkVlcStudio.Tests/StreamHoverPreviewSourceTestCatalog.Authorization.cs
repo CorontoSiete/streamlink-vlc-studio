@@ -1,5 +1,3 @@
-using StreamlinkVlcStudio.Infrastructure.Previews;
-
 internal static partial class StreamHoverPreviewSourceTestCatalog
 {
     private static IReadOnlyList<(string Name, Func<Task> Run)> AuthorizationTests =>

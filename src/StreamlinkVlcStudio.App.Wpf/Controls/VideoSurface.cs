@@ -286,11 +286,11 @@ public sealed partial class VideoSurface : HwndHost
 
         if (msg == WmMouseWheel)
         {
-            var delta = GetWheelDelta(wParam);
+            var delta = WindowInteropHelpers.GetSignedHighWord(wParam);
             if (delta != 0)
             {
                 MouseWheelScrolled?.Invoke(this, new VideoSurfaceMouseWheelEventArgs(
-                    delta, new Point(GetLParamX(lParam), GetLParamY(lParam))));
+                    delta, new Point(WindowInteropHelpers.GetSignedLowWord(lParam), WindowInteropHelpers.GetSignedHighWord(lParam))));
                 handled = true;
                 return IntPtr.Zero;
             }
@@ -323,8 +323,8 @@ public sealed partial class VideoSurface : HwndHost
 
         var screenPoint = new NativePoint
         {
-            X = GetLParamX(lParam),
-            Y = GetLParamY(lParam)
+            X = WindowInteropHelpers.GetSignedLowWord(lParam),
+            Y = WindowInteropHelpers.GetSignedHighWord(lParam)
         };
         if (!ClientToScreen(hwnd, ref screenPoint))
         {
@@ -372,8 +372,8 @@ public sealed partial class VideoSurface : HwndHost
 
         var screenPoint = new NativePoint
         {
-            X = GetLParamX(lParam),
-            Y = GetLParamY(lParam)
+            X = WindowInteropHelpers.GetSignedLowWord(lParam),
+            Y = WindowInteropHelpers.GetSignedHighWord(lParam)
         };
         if (!ClientToScreen(hwnd, ref screenPoint))
         {
@@ -903,30 +903,12 @@ public sealed partial class VideoSurface : HwndHost
         DefWindowProc(hwnd, msg, wParam, lParam);
 
     private bool IsLeftButtonDoubleClick(IntPtr lParam) =>
-        doubleClickTracker.IsDoubleClick(GetLParamX(lParam), GetLParamY(lParam));
+        doubleClickTracker.IsDoubleClick(WindowInteropHelpers.GetSignedLowWord(lParam), WindowInteropHelpers.GetSignedHighWord(lParam));
 
     private void CaptureLastLeftButtonDown(IntPtr lParam) =>
-        doubleClickTracker.Capture(GetLParamX(lParam), GetLParamY(lParam));
+        doubleClickTracker.Capture(WindowInteropHelpers.GetSignedLowWord(lParam), WindowInteropHelpers.GetSignedHighWord(lParam));
 
     private void ResetLastLeftButtonDown() => doubleClickTracker.Reset();
-
-    private static int GetWheelDelta(IntPtr wParam)
-    {
-        var value = unchecked((long)wParam);
-        return unchecked((short)((value >> 16) & 0xFFFF));
-    }
-
-    private static int GetLParamX(IntPtr lParam)
-    {
-        var value = unchecked((long)lParam);
-        return unchecked((short)(value & 0xFFFF));
-    }
-
-    private static int GetLParamY(IntPtr lParam)
-    {
-        var value = unchecked((long)lParam);
-        return unchecked((short)((value >> 16) & 0xFFFF));
-    }
 
     private static int GetLowWord(IntPtr value) => unchecked((ushort)(value.ToInt64() & 0xFFFF));
 

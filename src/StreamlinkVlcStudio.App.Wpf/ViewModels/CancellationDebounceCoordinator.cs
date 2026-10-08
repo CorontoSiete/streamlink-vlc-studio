@@ -1,3 +1,5 @@
+using StreamlinkVlcStudio.Infrastructure.Threading;
+
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 /// <summary>
@@ -32,12 +34,15 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
             }
 
             previousTimer = timer;
-            var scheduledVersion = ++scheduleVersion;
-            timer = new Timer(
+            var scheduledVersion = scheduleVersion + 1;
+            var nextTimer = new Timer(
                 _ => RunScheduledCallback(scheduledVersion, callback, callbackErrorHandler),
                 null,
                 delay,
                 Timeout.InfiniteTimeSpan);
+            // An invalid delay must not invalidate the callback already scheduled.
+            timer = nextTimer;
+            scheduleVersion = scheduledVersion;
         }
 
         previousTimer?.Dispose();
@@ -72,7 +77,7 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
             operations.Add(nextOperation);
         }
 
-        TryCancel(previousOperation);
+        CancellationSourceCleanup.Cancel(previousOperation);
         return nextOperation;
     }
 
@@ -85,7 +90,7 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
             currentOperation = null;
         }
 
-        TryCancel(operation);
+        CancellationSourceCleanup.Cancel(operation);
     }
 
     public void Complete(CancellationTokenSource operation)
@@ -163,7 +168,7 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
         timerToDispose?.Dispose();
         foreach (var operation in operationsToCancel)
         {
-            TryCancel(operation);
+            CancellationSourceCleanup.Cancel(operation);
         }
 
         completion?.TrySetResult();
@@ -174,6 +179,7 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
         Action callback,
         Action<Exception>? callbackErrorHandler)
     {
+        Timer? completedTimer;
         lock (gate)
         {
             if (disposed || scheduledVersion != scheduleVersion)
@@ -181,9 +187,11 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
                 return;
             }
 
+            completedTimer = timer;
             timer = null;
         }
 
+        completedTimer?.Dispose();
         try
         {
             callback();
@@ -211,15 +219,4 @@ internal sealed class CancellationDebounceCoordinator : IDisposable
         }
     }
 
-    private static void TryCancel(CancellationTokenSource? operation)
-    {
-        try
-        {
-            operation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Completion and cancellation may race. A disposed source is already terminal.
-        }
-    }
 }

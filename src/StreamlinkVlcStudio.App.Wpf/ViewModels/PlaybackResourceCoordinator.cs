@@ -1,5 +1,6 @@
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
@@ -77,15 +78,8 @@ internal sealed class PlaybackResourceCoordinator
         }
         catch (TimeoutException)
         {
-            try
-            {
-                shutdownCancellation.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-                // The shutdown won the race and disposed its linked token source.
-            }
-            logger.Write(
+            CancellationSourceCleanup.Cancel(shutdownCancellation);
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 "Playback",
                 $"Timed out stopping playback for {displayName()}; cancellation was requested through the engine token.");
@@ -99,7 +93,7 @@ internal sealed class PlaybackResourceCoordinator
             }
             else
             {
-                logger.Write(
+                logger.WriteSafely(
                     AppLogLevel.Warning,
                     "Playback",
                     $"Playback cleanup for {displayName()} ignored cancellation and remains tracked in the background.");
@@ -116,7 +110,7 @@ internal sealed class PlaybackResourceCoordinator
         }
         catch (Exception ex)
         {
-            logger.Write(
+            logger.WriteSafely(
                 AppLogLevel.Warning,
                 "Playback",
                 $"Failed to stop playback for {displayName()}.",

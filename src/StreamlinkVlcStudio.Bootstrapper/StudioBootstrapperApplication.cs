@@ -31,16 +31,21 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     private bool retryingDetection;
     private bool shutdownRequested;
     private string? lastError;
+    private string? preparationWarning;
     private string? logPath;
     private readonly Func<string, string, TimeSpan, int>? runMaintenance;
+    private readonly Func<TimeSpan, bool>? requestShutdown;
 
     public StudioBootstrapperApplication() : this(null)
     {
     }
 
-    internal StudioBootstrapperApplication(Func<string, string, TimeSpan, int>? runMaintenance)
+    internal StudioBootstrapperApplication(
+        Func<string, string, TimeSpan, int>? runMaintenance,
+        Func<TimeSpan, bool>? requestShutdown = null)
     {
         this.runMaintenance = runMaintenance;
+        this.requestShutdown = requestShutdown;
         DetectBegin += OnDetectBegin;
         DetectRelatedBundle += OnDetectRelatedBundle;
         DetectPackageComplete += OnDetectPackageComplete;
@@ -287,6 +292,7 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
 
         plannedAction = action;
         lastError = null;
+        preparationWarning = null;
         notificationsUnregistered = false;
         isRollingBack = false;
         viewModel.IsRollingBack = false;
@@ -349,13 +355,13 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     private MaintenanceResult PrepareApplication(LaunchAction action)
     {
         var executable = GetInstalledApplicationPath();
-        if (!File.Exists(executable))
-        {
-            TryLog(LogLevel.Standard, $"Installed application maintenance executable was not found: {executable}");
-            return MaintenanceResult.Ok;
-        }
-
-        var shutdown = RunMaintenance(executable, "--maintenance-request-shutdown", TimeSpan.FromSeconds(30));
+        var shutdown = requestShutdown is not null || runMaintenance is null
+            ? (requestShutdown?.Invoke(TimeSpan.FromSeconds(30)) ?? WindowsApplicationShutdown.Request(TimeSpan.FromSeconds(30)))
+                ? MaintenanceResult.Ok
+                : new MaintenanceResult(false, ErrorInstallUserExit, "The application did not close.")
+            : File.Exists(executable)
+                ? RunMaintenance(executable, "--maintenance-request-shutdown", TimeSpan.FromSeconds(30))
+                : MaintenanceResult.Ok;
         if (!shutdown.Success)
         {
             return new MaintenanceResult(
@@ -364,15 +370,22 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
                 "Stream Studio did not close cleanly. Close the application and try setup again.");
         }
 
+        if (!File.Exists(executable))
+        {
+            TryLog(LogLevel.Standard, $"Installed application maintenance executable was not found: {executable}");
+            if (action == LaunchAction.Uninstall && isInstalled)
+                preparationWarning = "The application was removed, but its missing executable prevented Windows notification cleanup. Open the setup log for details.";
+            return MaintenanceResult.Ok;
+        }
+
         if (action != LaunchAction.Uninstall) return MaintenanceResult.Ok;
 
         var unregister = RunMaintenance(executable, "--maintenance-unregister-notifications", TimeSpan.FromSeconds(15));
         if (!unregister.Success)
         {
-            return new MaintenanceResult(
-                false,
-                unregister.ExitCode,
-                "Windows notification registration could not be removed. No application files were changed.");
+            preparationWarning = "The application was removed, but Windows notification registration could not be cleaned up. Open the setup log for details.";
+            TryLog(LogLevel.Standard, $"Continuing uninstall after notification cleanup failed: {unregister.Message}");
+            return MaintenanceResult.Ok;
         }
 
         notificationsUnregistered = true;
@@ -625,7 +638,10 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
     private async Task CompleteApplyAsync(int status, ApplyRestart restart)
     {
         var effectiveStatus = status;
-        var cleanupWarning = string.Empty;
+        var cleanupWarning = status >= 0 && plannedAction == LaunchAction.Uninstall && !IsRelatedBundleRemoval
+            ? preparationWarning ?? string.Empty
+            : string.Empty;
+        if (cleanupWarning.Length > 0) effectiveStatus = 2;
 
         if (status < 0 && !IsRelatedBundleRemoval && plannedAction == LaunchAction.Uninstall && notificationsUnregistered)
         {
@@ -646,7 +662,8 @@ internal sealed class StudioBootstrapperApplication : BootstrapperApplication
             if (!purge.Success)
             {
                 effectiveStatus = purge.ExitCode == 0 ? 1 : purge.ExitCode;
-                cleanupWarning = "The application was removed, but personal-data cleanup is incomplete. Open the setup log for details.";
+                cleanupWarning = (cleanupWarning.Length > 0 ? cleanupWarning + " " : string.Empty) +
+                    "The application was removed, but personal-data cleanup is incomplete. Open the setup log for details.";
             }
         }
 

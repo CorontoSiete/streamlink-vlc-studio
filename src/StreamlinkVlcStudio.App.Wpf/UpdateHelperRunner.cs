@@ -32,6 +32,8 @@ internal static class UpdateHelperRunner
     {
         var operationId = Guid.Parse(Required(args, "--update-helper"));
         var parentId = int.Parse(Required(args, "--parent-pid"), System.Globalization.CultureInfo.InvariantCulture);
+        if (parentId <= 0 || parentId == Environment.ProcessId)
+            throw new ArgumentException("The update helper requires a valid parent process identifier.");
         var setup = Path.GetFullPath(Required(args, "--setup"));
         var setupLength = long.Parse(Required(args, "--setup-length"), System.Globalization.CultureInfo.InvariantCulture);
         var setupSha256 = Required(args, "--setup-sha256");
@@ -260,5 +262,6 @@ internal static class UpdateHelperRunner
     private static Task WriteAtomicAsync(string path, AppUpdateCompletion result) =>
         AtomicFile.WriteAsync(path,
             (stream, token) => JsonSerializer.SerializeAsync(stream, result, cancellationToken: token),
-            CancellationToken.None);
+            CancellationToken.None,
+            flushToDisk: true);
 }

@@ -50,13 +50,13 @@ internal static class TimeoutRecoveryTestCatalog
             KickTokenExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(30)
         };
         var applied = false;
-        var task = KickOAuthService.GetUsableAccessTokenAsync(settings,
-            (_, _, _) => { applied = true; return Task.CompletedTask; },
-            (_, _) =>
-            {
-                if (cancel) cancellation.Cancel();
-                return Task.FromException<KickOAuthTokenResult>(new OperationCanceledException("HTTP deadline"));
-            }, new MemoryLogger(), cancellation.Token);
+        var coordinator = new KickUserTokenCoordinator((_, _) =>
+        {
+            if (cancel) cancellation.Cancel();
+            return Task.FromException<KickOAuthTokenResult>(new OperationCanceledException("HTTP deadline"));
+        });
+        var task = coordinator.ResolveAsync(settings,
+            (_, _, _) => { applied = true; return Task.CompletedTask; }, new MemoryLogger(), cancellation.Token);
         if (cancel) await Assert.ThrowsAsync<OperationCanceledException>(() => task);
         else Assert.Equal("current-token", await task);
         Assert.True(!applied);

@@ -102,14 +102,6 @@ public static class KickOAuthService
             return Task.CompletedTask;
         }, logger, cancellationToken, rejectedToken);
 
-    internal static Task<string?> GetUsableAccessTokenAsync(
-        ChatSettings settings,
-        Func<ChatSettings, KickOAuthTokenResult, CancellationToken, Task> applyTokenResultAsync,
-        Func<ChatSettings, CancellationToken, Task<KickOAuthTokenResult>> refreshTokenAsync,
-        IAppLogger? logger,
-        CancellationToken cancellationToken) =>
-        new KickUserTokenCoordinator(refreshTokenAsync).ResolveAsync(settings, applyTokenResultAsync, logger, cancellationToken);
-
     public static void ApplyTokenResult(ChatSettings settings, KickOAuthTokenResult token)
     {
         settings.KickOAuthToken = token.AccessToken;
@@ -181,7 +173,7 @@ public static class KickOAuthService
         {
             // This optional decoration must not prevent either authorization UI from saving
             // a valid token when the users endpoint fails or reaches its HTTP deadline.
-            logger?.Write(AppLogLevel.Warning, "KickOAuth", "Could not resolve the authorized Kick username.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", "Could not resolve the authorized Kick username.", ex);
         }
 
         return null;
@@ -226,7 +218,7 @@ public static class KickOAuthService
             var appTokenResult = await TryResolveBroadcasterUserIdWithTokenAsync(channel, appToken, cancellationToken);
             if (appTokenResult is not null)
             {
-                logger?.Write(AppLogLevel.Info, "KickOAuth", $"Resolved Kick broadcaster user ID for {channel} with an app access token.");
+                logger.WriteSafely(AppLogLevel.Info, "KickOAuth", $"Resolved Kick broadcaster user ID for {channel} with an app access token.");
                 return appTokenResult;
             }
         }
@@ -276,7 +268,7 @@ public static class KickOAuthService
             var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                logger?.Write(AppLogLevel.Warning, "KickOAuth", $"Kick app token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
+                logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", $"Kick app token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
                 return null;
             }
 
@@ -284,7 +276,7 @@ public static class KickOAuthService
             var accessToken = GetOptionalString(document.RootElement, "access_token");
             if (string.IsNullOrWhiteSpace(accessToken))
             {
-                logger?.Write(AppLogLevel.Warning, "KickOAuth", "Kick app token response did not include an access token.");
+                logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", "Kick app token response did not include an access token.");
                 return null;
             }
 
@@ -294,7 +286,7 @@ public static class KickOAuthService
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            logger?.Write(AppLogLevel.Warning, "KickOAuth", "Kick app token request failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", "Kick app token request failed.", ex);
             return null;
         }
         finally

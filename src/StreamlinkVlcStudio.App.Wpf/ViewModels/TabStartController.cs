@@ -130,11 +130,7 @@ internal sealed class TabStartController(int maximumConcurrency) : IDisposable
             Token = cancellation.Token;
         }
 
-        public void Cancel()
-        {
-            try { cancellation.Cancel(); }
-            catch (ObjectDisposedException) { }
-        }
+        public void Cancel() => CancellationSourceCleanup.Cancel(cancellation);
 
         public void Dispose() => cancellation.Dispose();
     }

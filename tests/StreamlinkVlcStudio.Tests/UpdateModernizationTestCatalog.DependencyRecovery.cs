@@ -8,7 +8,11 @@ internal static partial class UpdateModernizationTestCatalog
         ("updater ignores invalid and unrelated persistent repair notices", InvalidRepairNoticesAsync),
         ("signed updater accepts new dependency minima and rejects missing malformed and overflowed versions", SignedDependencyMinimumsAsync),
         ("update helper requires a successful bounded installed dependency check", HelperDependencyVerificationAsync),
-        ("updater reads the dependency capability from MSI metadata and refuses legacy or malformed declarations", InstalledDependencyCapability)
+        ("updater reads the dependency capability from MSI metadata and refuses legacy or malformed declarations", InstalledDependencyCapability),
+        ("updater records install intent before launch and recovers without a helper completion", InterruptedApplyRecoversAsync),
+        ("updater recovery record locks prevent launch and preserve the verified installer", RecoveryRecordFailurePreventsLaunchAsync),
+        ("updater helper launch failure preserves recovery and allows another attempt", HelperLaunchFailureRemainsRetryableAsync),
+        ("updater successful completion clears the prelaunch repair notice", SuccessClearsInstallIntentAsync)
     ];
 
     private static async Task WriteDependencyCompletionAsync(string root, PreparedAppUpdate prepared,

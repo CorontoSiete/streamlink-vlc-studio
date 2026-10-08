@@ -17,7 +17,7 @@ $parseErrors = $null
 $installer = [Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $repoRoot 'scripts\install.ps1'), [ref]$tokens, [ref]$parseErrors)
 Assert-Lifecycle ($parseErrors.Count -eq 0) 'Installer PowerShell syntax is invalid.'
-$functionNames = @('Install-AppPayloadAtomically', 'Copy-DirectoryContents', 'Remove-InstallWorkingDirectory', 'Remove-SearchIconCache')
+$functionNames = @('Install-AppPayloadAtomically', 'Install-AppPayloadCore', 'Copy-DirectoryContents', 'Remove-InstallWorkingDirectory', 'Remove-SearchIconCache')
 foreach ($definition in $installer.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $functionNames
@@ -47,6 +47,82 @@ function Invoke-LifecycleTest([string]$Name, [scriptblock]$Test) {
 
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
+    Invoke-LifecycleTest 'installation lease matches the native uninstaller and normalizes path aliases' {
+        $expected = 'Local\StreamStudio.Installation.25549A2C6E0AAF49EA87B4987F6EAC72914EA313C86CB5E31C88CBCFE33BFB02'
+        foreach ($directory in @('C:\Stream Studio\Install\', 'C:/stream studio/install/../install')) {
+            Assert-Lifecycle ((Get-InstallOperationMutexName $directory) -ceq $expected) 'The installer and native uninstaller mutex identities differ.'
+        }
+        $outer = Enter-InstallOperation $testRoot
+        try {
+            $nested = Enter-InstallOperation $testRoot
+            Exit-InstallOperation $nested
+        } finally {
+            Exit-InstallOperation $outer
+        }
+    }
+
+    Invoke-LifecycleTest 'a competing process prevents replacement and allows retry after releasing its lease' {
+        $InstallDir = Join-Path $testRoot 'concurrent-install'
+        $source = Join-Path $testRoot 'concurrent-payload'
+        [IO.Directory]::CreateDirectory($InstallDir) | Out-Null
+        [IO.Directory]::CreateDirectory($source) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $InstallDir 'StreamStudio.exe'), 'old app')
+        [IO.File]::WriteAllText((Join-Path $source 'StreamStudio.exe'), 'new app')
+        Write-InstallOwnershipState -Directory $InstallDir | Out-Null
+        Write-InstallOwnershipState -Directory $source | Out-Null
+        [IO.File]::WriteAllText((Join-Path $InstallDir 'notes.txt'), 'before shutdown')
+        $readyPath = Join-Path $testRoot 'mutex-holder-ready'
+        $releaseName = 'Local\StreamStudio.Install.Test.' + [Guid]::NewGuid().ToString('N')
+        $release = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $releaseName)
+        $command = @'
+$ErrorActionPreference = 'Stop'
+$mutex = [Threading.Mutex]::new($false, $env:SVS_LIFECYCLE_MUTEX_NAME)
+$release = [Threading.EventWaitHandle]::OpenExisting($env:SVS_LIFECYCLE_RELEASE_EVENT)
+try {
+    if (-not $mutex.WaitOne(0)) { throw 'Could not acquire fixture mutex.' }
+    try {
+        [IO.File]::WriteAllText($env:SVS_LIFECYCLE_READY_PATH, 'ready')
+        if (-not $release.WaitOne(10000)) { throw 'Fixture was not released.' }
+    } finally { $mutex.ReleaseMutex() }
+} finally { $release.Dispose(); $mutex.Dispose() }
+'@
+        $info = [Diagnostics.ProcessStartInfo]::new()
+        $info.FileName = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::System)) 'WindowsPowerShell\v1.0\powershell.exe'
+        $info.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        $info.EnvironmentVariables['SVS_LIFECYCLE_MUTEX_NAME'] = Get-InstallOperationMutexName $InstallDir
+        $info.EnvironmentVariables['SVS_LIFECYCLE_RELEASE_EVENT'] = $releaseName
+        $info.EnvironmentVariables['SVS_LIFECYCLE_READY_PATH'] = $readyPath
+        $child = [Diagnostics.Process]::Start($info)
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(5)
+            while (-not (Test-Path -LiteralPath $readyPath) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+                Start-Sleep -Milliseconds 20
+            }
+            Assert-Lifecycle (Test-Path -LiteralPath $readyPath) 'The competing process did not acquire the installation lease.'
+            $blocked = $false
+            try { Install-AppPayloadAtomically $source 'concurrent fixture' | Out-Null } catch {
+                $blocked = $true
+                Assert-Lifecycle ($_.Exception.Message -match 'Another installation or uninstall') 'A competing operation was not identified.'
+            }
+            Assert-Lifecycle $blocked 'A competing process did not prevent replacement.'
+            Assert-Lifecycle ([IO.File]::ReadAllText((Join-Path $InstallDir 'StreamStudio.exe')) -ceq 'old app') 'The installed app changed while another operation owned it.'
+            Assert-Lifecycle ([IO.File]::ReadAllText((Join-Path $InstallDir 'notes.txt')) -ceq 'before shutdown') 'Application shutdown ran before the lease was acquired.'
+            Assert-Lifecycle (@(Get-ChildItem -LiteralPath $testRoot -Force | Where-Object { $_.Name -match '^\.concurrent-install\.(stage|backup)-' }).Count -eq 0) 'A blocked operation left transaction directories.'
+            $release.Set() | Out-Null
+            Assert-Lifecycle ($child.WaitForExit(5000) -and $child.ExitCode -eq 0) 'The competing process did not release its lease.'
+            Install-AppPayloadAtomically $source 'retry fixture' | Out-Null
+            Assert-Lifecycle ([IO.File]::ReadAllText((Join-Path $InstallDir 'StreamStudio.exe')) -ceq 'new app') 'The installer could not retry after the competing operation finished.'
+        } finally {
+            $release.Set() | Out-Null
+            if (-not $child.WaitForExit(5000)) { $child.Kill(); $child.WaitForExit(2000) | Out-Null }
+            $child.Dispose()
+            $release.Dispose()
+        }
+    }
+
     Invoke-LifecycleTest 'search icon cleanup preserves unrelated apps at every display scale' {
         $localApplicationData = Join-Path $testRoot 'search-cache'
         $cache = Join-Path $localApplicationData 'Packages\Microsoft.Windows.Search_cw5n1h2txyewy\LocalState\AppIconCache'
@@ -180,6 +256,7 @@ try {
         $entryPoint = $installer.EndBlock.Statements[-1]
         Assert-Lifecycle ($entryPoint -is [Management.Automation.Language.TryStatementAst]) 'The installer entry point changed.'
         foreach ($failingDependency in @('Streamlink', 'VLC')) {
+            $InstallDir = Join-Path $testRoot 'registered-install'
             $steps = [Collections.Generic.List[string]]::new()
             $SkipApp = $false
             $SkipStreamlink = $false
@@ -201,6 +278,7 @@ try {
             function Update-AppSettings { param($StreamlinkPath, $VlcDirectory) $steps.Add('settings') }
             function Start-Process { param($FilePath) $steps.Add('launch') }
             function Remove-TempRoot { $steps.Add('cleanup') }
+            $installOperationMutex = Enter-InstallOperation $InstallDir
             $failed = $false
             try { & ([scriptblock]::Create($entryPoint.Extent.Text)) } catch {
                 $failed = $true

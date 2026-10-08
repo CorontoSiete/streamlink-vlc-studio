@@ -4176,10 +4176,11 @@ internal static partial class ApplicationTestCatalog
             var viewModelField = typeof(MainWindow).GetField(
                 "viewModel",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var rememberBounds = typeof(MainWindow).GetMethod(
+            var controller = GetMainWindowController(mainWindow, "pictureInPicture");
+            var rememberBounds = controller.GetType().GetMethod(
                 "RememberPictureInPictureWindowBoundsAsync",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var positionWindow = typeof(MainWindow).GetMethod(
+            var positionWindow = controller.GetType().GetMethod(
                 "PositionDetachedWindow",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(viewModelField);
@@ -4194,7 +4195,7 @@ internal static partial class ApplicationTestCatalog
                 Width = 640,
                 Height = 360
             };
-            ((Task)rememberBounds!.Invoke(mainWindow, [closedWindow])!).GetAwaiter().GetResult();
+            ((Task)rememberBounds!.Invoke(controller, [closedWindow])!).GetAwaiter().GetResult();
 
             Assert.NotNull(settings.PictureInPictureWindowLocation);
             Assert.Equal(240d, settings.PictureInPictureWindowLocation!.Left);
@@ -4205,7 +4206,7 @@ internal static partial class ApplicationTestCatalog
 
             var nextWindow = new DetachedVideoWindow(tab);
             var usedSavedLocation = (bool)positionWindow!.Invoke(
-                mainWindow,
+                controller,
                 [nextWindow, new System.Windows.Point(900, 700), true])!;
 
         Assert.True(usedSavedLocation);
@@ -4337,7 +4338,8 @@ internal static partial class ApplicationTestCatalog
             var viewModelField = typeof(MainWindow).GetField(
                 "viewModel",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var rememberBounds = typeof(MainWindow).GetMethod(
+            var controller = GetMainWindowController(mainWindow, "pictureInPicture");
+            var rememberBounds = controller.GetType().GetMethod(
                 "RememberPictureInPictureWindowBoundsAsync",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var detachTab = typeof(MainWindow).GetMethod(
@@ -4375,7 +4377,7 @@ internal static partial class ApplicationTestCatalog
                     System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 maximizedWindow.UpdateLayout();
 
-                ((Task)rememberBounds!.Invoke(mainWindow, [maximizedWindow])!).GetAwaiter().GetResult();
+                ((Task)rememberBounds!.Invoke(controller, [maximizedWindow])!).GetAwaiter().GetResult();
 
                 Assert.NotNull(settings.PictureInPictureWindowLocation);
                 Assert.True(settings.PictureInPictureWindowLocation!.IsFullscreen);
@@ -5179,12 +5181,13 @@ internal static partial class ApplicationTestCatalog
 
             try
             {
-                var applyTheatreChat = typeof(MainWindow).GetMethod(
+                var controller = GetMainWindowController(window, "windowMode");
+                var applyTheatreChat = controller.GetType().GetMethod(
                     "ApplyTheatreModeChatToSelectedTab",
                     BindingFlags.Instance | BindingFlags.NonPublic);
                 Assert.NotNull(applyTheatreChat);
 
-                applyTheatreChat!.Invoke(window, []);
+                applyTheatreChat!.Invoke(controller, []);
 
                 Assert.Equal(ChatLayout.Overlay, settings.Chat.Layout);
                 Assert.Equal(true, tab.IsDockedChatOverrideActive);

@@ -100,6 +100,43 @@ class MeasurementSummaryTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertFalse((self.directory / "summary.json").exists())
 
+    def test_summaries_reject_overflowing_json_numbers(self):
+        for live in (False, True):
+            with self.subTest(live=live):
+                (self.directory / "summary.json").unlink(missing_ok=True)
+                (self.write_live if live else self.write_controlled)()
+                if live:
+                    path = self.directory / f"{STREAMS}-1-before" / "results.json"
+                else:
+                    path = self.directory / f"{STREAMS}-quiet-1-before.json"
+                path.write_text(path.read_text(encoding="utf-8").replace(
+                    '"VideoDecode": 2', '"VideoDecode": 1e999'), encoding="utf-8")
+                result = self.run_summary(live=live)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse((self.directory / "summary.json").exists())
+
+    def test_controlled_summary_rejects_lost_audio(self):
+        self.write_controlled(lambda trial: trial["frames"][0].update(audioLost=1))
+        result = self.run_summary()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse((self.directory / "summary.json").exists())
+
+    def test_summaries_reject_overflowing_calculations(self):
+        def overflow_memory(trial):
+            processes = [dict(PROCESS, Pid=pid, PrivateBytes=1e308) for pid in (123, 456)]
+            trial["samples"][0]["processes"] = processes
+            if "beforeProcesses" in trial:
+                trial["beforeProcesses"] = processes
+                trial["afterProcesses"] = processes
+
+        for live in (False, True):
+            with self.subTest(live=live):
+                (self.directory / "summary.json").unlink(missing_ok=True)
+                (self.write_live if live else self.write_controlled)(overflow_memory)
+                result = self.run_summary(live=live)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse((self.directory / "summary.json").exists())
+
     def test_summaries_reject_missing_stream_counters(self):
         for live, field in ((False, "frames"), (False, "chatFrames"),
                             (True, "lost"), (True, "audioLost"), (True, "audioSelected")):

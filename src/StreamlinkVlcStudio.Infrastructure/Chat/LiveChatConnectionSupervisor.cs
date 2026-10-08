@@ -1,5 +1,6 @@
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
@@ -88,41 +89,35 @@ internal sealed class LiveChatConnectionSupervisor : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        Task task;
-        lock (gate)
-        {
-            if (disposalTask is not null)
-            {
-                task = disposalTask;
-            }
-            else
-            {
-                disposed = true;
-                lifetimeCancellation.Cancel();
-                task = disposalTask = DrainAndDisposeAsync(runTask);
-            }
-        }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(gate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
-        await task.ConfigureAwait(false);
-    }
-
-    private async Task DrainAndDisposeAsync(Task? task)
+    private async Task DisposeCoreAsync()
     {
-        if (task is not null)
+        try
         {
             try
             {
-                await task.ConfigureAwait(false);
+                lifetimeCancellation.Cancel();
             }
-            catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+            finally
             {
+                if (runTask is not null)
+                {
+                    try
+                    {
+                        await runTask.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+                    {
+                    }
+                }
             }
         }
-
-        lifetimeCancellation.Dispose();
-        reconnectSignal.Dispose();
+        finally
+        {
+            ChatConnectionCleanup.DisposeResources(logger, source, lifetimeCancellation, reconnectSignal);
+        }
     }
 
     private async Task RunAsync()
@@ -162,7 +157,7 @@ internal sealed class LiveChatConnectionSupervisor : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    SafeLog(AppLogLevel.Warning, $"{source} reconnect attempt failed.", ex);
+                    logger.WriteSafely(AppLogLevel.Warning, source, $"{source} reconnect attempt failed.", ex);
                     SafeStatus($"{source} reconnect failed: {ex.Message}");
                 }
             }
@@ -184,7 +179,7 @@ internal sealed class LiveChatConnectionSupervisor : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Debug, $"{source} reconnect jitter provider failed.", ex);
+            logger.WriteSafely(AppLogLevel.Debug, source, $"{source} reconnect jitter provider failed.", ex);
             sample = 0.5d;
         }
 
@@ -199,18 +194,7 @@ internal sealed class LiveChatConnectionSupervisor : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            SafeLog(AppLogLevel.Debug, $"{source} status callback failed.", ex);
-        }
-    }
-
-    private void SafeLog(AppLogLevel level, string message, Exception exception)
-    {
-        try
-        {
-            logger.Write(level, source, message, exception);
-        }
-        catch (Exception)
-        {
+            logger.WriteSafely(AppLogLevel.Debug, source, $"{source} status callback failed.", ex);
         }
     }
 }

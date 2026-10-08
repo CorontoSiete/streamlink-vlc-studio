@@ -4,6 +4,8 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
@@ -18,6 +20,7 @@ public sealed class StreamHoverPreviewController : IAsyncDisposable
     private readonly TimeSpan hoverDelay;
     private StreamHoverPreviewSession? current;
     private Task pending = Task.CompletedTask;
+    private Task? disposal;
     private bool disposed;
 
     public StreamHoverPreviewController(AppSettings settings, IStreamlinkService streamlink, IAppLogger logger)
@@ -36,11 +39,13 @@ public sealed class StreamHoverPreviewController : IAsyncDisposable
 
     internal StreamHoverPreviewSession? Begin(StreamTarget target)
     {
+        StreamHoverPreviewSession session;
+        StreamHoverPreviewSession? previousSession;
         lock (gate)
         {
             if (disposed || !settings.EnableStreamHoverPreviews || target.Kind != StreamTargetKind.Live) return null;
-            current?.Stop();
-            var session = new StreamHoverPreviewSession(target);
+            previousSession = current;
+            session = new StreamHoverPreviewSession(target, logger);
             current = session;
             // Snapshot settings on the caller's UI thread, before starting background work.
             var path = settings.StreamlinkPath ?? "";
@@ -66,36 +71,45 @@ public sealed class StreamHoverPreviewController : IAsyncDisposable
                 {
                     session.SetState(StreamHoverPreviewState.Unavailable);
                     // Provider exceptions may include signed URLs or custom authentication arguments.
-                    logger.Write(AppLogLevel.Warning, "Hover preview", $"Preview unavailable ({ex.GetType().Name}).");
+                    logger.WriteSafely(AppLogLevel.Warning, "Hover preview", $"Preview unavailable ({ex.GetType().Name}).");
                 }
                 finally
                 {
                     // Even canceled, queued hovers must retain the earlier cleanup in the chain.
-                    await previous.ConfigureAwait(false);
-                    session.Complete();
+                    try { await previous.ConfigureAwait(false); }
+                    finally { session.Complete(); }
                 }
             });
-            return session;
         }
+        previousSession?.Stop();
+        return session;
     }
 
     private void SettingsChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(AppSettings.EnableStreamHoverPreviews) && !settings.EnableStreamHoverPreviews)
         {
-            lock (gate) current?.Stop();
+            StreamHoverPreviewSession? session;
+            lock (gate) session = current;
+            session?.Stop();
         }
     }
 
-    public ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => new(AsyncDisposal.Begin(gate, ref disposed, ref disposal, DisposeCoreAsync));
+
+    private async Task DisposeCoreAsync()
     {
+        StreamHoverPreviewSession? session;
+        Task completion;
         lock (gate)
         {
-            disposed = true;
-            settings.PropertyChanged -= SettingsChanged;
-            current?.Stop();
-            return new ValueTask(pending);
+            session = current;
+            current = null;
+            completion = pending;
         }
+        settings.PropertyChanged -= SettingsChanged;
+        session?.Stop();
+        await completion.ConfigureAwait(false);
     }
 }
 
@@ -105,14 +119,16 @@ internal sealed class StreamHoverPreviewSession
 {
     private readonly object gate = new();
     private readonly CancellationTokenSource cancellation = new();
+    private readonly IAppLogger logger;
     private LivePreviewFrame? frame;
     private StreamHoverPreviewState state;
     private bool complete;
 
-    internal StreamHoverPreviewSession(StreamTarget target)
+    internal StreamHoverPreviewSession(StreamTarget target, IAppLogger logger)
     {
         Target = target;
         Token = cancellation.Token;
+        this.logger = logger;
     }
 
     internal StreamTarget Target { get; }
@@ -138,30 +154,36 @@ internal sealed class StreamHoverPreviewSession
             frame = value; // One mailbox slot: a busy UI never accumulates decoded frames.
             state = StreamHoverPreviewState.Playing;
         }
-        Changed?.Invoke();
+        NotifyChanged();
     }
 
     internal void SetState(StreamHoverPreviewState value)
     {
         lock (gate)
         {
-            if (state == StreamHoverPreviewState.Stopped) return;
+            if (state == StreamHoverPreviewState.Stopped || complete) return;
             state = value;
             if (value == StreamHoverPreviewState.Unavailable) frame = null;
         }
-        Changed?.Invoke();
+        NotifyChanged();
     }
 
     internal void Stop()
     {
+        CancellationTokenSource? source;
         lock (gate)
         {
+            if (state == StreamHoverPreviewState.Stopped) return;
             state = StreamHoverPreviewState.Stopped;
             frame = null;
-            if (!complete) cancellation.Cancel();
+            source = complete ? null : cancellation;
         }
-        Changed?.Invoke();
+        CancellationSourceCleanup.Cancel(source, exception => logger.Write(AppLogLevel.Warning, "Hover preview",
+            $"Preview cancellation callback failed ({exception.GetType().Name})."));
+        NotifyChanged();
     }
+
+    private void NotifyChanged() => SafeEventDispatcher.Invoke(Changed, logger, "Hover preview", nameof(Changed));
 
     internal void Complete()
     {

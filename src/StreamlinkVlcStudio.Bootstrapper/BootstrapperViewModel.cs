@@ -1,10 +1,10 @@
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using System.Windows.Input;
+using StreamlinkVlcStudio.Core.Commands;
+using StreamlinkVlcStudio.Core.Settings;
 
 namespace StreamlinkVlcStudio.Bootstrapper;
 
-internal sealed class BootstrapperViewModel : INotifyPropertyChanged
+internal sealed class BootstrapperViewModel : NotifyPropertyChangedObject
 {
     private BootstrapperPage page = BootstrapperPage.Loading;
     private string statusText = "Checking your system…";
@@ -41,8 +41,6 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         LaunchCommand = new RelayCommand(application.LaunchApplication, () => CanLaunch);
     }
 
-    public event PropertyChangedEventHandler? PropertyChanged;
-
     public string Version { get; }
 
     public string StreamlinkVersion { get; }
@@ -72,7 +70,7 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => page;
         set
         {
-            if (Set(ref page, value))
+            if (SetProperty(ref page, value))
             {
                 OnPropertyChanged(nameof(IsLoadingPage));
                 OnPropertyChanged(nameof(IsInstallPage));
@@ -97,55 +95,55 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
     public string StatusText
     {
         get => statusText;
-        set => Set(ref statusText, value);
+        set => SetProperty(ref statusText, value);
     }
 
     public string OperationTitle
     {
         get => operationTitle;
-        set => Set(ref operationTitle, value);
+        set => SetProperty(ref operationTitle, value);
     }
 
     public string ResultTitle
     {
         get => resultTitle;
-        set => Set(ref resultTitle, value);
+        set => SetProperty(ref resultTitle, value);
     }
 
     public string ResultMessage
     {
         get => resultMessage;
-        set => Set(ref resultMessage, value);
+        set => SetProperty(ref resultMessage, value);
     }
 
     public string StreamlinkStatus
     {
         get => streamlinkStatus;
-        set => Set(ref streamlinkStatus, value);
+        set => SetProperty(ref streamlinkStatus, value);
     }
 
     public string VlcStatus
     {
         get => vlcStatus;
-        set => Set(ref vlcStatus, value);
+        set => SetProperty(ref vlcStatus, value);
     }
 
     public string WebView2Status
     {
         get => webView2Status;
-        set => Set(ref webView2Status, value);
+        set => SetProperty(ref webView2Status, value);
     }
 
     public int Progress
     {
         get => progress;
-        set => Set(ref progress, Math.Clamp(value, 0, 100));
+        set => SetProperty(ref progress, Math.Clamp(value, 0, 100));
     }
 
     public bool PurgeUserData
     {
         get => purgeUserData;
-        set => Set(ref purgeUserData, value);
+        set => SetProperty(ref purgeUserData, value);
     }
 
     public bool CancelRequested
@@ -153,7 +151,7 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => cancelRequested;
         set
         {
-            if (Set(ref cancelRequested, value))
+            if (SetProperty(ref cancelRequested, value))
             {
                 ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
             }
@@ -165,7 +163,7 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => isRollingBack;
         set
         {
-            if (Set(ref isRollingBack, value)) ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
+            if (SetProperty(ref isRollingBack, value)) ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
         }
     }
 
@@ -174,7 +172,7 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => canRetry;
         set
         {
-            if (Set(ref canRetry, value)) ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
+            if (SetProperty(ref canRetry, value)) ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
         }
     }
 
@@ -183,20 +181,20 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => isVerifyingDependencies;
         set
         {
-            if (Set(ref isVerifyingDependencies, value)) ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
+            if (SetProperty(ref isVerifyingDependencies, value)) ((RelayCommand)CancelCommand).RaiseCanExecuteChanged();
         }
     }
 
     public bool ResultSucceeded
     {
         get => resultSucceeded;
-        set => Set(ref resultSucceeded, value);
+        set => SetProperty(ref resultSucceeded, value);
     }
 
     public bool ResultWarning
     {
         get => resultWarning;
-        set => Set(ref resultWarning, value);
+        set => SetProperty(ref resultWarning, value);
     }
 
     public bool CanLaunch
@@ -204,7 +202,7 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => canLaunch;
         set
         {
-            if (Set(ref canLaunch, value))
+            if (SetProperty(ref canLaunch, value))
             {
                 ((RelayCommand)LaunchCommand).RaiseCanExecuteChanged();
             }
@@ -216,23 +214,11 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         get => canOpenLog;
         set
         {
-            if (Set(ref canOpenLog, value))
+            if (SetProperty(ref canOpenLog, value))
             {
                 ((RelayCommand)OpenLogCommand).RaiseCanExecuteChanged();
             }
         }
-    }
-
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-        {
-            return false;
-        }
-
-        field = value;
-        OnPropertyChanged(propertyName);
-        return true;
     }
 
     private void RaiseCommandStates()
@@ -244,7 +230,4 @@ internal sealed class BootstrapperViewModel : INotifyPropertyChanged
         ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
         ((RelayCommand)CloseCommand).RaiseCanExecuteChanged();
     }
-
-    private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }

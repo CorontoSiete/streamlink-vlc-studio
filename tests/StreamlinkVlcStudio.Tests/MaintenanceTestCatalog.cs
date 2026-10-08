@@ -1,6 +1,6 @@
 using StreamlinkVlcStudio.Maintenance;
 
-internal static class MaintenanceTestCatalog
+internal static partial class MaintenanceTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
@@ -18,6 +18,13 @@ internal static class MaintenanceTestCatalog
         ("ZIP cleanup cancels pending control-file deletion when a later file is mapped", MappedControlFilePreservesRetryState),
         ("ZIP cleanup preserves personal data until application removal succeeds", FailedUninstallPreservesPersonalData),
         ("Maintenance cleanup retries attribute preparation failures", CleanupPreparationFailuresAreRetried),
+        ("Maintenance quiet argument failures never open a dialog", QuietArgumentFailures),
+        ("Maintenance shutdown waits for startup and releases abandoned instance ownership", ShutdownWaitsForInstanceExit),
+        ("Maintenance failed shutdown preserves every app file and personal data", FailedShutdownPreservesInstallation),
+        ("Maintenance competing installer prevents uninstall before any changes", CompetingInstallerPreventsUninstall),
+        ("Maintenance installer lease normalizes paths and recovers abandoned ownership", InstallerLeaseIdentityAndRecovery),
+        ("Maintenance damaged executable cleanup failures are reported without crashing", DamagedExecutableMaintenanceFailure),
+        ("Maintenance shortcut cleanup reports locks and continues with other shortcuts", ShortcutCleanupReportsFailures),
         ("Personal-data cleanup removes read-only directories and continues past locked files", ReadOnlyDirectoryCleanup),
         ("ZIP cleanup rejects corrupt ownership state before deletion", CorruptOwnershipStateIsRejected),
         ("ZIP cleanup treats malformed JSON types as invalid state and preserves retry files", MalformedOwnershipTypesAreRejected),

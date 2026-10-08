@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
+using StreamlinkVlcStudio.Core.Security;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
@@ -1024,7 +1025,7 @@ internal sealed class DockedChatBadgeCatalog
             return true;
         }
 
-        if (string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) && uri.IsFile)
+        if (ImageUriPolicy.IsLocalFile(uri))
         {
             normalized = uri.AbsoluteUri;
             return true;
@@ -1042,8 +1043,7 @@ internal sealed class DockedChatBadgeCatalog
 
         normalized = url.Trim();
         if (Uri.TryCreate(normalized, UriKind.Absolute, out var uri) &&
-            string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) &&
-            uri.IsFile)
+            ImageUriPolicy.IsLocalFile(uri))
         {
             normalized = uri.AbsoluteUri;
             return true;
@@ -1070,7 +1070,7 @@ internal sealed class DockedChatBadgeCatalog
             return false;
         }
 
-        if (platform == PlatformKind.Kick && !IsKickAssetHost(uri))
+        if (platform == PlatformKind.Kick && !KickHttpHeaders.IsKickHost(uri))
         {
             return false;
         }
@@ -1083,12 +1083,6 @@ internal sealed class DockedChatBadgeCatalog
             extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".ico", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsKickAssetHost(Uri uri)
-    {
-        return string.Equals(uri.Host, "kick.com", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".kick.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static HttpClient CreateHttpClient()

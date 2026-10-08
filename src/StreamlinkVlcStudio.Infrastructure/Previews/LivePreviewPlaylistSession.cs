@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Previews;
 
@@ -17,6 +18,7 @@ internal sealed class LivePreviewPlaylistSession : IAsyncDisposable
     private readonly Task serve;
     private readonly object gate = new();
     private Task? disposal;
+    private bool disposed;
     private string? initial;
 
     internal LivePreviewPlaylistSession(string initial, Func<CancellationToken, Task<string>> refresh,
@@ -46,7 +48,7 @@ internal sealed class LivePreviewPlaylistSession : IAsyncDisposable
     internal LivePreviewPlaybackOptions? PlaybackOptions { get; }
     internal CancellationToken FallbackToken => fallback.Token;
 
-    internal void Stop() => lifetime.Cancel();
+    internal void Stop() => CancellationSourceCleanup.Cancel(lifetime);
 
     private async Task ServeAsync()
     {
@@ -79,7 +81,7 @@ internal sealed class LivePreviewPlaylistSession : IAsyncDisposable
                     {
                         // The caller stops this player before starting Streamlink. No ad,
                         // malformed playlist or newly unsupported URI reaches native HLS.
-                        fallback.Cancel();
+                        CancellationSourceCleanup.Cancel(fallback);
                         break;
                     }
                     await WriteAsync(stream, 200, playlist, request.Method == "HEAD", requestBudget.Token).ConfigureAwait(false);
@@ -89,7 +91,7 @@ internal sealed class LivePreviewPlaylistSession : IAsyncDisposable
         }
         catch (Exception ex) when (ex is SocketException or OperationCanceledException or ObjectDisposedException)
         {
-            if (!lifetime.IsCancellationRequested) fallback.Cancel();
+            if (!lifetime.IsCancellationRequested) CancellationSourceCleanup.Cancel(fallback);
         }
         finally { listener.Stop(); }
     }
@@ -108,16 +110,19 @@ internal sealed class LivePreviewPlaylistSession : IAsyncDisposable
         if (!head) await stream.WriteAsync(bytes, token).ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
-    {
-        lock (gate) return new ValueTask(disposal ??= DisposeCoreAsync());
-    }
+    public ValueTask DisposeAsync() => new(AsyncDisposal.Begin(gate, ref disposed, ref disposal, DisposeCoreAsync));
 
     private async Task DisposeCoreAsync()
     {
-        lifetime.Cancel();
-        await serve.ConfigureAwait(false);
-        lifetime.Dispose();
-        fallback.Dispose();
+        try
+        {
+            Stop();
+            await serve.ConfigureAwait(false);
+        }
+        finally
+        {
+            lifetime.Dispose();
+            fallback.Dispose();
+        }
     }
 }

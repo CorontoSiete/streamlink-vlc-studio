@@ -1,5 +1,6 @@
 using StreamlinkVlcStudio.Core.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
@@ -7,7 +8,7 @@ using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
-internal static class BrowsePayloadMapper
+internal static partial class BrowsePayloadMapper
 {
     public static IEnumerable<BrowseCategory> ReadCategories(JsonElement root, PlatformKind platform)
     {
@@ -217,7 +218,7 @@ internal static class BrowsePayloadMapper
                 platform,
                 id,
                 name,
-                NormalizeImageUrl(GetOptionalString(item, "box_art_url"), "285", "380"),
+                NormalizeTwitchCategoryThumbnailUrl(GetOptionalString(item, "box_art_url")),
                 []),
             PlatformKind.Kick => new BrowseCategory(
                 platform,
@@ -231,6 +232,27 @@ internal static class BrowsePayloadMapper
             _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, "Unsupported category platform.")
         };
     }
+
+    private static string NormalizeTwitchCategoryThumbnailUrl(string value)
+    {
+        var normalized = NormalizeImageUrl(value, "285", "380");
+        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Host, "static-cdn.jtvnw.net", StringComparison.OrdinalIgnoreCase) ||
+            !uri.AbsolutePath.StartsWith("/ttv-boxart/", StringComparison.Ordinal))
+        {
+            return normalized;
+        }
+
+        // Search returns fixed 52x72 URLs, while top games returns size placeholders.
+        // Resize the returned artwork filename so IGDB covers and escaped names stay intact.
+        var suffixStart = normalized.IndexOfAny(['?', '#']);
+        return suffixStart < 0
+            ? TwitchCategoryThumbnailDimensions().Replace(normalized, "-285x380.jpg")
+            : TwitchCategoryThumbnailDimensions().Replace(normalized[..suffixStart], "-285x380.jpg") + normalized[suffixStart..];
+    }
+
+    [GeneratedRegex(@"-[0-9]+x[0-9]+\.jpg$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TwitchCategoryThumbnailDimensions();
 
     private static IReadOnlyList<string> ReadTags(JsonElement element)
     {

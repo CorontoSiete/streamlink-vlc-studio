@@ -12,8 +12,9 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
 {
     internal const int MaximumAssets = 200000;
     internal const long MaximumAssetBytes = 512L * 1024 * 1024;
+    private const decimal MaximumDurationSeconds = 14 * 24 * 60 * 60;
 
-    internal static OfflineHlsPlaylist Parse(string content, Uri playlistUri)
+    internal static OfflineHlsPlaylist Parse(string content, Uri playlistUri, bool requireLocalAssets = false)
     {
         var lines = HlsPlaylistPolicy.SplitLines(content);
         if (lines.Length == 0 || lines[0] != "#EXTM3U")
@@ -31,7 +32,7 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
         long? previousRangeEnd = null;
         var hasTargetDuration = false;
         var hasMediaSequence = false;
-        var finished = false;
+        var hasEndList = false;
         var encrypted = false;
         var hasEncryptionIv = false;
 
@@ -40,6 +41,8 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
             if (assets.Count >= MaximumAssets) throw new InvalidDataException("The VOD contains too many media resources.");
             var address = ResolveUri(playlistUri, value);
             var name = OfflineHlsAssetName.Create(address, assets.Count, key);
+            if (requireLocalAssets && !string.Equals(value, name, StringComparison.Ordinal))
+                throw new InvalidDataException("The offline VOD must reference its local media file names directly.");
             assets.Add(new OfflineHlsAsset(address, name, offset, length, segment, key, encrypted && !key));
             return name;
         }
@@ -50,7 +53,7 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
                 throw new InvalidDataException("The VOD playlist contains invalid control characters.");
             if (!line.StartsWith('#'))
             {
-                if (finished || pendingDuration is null) throw new InvalidDataException("A VOD segment has no valid duration.");
+                if (pendingDuration is null) throw new InvalidDataException("A VOD segment has no valid duration.");
                 var address = ResolveUri(playlistUri, line);
                 long? offset = null;
                 long? length = null;
@@ -63,7 +66,7 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
                 output.AppendLine(AddAsset(line, offset, length, segment: true));
                 previousUri = address;
                 seconds += pendingDuration.Value;
-                if (seconds > (decimal)TimeSpan.FromDays(14).TotalSeconds)
+                if (seconds > MaximumDurationSeconds)
                     throw new InvalidDataException("The VOD duration exceeds the supported safety limit.");
                 pendingDuration = null;
                 pendingRange = null;
@@ -74,28 +77,24 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
             var separator = line.IndexOf(':');
             var tag = separator < 0 ? line : line[..separator];
             var value = separator < 0 ? "" : line[(separator + 1)..];
-            if (finished && tag.StartsWith("#EXT", StringComparison.Ordinal))
-                throw new InvalidDataException("The VOD contains media tags after its end marker.");
             switch (tag)
             {
                 case "#EXTINF":
-                    var comma = value.IndexOf(',');
-                    var duration = comma < 0 ? value : value[..comma];
-                    if (pendingDuration is not null || !decimal.TryParse(duration, NumberStyles.AllowDecimalPoint,
-                        CultureInfo.InvariantCulture, out var parsedDuration) || parsedDuration <= 0)
+                    if (pendingDuration is not null || !HlsPlaylistPolicy.TryReadSegmentDuration(
+                        value, MaximumDurationSeconds, out var parsedDuration))
                         throw new InvalidDataException("The VOD contains an invalid segment duration.");
                     pendingDuration = parsedDuration;
-                    output.AppendLine($"#EXTINF:{duration},");
+                    output.AppendLine($"#EXTINF:{parsedDuration.ToString(CultureInfo.InvariantCulture)},");
                     break;
                 case "#EXT-X-BYTERANGE":
-                    if (pendingDuration is null || pendingRange is not null)
+                    if (pendingRange is not null)
                         throw new InvalidDataException("The VOD contains an invalid segment byte range.");
                     pendingRange = value;
                     break;
                 case "#EXT-X-KEY":
-                    var key = ParseAttributes(value);
-                    if (!key.TryGetValue("METHOD", out var method)) throw new InvalidDataException("The VOD encryption method is missing.");
-                    encrypted = method != "NONE";
+                    if (!HlsAttributeList.TryParse(value, out var key)) throw new InvalidDataException("The VOD contains invalid encryption key attributes.");
+                    if (!key.TryGetValue("METHOD", out var method) || method.IsQuoted) throw new InvalidDataException("The VOD encryption method is missing or invalid.");
+                    encrypted = method.Value != "NONE";
                     hasEncryptionIv = key.ContainsKey("IV");
                     if (!encrypted)
                     {
@@ -103,30 +102,34 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
                         output.AppendLine("#EXT-X-KEY:METHOD=NONE");
                         break;
                     }
-                    if (method != "AES-128" || (key.TryGetValue("KEYFORMAT", out var format) && format != "identity") ||
-                        (key.TryGetValue("KEYFORMATVERSIONS", out var versions) && versions != "1"))
+                    if (method.Value != "AES-128" || (key.TryGetValue("KEYFORMAT", out var format) && (!format.IsQuoted || format.Value != "identity")) ||
+                        (key.TryGetValue("KEYFORMATVERSIONS", out var versions) && (!versions.IsQuoted || versions.Value != "1")))
                         throw new NotSupportedException("This VOD uses DRM or unsupported encryption. It cannot be downloaded for offline playback.");
-                    if (!key.TryGetValue("URI", out var keyUri)) throw new InvalidDataException("The VOD encryption key URL is missing.");
-                    var keyLine = $"#EXT-X-KEY:METHOD=AES-128,URI=\"{AddAsset(keyUri, key: true)}\"";
+                    if (!key.TryGetValue("URI", out var keyUri) || !keyUri.IsQuoted) throw new InvalidDataException("The VOD encryption key URL is missing or invalid.");
+                    var keyLine = $"#EXT-X-KEY:METHOD=AES-128,URI=\"{AddAsset(keyUri.Value, key: true)}\"";
                     if (key.TryGetValue("IV", out var iv))
                     {
-                        if (!iv.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || iv.Length is < 3 or > 34 ||
-                            !iv[2..].All(char.IsAsciiHexDigit)) throw new InvalidDataException("The VOD encryption IV is invalid.");
-                        keyLine += $",IV={iv}";
+                        if (iv.IsQuoted || !iv.Value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || iv.Value.Length is < 3 or > 34 ||
+                            !iv.Value[2..].All(char.IsAsciiHexDigit)) throw new InvalidDataException("The VOD encryption IV is invalid.");
+                        keyLine += $",IV={iv.Value}";
                     }
                     output.AppendLine(keyLine);
                     break;
                 case "#EXT-X-MAP":
-                    var map = ParseAttributes(value);
-                    if (!map.TryGetValue("URI", out var mapUri)) throw new InvalidDataException("The VOD initialization section URL is missing.");
+                    if (!HlsAttributeList.TryParse(value, out var map)) throw new InvalidDataException("The VOD contains invalid initialization section attributes.");
+                    if (!map.TryGetValue("URI", out var mapUri) || !mapUri.IsQuoted) throw new InvalidDataException("The VOD initialization section URL is missing or invalid.");
                     if (encrypted && !hasEncryptionIv) throw new InvalidDataException("An encrypted initialization section requires an explicit IV.");
                     long? mapOffset = null;
                     long? mapLength = null;
-                    if (map.TryGetValue("BYTERANGE", out var mapRange)) (mapOffset, mapLength) = ParseRange(mapRange, null);
-                    output.AppendLine($"#EXT-X-MAP:URI=\"{AddAsset(mapUri, mapOffset, mapLength)}\"");
+                    if (map.TryGetValue("BYTERANGE", out var mapRange))
+                    {
+                        if (!mapRange.IsQuoted) throw new InvalidDataException("The VOD initialization byte range is invalid.");
+                        (mapOffset, mapLength) = ParseRange(mapRange.Value, null);
+                    }
+                    output.AppendLine($"#EXT-X-MAP:URI=\"{AddAsset(mapUri.Value, mapOffset, mapLength)}\"");
                     break;
                 case "#EXT-X-TARGETDURATION":
-                    if (hasTargetDuration || segments != 0 || ReadNumber(value) <= 0)
+                    if (hasTargetDuration || ReadNumber(value) <= 0)
                         throw new InvalidDataException("The VOD target duration is invalid.");
                     hasTargetDuration = true;
                     output.AppendLine(line);
@@ -155,8 +158,8 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
                     output.AppendLine(line);
                     break;
                 case "#EXT-X-ENDLIST":
-                    if (pendingDuration is not null || pendingRange is not null) throw new InvalidDataException("The VOD ends with an incomplete segment.");
-                    finished = true;
+                    if (hasEndList || line != "#EXT-X-ENDLIST") throw new InvalidDataException("The VOD end marker is invalid.");
+                    hasEndList = true;
                     break;
                 case "#EXT-X-GAP":
                     throw new InvalidDataException("The VOD declares missing media segments; a complete offline copy is unavailable.");
@@ -174,7 +177,8 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
             }
         }
 
-        if (!finished) throw new InvalidDataException("This VOD is still being recorded. Wait for the broadcast to finish before downloading it.");
+        if (!hasEndList) throw new InvalidDataException("This VOD is still being recorded. Wait for the broadcast to finish before downloading it.");
+        if (pendingDuration is not null || pendingRange is not null) throw new InvalidDataException("The VOD ends with an incomplete segment.");
         if (!hasTargetDuration || segments == 0) throw new InvalidDataException("The VOD playlist contains no complete playable media.");
         output.AppendLine("#EXT-X-ENDLIST");
         return new OfflineHlsPlaylist(output.ToString(), assets, segments,
@@ -204,41 +208,5 @@ internal sealed record OfflineHlsPlaylist(string Content, IReadOnlyList<OfflineH
         if (length is <= 0 or > MaximumAssetBytes || offset > long.MaxValue - length)
             throw new InvalidDataException("The VOD byte range exceeds the supported safety limit.");
         return (offset, length);
-    }
-
-    private static Dictionary<string, string> ParseAttributes(string value)
-    {
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        var position = 0;
-        while (position < value.Length)
-        {
-            var equals = value.IndexOf('=', position);
-            if (equals < 0) throw new InvalidDataException("The VOD contains a malformed attribute list.");
-            var name = value[position..equals].Trim();
-            if (name.Length == 0 || !name.All(character => char.IsAsciiLetterOrDigit(character) || character == '-'))
-                throw new InvalidDataException("The VOD contains an invalid media attribute.");
-            position = equals + 1;
-            string attribute;
-            if (position < value.Length && value[position] == '"')
-            {
-                var end = value.IndexOf('"', position + 1);
-                if (end < 0) throw new InvalidDataException("The VOD contains an unterminated media attribute.");
-                attribute = value[(position + 1)..end];
-                position = end + 1;
-            }
-            else
-            {
-                var end = value.IndexOf(',', position);
-                if (end < 0) end = value.Length;
-                attribute = value[position..end].Trim();
-                position = end;
-            }
-            if (!result.TryAdd(name, attribute) || result.Count > 32)
-                throw new InvalidDataException("The VOD contains duplicate or excessive media attributes.");
-            if (position == value.Length) break;
-            if (value[position++] != ',' || position == value.Length)
-                throw new InvalidDataException("The VOD contains a malformed attribute separator.");
-        }
-        return result;
     }
 }

@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Win32;
+using StreamStudio.Installation;
+using StreamStudio.Io;
 
 namespace StreamlinkVlcStudio.Maintenance;
 
@@ -24,7 +26,7 @@ internal static class MaintenanceApplication
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
         {
-            NativeDialog.ShowError(exception.Message);
+            if (!args.Any(CommandLineOptions.IsQuietSwitch)) NativeDialog.ShowError(exception.Message);
             return ExitInvalidArguments;
         }
 
@@ -49,7 +51,7 @@ internal static class MaintenanceApplication
                     (options.PurgeUserData
                         ? "This will remove this Windows account's Stream Studio settings, cache, and temporary data.\n\n"
                         : "Personal data will be preserved because --preserve-user-data was supplied.\n\n") +
-                    "Streamlink and VLC will remain installed."))
+                    "Streamlink, VLC, and WebView2 will remain installed."))
             {
                 log.Write("The user canceled uninstall before any changes were made.");
                 return ExitCancelled;
@@ -99,7 +101,9 @@ internal static class MaintenanceApplication
             WaitForOriginalProcess(options.ParentProcessId, log);
 
             var ownership = InstallOwnership.Load(options.InstallDirectory!);
-            return RemoveInstallation(options, ownership, log, RunAppMaintenanceMode, UserDataCleaner.PurgeCurrentUserData);
+            var result = RemoveInstallation(options, ownership, log, RunAppMaintenanceMode, UserDataCleaner.PurgeCurrentUserData);
+            log.Write($"Staged uninstall completed with exit code {result}.");
+            return result;
         }
         catch (Exception exception) when (IsRecoverableMaintenanceFailure(exception))
         {
@@ -125,12 +129,21 @@ internal static class MaintenanceApplication
         Func<string, string, TimeSpan, MaintenanceLog, bool> runMaintenance,
         Func<MaintenanceLog, IReadOnlyList<string>> purgeUserData)
     {
+        using var operationLease = InstallationOperationLease.Acquire(ownership.Root);
+        // Re-read after acquiring the installer lease: a concurrent upgrade may
+        // have replaced the ownership files since the staged handoff loaded them.
+        ownership = InstallOwnership.Load(ownership.Root);
         var appPath = Path.Combine(ownership.Root, "StreamStudio.exe");
         var shutdownRequested = runMaintenance(
             appPath, "--maintenance-request-shutdown", TimeSpan.FromSeconds(20), log);
         if (!shutdownRequested)
         {
-            log.Write("Graceful shutdown did not report success; bounded file deletion retries will determine the retained result.");
+            log.Write("Application shutdown did not complete. All application files, uninstall registration, and personal data were preserved for retry.");
+            if (!options.Quiet)
+            {
+                NativeDialog.ShowError($"Stream Studio did not close. Close the application and retry uninstall. Your application files and personal data were preserved.\n\nLog: {log.Path}");
+            }
+            return ExitManagedFilesRetained;
         }
 
         var notificationsUnregistered = runMaintenance(
@@ -190,6 +203,8 @@ internal static class MaintenanceApplication
         exception is IOException or
             UnauthorizedAccessException or
             InvalidDataException or
+            InvalidOperationException or
+            System.ComponentModel.Win32Exception or
             ArgumentException or
             NotSupportedException or
             System.Text.Json.JsonException or
@@ -234,14 +249,16 @@ internal static class MaintenanceApplication
             return ExitCleanupIncomplete;
         }
 
-        var cleanupIncomplete = !notificationsUnregistered || !outcome.RegistrationRemoved;
+        var cleanupIncomplete = !notificationsUnregistered || !outcome.RegistrationRemoved || !outcome.ShortcutRemoved;
         if (!options.Quiet)
         {
             var dataMessage = options.PurgeUserData
                 ? "Personal data for this Windows account was also removed."
                 : "Personal data was preserved.";
-            NativeDialog.ShowInformation(
-                $"Stream Studio was removed.\n\n{dataMessage}\nStreamlink and VLC were retained.\n\nLog: {log.Path}");
+            var message = $"Stream Studio was removed.\n\n{dataMessage}\nStreamlink, VLC, and WebView2 were retained.\n\nLog: {log.Path}";
+            if (cleanupIncomplete)
+                NativeDialog.ShowError("Some Windows notification registrations, shortcuts, or uninstall entries could not be removed.\n\n" + message);
+            else NativeDialog.ShowInformation(message);
         }
 
         return cleanupIncomplete ? ExitCleanupIncomplete : ExitSuccess;
@@ -267,12 +284,18 @@ internal static class MaintenanceApplication
         return PathSafety.Normalize(registeredLocation);
     }
 
-    private static bool RunAppMaintenanceMode(
+    internal static bool RunAppMaintenanceMode(
         string appPath,
         string argument,
         TimeSpan timeout,
         MaintenanceLog log)
     {
+        if (string.Equals(argument, "--maintenance-request-shutdown", StringComparison.Ordinal))
+        {
+            var stopped = WindowsApplicationShutdown.Request(timeout);
+            log.Write($"Independent application shutdown completed. Success={stopped}");
+            return stopped;
+        }
         if (!PathSafety.TryGetAttributes(appPath, out var attributes) ||
             !PathSafety.IsPlainFile(attributes) ||
             PathSafety.ContainsReparsePoint(appPath))
@@ -315,7 +338,7 @@ internal static class MaintenanceApplication
             return process.ExitCode == 0;
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+            exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             log.Write($"Application maintenance mode failed: {argument}. {exception.Message}");
             return false;
@@ -441,7 +464,7 @@ internal static class StageLauncher
         var tokenPath = Path.Combine(stageDirectory, StageTokenFileName);
         if (!PathSafety.TryGetAttributes(tokenPath, out var attributes) ||
             !PathSafety.IsPlainFile(attributes) ||
-            !string.Equals(File.ReadAllText(tokenPath), options.StageNonce, StringComparison.Ordinal))
+            !string.Equals(BoundedFile.ReadAllText(tokenPath, 128), options.StageNonce, StringComparison.Ordinal))
         {
             throw new InvalidDataException("The staged maintenance handoff token is invalid.");
         }

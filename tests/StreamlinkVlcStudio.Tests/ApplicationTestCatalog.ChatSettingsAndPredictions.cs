@@ -362,7 +362,7 @@ internal static partial class ApplicationTestCatalog
         {
             StreamlinkPath = @"C:\Tools\streamlink.exe",
             VlcDirectory = @"C:\Program Files\VideoLAN\VLC",
-            DefaultPlatform = PlatformKind.Kick,
+            Theme = AppTheme.Nord,
             MultiStreamEnabled = true,
             KeepHomeCardRightGap = false,
             CustomStreamlinkArguments = "--retry-streams 10"
@@ -414,7 +414,7 @@ internal static partial class ApplicationTestCatalog
         var loaded = await service.LoadAsync();
         File.Delete(temp);
 
-        Assert.Equal(PlatformKind.Kick, loaded.DefaultPlatform);
+        Assert.Equal(AppTheme.Nord, loaded.Theme);
         Assert.True(loaded.MultiStreamEnabled);
         Assert.Equal(false, loaded.KeepHomeCardRightGap);
         Assert.Equal("--retry-streams 10", loaded.CustomStreamlinkArguments);
@@ -614,7 +614,7 @@ internal static partial class ApplicationTestCatalog
         var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var settingsPath = Path.Combine(directory, "settings.json");
-        var malformed = """{"DefaultPlatform":"not-a-platform"}""";
+        var malformed = """{"Theme":"not-a-theme"}""";
 
         try
         {
@@ -624,7 +624,7 @@ internal static partial class ApplicationTestCatalog
             var loaded = await service.LoadAsync();
             var backups = Directory.GetFiles(directory, "settings.json.invalid-*");
 
-            Assert.Equal(PlatformKind.Twitch, loaded.DefaultPlatform);
+            Assert.Equal(AppTheme.Dark, loaded.Theme);
             Assert.Equal("best", loaded.DefaultQuality);
             Assert.Equal(false, File.Exists(settingsPath));
             Assert.Equal(1, backups.Length);

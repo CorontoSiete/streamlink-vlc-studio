@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using SkiaSharp;
+using StreamlinkVlcStudio.Core.Security;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Limits;
 
@@ -63,6 +64,20 @@ public sealed class AnimatedEmoteImage : Image
         typeof(AnimatedEmoteImage),
         new PropertyMetadata(DefaultMaxImageBytes, OnImageSourceChanged));
 
+    private static readonly DependencyPropertyKey HasImageLoadFailedPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HasImageLoadFailed),
+        typeof(bool),
+        typeof(AnimatedEmoteImage),
+        new PropertyMetadata(false));
+
+    public static readonly DependencyProperty HasImageLoadFailedProperty = HasImageLoadFailedPropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty IsRefreshRunningProperty = DependencyProperty.Register(
+        nameof(IsRefreshRunning),
+        typeof(bool),
+        typeof(AnimatedEmoteImage),
+        new PropertyMetadata(false, OnRefreshRunningChanged));
+
     public AnimatedEmoteImage()
     {
         frameTimer = new DispatcherTimer(DispatcherPriority.Render);
@@ -88,6 +103,14 @@ public sealed class AnimatedEmoteImage : Image
     {
         get => (int)GetValue(MaxImageBytesProperty);
         set => SetValue(MaxImageBytesProperty, value);
+    }
+
+    public bool HasImageLoadFailed => (bool)GetValue(HasImageLoadFailedProperty);
+
+    public bool IsRefreshRunning
+    {
+        get => (bool)GetValue(IsRefreshRunningProperty);
+        set => SetValue(IsRefreshRunningProperty, value);
     }
 
     internal AnimatedEmoteImageCacheKey? CurrentImageCacheKey => currentImageCacheKey;
@@ -289,10 +312,26 @@ public sealed class AnimatedEmoteImage : Image
         return completion;
     }
 
+    internal static async Task<bool> LoadImageForTestAsync(string imageUrl, HttpClient httpClient)
+    {
+        var key = CreateCacheKey(new Uri(imageUrl), DefaultMaxImageBytes, cacheVersion: 0);
+        return await GetOrLoadImageAsync(key, out _, httpClient).ConfigureAwait(false) is { Frames.Count: > 0 };
+    }
+
     private static void OnImageSourceChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
     {
         if (dependencyObject is AnimatedEmoteImage image)
         {
+            image.LoadImageAsync();
+        }
+    }
+
+    private static void OnRefreshRunningChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is false && dependencyObject is AnimatedEmoteImage { HasImageLoadFailed: true } image)
+        {
+            // Retained cards keep the same URL. A completed category refresh must
+            // ask the cache again so an expired failure can recover in that card.
             image.LoadImageAsync();
         }
     }
@@ -309,11 +348,13 @@ public sealed class AnimatedEmoteImage : Image
         frameIndex = 0;
         imageLoadPending = false;
         Source = null;
+        SetValue(HasImageLoadFailedPropertyKey, false);
 
         if (string.IsNullOrWhiteSpace(url) ||
             !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-            !IsSupportedImageUri(uri))
+            !ImageUriPolicy.IsSupported(uri))
         {
+            SetValue(HasImageLoadFailedPropertyKey, !string.IsNullOrWhiteSpace(url));
             Visibility = Visibility.Collapsed;
             return;
         }
@@ -374,6 +415,7 @@ public sealed class AnimatedEmoteImage : Image
         }
 
         imageLoadPending = false;
+        SetValue(HasImageLoadFailedPropertyKey, image is null || image.Frames.Count == 0);
         if (image is null || image.Frames.Count == 0)
         {
             Visibility = Visibility.Collapsed;
@@ -421,7 +463,8 @@ public sealed class AnimatedEmoteImage : Image
 
     private static Task<DecodedEmoteImage?> GetOrLoadImageAsync(
         AnimatedEmoteImageCacheKey key,
-        out AnimatedEmoteImageCacheEntry entry)
+        out AnimatedEmoteImageCacheEntry entry,
+        HttpClient? httpClient = null)
     {
         AnimatedEmoteImageCacheEntry? cachedEntry;
         lock (ImageCacheGate)
@@ -436,7 +479,7 @@ public sealed class AnimatedEmoteImage : Image
             {
                 AnimatedEmoteImageCacheEntry? newEntry = null;
                 newEntry = new AnimatedEmoteImageCacheEntry(new Lazy<Task<DecodedEmoteImage?>>(
-                    () => LoadAndDecodeImageAndNotifyAsync(key, newEntry!),
+                    () => LoadAndDecodeImageAndNotifyAsync(key, newEntry!, httpClient),
                     LazyThreadSafetyMode.ExecutionAndPublication));
                 cachedEntry = newEntry;
                 ImageCache.Add(key, cachedEntry);
@@ -453,12 +496,13 @@ public sealed class AnimatedEmoteImage : Image
 
     private static async Task<DecodedEmoteImage?> LoadAndDecodeImageAndNotifyAsync(
         AnimatedEmoteImageCacheKey key,
-        AnimatedEmoteImageCacheEntry entry)
+        AnimatedEmoteImageCacheEntry entry,
+        HttpClient? httpClient)
     {
         DecodedEmoteImage? image = null;
         try
         {
-            image = await LoadAndDecodeImageAsync(key.Url, key.MaxImageBytes).ConfigureAwait(false);
+            image = await LoadAndDecodeImageAsync(key.Url, key.MaxImageBytes, httpClient).ConfigureAwait(false);
             return image;
         }
         finally
@@ -663,19 +707,19 @@ public sealed class AnimatedEmoteImage : Image
         }
     }
 
-    private static Task<DecodedEmoteImage?> LoadAndDecodeImageAsync(string url, int maxImageBytes)
+    private static Task<DecodedEmoteImage?> LoadAndDecodeImageAsync(string url, int maxImageBytes, HttpClient? httpClient)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !ImageUriPolicy.IsSupported(uri))
         {
             return Task.FromResult<DecodedEmoteImage?>(null);
         }
 
-        return string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) && uri.IsFile
+        return uri.IsFile
             ? ReadAndDecodeFileAsync(uri.LocalPath, maxImageBytes)
-            : DownloadAndDecodeImageAsync(url, maxImageBytes);
+            : DownloadAndDecodeImageAsync(url, maxImageBytes, httpClient ?? SharedHttpClient);
     }
 
-    private static async Task<DecodedEmoteImage?> DownloadAndDecodeImageAsync(string url, int maxImageBytes)
+    private static async Task<DecodedEmoteImage?> DownloadAndDecodeImageAsync(string url, int maxImageBytes, HttpClient httpClient)
     {
         using var deadline = new CancellationTokenSource(ImageLoadDeadline);
         try
@@ -698,16 +742,19 @@ public sealed class AnimatedEmoteImage : Image
                 try
                 {
                     using var request = new HttpRequestMessage(HttpMethod.Get, candidate);
-                    if (IsKickAssetHost(candidate))
+                    if (KickHttpHeaders.IsKickHost(candidate))
                     {
                         request.Headers.Referrer = new Uri("https://kick.com/");
                     }
 
-                    using var response = await SharedHttpClient.SendAsync(
+                    using var response = await httpClient.SendAsync(
                         request,
                         HttpCompletionOption.ResponseHeadersRead,
                         deadline.Token).ConfigureAwait(false);
+                    // Twitch's missing-cover redirect ends at a valid HTTP 200 JPEG.
+                    // Keep it in the expiring failure cache instead of caching it as artwork.
                     if (!response.IsSuccessStatusCode ||
+                        IsTwitchMissingCategoryArtwork(response.RequestMessage?.RequestUri ?? candidate) ||
                         response.Content.Headers.ContentLength > maxImageBytes)
                     {
                         continue;
@@ -1350,17 +1397,9 @@ public sealed class AnimatedEmoteImage : Image
         return client;
     }
 
-    private static bool IsKickAssetHost(Uri uri)
-    {
-        return string.Equals(uri.Host, "kick.com", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".kick.com", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsSupportedImageUri(Uri uri)
-    {
-        return string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-            (string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) && uri.IsFile);
-    }
+    private static bool IsTwitchMissingCategoryArtwork(Uri uri) =>
+        string.Equals(uri.Host, "static-cdn.jtvnw.net", StringComparison.OrdinalIgnoreCase) &&
+        uri.AbsolutePath.StartsWith("/ttv-static/404_boxart-", StringComparison.Ordinal);
 
     private static IEnumerable<Uri> GetImageUrlCandidates(Uri uri)
     {

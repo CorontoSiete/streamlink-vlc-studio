@@ -13,11 +13,10 @@ internal static class LiveReplayDemuxerTestCatalog
 
     private static Task PolicyAsync()
     {
-        Assert.True(TwitchVodReplayPolicy.UseLiveReplayDemuxer(Playlist, Vlc));
         Assert.Equal(TimeSpan.FromSeconds(10), TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(Playlist, Vlc));
         Assert.Equal(TimeSpan.Zero, TwitchVodReplayPolicy.GetPreroll(Playlist, Vlc));
         foreach (var version in new Version?[] { null, new(3, 0, 12), new(3, 0, 24), new(4, 0, 0) })
-            Assert.Equal(false, TwitchVodReplayPolicy.UseLiveReplayDemuxer(Playlist, version));
+            Assert.Equal(TimeSpan.Zero, TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(Playlist, version));
         foreach (var unsupported in new[]
         {
             Playlist + "#EXT-X-ENDLIST\n", Playlist.Replace("EVENT", "VOD"),
@@ -25,10 +24,10 @@ internal static class LiveReplayDemuxerTestCatalog
             Playlist.Replace("9.75", "NaN"), Playlist.Replace("9.75", "31"),
             Playlist.Replace("0.ts\n", ""), Playlist.Replace("#EXTINF:9.75,\n", ""),
             Playlist.Replace("#EXTM3U", "#BAD"), Playlist.Replace("TARGETDURATION:10", "TARGETDURATION:1")
-        }) Assert.Equal(false, TwitchVodReplayPolicy.UseLiveReplayDemuxer(unsupported, Vlc));
+        }) Assert.Equal(TimeSpan.Zero, TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(unsupported, Vlc));
         foreach (var tag in new[] { "KEY:METHOD=AES-128,URI=\"key\"", "MAP:URI=\"init.mp4\"", "BYTERANGE:99@0",
             "DISCONTINUITY", "DISCONTINUITY-SEQUENCE:1", "GAP", "STREAM-INF:BANDWIDTH=100", "PART:DURATION=1,URI=\"part.ts\"" })
-            Assert.Equal(false, TwitchVodReplayPolicy.UseLiveReplayDemuxer(
+            Assert.Equal(TimeSpan.Zero, TwitchVodReplayPolicy.GetLiveReplaySegmentDuration(
                 Playlist.Replace("#EXTINF:9.75,", "#EXT-X-" + tag + "\n#EXTINF:9.75,"), Vlc));
         return Task.CompletedTask;
     }

@@ -36,7 +36,7 @@ int          tls_send         (tls_conn_t *conn, const void *data, int n);
 /* Returns bytes read (1..n), 0 on clean close, -1 on error. */
 int          tls_recv         (tls_conn_t *conn, void *buf, int n);
 
-/* Last error message (static buffer; overwritten by subsequent calls). */
+/* Calling thread's last error (overwritten by its next failing TLS call). */
 const char  *tls_last_error   (void);
 
 #endif

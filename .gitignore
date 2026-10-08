@@ -2,6 +2,7 @@ bin/
 obj/
 .tmp/
 .dotnet-home/
+.dotnet-cli-home/
 .dotnet-sdk/
 .dependency-audit/
 .nuget/

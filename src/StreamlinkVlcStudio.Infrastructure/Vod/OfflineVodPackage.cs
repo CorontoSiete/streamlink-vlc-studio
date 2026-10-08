@@ -47,8 +47,8 @@ internal sealed record OfflineVodPackage(int Version, string ManifestHash, TimeS
             throw new InvalidDataException("The offline VOD playlist is missing or too large.");
         if (!Convert.ToHexString(SHA256.HashData(manifest)).Equals(package.ManifestHash, StringComparison.Ordinal))
             throw new InvalidDataException("The offline VOD playlist has changed or is damaged.");
-        var localBase = new Uri("https://offline.invalid/index.m3u8");
-        var playlist = OfflineHlsPlaylist.Parse(new UTF8Encoding(false, true).GetString(manifest), localBase);
+        var playlist = OfflineHlsPlaylist.Parse(new UTF8Encoding(false, true).GetString(manifest),
+            new Uri("https://offline.invalid/index.m3u8"), requireLocalAssets: true);
         if (playlist.Duration != package.Duration || playlist.SegmentCount != package.SegmentCount ||
             playlist.Assets.Count != package.Files.Count)
             throw new InvalidDataException("The offline VOD package does not match its playlist.");
@@ -68,8 +68,7 @@ internal sealed record OfflineVodPackage(int Version, string ManifestHash, TimeS
         if (totalBytes != package.BytesDownloaded) throw new InvalidDataException("The offline VOD size is invalid.");
         foreach (var asset in playlist.Assets)
         {
-            if (asset.Uri.Host != localBase.Host || !string.IsNullOrEmpty(asset.Uri.Query) ||
-                asset.Uri.AbsolutePath != "/" + asset.FileName || !inventory.TryGetValue(asset.FileName, out var length) ||
+            if (!inventory.TryGetValue(asset.FileName, out var length) ||
                 asset.Offset is not null || asset.Length is not null || (asset.IsKey && length != 16))
                 throw new InvalidDataException("The offline VOD still references external or invalid media resources.");
         }

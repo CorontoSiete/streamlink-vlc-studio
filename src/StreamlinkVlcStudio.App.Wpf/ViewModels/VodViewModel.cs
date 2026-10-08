@@ -19,19 +19,26 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
         TwitchVodItem vod,
         Func<VodViewModel, bool, Task> openAsync,
         Func<VodViewModel, AsyncRelayCommand>? downloadCommand = null)
+        : this(vod, null, openAsync, downloadCommand)
     {
-        twitchVod = vod;
-        OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
-        OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
-        DownloadCommand = downloadCommand?.Invoke(this) ?? new AsyncRelayCommand(() => Task.CompletedTask, () => false);
     }
 
     public VodViewModel(
         KickVodItem vod,
         Func<VodViewModel, bool, Task> openAsync,
         Func<VodViewModel, AsyncRelayCommand>? downloadCommand = null)
+        : this(null, vod, openAsync, downloadCommand)
     {
-        kickVod = vod;
+    }
+
+    private VodViewModel(
+        TwitchVodItem? twitch,
+        KickVodItem? kick,
+        Func<VodViewModel, bool, Task> openAsync,
+        Func<VodViewModel, AsyncRelayCommand>? downloadCommand)
+    {
+        twitchVod = twitch;
+        kickVod = kick;
         OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
         DownloadCommand = downloadCommand?.Invoke(this) ?? new AsyncRelayCommand(() => Task.CompletedTask, () => false);

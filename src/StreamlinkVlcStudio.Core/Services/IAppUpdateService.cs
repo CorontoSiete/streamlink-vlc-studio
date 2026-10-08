@@ -4,6 +4,7 @@ public interface IAppUpdateService
 {
     event EventHandler<AppUpdateStateChangedEventArgs>? StateChanged { add { } remove { } }
     AppUpdateState State => AppUpdateState.Idle;
+    Version? PendingRepairVersion => null;
     Task<AppUpdateCheckResult> CheckAsync(UpdateCheckReason reason, CancellationToken cancellationToken = default) =>
         Task.FromException<AppUpdateCheckResult>(new NotSupportedException("This updater does not support staged checks."));
     Task<PreparedAppUpdate> DownloadAsync(AppUpdateRelease release, IProgress<AppUpdateProgress>? progress = null, CancellationToken cancellationToken = default) =>

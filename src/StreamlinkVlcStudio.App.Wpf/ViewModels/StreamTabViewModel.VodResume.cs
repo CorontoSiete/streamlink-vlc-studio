@@ -41,7 +41,7 @@ public sealed partial class StreamTabViewModel
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            logger.Write(AppLogLevel.Warning, "VOD resume", $"Could not read the saved position for {Target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VOD resume", $"Could not read the saved position for {Target.DisplayName}.", ex);
             return TimeSpan.Zero;
         }
     }
@@ -108,8 +108,11 @@ public sealed partial class StreamTabViewModel
                     // Ignore shutdown resets, late pre-seek samples and impossible jumps. Paused
                     // or buffering wall time is never added to the saved playback position.
                     var elapsed = Stopwatch.GetElapsedTime(vodLastSampleTimestamp);
+                    // Polling can pause while playback continues or changes speed. Bound actual
+                    // media progress by every supported rate, including a faster earlier rate.
+                    var maximumProgress = ReplayClockState.ScaleElapsed(elapsed, PlaybackRateValues[^1]);
                     if (previous.Completed || position < previous.Position ||
-                        position - previous.Position > elapsed + ReplayClockSampleTolerance) return;
+                        position - previous.Position > ReplayClockState.SafeAdd(maximumProgress, ReplayClockSampleTolerance)) return;
                 }
                 else if (position == TimeSpan.Zero) return;
 
@@ -120,7 +123,7 @@ public sealed partial class StreamTabViewModel
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Warning, "VOD resume", $"Could not capture the position for {Target.DisplayName}.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "VOD resume", $"Could not capture the position for {Target.DisplayName}.", ex);
             }
             finally
             {
@@ -164,7 +167,7 @@ public sealed partial class StreamTabViewModel
             }
             catch (Exception ex)
             {
-                logger.Write(AppLogLevel.Warning, "VOD resume", $"Could not record completion for {Target.DisplayName}.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "VOD resume", $"Could not record completion for {Target.DisplayName}.", ex);
             }
         }
     }
@@ -181,7 +184,7 @@ public sealed partial class StreamTabViewModel
         catch (Exception ex)
         {
             // Keep the dirty in-memory bookmark so the next checkpoint or close retries it.
-            logger.Write(AppLogLevel.Warning, "VOD resume", $"Could not save the position for {Target.DisplayName}.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "VOD resume", $"Could not save the position for {Target.DisplayName}.", ex);
         }
     }
 

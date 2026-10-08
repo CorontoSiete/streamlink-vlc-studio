@@ -14,6 +14,9 @@ internal static partial class ApplicationTestCatalog
     static string QuotePowerShellLiteral(string value) =>
         "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
+    static object GetMainWindowController(MainWindow window, string fieldName) =>
+        typeof(MainWindow).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+
     static async Task<(int ExitCode, string Output, string Error)> RunPowerShellAsync(
         IReadOnlyList<string> arguments,
         TimeSpan timeout)
@@ -554,7 +557,7 @@ internal static partial class ApplicationTestCatalog
         throw new TimeoutException("Timed out waiting for native overlay pipe messages.");
     }
 
-    static async Task WriteNativeOverlayEventPipeMessageAsync(string pipeName, byte[] message, TimeSpan timeout)
+    internal static async Task WriteNativeOverlayEventPipeMessageAsync(string pipeName, byte[] message, TimeSpan timeout)
     {
         await WriteNativeOverlayEventPipeMessagesAsync(pipeName, [message], timeout);
     }
@@ -598,7 +601,7 @@ internal static partial class ApplicationTestCatalog
         throw new TimeoutException("Timed out writing a native overlay event pipe message.", lastException);
     }
 
-    static byte[] BuildNativeOverlayEventMessage(uint type, int value)
+    internal static byte[] BuildNativeOverlayEventMessage(uint type, int value)
     {
         var message = new byte[16];
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(0, 4), 0x564C4F56u);

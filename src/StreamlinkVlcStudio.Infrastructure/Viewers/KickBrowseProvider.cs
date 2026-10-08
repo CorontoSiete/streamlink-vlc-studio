@@ -18,6 +18,8 @@ internal sealed class KickBrowseProvider : BrowseProviderRequests
     internal KickBrowseProvider(IAppLogger logger, HttpClient httpClient, IKickTokenProvider kickTokenProvider) : base(logger, httpClient) { this.kickTokenProvider = kickTokenProvider; }
     private const int KickCategoryDetailConcurrency = 4;
     private const int KickTopLiveStreamDiscoveryLimit = 100;
+    private const int KickCategorySearchApiPageSize = 100;
+    private const string KickCategorySearchCursorPrefix = "kick-category-search";
     private readonly IKickTokenProvider kickTokenProvider;
 
     internal async Task<BrowseResult<BrowseCategory>> GetKickCategoriesAsync(
@@ -51,12 +53,11 @@ internal sealed class KickBrowseProvider : BrowseProviderRequests
         string accessToken,
         CancellationToken cancellationToken)
     {
-        var categoryPageResult = await LoadKickCategoryListPageAsync(
-            query,
-            pageSize,
-            cursor,
-            accessToken,
-            cancellationToken).ConfigureAwait(false);
+        var categoryPageResult = string.IsNullOrWhiteSpace(query)
+            ? await LoadKickCategoryListPageAsync(
+                pageSize, cursor, accessToken, cancellationToken).ConfigureAwait(false)
+            : await LoadKickCategorySearchPageAsync(
+                query, pageSize, cursor, accessToken, cancellationToken).ConfigureAwait(false);
         if (categoryPageResult.Failure is { } categoryPageFailure)
         {
             return categoryPageFailure;
@@ -84,7 +85,6 @@ internal sealed class KickBrowseProvider : BrowseProviderRequests
     }
 
     private async Task<KickCategoryListPageLoadResult> LoadKickCategoryListPageAsync(
-        string query,
         int pageSize,
         string cursor,
         string accessToken,
@@ -95,11 +95,6 @@ internal sealed class KickBrowseProvider : BrowseProviderRequests
             new("limit", pageSize.ToString(CultureInfo.InvariantCulture)),
             new("cursor", cursor)
         };
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            queryParameters.Add(new("name", query));
-        }
-
         var url = BuildUrl(
             "https://api.kick.com/public/v2/categories",
             queryParameters);
@@ -124,6 +119,72 @@ internal sealed class KickBrowseProvider : BrowseProviderRequests
             ReadPaginationCursor(document.RootElement, "next_cursor"),
             null);
     }
+
+    private async Task<KickCategoryListPageLoadResult> LoadKickCategorySearchPageAsync(
+        string query,
+        int pageSize,
+        string cursor,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        if (!TryReadKickCategorySearchCursor(cursor, out var page, out var offset))
+        {
+            return new KickCategoryListPageLoadResult(
+                [], "", BrowseResult<BrowseCategory>.Unavailable("Refresh the Kick category search to load more results."));
+        }
+
+        // Kick's v2 name filter misses matches inside a category name (e.g. "hot tubs").
+        // The documented v1 q endpoint searches those names and returns fixed pages of up to 100.
+        var url = BuildUrl(
+            "https://api.kick.com/public/v1/categories",
+            [new("q", query), new("page", page.ToString(CultureInfo.InvariantCulture))]);
+        using var httpRequest = CreateKickRequest(url, accessToken);
+        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, httpRequest, cancellationToken).ConfigureAwait(false);
+        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new KickCategoryListPageLoadResult(
+                [], "", HandleBrowseHttpFailure<BrowseCategory>(
+                    response, responseBody, "Kick category search unavailable. Check Kick API credentials."));
+        }
+
+        using var document = JsonDocument.Parse(responseBody);
+        if (!TryGetArray(document.RootElement, "data", out var data))
+        {
+            throw new JsonException("Kick category search did not return category data.");
+        }
+
+        var matches = BrowsePayloadMapper.ReadCategories(document.RootElement, PlatformKind.Kick)
+            .DistinctBy(category => category.Id, StringComparer.Ordinal)
+            .ToArray();
+        var categories = matches.Skip(offset).Take(pageSize).ToArray();
+        var nextOffset = offset + categories.Length;
+        // Keep the unreturned portion reachable without fetching another API page or
+        // requesting viewer counts for categories outside the requested result page.
+        var nextCursor = nextOffset < matches.Length
+            ? FormatKickCategorySearchCursor(page, nextOffset)
+            : data.GetArrayLength() >= KickCategorySearchApiPageSize
+                ? FormatKickCategorySearchCursor(page + 1, 0)
+                : "";
+        return new KickCategoryListPageLoadResult(categories, nextCursor, null);
+    }
+
+    private static bool TryReadKickCategorySearchCursor(string cursor, out int page, out int offset)
+    {
+        page = 1;
+        offset = 0;
+        if (string.IsNullOrWhiteSpace(cursor)) return true;
+
+        var parts = cursor.Split(':');
+        return parts.Length == 3 && parts[0] == KickCategorySearchCursorPrefix &&
+            int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out page) &&
+            page > 0 && page < int.MaxValue &&
+            int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out offset) &&
+            offset >= 0 && offset < KickCategorySearchApiPageSize;
+    }
+
+    private static string FormatKickCategorySearchCursor(int page, int offset) =>
+        $"{KickCategorySearchCursorPrefix}:{page.ToString(CultureInfo.InvariantCulture)}:{offset.ToString(CultureInfo.InvariantCulture)}";
 
     private async Task<IReadOnlyList<BrowseCategory>> LoadKickTopLiveCategoriesAsync(
         string accessToken,

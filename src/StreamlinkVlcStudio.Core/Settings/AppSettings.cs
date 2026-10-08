@@ -8,7 +8,6 @@ public sealed class AppSettings : NotifyPropertyChangedObject
 {
     private string? streamlinkPath;
     private string? vlcDirectory;
-    private PlatformKind defaultPlatform = PlatformKind.Twitch;
     private string defaultQuality = "best";
     private bool lowLatency = true;
     private bool keepInactiveTabsRunning;
@@ -44,12 +43,6 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     {
         get => vlcDirectory;
         set => SetProperty(ref vlcDirectory, value);
-    }
-
-    public PlatformKind DefaultPlatform
-    {
-        get => defaultPlatform;
-        set => SetProperty(ref defaultPlatform, Enum.IsDefined(value) ? value : PlatformKind.Twitch);
     }
 
     public string DefaultQuality

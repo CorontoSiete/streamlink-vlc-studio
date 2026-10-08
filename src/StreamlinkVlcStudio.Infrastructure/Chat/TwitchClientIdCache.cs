@@ -83,7 +83,7 @@ internal static class TwitchClientIdCache
         {
             // Waiters cancel only their own WaitAsync. A cancellation here is the HTTP
             // deadline, so report a lookup failure and allow the next request to retry.
-            logger.Write(AppLogLevel.Warning, logCategory, failureMessage, ex);
+            logger.WriteSafely(AppLogLevel.Warning, logCategory, failureMessage, ex);
             return null;
         }
 

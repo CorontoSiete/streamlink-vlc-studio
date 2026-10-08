@@ -182,6 +182,20 @@ public partial class VolumeOverlay : UserControl
     }
 
     /// <summary>
+    /// Selects the visible video or completed-VOD surface shared by both window types.
+    /// </summary>
+    internal static UIElement ResolveTarget(StreamTabViewModel tab,
+        IReadOnlyDictionary<StreamTabViewModel, VideoSurface> surfaces, UIElement fallback)
+    {
+        if (tab.IsVodFinished && tab.VideoSurfacePresenterOwner?.Parent is UIElement { IsVisible: true } finishedScreen)
+        {
+            return finishedScreen;
+        }
+
+        return surfaces.TryGetValue(tab, out var surface) && surface.IsVisible ? surface : fallback;
+    }
+
+    /// <summary>
     /// Applies a mouse-wheel delta to the tab's volume and shows <paramref name="osd"/> over
     /// <paramref name="osdTarget"/>. Shared by the main and detached video windows.
     /// </summary>

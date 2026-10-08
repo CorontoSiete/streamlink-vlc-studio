@@ -36,6 +36,7 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/StudioTheme.xaml" />
                 <ResourceDictionary Source="Themes/StudioShell.xaml" />
+                <ResourceDictionary Source="Themes/Changelog.xaml" />
                 <ResourceDictionary Source="Themes/ResponsiveToolBar.xaml" />
             </ResourceDictionary.MergedDictionaries>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -1350,6 +1351,18 @@
             </Style.Triggers>
         </Style>
 
+        <Style x:Key="ChangelogSettingsCategoryButton" TargetType="Button" BasedOn="{StaticResource SettingsCategoryButtonStyle}">
+            <Setter Property="Tag" Value="{StaticResource StudioIconRecent}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsChangelogSelected}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource StudioAccentPressedBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource StudioAccentBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource StudioAccentHoverBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <Style x:Key="SettingsSectionCard" TargetType="Border" BasedOn="{StaticResource StudioCardStyle}">
             <Setter Property="Margin" Value="0,0,0,18" />
             <Setter Property="Padding" Value="24" />
@@ -2585,10 +2598,13 @@
                                                     Command="{Binding SelectKickVodPlatformCommand}" />
                                         </StackPanel>
                                         <Grid>
-                                            <TextBox Text="{Binding TwitchVodSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                            <TextBox x:Name="VodStreamerSearchTextBox"
+                                                     Text="{Binding TwitchVodSearchText, UpdateSourceTrigger=PropertyChanged}"
                                                      Style="{StaticResource HomeSearchTextBoxStyle}"
+                                                     Padding="30,8,38,8"
                                                      AutomationProperties.Name="VOD streamer search"
-                                                     ToolTip="Streamer login, slug, or channel URL" />
+                                                     KeyDown="VodStreamerSearchTextBox_KeyDown"
+                                                     ToolTip="Type part of a streamer name or paste a channel URL. Choose a result to browse broadcasts." />
                                             <TextBlock Text="&#xE721;"
                                                        FontFamily="Segoe MDL2 Assets"
                                                        FontSize="12"
@@ -2597,15 +2613,91 @@
                                                        Margin="13,0,0,0"
                                                        VerticalAlignment="Center"
                                                        HorizontalAlignment="Left" />
-                                            <TextBlock Text="Search streamer"
+                                            <TextBlock Text="Search by streamer name"
                                                        Foreground="{DynamicResource StudioTextPlaceholderBrush}"
                                                        IsHitTestVisible="False"
-                                                       Margin="30,0,12,0"
+                                                       Margin="30,0,38,0"
                                                        VerticalAlignment="Center"
                                                        TextTrimming="CharacterEllipsis"
                                                        Visibility="{Binding IsTwitchVodSearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
+                                            <Button x:Name="ClearVodStreamerSearchButton"
+                                                    Content="&#xE711;" FontFamily="Segoe MDL2 Assets"
+                                                    Width="28" Height="28" Padding="0" Margin="0,0,5,0"
+                                                    HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                    Style="{StaticResource StudioQuietIconButton}"
+                                                    Click="ClearVodStreamerSearch_Click"
+                                                    AutomationProperties.Name="Clear streamer search"
+                                                    ToolTip="Clear streamer search"
+                                                    Visibility="{Binding HasTwitchVodSearchText, Converter={StaticResource BoolToVisibility}}" />
                                         </Grid>
                                     </controls:ResponsiveDockPanel>
+
+                                    <Border x:Name="VodStreamerSearchResultsPanel"
+                                            Background="{DynamicResource StudioSurface1Brush}"
+                                            BorderBrush="{DynamicResource StudioBorderBrush}" BorderThickness="1"
+                                            CornerRadius="10" Padding="14" Margin="0,0,0,16"
+                                            Visibility="{Binding IsVodChannelSearchVisible, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding VodChannelSearchResultsTitle}"
+                                                       FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding VodChannelSearchStatus}"
+                                                       Foreground="{DynamicResource StudioTextSecondaryBrush}"
+                                                       TextWrapping="Wrap" Margin="0,5,0,10" />
+                                            <ProgressBar IsIndeterminate="True" Height="3" Margin="0,0,0,10"
+                                                         Visibility="{Binding IsVodChannelSearchRunning, Converter={StaticResource BoolToVisibility}}" />
+                                            <ScrollViewer MaxHeight="310" VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          Visibility="{Binding HasVodChannelSearchResults, Converter={StaticResource BoolToVisibility}}">
+                                                <ScrollViewer.Resources>
+                                                    <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource HomeScrollBarStyle}" />
+                                                </ScrollViewer.Resources>
+                                                <ItemsControl x:Name="VodChannelSearchResultsList"
+                                                              ItemsSource="{Binding VodChannelSearchResults}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Button Command="{Binding SelectCommand}"
+                                                                    Style="{StaticResource StudioButtonStyle}"
+                                                                    HorizontalContentAlignment="Stretch" Padding="12,10" Margin="0,0,0,6"
+                                                                    AutomationProperties.Name="{Binding SelectLabel}"
+                                                                    ToolTip="{Binding SelectLabel}">
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                        <ColumnDefinition Width="*" />
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <controls:RoundedClipBorder Width="40" Height="40" CornerRadius="20"
+                                                                                                Background="{DynamicResource StudioSurface3Brush}">
+                                                                        <Grid>
+                                                                            <TextBlock Text="&#xE77B;" FontFamily="Segoe MDL2 Assets"
+                                                                                       FontSize="18" Foreground="{DynamicResource StudioTextMutedBrush}"
+                                                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                            <controls:AnimatedEmoteImage ImageUrl="{Binding ProfileImageUrl}"
+                                                                                                         MaxImageBytes="8388608" Stretch="UniformToFill" />
+                                                                        </Grid>
+                                                                    </controls:RoundedClipBorder>
+                                                                    <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Text="{Binding Details}" FontSize="12" Margin="0,3,0,0"
+                                                                                   Foreground="{DynamicResource StudioTextSecondaryBrush}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                    </StackPanel>
+                                                                    <TextBlock Grid.Column="2" Text="&#xE8B2;" FontFamily="Segoe MDL2 Assets"
+                                                                               FontSize="16" VerticalAlignment="Center"
+                                                                               Foreground="{DynamicResource StudioTextSecondaryBrush}" />
+                                                                </Grid>
+                                                            </Button>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </ScrollViewer>
+                                            <TextBlock Text="Use ↑ / ↓ to choose a streamer, then Enter to browse broadcasts."
+                                                       Foreground="{DynamicResource StudioTextMutedBrush}" FontSize="12"
+                                                       TextWrapping="Wrap" Margin="0,8,0,0"
+                                                       Visibility="{Binding HasVodChannelSearchResults, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                    </Border>
 
                                     <WrapPanel Orientation="Horizontal"
                                                 Margin="0,0,0,16"
@@ -2640,6 +2732,8 @@
                                                         <MultiDataTrigger.Conditions>
                                                             <Condition Binding="{Binding HasTwitchVods}" Value="False" />
                                                             <Condition Binding="{Binding IsTwitchVodSearchRunning}" Value="False" />
+                                                            <Condition Binding="{Binding IsVodChannelSearchVisible}" Value="False" />
+                                                            <Condition Binding="{Binding IsVodChannelSearchRunning}" Value="False" />
                                                         </MultiDataTrigger.Conditions>
                                                         <Setter Property="Visibility" Value="Visible" />
                                                     </MultiDataTrigger>
@@ -3009,13 +3103,37 @@
                                                                         Background="{DynamicResource StudioSurface2Brush}"
                                                                         CornerRadius="11,11,0,0">
                                                                     <Grid>
-                                                                        <TextBlock Text="&#xE8B2;"
-                                                                                   FontFamily="Segoe MDL2 Assets"
-                                                                                   FontSize="30"
-                                                                                   Foreground="{DynamicResource StudioTextDimBrush}"
-                                                                                   HorizontalAlignment="Center"
-                                                                                   VerticalAlignment="Center" />
-                                                                        <controls:AnimatedEmoteImage ImageUrl="{Binding ThumbnailUrl}"
+                                                                        <StackPanel HorizontalAlignment="Center"
+                                                                                    VerticalAlignment="Center"
+                                                                                    Margin="12">
+                                                                            <StackPanel.Style>
+                                                                                <Style TargetType="StackPanel">
+                                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding HasThumbnail}" Value="False">
+                                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                                        </DataTrigger>
+                                                                                        <DataTrigger Binding="{Binding HasImageLoadFailed, ElementName=CategoryThumbnailImage}" Value="True">
+                                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                                        </DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </StackPanel.Style>
+                                                                            <TextBlock Text="&#xE8B2;"
+                                                                                       FontFamily="Segoe MDL2 Assets"
+                                                                                       FontSize="30"
+                                                                                       Foreground="{DynamicResource StudioTextDimBrush}"
+                                                                                       HorizontalAlignment="Center" />
+                                                                            <TextBlock Text="Artwork unavailable"
+                                                                                       Margin="0,12,0,0"
+                                                                                       FontSize="12"
+                                                                                       Foreground="{DynamicResource StudioTextMutedBrush}"
+                                                                                       TextAlignment="Center"
+                                                                                       TextWrapping="Wrap" />
+                                                                        </StackPanel>
+                                                                        <controls:AnimatedEmoteImage x:Name="CategoryThumbnailImage"
+                                                                                                     ImageUrl="{Binding ThumbnailUrl}"
+                                                                                                     IsRefreshRunning="{Binding DataContext.IsBrowseCategoriesLoading, RelativeSource={RelativeSource AncestorType=Window}}"
                                                                                                      MaxImageBytes="8388608"
                                                                                                      Stretch="Uniform" />
                                                                         <Border VerticalAlignment="Bottom"
@@ -3535,9 +3653,9 @@
                     </Button>
                 </StackPanel>
 
-                <StackPanel x:Name="WorkspacePageContext" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="24,0,16,0">
-                    <StackPanel.Style>
-                        <Style TargetType="StackPanel">
+                <Grid x:Name="WorkspacePageContext" Grid.Column="1" Grid.ColumnSpan="2" MinWidth="120" VerticalAlignment="Center" Margin="24,0,16,0">
+                    <Grid.Style>
+                        <Style TargetType="Grid">
                             <Setter Property="Visibility" Value="Collapsed" />
                             <Style.Triggers>
                                 <MultiDataTrigger>
@@ -3559,8 +3677,9 @@
                                 </MultiDataTrigger>
                             </Style.Triggers>
                         </Style>
-                    </StackPanel.Style>
-                    <TextBlock FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center">
+                    </Grid.Style>
+                    <TextBlock x:Name="WorkspacePageContextTitle" FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="18"
+                               FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
                                 <Setter Property="Text" Value="Following" />
@@ -3574,7 +3693,7 @@
                             </Style>
                         </TextBlock.Style>
                     </TextBlock>
-                </StackPanel>
+                </Grid>
 
                 <ToolBar x:Name="HomeNavigation"
                             VerticalAlignment="Center"
@@ -4153,6 +4272,10 @@
                                     Content="Advanced"
                                     Command="{Binding ShowAdvancedSettingsCommand}"
                                     AutomationProperties.Name="Advanced settings" />
+                            <Button Style="{StaticResource ChangelogSettingsCategoryButton}"
+                                    Content="Changelog"
+                                    Command="{Binding ShowChangelogCommand}"
+                                    AutomationProperties.Name="Changelog" />
                         </StackPanel>
                         <StackPanel Grid.Row="2">
                         <DockPanel x:Name="SettingsAutoSaveIndicator" Margin="10,8,10,16" ToolTip="{Binding SettingsSaveStatus}">
@@ -4231,6 +4354,7 @@
                         <x:Static Member="vm:SettingsCategory.Chat" />
                         <x:Static Member="vm:SettingsCategory.Hotkeys" />
                         <x:Static Member="vm:SettingsCategory.Advanced" />
+                        <x:Static Member="vm:SettingsCategory.Changelog" />
                     </ComboBox>
                     <Button Grid.Column="1"
                             Content="&#xE8BB;" FontFamily="Segoe MDL2 Assets"
@@ -4559,7 +4683,7 @@
                                                     <TextBlock x:Name="TwitchBonusSignInStatus" Text="{Binding SignInStatus}"
                                                                FontWeight="SemiBold" TextWrapping="Wrap" />
                                                 </Border>
-                                                <TextBlock Text="Connect Twitch above to load your follows, then sign in separately for bonuses below. Available bonuses are checked for every live followed Twitch channel, even with no stream tabs open. Channels refresh automatically. Chat-only access does not guarantee new watch-time bonuses."
+                                                <TextBlock Text="Connect Twitch above to load your follows, then sign in separately for bonuses below. This website sign-in also lets the player open video when Twitch returns only audio without it. Available bonuses are checked for every live followed Twitch channel, even with no stream tabs open. Channels refresh automatically. Chat-only access does not guarantee new watch-time bonuses."
                                                            TextWrapping="Wrap" Margin="0,0,0,12" />
                                                 <WrapPanel>
                                                     <Button Content="Sign in for bonuses" Command="{Binding SignInCommand}" Margin="0,0,8,8" />
@@ -5029,6 +5153,91 @@
                                 </controls:ResponsiveColumnsPanel>
                             </StackPanel>
 
+                            <StackPanel x:Name="ChangelogSettingsPage"
+                                        MaxWidth="860"
+                                        Visibility="{Binding IsChangelogSelected, Converter={StaticResource BoolToVisibility}}"
+                                        IsVisibleChanged="ChangelogPage_IsVisibleChanged">
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Changelog.SelectedReleaseLabel}" FontSize="10" FontWeight="Medium"
+                                               Foreground="{DynamicResource StudioTextMutedBrush}" VerticalAlignment="Center"
+                                               Visibility="{Binding Changelog.HasSelectedRelease, Converter={StaticResource BoolToVisibility}}" />
+                                    <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                        <ComboBox x:Name="ChangelogVersionSelector" Width="180" MinHeight="36"
+                                                  ItemsSource="{Binding Changelog.Releases}"
+                                                  TextSearch.TextPath="DisplayName"
+                                                  SelectedItem="{Binding Changelog.SelectedRelease, Mode=TwoWay}"
+                                                  SelectionChanged="ChangelogVersionSelector_SelectionChanged"
+                                                  AutomationProperties.Name="Changelog version">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                        <Button Command="{Binding Changelog.ShowInstalledReleaseCommand}"
+                                                Style="{StaticResource ChangelogReturnButtonStyle}" Margin="0,4,0,0"
+                                                HorizontalAlignment="Right" ToolTip="{Binding Changelog.InstalledVersionText}"
+                                                Visibility="{Binding Changelog.CanSelectInstalledRelease, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Return to installed release"
+                                                Content="Back to installed version" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Border BorderBrush="{DynamicResource StudioBorderBrush}" BorderThickness="0,0,0,1"
+                                        Padding="0,0,0,24" Margin="0,0,0,24"
+                                        Visibility="{Binding Changelog.HasSelectedRelease, Converter={StaticResource BoolToVisibility}}">
+                                    <controls:ReleaseNotesText x:Name="ChangelogReleaseHeader" Presentation="Header"
+                                                              Markdown="{Binding Changelog.SelectedRelease.HeaderMarkdown, TargetNullValue=''}"
+                                                              AutomationProperties.Name="Release title and overview" />
+                                </Border>
+
+                                <controls:ReleaseNotesText x:Name="ChangelogNotes" Presentation="Changes"
+                                                          Margin="0,0,0,4"
+                                                          Markdown="{Binding Changelog.SelectedRelease.BodyMarkdown, TargetNullValue=''}"
+                                                          Visibility="{Binding Changelog.HasSelectedRelease, Converter={StaticResource BoolToVisibility}}"
+                                                          AutomationProperties.Name="Release notes" />
+
+                                <Border Padding="0,24" Margin="0,0,0,12">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Changelog.HasSelectedRelease}" Value="False">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <StackPanel>
+                                        <TextBlock Text="Release notes aren't available" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                        <TextBlock Text="Choose another version from the release history above." TextWrapping="Wrap" Margin="0,8,0,0"
+                                                   Foreground="{DynamicResource StudioTextMutedBrush}" AutomationProperties.LiveSetting="Polite" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Expander x:Name="ChangelogUpdatingGuide" Style="{StaticResource ChangelogGuideExpanderStyle}"
+                                          Margin="0,16,0,12" IsExpanded="False" Header="How to update"
+                                          Visibility="{Binding Changelog.SelectedRelease.HasUpdatingInstructions, Converter={StaticResource BoolToVisibility}, FallbackValue=Collapsed}"
+                                          AutomationProperties.Name="Update instructions">
+                                    <controls:ReleaseNotesText x:Name="ChangelogUpdatingNotes"
+                                                              Markdown="{Binding Changelog.SelectedRelease.UpdatingMarkdown, TargetNullValue=''}"
+                                                              AutomationProperties.Name="Update instructions and verification" />
+                                </Expander>
+                                <Button Command="{Binding ToggleSettingsCommand}" Style="{StaticResource StudioSubtleButtonStyle}"
+                                        Padding="0,8" MinHeight="32" FontSize="12"
+                                        HorizontalAlignment="Left" AutomationProperties.Name="Finish reading changelog">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource StudioLineIcon}" Data="{StaticResource StudioIconBack}" Width="13" Height="13"
+                                              Margin="0,0,8,0" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                                        <TextBlock Text="Back to studio" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+
                             <StackPanel x:Name="AdvancedSettingsPage"
                                         Visibility="{Binding IsAdvancedSettingsSelected, Converter={StaticResource BoolToVisibility}}">
                                 <controls:ResponsiveColumnsPanel>
@@ -5111,6 +5320,9 @@
                                                         Visibility="{Binding CanCancelUpdate, Converter={StaticResource BoolToVisibility}}" />
                                                 <TextBlock Text="{Binding AppUpdateStatus}"
                                                            Style="{StaticResource SettingsPageDescriptionStyle}" />
+                                                <Button Content="View changelog" Command="{Binding ShowChangelogCommand}"
+                                                        Style="{StaticResource StudioButtonStyle}" HorizontalAlignment="Left"
+                                                        Margin="0,12,0,0" AutomationProperties.Name="View changelog" />
                                             </StackPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsSectionCard}"

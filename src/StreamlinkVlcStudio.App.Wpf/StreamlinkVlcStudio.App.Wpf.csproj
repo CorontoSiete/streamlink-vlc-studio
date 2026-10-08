@@ -39,7 +39,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\shared\WindowsApplicationShutdown.cs" Link="Maintenance\WindowsApplicationShutdown.cs" />
     <EmbeddedResource Include="Twitch\ClaimChannelPoints.js" />
+    <EmbeddedResource Include="..\..\docs\releases\v*.md" LogicalName="StreamStudio.ReleaseNotes.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
@@ -50,6 +52,18 @@
     <Resource Include="Assets\TwitchBadges\**\*.*" />
     <Resource Include="Assets\KickBadges\**\*.*" />
   </ItemGroup>
+
+  <Target Name="ValidateBundledReleaseNotes" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <CurrentReleaseNotesPath>$(MSBuildProjectDirectory)\..\..\docs\releases\v$(VersionPrefix).md</CurrentReleaseNotesPath>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(CurrentReleaseNotesPath)')"
+           Text="Add docs/releases/v$(VersionPrefix).md before building this version. Its changelog is bundled with the app." />
+    <ReadLinesFromFile File="$(CurrentReleaseNotesPath)" Condition="Exists('$(CurrentReleaseNotesPath)')">
+      <Output TaskParameter="Lines" ItemName="CurrentReleaseNotesLines" />
+    </ReadLinesFromFile>
+    <Error Condition="'@(CurrentReleaseNotesLines->Count())' == '0'" Text="The release notes for version $(VersionPrefix) must not be empty." />
+  </Target>
 
   <Target Name="RemovePublishSymbolsForSingleFile" BeforeTargets="_ComputeFilesToBundle" Condition="'$(PublishSingleFile)' == 'true'">
     <ItemGroup>

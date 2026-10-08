@@ -176,6 +176,41 @@ static int install_emote(const char *code, bool animated)
     return index;
 }
 
+static void test_long_animation_delays(void)
+{
+    const ULONGLONG saved_clock = resource_clock_ms;
+    int index = install_emote("LongDelays", true);
+    bttv_emote_t *entry = &g_bttv.items[index];
+    DWORD hundredths[] = { 400000000u, 400000000u, 2u };
+    PropertyItem delays = {0};
+    delays.id = PropertyTagFrameDelay;
+    delays.type = PropertyTagTypeLong;
+    delays.length = sizeof(hundredths);
+    delays.value = hundredths;
+    CHECK(GdipSetPropertyItem(entry->image, &delays) == 0);
+    free(entry->frame_delays_ms);
+    entry->frame_delays_ms = NULL;
+    emote_init_animation_locked(entry);
+
+    const ULONGLONG frame_ms = 4000000000ULL;
+    const ULONGLONG total_ms = frame_ms * 2u + 20u;
+    CHECK(entry->total_frame_delay_ms == total_ms);
+    resource_clock_ms = entry->animation_started_ms + frame_ms;
+    emote_select_animation_frame_locked(entry, 0);
+    CHECK(entry->current_frame == 1);
+    resource_clock_ms += frame_ms;
+    emote_select_animation_frame_locked(entry, 0);
+    CHECK(entry->current_frame == 2);
+    resource_clock_ms += 20u;
+    emote_select_animation_frame_locked(entry, 0);
+    CHECK(entry->current_frame == 0);
+    CHECK(normalize_frame_delay_ms(MAXDWORD / 10u + 1u) == MAXDWORD);
+    CHECK(normalize_frame_delay_ms(0) == 100);
+    CHECK(normalize_frame_delay_ms(1) == 20);
+    resource_clock_ms = saved_clock;
+    puts("PASS long animation delays preserve frame boundaries and loop timing");
+}
+
 #ifndef RESOURCE_BASELINE
 static void test_obsolete_image_loads(void)
 {
@@ -804,12 +839,15 @@ int main(int argc, char **argv)
         test_surface_capacity();
     } else if (argc == 2 && strcmp(argv[1], "--pipe") == 0) {
         test_pipe_reconnection();
+    } else if (argc == 2 && strcmp(argv[1], "--animation") == 0) {
+        test_long_animation_delays();
     } else {
         test_text_reference_lifetime();
         test_surface_capacity();
         test_static_frames();
         test_pending_events_and_retry();
         test_animation_input_and_assets();
+        test_long_animation_delays();
         test_pipe_reconnection();
         test_resize_scale_and_cleanup();
 #ifndef RESOURCE_BASELINE

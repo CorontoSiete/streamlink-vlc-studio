@@ -20,6 +20,8 @@ internal static class BootstrapperTestCatalog
         ("Bootstrapper retry is unavailable for downgrades or cleanup warnings", RetryEligibility),
         ("Bootstrapper reboot-required completion does not offer app launch", RebootRequiredDisablesLaunch),
         ("Bootstrapper dependency verification failure prevents success and launch", DependencyVerificationFailureAsync),
+        ("Bootstrapper repairs damaged executables and reports uninstall notification warnings", DamagedApplicationMaintenanceAsync),
+        ("Bootstrapper failed independent shutdown prevents every setup action", FailedIndependentShutdownAsync),
         ("Bootstrapper install requests repair registered bundles for current and legacy update helpers", InstalledBundleRequestsRepairAsync),
         ("Bootstrapper runtime repair uses the reviewed commands and retains newer shared versions", RuntimeRepairCommands),
         ("Bootstrapper bundles the offline WebView2 runtime as a shared dependency", WebView2DependencyUsesOfflinePackage),
@@ -54,6 +56,71 @@ internal static class BootstrapperTestCatalog
         }
         return Task.CompletedTask;
     }
+
+    private static Task DamagedApplicationMaintenanceAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "StreamStudio-damaged-maintenance-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            foreach (var missing in new[] { false, true })
+                foreach (var action in new[] { LaunchAction.Install, LaunchAction.Repair, LaunchAction.Uninstall })
+                {
+                    var executable = Path.Combine(root, missing ? "missing.exe" : "corrupt.exe");
+                    if (!missing) File.WriteAllText(executable, "damaged executable");
+                    var shutdowns = 0;
+                    var (app, model, engine) = CreateApplication(RelationType.None, null, Display.Full, timeout =>
+                    {
+                        shutdowns++;
+                        Assert.Equal(TimeSpan.FromSeconds(30), timeout);
+                        return true;
+                    });
+                    SetField(app, "dispatcher", System.Windows.Threading.Dispatcher.CurrentDispatcher);
+                    SetField(app, "isInstalled", true);
+                    model.PurgeUserData = false;
+                    engine.Variables["InstalledApplicationPath"] = executable;
+                    engine.FormattedVariables["[InstalledApplicationPath]"] = executable;
+                    if (action == LaunchAction.Uninstall) app.Uninstall();
+                    else if (action == LaunchAction.Repair) app.Repair();
+                    else app.Install();
+                    await TestWait.UntilAsync(() => engine.PlannedAction != LaunchAction.Unknown, TimeSpan.FromSeconds(3));
+                    Assert.Equal(1, shutdowns);
+                    Assert.Equal(action == LaunchAction.Uninstall ? LaunchAction.Uninstall : LaunchAction.Repair, engine.PlannedAction);
+                    if (action != LaunchAction.Uninstall) continue;
+                    var finished = WhenResult(model);
+                    InvokeHandler(app, "OnApplyComplete", new ApplyCompleteEventArgs(0, ApplyRestart.None,
+                        BOOTSTRAPPER_APPLYCOMPLETE_ACTION.None, BOOTSTRAPPER_APPLYCOMPLETE_ACTION.None));
+                    await finished.WaitAsync(TimeSpan.FromSeconds(3));
+                    Assert.True(model.ResultWarning);
+                    Assert.Equal(false, model.ResultSucceeded);
+                    Assert.Equal(false, model.CanLaunch);
+                    Assert.Equal(false, model.CanRetry);
+                    Assert.Contains("notification", model.ResultMessage);
+                    Assert.Equal(2, (int)GetField(app, "resultCode")!);
+                }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    });
+
+    private static Task FailedIndependentShutdownAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        foreach (var action in new[] { LaunchAction.Install, LaunchAction.Repair, LaunchAction.Uninstall })
+        {
+            var (app, model, engine) = CreateApplication(RelationType.None, (_, _, _) =>
+                throw new InvalidOperationException("No application executable may be launched after shutdown fails."), Display.Full, _ => false);
+            SetField(app, "dispatcher", System.Windows.Threading.Dispatcher.CurrentDispatcher);
+            model.PurgeUserData = false;
+            var finished = WhenResult(model);
+            if (action == LaunchAction.Uninstall) app.Uninstall();
+            else if (action == LaunchAction.Repair) app.Repair();
+            else app.Install();
+            await finished.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(LaunchAction.Unknown, engine.PlannedAction);
+            Assert.Equal(false, model.ResultSucceeded);
+            Assert.True(model.CanRetry);
+            Assert.Contains("did not close", model.ResultMessage);
+        }
+    });
 
     private static Task InstalledBundleRequestsRepairAsync() => TestSta.RunOffscreenAsync(async () =>
     {
@@ -520,10 +587,11 @@ internal static class BootstrapperTestCatalog
     }
 
     private static (StudioBootstrapperApplication App, BootstrapperViewModel Model, BootstrapperEngineProbe Engine)
-        CreateApplication(RelationType relation, Func<string, string, TimeSpan, int> maintenance, Display display = Display.None)
+        CreateApplication(RelationType relation, Func<string, string, TimeSpan, int>? maintenance, Display display = Display.None,
+            Func<TimeSpan, bool>? requestShutdown = null)
     {
         var engine = DispatchProxy.Create<IEngine, BootstrapperEngineProbe>();
-        var app = new StudioBootstrapperApplication(maintenance);
+        var app = new StudioBootstrapperApplication(maintenance, requestShutdown);
         typeof(BootstrapperApplication).GetField("engine", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(app, engine);
         var command = new BootstrapperCommand(LaunchAction.Uninstall, display, "", 0,
             ResumeType.None, nint.Zero, relation, false, "", "", "");

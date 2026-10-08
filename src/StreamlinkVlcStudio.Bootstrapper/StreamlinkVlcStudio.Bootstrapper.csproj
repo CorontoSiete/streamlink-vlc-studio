@@ -27,6 +27,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\StreamlinkVlcStudio.Core\Commands\RelayCommand.cs"
+             Link="ViewModels\RelayCommand.cs" />
+    <Compile Include="..\StreamlinkVlcStudio.Core\Settings\NotifyPropertyChangedObject.cs"
+             Link="ViewModels\NotifyPropertyChangedObject.cs" />
+    <Compile Include="..\..\shared\WindowsApplicationShutdown.cs" Link="Maintenance\WindowsApplicationShutdown.cs" />
     <Compile Include="..\..\scripts\lib\WindowsDependencyProbe.cs" Link="Dependencies\WindowsDependencyProbe.cs" />
     <Resource Include="..\StreamlinkVlcStudio.App.Wpf\Assets\Studio.ico"
               Link="Assets\Studio.ico" />

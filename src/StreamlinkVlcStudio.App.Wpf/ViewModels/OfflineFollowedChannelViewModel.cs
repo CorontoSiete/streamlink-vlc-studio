@@ -1,3 +1,4 @@
+using StreamlinkVlcStudio.Core.Commands;
 using StreamlinkVlcStudio.Core.Models;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;

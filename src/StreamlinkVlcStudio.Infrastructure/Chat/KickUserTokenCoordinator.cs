@@ -38,7 +38,7 @@ internal sealed class KickUserTokenCoordinator(
         {
             var now = DateTimeOffset.UtcNow;
             foreach (var key in refreshes.Where(pair => pair.Value.Task.IsCompleted &&
-                         (pair.Value.RetainUntil <= now || pair.Value.Task.Result is null)).Select(pair => pair.Key).ToArray())
+                         (!pair.Value.Task.IsCompletedSuccessfully || pair.Value.RetainUntil <= now || pair.Value.Task.Result is null)).Select(pair => pair.Key).ToArray())
                 refreshes.Remove(key);
             if (!refreshes.TryGetValue(credentials.CacheKey, out var entry))
             {
@@ -83,12 +83,12 @@ internal sealed class KickUserTokenCoordinator(
         try
         {
             var result = await refreshAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
-            logger?.Write(AppLogLevel.Info, "KickOAuth", "Refreshed Kick OAuth token.");
+            logger.WriteSafely(AppLogLevel.Info, "KickOAuth", "Refreshed Kick OAuth token.");
             return result;
         }
         catch (Exception ex)
         {
-            logger?.Write(AppLogLevel.Warning, "KickOAuth", "Kick OAuth token refresh failed.", ex);
+            logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", "Kick OAuth token refresh failed.", ex);
             return null;
         }
     }

@@ -26,6 +26,10 @@ internal static partial class TwitchChannelPointsTestCatalog
         ("Twitch bonuses show independent sign-in status without open streams", SignInIndicatorAsync),
         ("Twitch bonuses count confirmed claims once per channel and persist across restart", ClaimCountsAsync),
         ("Twitch bonuses report failed history saves and retry without losing counts", ClaimSaveFailureAsync),
+        ("review robustness: Twitch bonuses save confirmations and keep polling when diagnostics fail", BonusDiagnosticsAsync),
+        ("review robustness: Twitch bonuses finish stopping every worker after cancellation callbacks fail", BonusWorkerCancellationFailureAsync),
+        ("review robustness: Twitch bonuses release every page after one page disposal fails", BonusPageDisposalFailureAsync),
+        ("review robustness: Twitch bonuses finish shutdown after lifetime cancellation callbacks fail", BonusShutdownCancellationFailureAsync),
         ("Twitch bonuses reject unsuccessful mismatched and malformed claim responses", ClaimResponseAsync),
         ("Twitch bonuses normalize saved history and preserve existing settings", ClaimHistorySettingsAsync),
         ("Twitch bonuses settings bind sign-in and per-channel counts", IndicatorsUiAsync),
@@ -39,7 +43,8 @@ internal static partial class TwitchChannelPointsTestCatalog
                 ("Twitch bonuses real browser blocks video and worker streaming requests before any claim check", BrowserMediaAsync),
                 ("Twitch bonuses real browser confines navigation to the selected chat", BrowserNavigationAsync),
                 ("Twitch bonuses real browser releases hidden hosts after canceled creation", BrowserCanceledCreationAsync),
-                ("Twitch bonuses real browser records server confirmations and detects rejected sessions", BrowserClaimConfirmationAsync)
+                ("Twitch bonuses real browser records server confirmations and detects rejected sessions", BrowserClaimConfirmationAsync),
+                ("Twitch video authentication: real browser reads and clears the existing website session without navigation", BrowserPlaybackTokenAsync)
             }
             : []),
         .. (Environment.GetEnvironmentVariable("SVS_TEST_TWITCH_BONUS_LIVE") == "true"
@@ -349,7 +354,7 @@ internal static partial class TwitchChannelPointsTestCatalog
         internal TwitchChannelPointsController Controller { get; }
         private readonly List<StreamTabViewModel> ownedTabs = [];
         internal Fixture(bool signedIn = true, AppSettings? settings = null, ISettingsService? settingsService = null,
-            Task? sessionGate = null, IEnumerable<LiveStreamCardData>? initialChannels = null)
+            Task? sessionGate = null, IEnumerable<LiveStreamCardData>? initialChannels = null, IAppLogger? logger = null)
         {
             Settings = settings ?? new();
             Settings.StreamlinkPath = "streamlink.exe";
@@ -361,7 +366,7 @@ internal static partial class TwitchChannelPointsTestCatalog
             foreach (var channel in initialChannels ?? [])
                 LiveFollowedChannels.Add(new(channel, (_, _) => Task.CompletedTask));
             Controller = new(Settings, LiveFollowedChannels, () => Tabs.FirstOrDefault(), Browser,
-                new MemoryLogger(), TimeSpan.FromMilliseconds(10), settingsService);
+                logger ?? new MemoryLogger(), TimeSpan.FromMilliseconds(10), settingsService);
         }
         internal LiveStreamCardViewModel Add(string channel, PlatformKind platform = PlatformKind.Twitch,
             StreamTargetKind kind = StreamTargetKind.Live, LiveStreamCardSource source = LiveStreamCardSource.Followed)
@@ -390,13 +395,14 @@ internal static partial class TwitchChannelPointsTestCatalog
 
     private sealed class FakeBrowser : ITwitchBonusBrowser
     {
-        internal bool SignedIn = true, FailOpen, FailSession, AllPagesClosedAtSignOut;
+        internal bool SignedIn = true, FailOpen, FailSession, AllPagesClosedAtSignOut, Disposed;
         internal int OpenAttempts;
         internal Task? OpenGate, CheckGate, SessionGate;
-        internal CancellationToken LastOpenToken;
+        internal CancellationToken LastOpenToken, LastSessionToken;
         internal List<FakePage> Pages { get; } = [];
         public async Task<bool> HasSessionAsync(CancellationToken token)
         {
+            LastSessionToken = token;
             if (SessionGate is not null) await SessionGate.WaitAsync(token);
             if (FailSession) throw new InvalidOperationException("test session failure");
             return SignedIn;
@@ -418,7 +424,7 @@ internal static partial class TwitchChannelPointsTestCatalog
             Pages.Add(page);
             return page;
         }
-        public void Dispose() { foreach (var page in Pages) page.Dispose(); }
+        public void Dispose() { Disposed = true; foreach (var page in Pages) page.Dispose(); }
     }
 
     private sealed class FakePage(string channel, Task? checkGate) : ITwitchBonusPage
@@ -427,7 +433,7 @@ internal static partial class TwitchChannelPointsTestCatalog
         internal void Confirm(string id) => ClaimConfirmed?.Invoke(this, id);
         internal string Channel => channel;
         internal int Checks, Shows;
-        internal bool Disposed, Expired;
+        internal bool Disposed, Expired, FailDispose;
         internal CancellationToken LastCheckToken;
         internal string Result = "Checking chat for available bonuses (no background video).";
         public async Task<string> CheckAsync(CancellationToken token)
@@ -441,6 +447,11 @@ internal static partial class TwitchChannelPointsTestCatalog
             return Result;
         }
         public void Show() => Shows++;
-        public void Dispose() => Disposed = true;
+        public void Dispose()
+        {
+            if (Disposed) return;
+            Disposed = true;
+            if (FailDispose) throw new IOException("Injected bonus page disposal failure.");
+        }
     }
 }

@@ -12,9 +12,6 @@ param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\StreamStudio"),
     [ValidatePattern("^[^/\s]+/[^/\s]+$")]
     [string]$GitHubRepository = "CorontoSiete/streamlink-vlc-studio",
-    [string[]]$AppAssetPatterns = @(
-        "^StreamlinkVlcStudio-release\.zip$"
-    ),
     [ValidateSet("Auto", "Release", "Artifact", "GitHub", "Local")]
     [string]$AppSource = "Auto",
     [switch]$DeveloperArtifact,
@@ -104,14 +101,14 @@ $dependencyManifestPath = $dependencyManifestCandidates |
 if ([string]::IsNullOrWhiteSpace($dependencyManifestPath)) {
     throw "Locked dependency manifest was not found. Supply -DependencyManifest or use a complete release package."
 }
-$script:DependencyManifest = Read-WindowsDependencyManifest $dependencyManifestPath
-$script:InstallerDependencyManifest = $script:DependencyManifest
+$script:ParsedDependencyManifest = Read-WindowsDependencyManifest $dependencyManifestPath
+$script:InstallerDependencyManifest = $script:ParsedDependencyManifest
 $script:DependencyManifestWasOverridden = $PSBoundParameters.ContainsKey('DependencyManifest')
 $script:VerifyInstalledAppDependencies = $false
-if ($script:DependencyManifest.schemaVersion -ne 1 -or
-    $null -eq $script:DependencyManifest.dependencies.streamlink -or
-    $null -eq $script:DependencyManifest.dependencies.vlc -or
-    $null -eq $script:DependencyManifest.dependencies.webview2) {
+if ($script:ParsedDependencyManifest.schemaVersion -ne 1 -or
+    $null -eq $script:ParsedDependencyManifest.dependencies.streamlink -or
+    $null -eq $script:ParsedDependencyManifest.dependencies.vlc -or
+    $null -eq $script:ParsedDependencyManifest.dependencies.webview2) {
     throw "Unsupported or incomplete dependency manifest: $dependencyManifestPath"
 }
 
@@ -221,26 +218,6 @@ function Get-GitHubArtifacts([string]$Repository) {
 
 function Get-GitHubWorkflowRun([string]$Repository, [int64]$RunId) {
     Invoke-GitHubApi "https://api.github.com/repos/$Repository/actions/runs/$RunId"
-}
-
-function Select-ReleaseAsset($Release, [string[]]$Patterns, [string]$Description) {
-    $assets = @($Release.assets)
-    foreach ($pattern in $Patterns) {
-        $asset = $assets |
-            Where-Object { $_.name -match $pattern } |
-            Sort-Object name |
-            Select-Object -First 1
-        if ($null -ne $asset) {
-            return $asset
-        }
-    }
-
-    $available = ($assets | ForEach-Object { $_.name }) -join ", "
-    if ([string]::IsNullOrWhiteSpace($available)) {
-        $available = "(none)"
-    }
-
-    throw "No $Description asset matched '$($Patterns -join "', '")'. Available assets: $available"
 }
 
 function Select-UniqueReleaseAssetExact($Release, [string]$Name) {
@@ -574,7 +551,7 @@ function Get-StreamlinkCandidatePaths {
 
 function Find-Streamlink {
     $selected = Select-CompatibleDependencyCandidate -CandidatePaths @(Get-StreamlinkCandidatePaths) `
-        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.streamlink) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:ParsedDependencyManifest.dependencies.streamlink) `
         -VersionReader { param($path) Get-StreamlinkVersion $path } -Description 'Streamlink' -AllowNone
     if ($null -ne $selected) { $selected.Path }
 }
@@ -627,7 +604,7 @@ function Get-VlcCandidateDirectories {
 
 function Find-VlcDirectory {
     $selected = Select-CompatibleDependencyCandidate -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
-        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.vlc) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:ParsedDependencyManifest.dependencies.vlc) `
         -VersionReader { param($path) Get-VlcVersion $path } -Description 'VLC' -AllowNone
     if ($null -ne $selected) { $selected.Path }
 }
@@ -737,6 +714,15 @@ function Remove-InstallWorkingDirectory([string]$Directory) {
 }
 
 function Install-AppPayloadAtomically([string]$PayloadRoot, [string]$SourceDescription) {
+    $operationMutex = Enter-InstallOperation $InstallDir
+    try {
+        Install-AppPayloadCore $PayloadRoot $SourceDescription
+    } finally {
+        Exit-InstallOperation $operationMutex
+    }
+}
+
+function Install-AppPayloadCore([string]$PayloadRoot, [string]$SourceDescription) {
     $source = [IO.Path]::GetFullPath($PayloadRoot).TrimEnd([char[]]@('\', '/'))
     $destination = [IO.Path]::GetFullPath($InstallDir).TrimEnd([char[]]@('\', '/'))
     Assert-AppPayload $source
@@ -881,7 +867,7 @@ function Use-AppPayloadDependencyManifest([string]$PayloadRoot, $SignedMinimums 
                 throw "The explicit dependency manifest does not match the payload's '$($entry.Name)' minimum."
             }
         }
-        $script:DependencyManifest = $script:InstallerDependencyManifest
+        $script:ParsedDependencyManifest = $script:InstallerDependencyManifest
         return
     }
     if ($null -eq $payloadManifest.dependencies.PSObject.Properties['webview2']) {
@@ -890,7 +876,7 @@ function Use-AppPayloadDependencyManifest([string]$PayloadRoot, $SignedMinimums 
         $payloadManifest.dependencies | Add-Member -NotePropertyName webview2 `
             -NotePropertyValue $script:InstallerDependencyManifest.dependencies.webview2
     }
-    $script:DependencyManifest = $payloadManifest
+    $script:ParsedDependencyManifest = $payloadManifest
 }
 
 function Install-AppFromLocalPayload {
@@ -1021,7 +1007,7 @@ function Install-App {
 
 function Ensure-LockedStreamlink {
     Write-Step "Checking Streamlink"
-    $dependency = $script:DependencyManifest.dependencies.streamlink
+    $dependency = $script:ParsedDependencyManifest.dependencies.streamlink
     $targetVersion = Get-DependencyMinimumVersion $dependency
     $current = Select-CompatibleDependencyCandidate `
         -CandidatePaths @(Get-StreamlinkCandidatePaths) `
@@ -1066,7 +1052,7 @@ function Ensure-LockedStreamlink {
 
 function Ensure-LockedVlc {
     Write-Step "Checking VLC"
-    $dependency = $script:DependencyManifest.dependencies.vlc
+    $dependency = $script:ParsedDependencyManifest.dependencies.vlc
     $targetVersion = Get-DependencyMinimumVersion $dependency
     $current = Select-CompatibleDependencyCandidate `
         -CandidatePaths @(Get-VlcCandidateDirectories | Select-Object -Unique) `
@@ -1111,7 +1097,7 @@ function Ensure-LockedVlc {
 
 function Ensure-LockedWebView2 {
     Write-Step "Checking Microsoft Edge WebView2 Runtime"
-    $dependency = $script:DependencyManifest.dependencies.webview2
+    $dependency = $script:ParsedDependencyManifest.dependencies.webview2
     $minimumVersion = Get-DependencyMinimumVersion $dependency
     $minimum = ConvertTo-DependencyVersion $minimumVersion
     $current = Get-WebView2Version
@@ -1139,15 +1125,15 @@ function Ensure-LockedWebView2 {
 function Assert-InstalledDependencies([string]$AppExe, [string]$StreamlinkPath, [string]$VlcDirectory) {
     Write-Step 'Verifying installed dependencies'
     Select-CompatibleDependencyCandidate -CandidatePaths @($StreamlinkPath) `
-        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.streamlink) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:ParsedDependencyManifest.dependencies.streamlink) `
         -VersionReader { param($path) Get-StreamlinkVersion $path } -Description 'Streamlink' | Out-Null
     Select-CompatibleDependencyCandidate -CandidatePaths @($VlcDirectory) `
-        -MinimumVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.vlc) `
+        -MinimumVersion (Get-DependencyMinimumVersion $script:ParsedDependencyManifest.dependencies.vlc) `
         -VersionReader { param($path) Get-VlcVersion $path } -Description 'VLC' | Out-Null
     $webView2 = Get-WebView2Version
     $webView2Version = ConvertTo-DependencyVersion $webView2
     if ($null -eq $webView2Version -or
-        $webView2Version -lt (ConvertTo-DependencyVersion (Get-DependencyMinimumVersion $script:DependencyManifest.dependencies.webview2))) {
+        $webView2Version -lt (ConvertTo-DependencyVersion (Get-DependencyMinimumVersion $script:ParsedDependencyManifest.dependencies.webview2))) {
         throw 'A usable supported x64 WebView2 runtime was not found after dependency setup.'
     }
     if ($script:RebootRequired -or [string]::IsNullOrWhiteSpace($AppExe) -or -not $script:VerifyInstalledAppDependencies) { return }
@@ -1394,6 +1380,7 @@ function Remove-TempRoot {
 }
 
 $InstallDir = Assert-SafeInstallDirectory $InstallDir
+$installOperationMutex = Enter-InstallOperation $InstallDir
 
 try {
     $appExe = if ($SkipApp) {
@@ -1441,5 +1428,5 @@ try {
         Start-Process -FilePath $appExe
     }
 } finally {
-    Remove-TempRoot
+    try { Remove-TempRoot } finally { Exit-InstallOperation $installOperationMutex }
 }

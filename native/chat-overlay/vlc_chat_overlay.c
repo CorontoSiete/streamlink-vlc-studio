@@ -294,7 +294,7 @@ typedef struct {
     UINT     frame_count;
     UINT     current_frame;
     DWORD   *frame_delays_ms;
-    DWORD    total_frame_delay_ms;
+    ULONGLONG total_frame_delay_ms;
     ULONGLONG animation_started_ms;
 } bttv_emote_t;
 
@@ -4859,7 +4859,8 @@ static void bttv_scaled_size(int index, int *out_w, int *out_h) {
 }
 
 static DWORD normalize_frame_delay_ms(DWORD hundredths) {
-    DWORD ms = hundredths * 10u;
+    ULONGLONG scaled = (ULONGLONG)hundredths * 10u;
+    DWORD ms = scaled > MAXDWORD ? MAXDWORD : (DWORD)scaled;
     if (ms == 0) ms = 100;
     if (ms < 20) ms = 20;
     return ms;
@@ -4921,7 +4922,7 @@ static void emote_init_animation_locked(bttv_emote_t *e) {
         free(item);
     }
 
-    DWORD total = 0;
+    ULONGLONG total = 0;
     for (UINT i = 0; i < chosen_count; i++) {
         total += delays[i] ? delays[i] : 100;
     }
@@ -4950,9 +4951,8 @@ static void emote_select_animation_frame_locked(bttv_emote_t *e,
     ULONGLONG now = GetTickCount64();
     ULONGLONG started = occurrence_started_ms ? occurrence_started_ms
                                               : e->animation_started_ms;
-    DWORD elapsed = (DWORD)((now - started)
-                            % e->total_frame_delay_ms);
-    DWORD cursor = 0;
+    ULONGLONG elapsed = (now - started) % e->total_frame_delay_ms;
+    ULONGLONG cursor = 0;
     UINT frame = 0;
     for (UINT i = 0; i < e->frame_count; i++) {
         DWORD delay = e->frame_delays_ms[i] ? e->frame_delays_ms[i] : 100;

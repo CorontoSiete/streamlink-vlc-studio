@@ -169,7 +169,7 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         }
         catch (TimeoutException)
         {
-            SafeLog(AppLogLevel.Warning, "Timed out stopping the native VLC replay overlay renderer.");
+            logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Timed out stopping the native VLC replay overlay renderer.");
         }
     }
 
@@ -307,14 +307,14 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
             catch (Exception ex)
             {
                 exception = ex;
-                SafeLog(AppLogLevel.Warning, "Native VLC replay overlay rendering failed.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay rendering failed.", ex);
             }
 
             stopwatch.Stop();
             if (exception is null && stopwatch.Elapsed >= SlowRenderThreshold)
             {
-                SafeLog(
-                    AppLogLevel.Debug,
+                logger.WriteSafely(
+                    AppLogLevel.Debug, "ChatOverlay",
                     $"Native VLC replay overlay render took {stopwatch.Elapsed.TotalMilliseconds:0} ms for {request.Messages.Count} messages at {width}x{height}.");
             }
 
@@ -337,7 +337,7 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                SafeLog(AppLogLevel.Warning, "Native VLC replay overlay render callback failed.", ex);
+                logger.WriteSafely(AppLogLevel.Warning, "ChatOverlay", "Native VLC replay overlay render callback failed.", ex);
             }
 
             lock (gate)
@@ -348,17 +348,6 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
                     return;
                 }
             }
-        }
-    }
-
-    private void SafeLog(AppLogLevel level, string message, Exception? exception = null)
-    {
-        try
-        {
-            logger.Write(level, "ChatOverlay", message, exception);
-        }
-        catch (Exception)
-        {
         }
     }
 

@@ -40,7 +40,8 @@ internal static class VodResumeTestCatalog
     }
 
     internal static StreamTabViewModel Tab(StreamTarget target, IVodPlaybackHistory history,
-        IPlaybackEngineFactory factory, IVodChatProvider? chat = null, IStreamlinkService? streamlink = null) => new(
+        IPlaybackEngineFactory factory, IVodChatProvider? chat = null, IStreamlinkService? streamlink = null,
+        IAppLogger? logger = null) => new(
         new StreamTabViewModelDependencies
         {
             Target = target,
@@ -48,7 +49,7 @@ internal static class VodResumeTestCatalog
             StreamlinkService = streamlink ?? new FakeStreamlinkService(),
             PlaybackFactory = factory,
             ChatFactory = new FakeChatClientFactory(),
-            Logger = new MemoryLogger(),
+            Logger = logger ?? new MemoryLogger(),
             Dispatch = action => action(),
             VodPlaybackHistory = history,
             VodChatProvider = chat
@@ -444,7 +445,7 @@ internal static class VodResumeTestCatalog
         internal string Directory { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "StreamStudioTests", Guid.NewGuid().ToString("N"));
         internal string Path => System.IO.Path.Combine(Directory, "vod-history.json");
         internal HistoryFiles() => System.IO.Directory.CreateDirectory(Directory);
-        internal JsonVodPlaybackHistory Create() => new(Path, new MemoryLogger());
+        internal JsonVodPlaybackHistory Create(IAppLogger? logger = null) => new(Path, logger ?? new MemoryLogger());
         internal async Task<JsonVodPlaybackHistory> SeedAsync()
         {
             var history = Create();

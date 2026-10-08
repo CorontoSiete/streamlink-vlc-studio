@@ -923,8 +923,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
         if (msg == WmNcHitTest)
         {
-            var screenX = GetLParamSignedLowWord(lParam);
-            var screenY = GetLParamSignedHighWord(lParam);
+            var screenX = WindowInteropHelpers.GetSignedLowWord(lParam);
+            var screenY = WindowInteropHelpers.GetSignedHighWord(lParam);
             handled = true;
             if (TryGetResizeHitTest(screenX, screenY, out var hitTest))
             {
@@ -1156,8 +1156,8 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
         }
 
         _ = TryBeginWindowMove(
-            GetLParamSignedLowWord(lParam),
-            GetLParamSignedHighWord(lParam));
+            WindowInteropHelpers.GetSignedLowWord(lParam),
+            WindowInteropHelpers.GetSignedHighWord(lParam));
     }
 
     private bool TryBeginWindowMove(int screenX, int screenY)
@@ -2026,19 +2026,7 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
 
     private void AdjustVolume(StreamTabViewModel tab, int delta)
     {
-        VolumeOverlay.AdjustVolume(tab, delta, VolumeOsd, ResolveVolumeOsdTarget(tab));
-    }
-
-    private UIElement ResolveVolumeOsdTarget(StreamTabViewModel tab)
-    {
-        if (tab.IsVodFinished && tab.VideoSurfacePresenterOwner?.Parent is UIElement { IsVisible: true } finishedScreen)
-        {
-            return finishedScreen;
-        }
-
-        return detachedSurfaces.TryGetValue(tab, out var surface) && surface.IsVisible
-            ? surface
-            : VideoHost;
+        VolumeOverlay.AdjustVolume(tab, delta, VolumeOsd, VolumeOverlay.ResolveTarget(tab, detachedSurfaces, VideoHost));
     }
 
     private bool IsScreenPointOverStreamArea(int screenX, int screenY)
@@ -2196,18 +2184,6 @@ public partial class DetachedVideoWindow : Window, INotifyPropertyChanged
     private void OnWindowPropertyChanged(string? propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
-
-    private static int GetLParamSignedLowWord(IntPtr lParam)
-    {
-        var value = unchecked((long)lParam);
-        return unchecked((short)(value & 0xFFFF));
-    }
-
-    private static int GetLParamSignedHighWord(IntPtr lParam)
-    {
-        var value = unchecked((long)lParam);
-        return unchecked((short)((value >> 16) & 0xFFFF));
     }
 
     private static IntPtr MakeMouseLParam(int x, int y)

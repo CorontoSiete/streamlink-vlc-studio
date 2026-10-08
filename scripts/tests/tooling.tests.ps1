@@ -10,6 +10,8 @@ $developmentSavedExitCode = if ($developmentHadExitCode) { $developmentExitCode.
 & (Join-Path $PSScriptRoot 'development.tests.ps1')
 & (Join-Path $PSScriptRoot 'install-lifecycle.tests.ps1')
 & (Join-Path $PSScriptRoot 'dependency-installation.tests.ps1')
+& (Join-Path $PSScriptRoot 'native-command.tests.ps1')
+& (Join-Path $PSScriptRoot 'workflow.tests.ps1')
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     & (Join-Path $PSScriptRoot 'update-manifest.tests.ps1')
 }
@@ -68,6 +70,61 @@ try {
         Assert-True (-not (Test-WixToolVersion $reported '6.0.2')) "An unpinned WiX version was accepted: $reported"
     }
     Write-Host 'PASS tooling: WiX stable version is exact and its reported build metadata is accepted'
+
+    $cacheLoader = $builder.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Save-DependencyFile'
+        }, $false)
+    & {
+        . ([scriptblock]::Create($cacheLoader.Extent.Text))
+        function Write-Info([string]$Message) { }
+        $DependencyCacheDirectory = Join-Path $testRoot 'dependency-cache'
+        New-Item -ItemType Directory -Path $DependencyCacheDirectory | Out-Null
+        $cached = Join-Path $DependencyCacheDirectory 'reviewed.exe'
+        $destination = Join-Path $testRoot 'dependency-output\reviewed.exe'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) | Out-Null
+        $fixtureBytes = [Text.Encoding]::UTF8.GetBytes('reviewed dependency fixture')
+        [IO.File]::WriteAllBytes($cached, $fixtureBytes)
+        $dependency = [pscustomobject]@{
+            fileName = 'reviewed.exe'
+            length = $fixtureBytes.Length
+            sha256 = (Get-FileHash -LiteralPath $cached -Algorithm SHA256).Hash.ToLowerInvariant()
+            authenticode = (Get-AuthenticodeSignature -LiteralPath $cached).Status.ToString()
+            expectedSignerThumbprint = ''
+            expectedPublisher = ''
+            expectedProductName = ''
+        }
+        $networkRequests = [Collections.Generic.List[string]]::new()
+        function Save-HttpFileAtomically {
+            param($Uri, $DestinationPath, $Headers, $TimeoutSeconds, $MaximumBytes, $ValidationScript)
+            $networkRequests.Add($Uri)
+            Assert-True ($MaximumBytes -eq $dependency.length) 'Missing-cache download lost its pinned length limit.'
+            [IO.File]::WriteAllBytes($DestinationPath, $fixtureBytes)
+            & $ValidationScript $DestinationPath
+        }
+
+        [IO.File]::WriteAllText($destination, 'previous output')
+        Save-DependencyFile 'https://example.invalid/reviewed.exe' $destination $dependency
+        Assert-True ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ieq $dependency.sha256) 'Verified cache was not promoted.'
+        Assert-True ($networkRequests.Count -eq 0 -and (Test-Path -LiteralPath $cached)) 'Verified reuse downloaded or removed its cache source.'
+        Write-Host 'PASS tooling: offline builds reuse pinned cached dependencies and preserve the source'
+
+        $previousHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+        [IO.File]::WriteAllBytes($cached, [byte[]]::new($fixtureBytes.Length))
+        Assert-Throws { Save-DependencyFile 'https://example.invalid/reviewed.exe' $destination $dependency } 'SHA-256 mismatch'
+        [IO.File]::WriteAllBytes($cached, $fixtureBytes)
+        $dependency.authenticode = 'Invalid fixture signature status'
+        Assert-Throws { Save-DependencyFile 'https://example.invalid/reviewed.exe' $destination $dependency } 'Authenticode status mismatch'
+        $dependency.authenticode = (Get-AuthenticodeSignature -LiteralPath $cached).Status.ToString()
+        Assert-True ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ceq $previousHash) 'Rejected cache changed the destination.'
+        Assert-True (@(Get-ChildItem -LiteralPath (Split-Path -Parent $destination) -Force -Filter '.dependency-*').Count -eq 0) 'Rejected cache left a temporary payload.'
+        Assert-True ($networkRequests.Count -eq 0) 'Rejected cache was silently replaced by a download.'
+        Write-Host 'PASS tooling: corrupt or untrusted cached dependencies preserve prior output and stop the build'
+
+        Remove-Item -LiteralPath $cached -Force
+        Save-DependencyFile 'https://example.invalid/reviewed.exe' $destination $dependency
+        Assert-True ($networkRequests.Count -eq 1) 'Missing cached dependency did not use the verified download boundary.'
+        Write-Host 'PASS tooling: missing cached dependencies keep the reviewed download and validation path'
+    }
 
     $candidateRoot = Join-Path $testRoot 'candidates'
     New-Item -ItemType Directory -Path $candidateRoot | Out-Null

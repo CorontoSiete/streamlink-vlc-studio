@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\scripts\lib\WindowsDependencyProbe.cs" Link="Dependencies\WindowsDependencyProbe.cs" />
+    <Compile Include="..\..\shared\BoundedFile.cs" Link="Io\BoundedFile.cs" />
     <EmbeddedResource Include="..\..\dependencies\windows-installers.json" LogicalName="StreamStudio.WindowsDependencies.json" />
     <EmbeddedResource Include="Vlc\BundledReplayPause\libstudio_replay_pause_plugin.dll" />
     <EmbeddedResource Include="Vlc\BundledAdaptiveReplay\libstudio_adaptive_plugin.dll" />
