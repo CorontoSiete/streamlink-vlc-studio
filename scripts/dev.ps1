@@ -26,8 +26,8 @@ param(
     [switch]$NoRestore,
     [switch]$Interactive,
     [ValidateRange(0, 2147483647)]
-    # 276 desktop tests, plus two decoder tests when VLC is unavailable.
-    [int]$ExpectedMaxSkips = 278,
+    # 276 desktop tests, two VLC decoder tests, and 11 real FFmpeg conversion tests.
+    [int]$ExpectedMaxSkips = 289,
     [string]$DotNetPath
 )
 

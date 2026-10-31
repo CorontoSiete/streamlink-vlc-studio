@@ -160,8 +160,7 @@ internal static partial class LocalWebTestCatalog
 
     private static async Task AssertBrowserOverlay(CoreWebView2 core, bool live = true)
     {
-        var metrics = await core.ExecuteScriptAsync("[...document.querySelectorAll('.player')].map(p=>{const r=e=>{const x=e.getBoundingClientRect();return {x:x.x,y:x.y,width:x.width,height:x.height,bottom:x.bottom}};return {video:r(p.querySelector('video')),chat:r(p.querySelector('.chat')),messages:r(p.querySelector('.chat-messages')),form:r(p.querySelector('.chat-form'))}})");
-        var valid = await core.ExecuteScriptAsync($$"""
+        var condition = $$"""
             [...document.querySelectorAll('.player')].every(p=>{
               const v=p.querySelector('video').getBoundingClientRect(),c=p.querySelector('.chat'),r=c.getBoundingClientRect(),m=p.querySelector('.chat-messages'),s=getComputedStyle(m);
               const f=p.querySelector('.chat-form').getBoundingClientRect();
@@ -170,8 +169,12 @@ internal static partial class LocalWebTestCatalog
                 {{(live ? "f.bottom<=r.bottom && f.top>=r.top" : "true")}} &&
                 v.width>=p.querySelector('.screen').clientWidth-1;
             }) && document.documentElement.scrollWidth<=document.documentElement.clientWidth
-            """);
-        Assert.True(valid == "true", metrics);
+            """;
+        // A viewport change is observable before ResizeObserver has repositioned chat.
+        // Wait for the rendered invariants while retaining the same geometry assertions.
+        await WaitBrowser(core, condition);
+        var metrics = await core.ExecuteScriptAsync("[...document.querySelectorAll('.player')].map(p=>{const r=e=>{const x=e.getBoundingClientRect();return {x:x.x,y:x.y,width:x.width,height:x.height,bottom:x.bottom}};return {video:r(p.querySelector('video')),chat:r(p.querySelector('.chat')),messages:r(p.querySelector('.chat-messages')),form:r(p.querySelector('.chat-form'))}})");
+        Assert.True(await core.ExecuteScriptAsync(condition) == "true", metrics);
     }
 
     private static async Task ClickBrowser(CoreWebView2 core, string selector)

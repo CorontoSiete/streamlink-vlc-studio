@@ -119,6 +119,10 @@ internal static partial class LocalWebTestCatalog
 
     private static async Task AssertChatAtVideoBottom(CoreWebView2 core, string selector = ".chat")
     {
+        // Layout observers run after viewport and fullscreen changes become visible.
+        await WaitBrowser(core, $$"""
+            (()=>{const c=document.querySelector({{JsonSerializer.Serialize(selector)}}),r=c.getBoundingClientRect(),v=c.closest('.player').querySelector('video').getBoundingClientRect();return Math.abs(v.bottom-r.bottom)<1;})()
+            """);
         var metrics = await core.ExecuteScriptAsync($$"""
             (()=>{const c=document.querySelector({{JsonSerializer.Serialize(selector)}}),r=c.getBoundingClientRect(),v=c.closest('.player').querySelector('video').getBoundingClientRect();return {gap:v.bottom-r.bottom,chatHeight:r.height,videoHeight:v.height};})()
             """);
