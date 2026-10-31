@@ -166,8 +166,16 @@ internal static partial class LocalWebTestCatalog
     private static async Task AssertSavedChatPosition(CoreWebView2 core, WebChatOverlayLayout? expected = null)
     {
         if (expected is null) await WaitBrowser(core, "window.chatLayoutRequests.length>0");
-        Assert.Equal("true", await core.ExecuteScriptAsync($$"""
+        var condition = $$"""
             (()=>{const c=document.querySelector('.chat'),r=c.getBoundingClientRect(),s=c.parentElement.getBoundingClientRect(),p={{JsonSerializer.Serialize(expected, new JsonSerializerOptions(JsonSerializerDefaults.Web))}}||window.chatLayoutRequests.at(-1).layout;return p.x>=0 && p.x<=1 && p.y>=0 && p.y<=1 && Math.abs(r.left-s.left-8-(s.width-r.width-16)*p.x)<1 && Math.abs(r.top-s.top-8-(s.height-r.height-8)*p.y)<1})()
-            """));
+            """;
+        // Fullscreen can satisfy the containment check before its final normalized position.
+        try { await WaitBrowser(core, condition); }
+        catch (TimeoutException error)
+        {
+            var metrics = await core.ExecuteScriptAsync("(()=>{const c=document.querySelector('.chat'),s=c.parentElement;return {chat:c.getBoundingClientRect().toJSON(),surface:s.getBoundingClientRect().toJSON(),clientWidth:s.clientWidth,clientHeight:s.clientHeight,style:c.style.cssText,saved:window.chatLayoutRequests.at(-1),fullscreen:!!document.fullscreenElement}})()");
+            throw new TimeoutException("Saved chat geometry did not settle: " + metrics, error);
+        }
+        Assert.Equal("true", await core.ExecuteScriptAsync(condition));
     }
 }
