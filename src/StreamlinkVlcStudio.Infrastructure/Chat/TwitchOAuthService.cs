@@ -23,7 +23,9 @@ public static class TwitchOAuthService
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var clientId = OAuthTokenHelpers.RequireSetting(settings.TwitchClientId, "Twitch Client ID", "Twitch");
+        var clientId = AccountConnectionConfiguration.Current.ResolveTwitchClientId(settings);
+        if (string.IsNullOrWhiteSpace(clientId))
+            throw new InvalidOperationException(AccountConnectionConfiguration.TwitchUnavailableMessage);
         var state = CreateBase64UrlSecret(32);
         var authorizationUri = BuildAuthorizationUri(clientId, state);
 
@@ -39,6 +41,7 @@ public static class TwitchOAuthService
 
         var browserToken = await WaitForAuthorizationTokenAsync(listener, state, cancellationToken);
         var tokenInfo = await ValidateTokenAsync(browserToken.AccessToken, cancellationToken);
+        RequireMatchingClientId(clientId, tokenInfo);
 
         var missingScopes = new List<string>();
         if (!tokenInfo.CanReadChat)
@@ -77,11 +80,13 @@ public static class TwitchOAuthService
             tokenInfo.Login,
             tokenInfo.ExpiresAtUtc ?? browserToken.ExpiresAtUtc,
             browserToken.TokenType,
-            tokenInfo.Scopes);
+            tokenInfo.Scopes,
+            clientId);
     }
 
     public static void ApplyTokenResult(ChatSettings settings, TwitchOAuthTokenResult token)
     {
+        if (!string.IsNullOrWhiteSpace(token.ClientId)) settings.TwitchClientId = token.ClientId;
         settings.TwitchOAuthToken = token.AccessToken;
         settings.TwitchTokenExpiresAtUtc = token.ExpiresAtUtc;
         settings.TwitchTokenScopes = token.Scopes.ToList();
@@ -157,6 +162,12 @@ public static class TwitchOAuthService
         return OAuthTokenHelpers.NormalizeBearerToken(token);
     }
 
+    internal static void RequireMatchingClientId(string expectedClientId, TwitchTokenInfo tokenInfo)
+    {
+        if (!string.Equals(expectedClientId, tokenInfo.ClientId, StringComparison.Ordinal))
+            throw new InvalidOperationException("Twitch returned a token for a different application. Please connect again.");
+    }
+
     private static Uri BuildAuthorizationUri(string clientId, string state)
     {
         var query = new Dictionary<string, string>
@@ -184,7 +195,8 @@ public static class TwitchOAuthService
                 AuthorizationTimeout,
                 ParseBrowserToken,
                 cancellationToken,
-                TryHandleFragmentCaptureRequestAsync)
+                TryHandleFragmentCaptureRequestAsync,
+                useFormPost: true)
             .ConfigureAwait(false);
     }
 
@@ -202,7 +214,7 @@ public static class TwitchOAuthService
             ReadScopes(query));
     }
 
-    private static async Task<bool> TryHandleFragmentCaptureRequestAsync(HttpListenerContext context)
+    internal static async Task<bool> TryHandleFragmentCaptureRequestAsync(HttpListenerContext context)
     {
         if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.Ordinal) ||
             !string.Equals(context.Request.Url?.AbsolutePath, "/", StringComparison.Ordinal))
@@ -210,27 +222,38 @@ public static class TwitchOAuthService
             return false;
         }
 
-        var html = """
+        var scriptNonce = CreateBase64UrlSecret(32);
+        await LoopbackOAuthReceiver.WriteHtmlAsync(context.Response, HttpStatusCode.OK,
+            BuildFragmentCaptureHtml(scriptNonce), scriptNonce).ConfigureAwait(false);
+        return true;
+    }
+
+    internal static string BuildFragmentCaptureHtml(string scriptNonce) => $$"""
         <!doctype html>
         <html>
         <head><meta charset="utf-8"><title>Twitch Authorization</title></head>
         <body style="font-family:Segoe UI,Arial,sans-serif;margin:32px;">
         <h1>Twitch Authorization</h1>
         <p id="status">Finishing authorization...</p>
-        <script>
+        <script nonce="{{scriptNonce}}">
         (async () => {
             const status = document.getElementById('status');
             const hash = window.location.hash.startsWith('#') ? window.location.hash.substring(1) : '';
-            if (!hash) {
+            // Twitch returns denied consent in the query, successful consent in the fragment.
+            const parameters = hash || window.location.search.substring(1);
+            window.history.replaceState(null, '', '/');
+            if (!parameters) {
                 status.textContent = 'Twitch did not return an OAuth token.';
                 return;
             }
 
-            const response = await fetch('/twitch-oauth-token?' + hash, { method: 'GET', cache: 'no-store' });
+            const response = await fetch('/twitch-oauth-token', {
+                method: 'POST', cache: 'no-store', referrerPolicy: 'no-referrer',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: parameters
+            });
             const html = await response.text();
-            document.open();
-            document.write(html);
-            document.close();
+            const result = new DOMParser().parseFromString(html, 'text/html');
+            status.textContent = result.querySelector('p')?.textContent || 'Twitch authorization failed.';
         })().catch(error => {
             document.getElementById('status').textContent = 'Twitch authorization failed: ' + error;
         });
@@ -238,10 +261,6 @@ public static class TwitchOAuthService
         </body>
         </html>
         """;
-        await LoopbackOAuthReceiver.WriteHtmlAsync(context.Response, HttpStatusCode.OK, html).ConfigureAwait(false);
-
-        return true;
-    }
 
     private static DateTimeOffset? TryGetExpiresAt(IReadOnlyDictionary<string, string> query)
     {
@@ -290,4 +309,5 @@ public sealed record TwitchOAuthTokenResult(
     string Login,
     DateTimeOffset? ExpiresAtUtc,
     string TokenType,
-    HashSet<string> Scopes);
+    HashSet<string> Scopes,
+    string ClientId = "");

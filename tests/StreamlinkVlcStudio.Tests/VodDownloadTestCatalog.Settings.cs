@@ -8,10 +8,12 @@ internal static partial class VodDownloadTestCatalog
         var service = new JsonSettingsService(path);
         var settings = await service.LoadAsync();
         Assert.Equal("480p", settings.Downloads.Quality);
+        Assert.Equal(VodDownloadFormat.Hls, settings.Downloads.Format);
         Assert.Equal(0L, settings.Downloads.BandwidthLimitBytesPerSecond);
         Assert.True(settings.Downloads.Directory is null);
         settings.DefaultQuality = "1080p";
         settings.Downloads.Quality = "720p";
+        settings.Downloads.Format = VodDownloadFormat.Mp4;
         settings.Downloads.BandwidthLimitMegabytesPerSecond = 1.25;
         settings.Downloads.Directory = Path.Combine(fixture.Root, "new downloads");
         settings.Downloads.PreviousDirectories = [fixture.Library, fixture.Library];
@@ -19,6 +21,9 @@ internal static partial class VodDownloadTestCatalog
         var restored = await service.LoadAsync();
         Assert.Equal("1080p", restored.DefaultQuality);
         Assert.Equal("720p", restored.Downloads.Quality);
+        Assert.Equal(VodDownloadFormat.Mp4, restored.Downloads.Format);
+        restored.Downloads.Format = (VodDownloadFormat)999;
+        Assert.Equal(VodDownloadFormat.Hls, restored.Downloads.Format);
         Assert.Equal(1.25, restored.Downloads.BandwidthLimitMegabytesPerSecond);
         Assert.Equal(1_250_000L, restored.Downloads.BandwidthLimitBytesPerSecond);
         Assert.Equal(settings.Downloads.Directory, restored.Downloads.Directory);

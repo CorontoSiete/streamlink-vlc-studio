@@ -19,6 +19,7 @@ internal sealed record StreamTabViewModelDependencies
     public IReplayResolver? ReplayResolver { get; init; }
     public IVodChatProvider? VodChatProvider { get; init; }
     public IVodPlaybackHistory? VodPlaybackHistory { get; init; }
+    public IVodDownloadPlayback? OfflinePlayback { get; init; }
     public TimeSpan? TwitchLiveDvrPromotionPollInterval { get; init; }
     public ITwitchSubOnlyVodResolver? TwitchSubOnlyVodResolver { get; init; }
 }

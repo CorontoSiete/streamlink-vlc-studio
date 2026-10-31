@@ -4,6 +4,8 @@ internal static partial class ApplicationTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> VodDownloadUiTests { get; } =
     [
+        ("VOD formats: download format selector applies MP4 in wide and compact dark layouts", () => DownloadFormatSelectorAsync(AppTheme.Dark)),
+        ("VOD formats: download format selector applies MP4 in wide and compact light layouts", () => DownloadFormatSelectorAsync(AppTheme.Light)),
         ("VOD downloads: download settings persist quality, bandwidth, and folders in wide and compact dark layouts", () => DownloadSettingsUiAsync(AppTheme.Dark)),
         ("VOD downloads: download settings persist quality, bandwidth, and folders in wide and compact light layouts", () => DownloadSettingsUiAsync(AppTheme.Light)),
         ("VOD downloads: download settings shortcut only appears on past broadcasts and downloads pages", DownloadSettingsButtonVisibilityAsync),
@@ -24,6 +26,9 @@ internal static partial class ApplicationTestCatalog
     internal static IReadOnlyList<(string Name, Func<Task> Run)> VodDownloadNativeTests =>
         string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")) ? [] :
         [
+            ("VOD formats: real VLC plays, seeks, pauses, and resumes downloaded MP4 without internet", () => NativeOfflineDownloadAsync(PlatformKind.Twitch, false, VodDownloadFormat.Mp4)),
+            ("VOD formats: real VLC keeps playing the original during MP4 conversion", () => NativeOfflineDownloadAsync(PlatformKind.Twitch, false, convertDuringPlayback: true)),
+            ("VOD formats: encrypted HLS converts to playable MP4 using only local keys", () => NativeOfflineDownloadAsync(PlatformKind.Twitch, true, VodDownloadFormat.Mp4)),
             ("VOD downloads: real VLC plays, seeks, pauses, and resumes downloaded Twitch video and audio with internet denied", () => NativeOfflineDownloadAsync(PlatformKind.Twitch, false)),
             ("VOD downloads: real VLC plays, seeks, pauses, and resumes downloaded Kick video and audio with internet denied", () => NativeOfflineDownloadAsync(PlatformKind.Kick, false)),
             ("VOD downloads: real VLC plays and seeks AES-encrypted downloads using only local keys", () => NativeOfflineDownloadAsync(PlatformKind.Twitch, true)),
@@ -192,8 +197,11 @@ internal static partial class ApplicationTestCatalog
         finally { window.Close(); }
     });
 
-    private static Task NativeOfflineDownloadAsync(PlatformKind platform, bool encrypted) => TestSta.RunOffscreenAsync(async () =>
+    private static Task NativeOfflineDownloadAsync(PlatformKind platform, bool encrypted,
+        VodDownloadFormat format = VodDownloadFormat.Hls, bool convertDuringPlayback = false) => TestSta.RunOffscreenAsync(async () =>
     {
+        if ((format != VodDownloadFormat.Hls || convertDuringPlayback) && ExecutableResolver.FindFfmpeg() is null)
+            throw new InteractiveDesktopTestSkippedException("FFmpeg is not installed for the real VOD conversion tests.");
         await using var fixture = new VodDownloadTestCatalog.DownloadFixture(platform);
         var fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "replay-position-audio");
         var playlist = await File.ReadAllTextAsync(Path.Combine(fixtureDirectory, "index.m3u8"));
@@ -219,8 +227,11 @@ internal static partial class ApplicationTestCatalog
             fixture.Handler.Put("/redirected/local-key", key);
         }
         fixture.Handler.Put("/redirected/index.m3u8", Encoding.UTF8.GetBytes(playlist.TrimEnd() + "\n#EXT-X-ENDLIST\n"));
+        await fixture.Service.ChangeDownloadFormatAsync(format, fixture.Options);
         var downloaded = await fixture.DownloadAsync();
-        var target = await fixture.Service.GetOfflineTargetAsync(downloaded.Id);
+        Assert.Equal(format, downloaded.Format);
+        await using var playback = await fixture.Service.AcquireOfflinePlaybackAsync(downloaded.Id);
+        var target = playback.Target;
         Assert.Equal(TimeSpan.FromSeconds(60), downloaded.Duration);
         fixture.Handler.NetworkAvailable = false;
         var requestCount = fixture.Handler.RequestCount;
@@ -235,7 +246,8 @@ internal static partial class ApplicationTestCatalog
         var handle = NativeWindowTest.CreateHiddenParentWindow();
         try
         {
-            await using (var tab = VodResumeTestCatalog.Tab(target, historyFiles.Create(), factory, streamlink: fixture.Resolver))
+            await using (var tab = VodResumeTestCatalog.Tab(target, historyFiles.Create(), factory, streamlink: fixture.Resolver,
+                offlinePlayback: playback))
             {
                 tab.SetVideoHandle(handle);
                 tab.IsMuted = true;
@@ -244,6 +256,13 @@ internal static partial class ApplicationTestCatalog
                 await TestWait.UntilAsync(() => factory.Engine!.TryGetPlaybackHealth(out var health) &&
                     health.DisplayedPictures > 0 && health.DecodedAudio > 0 &&
                     factory.Engine.TryGetPlaybackClock(out var clock) && clock.IsSeekable, TimeSpan.FromSeconds(8));
+                if (convertDuringPlayback)
+                {
+                    await fixture.Service.ChangeDownloadFormatAsync(VodDownloadFormat.Mp4, fixture.Options);
+                    var converted = await fixture.WaitAsync(downloaded.Id, VodDownloadState.Completed);
+                    Assert.Equal(VodDownloadFormat.Mp4, converted.Format);
+                    Assert.True(File.Exists(target.LocalMediaPath));
+                }
                 await tab.SeekReplayAsync(TimeSpan.FromSeconds(35.25));
                 Assert.Equal(PlaybackStatus.Playing, tab.Status);
                 Assert.True(factory.Engine!.TryGetPlaybackClock(out var seeked));
@@ -259,15 +278,20 @@ internal static partial class ApplicationTestCatalog
             }
             var bookmark = (await historyFiles.Create().GetAsync(target))!;
             Assert.True(bookmark.Position >= TimeSpan.FromSeconds(34));
+            if (convertDuringPlayback) Assert.True(!Directory.Exists(Path.GetDirectoryName(target.LocalMediaPath)!));
+            await using var reopenedPlayback = await fixture.Service.AcquireOfflinePlaybackAsync(downloaded.Id);
+            target = reopenedPlayback.Target;
             var reopenedFactory = new OfflineDownloadNativeFactory(settings.Chat, gateway);
-            await using var reopened = VodResumeTestCatalog.Tab(target, historyFiles.Create(), reopenedFactory, streamlink: fixture.Resolver);
+            await using var reopened = VodResumeTestCatalog.Tab(target, historyFiles.Create(), reopenedFactory, streamlink: fixture.Resolver,
+                offlinePlayback: reopenedPlayback);
             reopened.SetVideoHandle(handle);
             reopened.IsMuted = true;
             await reopened.StartAsync(settings);
             Assert.Equal(PlaybackStatus.Playing, reopened.Status);
+            PlaybackClock restored = null!;
             await TestWait.UntilAsync(() => reopenedFactory.Engine!.TryGetPlaybackHealth(out var health) &&
-                health.DisplayedPictures > 0 && health.DecodedAudio > 0, TimeSpan.FromSeconds(8));
-            Assert.True(reopenedFactory.Engine!.TryGetPlaybackClock(out var restored));
+                health.DisplayedPictures > 0 && health.DecodedAudio > 0 &&
+                reopenedFactory.Engine.TryGetPlaybackClock(out restored) && restored.IsSeekable, TimeSpan.FromSeconds(8));
             Console.WriteLine($"Offline {platform} encrypted={encrypted}: saved={bookmark.Position}, restored={restored.Position}, HTTP requests after disconnect={fixture.Handler.RequestCount - requestCount}");
             Assert.True(restored.Position >= bookmark.Position - TimeSpan.FromSeconds(1) && restored.Position <= bookmark.Position + TimeSpan.FromSeconds(3));
             Assert.Equal(requestCount, fixture.Handler.RequestCount);

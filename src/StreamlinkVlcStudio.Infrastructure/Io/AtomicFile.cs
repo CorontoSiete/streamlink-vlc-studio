@@ -4,13 +4,18 @@ namespace StreamlinkVlcStudio.Infrastructure.Io;
 /// Reads complete snapshots and writes through a temporary sibling, replacing the destination in one
 /// filesystem operation, so a reader never observes a partially written file. The temporary
 /// file always lives in the same directory as the destination (a cross-volume rename is not
-/// atomic) and is removed when the write fails. Reads allow replacement and briefly retry its locks.
+/// atomic) and is removed when the write fails. Reads allow replacement; reads and commits
+/// briefly retry Windows sharing/locking failures without modifying the committed snapshot.
 /// </summary>
 internal static class AtomicFile
 {
     private const int SharingViolation = unchecked((int)0x80070020);
+    private const int LockViolation = unchecked((int)0x80070021);
+    private const int UnableToRemoveReplaced = unchecked((int)0x80070497);
     private const int ReadRetryCount = 20;
     private static readonly TimeSpan ReadRetryDelay = TimeSpan.FromMilliseconds(25);
+    private const int WriteRetryCount = 20;
+    private static readonly TimeSpan WriteRetryDelay = TimeSpan.FromMilliseconds(25);
 
     /// <summary>Opens a complete snapshot, allowing replacement and retrying its brief exclusive lock.</summary>
     internal static async Task<FileStream> OpenReadAsync(string path, CancellationToken cancellationToken)
@@ -67,21 +72,36 @@ internal static class AtomicFile
                 }
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            if (File.Exists(destinationPath))
+            for (var attempt = 0; ; attempt++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    File.Replace(temporaryPath, destinationPath, null, ignoreMetadataErrors: true);
+                    if (File.Exists(destinationPath))
+                    {
+                        try
+                        {
+                            File.Replace(temporaryPath, destinationPath, null, ignoreMetadataErrors: true);
+                        }
+                        catch (FileNotFoundException)
+                        {
+                            File.Move(temporaryPath, destinationPath, overwrite: true);
+                        }
+                    }
+                    else
+                    {
+                        File.Move(temporaryPath, destinationPath, overwrite: true);
+                    }
+                    break;
                 }
-                catch (FileNotFoundException)
+                catch (IOException exception) when (attempt < WriteRetryCount &&
+                    exception.HResult is SharingViolation or LockViolation or UnableToRemoveReplaced && File.Exists(temporaryPath))
                 {
-                    File.Move(temporaryPath, destinationPath, overwrite: true);
+                    // Windows may briefly refuse an otherwise valid atomic replace.
+                    // Keep the prepared sibling and retry the commit itself; never
+                    // delete or truncate the last committed destination to bypass it.
+                    await Task.Delay(WriteRetryDelay, cancellationToken).ConfigureAwait(false);
                 }
-            }
-            else
-            {
-                File.Move(temporaryPath, destinationPath, overwrite: true);
             }
         }
         catch

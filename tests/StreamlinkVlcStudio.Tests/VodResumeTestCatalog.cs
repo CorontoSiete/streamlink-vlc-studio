@@ -41,7 +41,7 @@ internal static class VodResumeTestCatalog
 
     internal static StreamTabViewModel Tab(StreamTarget target, IVodPlaybackHistory history,
         IPlaybackEngineFactory factory, IVodChatProvider? chat = null, IStreamlinkService? streamlink = null,
-        IAppLogger? logger = null) => new(
+        IAppLogger? logger = null, IVodDownloadPlayback? offlinePlayback = null) => new(
         new StreamTabViewModelDependencies
         {
             Target = target,
@@ -52,6 +52,7 @@ internal static class VodResumeTestCatalog
             Logger = logger ?? new MemoryLogger(),
             Dispatch = action => action(),
             VodPlaybackHistory = history,
+            OfflinePlayback = offlinePlayback,
             VodChatProvider = chat
         });
 

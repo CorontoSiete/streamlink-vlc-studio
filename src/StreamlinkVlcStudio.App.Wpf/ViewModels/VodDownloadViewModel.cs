@@ -24,20 +24,23 @@ public sealed class VodDownloadViewModel : ObservableObject
     private bool ActionAvailable => Volatile.Read(ref actionRunning) == 0;
     public Guid Id => item.Id;
     public string Title => string.IsNullOrWhiteSpace(item.Target.DisplayTitle) ? $"VOD {item.Target.MediaId}" : item.Target.DisplayTitle;
-    public string ChannelText => $"{item.Target.Platform} · {item.Target.Channel} · {item.Quality}";
+    public string ChannelText => $"{item.Target.Platform} · {item.Target.Channel} · {item.Quality} · {(item.Format == VodDownloadFormat.Mp4 ? "MP4" : "HLS")}";
     public string Error => item.Error;
     public bool HasError => !string.IsNullOrWhiteSpace(Error);
-    public bool CanPlay => item.State == VodDownloadState.Completed;
+    public bool CanPlay => item.State is VodDownloadState.Completed or VodDownloadState.ConversionQueued or VodDownloadState.Converting;
     public bool CanCancel => item.IsActive;
-    public bool CanRetry => item.State is VodDownloadState.Failed or VodDownloadState.Canceled or VodDownloadState.Interrupted;
+    public bool CanRetry => item.CanRetryConversion || item.State is VodDownloadState.Failed or VodDownloadState.Canceled or VodDownloadState.Interrupted;
     public bool CanDelete => !item.IsActive;
     private bool IsFinalizing => item.State == VodDownloadState.Downloading && item.TotalSegments > 0 &&
         item.CompletedSegments >= item.TotalSegments;
-    public bool IsIndeterminate => item.IsActive && (item.TotalSegments == 0 || IsFinalizing);
+    public bool IsIndeterminate => item.IsActive && (item.TotalSegments == 0 || IsFinalizing ||
+        item.State is VodDownloadState.ConversionQueued or VodDownloadState.Converting);
     public double ProgressPercentage => item.TotalSegments == 0 ? 0 : Math.Clamp(100d * item.CompletedSegments / item.TotalSegments, 0, 100);
     public string CardButtonText => item.State switch
     {
         VodDownloadState.Completed => "Downloaded",
+        VodDownloadState.ConversionQueued => "Conversion queued",
+        VodDownloadState.Converting => "Converting…",
         VodDownloadState.Queued => "Queued",
         VodDownloadState.Resolving => "Preparing…",
         VodDownloadState.Downloading when IsFinalizing => "Finishing…",
@@ -47,12 +50,16 @@ public sealed class VodDownloadViewModel : ObservableObject
     };
     public string CardActionName => CanPlay ? "Watch downloaded VOD offline" :
         CanRetry ? "Retry VOD download" : "Download VOD for offline playback";
-    public string CardToolTip => CanPlay ? $"Downloaded at {item.Quality}. Click to watch offline.\n{ProgressText}" :
+    public string CardToolTip => item.State is VodDownloadState.ConversionQueued or VodDownloadState.Converting
+        ? $"{StateText}\nClick to watch the original download while it converts.\n{ProgressText}" :
+        CanPlay ? $"Downloaded at {item.Quality}. Click to watch offline.\n{ProgressText}" :
         CanRetry ? $"{StateText} at {item.Quality}.\n{Error}\nClick to retry this download." :
         $"{(IsFinalizing ? "Finishing offline files…" : StateText)} at {item.Quality}.\n{ProgressText}\nManage or cancel this download in Downloads.";
     public string StateText => item.State switch
     {
         VodDownloadState.Completed => "Ready to watch offline",
+        VodDownloadState.ConversionQueued => $"Queued for conversion to {(item.RequestedFormat == VodDownloadFormat.Mp4 ? "MP4" : "HLS")}",
+        VodDownloadState.Converting => $"Converting to {(item.RequestedFormat == VodDownloadFormat.Mp4 ? "MP4" : "HLS")}…",
         VodDownloadState.Resolving => "Resolving VOD…",
         VodDownloadState.Downloading => "Downloading…",
         VodDownloadState.Queued => "Queued",

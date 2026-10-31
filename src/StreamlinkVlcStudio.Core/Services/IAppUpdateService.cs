@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace StreamlinkVlcStudio.Core.Services;
 
 public interface IAppUpdateService
@@ -17,6 +19,7 @@ public interface IAppUpdateService
 
 public enum UpdateCheckReason { Startup, Retry, Manual }
 public enum AppInstallKind { Managed, LegacyManaged, Zip, Unmanaged }
+public enum AppUpdatePackageKind { Setup, Zip }
 public enum AppUpdatePhase { Idle, Checking, Available, Downloading, Verifying, Ready, Launching, Completed, NotifyOnly, Failed, DownloadFailed }
 
 public sealed record AppUpdateState(
@@ -63,7 +66,13 @@ public sealed record PreparedAppUpdate(
     string OperationDirectory,
     string SetupPath,
     string HelperPath,
-    DateTimeOffset VerifiedAt);
+    DateTimeOffset VerifiedAt,
+    AppUpdatePackageKind PackageKind = AppUpdatePackageKind.Setup)
+{
+    // Keep the existing cache property readable by older protocol-1 clients.
+    [JsonIgnore]
+    public string PackagePath => SetupPath;
+}
 public sealed record AppUpdateLaunchResult(bool Started, string Message, string? LogPath = null);
 public enum AppUpdateCompletionOutcome { Succeeded, SucceededRebootRequired, Canceled, Failed }
 public sealed record AppUpdateCompletion(

@@ -18,3 +18,6 @@
 *.tgz binary
 *.webp binary
 *.zip binary
+
+# Unified diff context lines use a single space, including for blank lines.
+native/vlc-core/playback-rate-continuity.patch whitespace=-blank-at-eol

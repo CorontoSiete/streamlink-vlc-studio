@@ -52,6 +52,16 @@ Generate it with:
 ffmpeg -f lavfi -i color=c=blue:s=64x64:r=2:d=60 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=60 -map 0:v -map 1:a -af volume=0.016 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 2 -sc_threshold 0 -c:a aac -b:a 32k -hls_time 10 -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments -hls_segment_filename playback-rate-replay-tone/segment%d.ts playback-rate-replay-tone/index.m3u8
 ```
 
+`playback-rate-continuity` uses generated blue video at 30 fps with silent AAC
+and an event playlist. The video
+regression measures gaps between newly presented pictures through every speed,
+including 2x to 0.5x. It serves the playlist both as growing replay and as a
+completed VOD through the production gateway. Generate it with the command
+above, changing `r=2` to `r=30`, `-g 2` to `-g 30`, the audio source to
+`anullsrc=r=48000:cl=stereo` with `-t 60`, and the output directory to
+`playback-rate-continuity`; omit the volume filter and use
+`-hls_playlist_type event -hls_flags omit_endlist`.
+
 `hover-preview-fmp4` contains twelve seconds of generated moving test patterns,
 160 x 90 at 30 fps, in two-second fragmented MP4 segments with a whole `init.mp4`.
 It exercises the hover preview's validated map, native HLS initialization, changing
@@ -61,3 +71,22 @@ Generate it with:
 ```text
 ffmpeg -f lavfi -i testsrc2=size=160x90:rate=30:duration=12 -an -c:v libx264 -preset fast -crf 28 -pix_fmt yuv420p -g 60 -sc_threshold 0 -f hls -hls_time 2 -hls_list_size 0 -hls_flags omit_endlist -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 -hls_segment_filename hover-preview-fmp4/segment%d.m4s hover-preview-fmp4/index.m3u8
 ```
+
+`h264-filler` is a four-second H.264/AAC transport stream with CBR filler NAL
+units. The VOD format test removes only that filler and compares the retained
+encoded video and decoded audio/video hashes. It was generated with FFmpeg
+n8.1.2-20260623 using:
+
+```text
+ffmpeg -f lavfi -i testsrc2=size=320x180:rate=30:duration=4 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=4 -c:v libx264 -preset veryfast -b:v 3M -minrate 3M -maxrate 3M -bufsize 3M -x264-params nal-hrd=cbr -c:a aac -b:a 128k -f hls -hls_time 1 -hls_playlist_type vod -hls_segment_filename seg-%03d.ts index.m3u8
+```
+
+The one generated segment was renamed `asset-000000.ts`; the playlist was
+updated to match. Its SHA-256 is
+`1178DB8A50B44717A405C8F6F24497F4C2905B4F88F1BE87AF3DBA13660D4F2E`.
+
+`hevc-video/vod.mp4` checks that the H.264-only filter rejects HEVC and the
+converter's ordinary stream-copy fallback succeeds. It is a one-second
+160 x 90 generated test pattern, encoded with `libx265 -preset ultrafast`.
+Its SHA-256 is
+`B934FA356E7F553CA3AB9E7F1A894531AD3B02B3C4B6826AF52F228F47647A9D`.

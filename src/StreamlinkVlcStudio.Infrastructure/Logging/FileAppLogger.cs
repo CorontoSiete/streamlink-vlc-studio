@@ -421,6 +421,9 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
             .Replace("\r", "\\n", StringComparison.Ordinal)
             .Replace("\n", "\\n", StringComparison.Ordinal);
         normalized = UrlUserInfoPattern().Replace(normalized, "$1[REDACTED]@");
+        // Quoted values can contain spaces, commas, and escaped quotes. Redact them
+        // before the unquoted patterns so no suffix of the credential survives.
+        normalized = QuotedSensitiveAssignmentPattern().Replace(normalized, "$1[REDACTED]");
         normalized = SensitiveQueryPattern().Replace(normalized, "$1[REDACTED]");
         normalized = BearerTokenPattern().Replace(normalized, "$1 [REDACTED]");
         normalized = OAuthPrefixPattern().Replace(normalized, "oauth:[REDACTED]");
@@ -434,10 +437,13 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
     [GeneratedRegex(@"(?i)(https?://)[^/@\s]+@", RegexOptions.CultureInvariant)]
     private static partial Regex UrlUserInfoPattern();
 
-    [GeneratedRegex(@"(?i)([?&](?:access_token|refresh_token|client_secret|oauth_token|token|authorization|auth|code)=)[^&#\s\""']+", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("""(?i)((?:"|')?(?:access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code)(?:"|')?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$))""", RegexOptions.CultureInvariant)]
+    private static partial Regex QuotedSensitiveAssignmentPattern();
+
+    [GeneratedRegex(@"(?i)([?&](?:access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code)=)[^&#\s\""']+", RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveQueryPattern();
 
-    [GeneratedRegex(@"(?i)((?:\""|')?(?:access_token|refresh_token|client_secret|oauth_token|token|authorization|auth|code)(?:\""|')?\s*[:=]\s*(?:\""|')?)[^,\s&}\""']+", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?i)((?:\""|')?(?:access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code)(?:\""|')?\s*[:=]\s*(?:\""|')?)[^,\s&}\""']+", RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveAssignmentPattern();
 
     [GeneratedRegex(@"(?i)\b(Bearer|OAuth)\s+[A-Za-z0-9._~+/=-]+", RegexOptions.CultureInvariant)]

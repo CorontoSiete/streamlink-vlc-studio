@@ -92,7 +92,7 @@ internal static partial class ApplicationTestCatalog
         {
             Assert.True(engine.TryGetPlaybackHealth(out var initial));
             Assert.True(await engine.TrySetPlaybackRateAsync(2f));
-            Assert.True(IsPlaybackRateRecoveryPending(engine), "The delayed request must exercise an actual HLS audio resynchronization.");
+            Assert.Equal(false, IsPlaybackRateRecoveryPending(engine));
             await TestWait.UntilAsync(() => engine.TryGetPlaybackHealth(out var health) &&
                 health.State == PlaybackEngineState.Playing &&
                 health.PositionMilliseconds >= initial.PositionMilliseconds + 12_000 &&

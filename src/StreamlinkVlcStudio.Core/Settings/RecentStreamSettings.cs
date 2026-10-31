@@ -16,6 +16,8 @@ public sealed class RecentStreamSettings
 
     public string ThumbnailUrl { get; set; } = "";
 
+    public string ProfileImageUrl { get; set; } = "";
+
     public string LastQuality { get; set; } = "";
 
     public DateTimeOffset LastWatchedAtUtc { get; set; }

@@ -15,7 +15,8 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
     public StreamSearchResultViewModel(
         StreamSearchChannel channel,
         Func<StreamSearchResultViewModel, bool, Task> openAsync,
-        int? viewerCount = null)
+        int? viewerCount = null,
+        Func<PlatformKind, string, Task>? openVodsAsync = null)
     {
         this.channel = channel;
         ViewerCount = NormalizeViewerCount(viewerCount ?? channel.ViewerCount);
@@ -27,6 +28,9 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(
             () => openAsync(this, true),
             () => CanOpen);
+        GoToVodsCommand = new AsyncRelayCommand(
+            () => openVodsAsync!(Platform, Channel),
+            () => openVodsAsync is not null && !Target.IsExplicitVod && !string.IsNullOrWhiteSpace(Channel));
     }
 
     public StreamSearchResultViewModel(
@@ -34,7 +38,8 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
         StreamlinkProbeResult probeResult,
         StreamMetadataResult? metadata,
         Func<StreamSearchResultViewModel, bool, Task> openAsync,
-        int? viewerCount = null)
+        int? viewerCount = null,
+        Func<PlatformKind, string, Task>? openVodsAsync = null)
     {
         this.probeResult = probeResult;
         this.metadata = metadata?.State == StreamMetadataState.Available ? metadata : null;
@@ -52,11 +57,16 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(
             () => openAsync(this, true),
             () => CanOpen);
+        GoToVodsCommand = new AsyncRelayCommand(
+            () => openVodsAsync!(Platform, Channel),
+            () => openVodsAsync is not null && !Target.IsExplicitVod && !string.IsNullOrWhiteSpace(Channel));
     }
 
     public AsyncRelayCommand OpenCommand { get; }
 
     public AsyncRelayCommand OpenAndStayOnHomeCommand { get; }
+
+    public AsyncRelayCommand GoToVodsCommand { get; }
 
     public StreamTarget Target { get; }
 

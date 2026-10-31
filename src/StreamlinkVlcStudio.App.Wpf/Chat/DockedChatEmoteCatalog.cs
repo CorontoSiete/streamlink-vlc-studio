@@ -14,6 +14,7 @@ internal sealed class DockedChatEmoteCatalog
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
 
     private readonly object sync = new();
+    private readonly HttpClient httpClient;
     private readonly Dictionary<string, DockedChatEmoteImage> emotes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> catalogScopeByEmoteKey = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> emoteKeysByCatalogScope = new(StringComparer.OrdinalIgnoreCase);
@@ -25,8 +26,13 @@ internal sealed class DockedChatEmoteCatalog
 
     public static DockedChatEmoteCatalog Shared { get; } = new();
 
-    internal DockedChatEmoteCatalog()
+    internal DockedChatEmoteCatalog() : this(SharedHttpClient)
     {
+    }
+
+    internal DockedChatEmoteCatalog(HttpClient httpClient)
+    {
+        this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         loadCoordinator = new CatalogLoadCoordinator(scopeEvicted: EvictCatalogScope);
         catalogChangeNotifier = new CatalogChangeNotifier(this);
     }
@@ -120,6 +126,23 @@ internal sealed class DockedChatEmoteCatalog
             LoadGlobalAsync,
             () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Twitch)),
             preserveFromEviction: true);
+    }
+
+    internal void EnsureKickLoaded(string channel, long? broadcasterId)
+    {
+        loadCoordinator.Ensure("kick:global", async () =>
+        {
+            var results = await Task.WhenAll(
+                LoadBttvAsync("https://api.betterttv.net/3/cached/emotes/global", PlatformKind.Kick, "", "kick:global"),
+                LoadFfzAsync("https://api.frankerfacez.com/v1/set/global", PlatformKind.Kick, "", "kick:global"),
+                LoadSevenTvAsync("https://7tv.io/v3/emote-sets/global", PlatformKind.Kick, "", "kick:global")).ConfigureAwait(false);
+            return new CatalogLoadResult(results.Any(r => r.Succeeded), results.Any(r => r.Changed));
+        }, () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Kick)), preserveFromEviction: true);
+        if (broadcasterId is not > 0) return;
+        var scope = $"kick:{broadcasterId}:{channel.Trim().ToLowerInvariant()}";
+        loadCoordinator.Ensure(scope,
+            () => LoadSevenTvAsync($"https://7tv.io/v3/users/kick/{broadcasterId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}", PlatformKind.Kick, channel, scope),
+            () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Kick, channel)));
     }
 
     private void EnsureTwitchChannelLoaded(string roomId, string channel)
@@ -547,10 +570,10 @@ internal sealed class DockedChatEmoteCatalog
             (channel ?? "").Trim().ToLowerInvariant(),
             code.Trim());
 
-    private static async Task<JsonDocument?> TryGetJsonAsync(string url)
+    private async Task<JsonDocument?> TryGetJsonAsync(string url)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        return await OptionalHttpJsonReader.SendAsync(SharedHttpClient, request, MaxJsonBytes).ConfigureAwait(false);
+        return await OptionalHttpJsonReader.SendAsync(httpClient, request, MaxJsonBytes).ConfigureAwait(false);
     }
 
     private static HttpClient CreateHttpClient()

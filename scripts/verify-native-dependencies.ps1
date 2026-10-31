@@ -43,10 +43,19 @@ if ($coreProvenance.schemaVersion -ne 1 -or
     @($coreProvenance.buildInputs.contribPackages).Count -ne 5) {
     throw 'Bundled VLC core provenance is missing its supported version or license.'
 }
-if (@($coreProvenance.additionalPatches).Count -ne 1 -or
-    $coreProvenance.additionalPatches[0].sourcePath -cne 'src/input/es_out.c' -or
-    $coreProvenance.additionalPatches[0].patch -cne 'replay-preroll-rate.patch') {
-    throw 'Bundled VLC core provenance is missing its replay clock source patch.'
+$expectedCorePatches = @(
+    @('src/input/es_out.c', 'replay-preroll-rate.patch'),
+    @('src/input/clock.h', 'playback-rate-continuity.patch'),
+    @('src/input/clock.c', 'playback-rate-continuity.patch'),
+    @('src/input/decoder.c', 'playback-rate-continuity.patch'))
+if (@($coreProvenance.additionalPatches).Count -ne $expectedCorePatches.Count) {
+    throw 'Bundled VLC core provenance is missing its replay timing source patches.'
+}
+for ($index = 0; $index -lt $expectedCorePatches.Count; $index++) {
+    if ($coreProvenance.additionalPatches[$index].sourcePath -cne $expectedCorePatches[$index][0] -or
+        $coreProvenance.additionalPatches[$index].patch -cne $expectedCorePatches[$index][1]) {
+        throw 'Bundled VLC core provenance does not match its replay timing source patches.'
+    }
 }
 $coreRuntimePath = Join-Path $repoRoot 'src\StreamlinkVlcStudio.Infrastructure\Vlc\BundledVlcCoreRuntime.cs'
 $coreRuntimeSource = Get-Content -LiteralPath $coreRuntimePath -Raw
@@ -63,6 +72,7 @@ foreach ($relativePath in (@(
         'core-config.h',
         'windows-address-waits.patch',
         'replay-preroll-rate.patch',
+        'playback-rate-continuity.patch',
         'provenance.json') + @($coreProvenance.licenseFiles))) {
     if (-not (Test-Path -LiteralPath (Join-Path $coreRoot $relativePath) -PathType Leaf)) {
         throw "Bundled VLC core source material is missing: $relativePath"

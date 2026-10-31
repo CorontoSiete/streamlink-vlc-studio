@@ -429,8 +429,8 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
                         throw new InvalidOperationException("libVLC failed to start playback.");
                     }
 
-                    // Establish the replay position at the normal input rate. Applying a
-                    // retained fast rate during preroll can skip its confirmation window.
+                    // Uncorrected cores establish replay at 1x before restoring a
+                    // retained speed. The bundled core inherits it before playback.
                     if (!startPosition.HasValue) ApplyRequestedPlaybackRateCore();
 
                     logger.WriteSafely(
@@ -664,6 +664,14 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
     private PlaybackRateWaitState TryApplyPlaybackRateCore(float rate, out bool recoveringNormalRate)
     {
         recoveringNormalRate = false;
+        if (rateAwareReplayPreroll && (usingAvformatReplay || LibVlcNative.libvlc_video_get_track(player) >= 0))
+        {
+            // The bundled core anchors new timestamps to the end of queued
+            // audio. Retain the buffered input and video instead of seeking.
+            // Audio-only adaptive HLS retains its output resynchronization.
+            return TrySetRequestedPlaybackRateCore(rate) ? PlaybackRateWaitState.Ready : PlaybackRateWaitState.Unavailable;
+        }
+
         var previousRate = requestedPlaybackRate;
         var nativeTime = LibVlcNative.libvlc_media_player_get_time(player);
         var length = LibVlcNative.libvlc_media_player_get_length(player);
@@ -686,16 +694,6 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             (liveReplaySegmentDuration <= TimeSpan.Zero ||
                 length - nativeTime > liveReplaySegmentDuration.TotalMilliseconds) &&
             LibVlcNative.libvlc_audio_get_track(player) >= 0;
-
-        if (resynchronizeHls && usingAvformatReplay && rateAwareReplayPreroll)
-        {
-            // This core converts preroll between media time and wall time at the
-            // selected rate. Flush old audio after setting the rate, then let the
-            // next request wait for the completed replay's clock to recover.
-            if (!TrySetRequestedPlaybackRateCore(rate)) return PlaybackRateWaitState.Unavailable;
-            TrySubmitPlaybackRateResynchronizationCore(nativeTime, waitForRecovery: true);
-            return PlaybackRateWaitState.Ready;
-        }
 
         if (resynchronizeHls && rate < 1f && previousRate > 1f)
         {
@@ -1374,6 +1372,10 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
             {
                 throw new InvalidOperationException("libVLC could not create a media player.");
             }
+
+            // Start the corrected clock at the retained speed, before any samples
+            // are queued. Opening should not first play a buffer at the old 1x rate.
+            if (rateAwareReplayPreroll) ApplyRequestedPlaybackRateCore();
 
             LibVlcVideoOutputBinding.Bind(player, videoHandle, RendererMode, libVlcVersion, UsesNativeOverlay, hardwareOverlayComposition);
             replayOutputPending = startPosition.HasValue;

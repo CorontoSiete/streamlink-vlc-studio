@@ -202,13 +202,14 @@ internal static partial class ApplicationTestCatalog
 
     private static Task DownloadCardVisualsAsync(AppTheme theme) => TestSta.RunOffscreenAsync(async () =>
     {
-        var targets = Enumerable.Range(1, 6).Select(DownloadCardTarget).ToArray();
+        var targets = Enumerable.Range(1, 8).Select(DownloadCardTarget).ToArray();
         var states = new[] { VodDownloadState.Downloading, VodDownloadState.Completed, VodDownloadState.Resolving,
-            VodDownloadState.Failed, VodDownloadState.Downloading };
+            VodDownloadState.Failed, VodDownloadState.Downloading, VodDownloadState.ConversionQueued, VodDownloadState.Converting };
         var entries = states.Select((state, index) => new VodDownloadItem(Guid.NewGuid(), targets[index + 1], "best",
             DateTimeOffset.UtcNow, state, index == 4 ? 100 : 42, state == VodDownloadState.Resolving ? 0 : 100,
             BytesDownloaded: 25 * 1024 * 1024, Error: state == VodDownloadState.Failed ? "The connection was interrupted." : "",
-            LocalMediaPath: state == VodDownloadState.Completed ? "offline.m3u8" : "", Revision: 1)).ToArray();
+            LocalMediaPath: state is VodDownloadState.Completed or VodDownloadState.ConversionQueued or VodDownloadState.Converting ? "offline.m3u8" : "",
+            Revision: 1, RequestedFormat: state is VodDownloadState.ConversionQueued or VodDownloadState.Converting ? VodDownloadFormat.Mp4 : null)).ToArray();
         var service = new CardDownloadTestService(entries);
         var dispatcher = Dispatcher.CurrentDispatcher;
         await using var model = CreateDownloadCardsMain(service, targets, action => dispatcher.BeginInvoke(action));
@@ -246,13 +247,13 @@ internal static partial class ApplicationTestCatalog
             ProgressBar Progress(Button button) => (ProgressBar)button.Template.FindName("DownloadProgress", button);
             Layout(1020);
             Assert.True(host.IsVisible);
-            var expected = new[] { "Download", "42%", "Downloaded", "Preparing…", "Retry", "Finishing…" };
+            var expected = new[] { "Download", "42%", "Downloaded", "Preparing…", "Retry", "Finishing…", "Conversion queued", "Converting…" };
             for (var index = 0; index < expected.Length; index++)
             {
                 var card = model.TwitchVods[index];
                 var button = DownloadButton(card);
                 Assert.Equal(expected[index], button.Content.ToString()!);
-                Assert.Equal(card.Download?.CanCancel != true, button.IsEnabled);
+                Assert.Equal(card.Download?.CanPlay == true || card.Download?.CanCancel != true, button.IsEnabled);
                 Assert.True(button.Focusable && button.FocusVisualStyle is not null);
                 Assert.Equal(button.ToolTip.ToString()!, AutomationProperties.GetHelpText(button));
                 Assert.Equal(expected[index], AutomationProperties.GetItemStatus(button));
@@ -271,6 +272,12 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal(Visibility.Visible, glow.Visibility);
             Assert.True(DependencyPropertyHelper.GetValueSource(glow, FrameworkElement.MarginProperty).IsAnimated);
             Assert.True(Progress(DownloadButton(model.TwitchVods[5])).IsIndeterminate);
+            foreach (var index in new[] { 6, 7 })
+            {
+                Assert.True(Progress(DownloadButton(model.TwitchVods[index])).IsIndeterminate);
+                Assert.True(model.TwitchVods[index].Download!.PlayCommand.CanExecute(null));
+                Assert.Contains("original download", DownloadButton(model.TwitchVods[index]).ToolTip.ToString()!);
+            }
             Assert.Equal(Visibility.Collapsed, Progress(DownloadButton(model.TwitchVods[2])).Visibility);
             AssertCardGeometry();
             SaveDownloadCardImage(host, $"vod-card-downloads-{theme}-wide");
@@ -386,6 +393,12 @@ internal static partial class ApplicationTestCatalog
         public string DownloadDirectory { get; private set; } = Path.GetTempPath();
         internal long BandwidthLimit { get; private set; }
         public void SetBandwidthLimit(long bytesPerSecond) => BandwidthLimit = bytesPerSecond;
+        internal VodDownloadFormat DownloadFormat { get; private set; }
+        public Task ChangeDownloadFormatAsync(VodDownloadFormat format, VodDownloadOptions options, CancellationToken cancellationToken = default)
+        {
+            DownloadFormat = format;
+            return Task.CompletedTask;
+        }
         public Task ChangeDownloadDirectoryAsync(string downloadDirectory, CancellationToken cancellationToken = default)
         {
             DownloadDirectory = Path.GetFullPath(downloadDirectory);
@@ -430,11 +443,19 @@ internal static partial class ApplicationTestCatalog
             return Task.CompletedTask;
         }
         public Task<StreamTarget> GetOfflineTargetAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(entries[id].OfflineTarget);
+        public Task<IVodDownloadPlayback> AcquireOfflinePlaybackAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IVodDownloadPlayback>(new CardDownloadPlayback(entries[id].OfflineTarget));
         public Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
         {
             lock (entries) entries.Remove(id);
             return Task.CompletedTask;
         }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class CardDownloadPlayback(StreamTarget target) : IVodDownloadPlayback
+    {
+        public StreamTarget Target { get; } = target;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

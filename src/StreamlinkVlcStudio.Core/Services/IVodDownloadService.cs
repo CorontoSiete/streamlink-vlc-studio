@@ -7,11 +7,19 @@ public interface IVodDownloadService : IAsyncDisposable
     string DownloadDirectory { get; }
     void SetBandwidthLimit(long bytesPerSecond);
     Task ChangeDownloadDirectoryAsync(string downloadDirectory, CancellationToken cancellationToken = default);
+    Task ChangeDownloadFormatAsync(VodDownloadFormat format, VodDownloadOptions options, CancellationToken cancellationToken = default);
     event Action<VodDownloadItem>? DownloadChanged;
     Task<IReadOnlyList<VodDownloadItem>> GetDownloadsAsync(CancellationToken cancellationToken = default);
     Task<VodDownloadItem> EnqueueAsync(VodDownloadRequest request, CancellationToken cancellationToken = default);
     Task CancelAsync(Guid id, CancellationToken cancellationToken = default);
     Task RetryAsync(Guid id, VodDownloadOptions options, CancellationToken cancellationToken = default);
     Task<StreamTarget> GetOfflineTargetAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<IVodDownloadPlayback> AcquireOfflinePlaybackAsync(Guid id, CancellationToken cancellationToken = default);
     Task RemoveAsync(Guid id, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Keeps one validated media generation available until its player has closed.</summary>
+public interface IVodDownloadPlayback : IAsyncDisposable
+{
+    StreamTarget Target { get; }
 }

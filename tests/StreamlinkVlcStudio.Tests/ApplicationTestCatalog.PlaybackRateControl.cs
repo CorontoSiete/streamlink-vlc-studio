@@ -14,6 +14,8 @@ internal static partial class ApplicationTestCatalog
         .. string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SVS_TEST_VLC_DIRECTORY")) ? [] :
             new (string, Func<Task>)[]
             {
+                ("playback speed continuity: completed replay presents video without cuts", () => NativePlaybackRateContinuityAsync(false)),
+                ("playback speed continuity: growing replay presents video without cuts", () => NativePlaybackRateContinuityAsync(true)),
                 ("playback speed control: native repeated speed avoids another recovery wait", NativePlaybackRateNoOpAsync),
                 ("playback speed control: native stop invalidates pending speed requests", NativePlaybackRateStopAsync),
                 ("playback speed control: native seek invalidates pending speed requests", NativePlaybackRateSeekAsync),
@@ -308,6 +310,7 @@ internal static partial class ApplicationTestCatalog
 
     private static Task NativePlaybackRateNoOpAsync() => WithPlaybackRateReplayAsync(async (engine, _) =>
     {
+        UsePlaybackRateCompatibilityPath(engine);
         Assert.True(await engine.TrySetPlaybackRateAsync(2f));
         Assert.True(IsPlaybackRateRecoveryPending(engine), "The unchanged request must arrive during HLS audio recovery.");
         var watch = Stopwatch.StartNew();
@@ -319,6 +322,7 @@ internal static partial class ApplicationTestCatalog
 
     private static Task NativePlaybackRateStopAsync() => WithPlaybackRateReplayAsync(async (engine, _) =>
     {
+        UsePlaybackRateCompatibilityPath(engine);
         Assert.True(await engine.TrySetPlaybackRateAsync(2f));
         Assert.True(IsPlaybackRateRecoveryPending(engine), "The stop must invalidate requests waiting on actual HLS audio recovery.");
         var first = engine.TrySetPlaybackRateAsync(1.75f);
@@ -333,6 +337,7 @@ internal static partial class ApplicationTestCatalog
 
     private static Task NativePlaybackRateSeekAsync() => WithPlaybackRateReplayAsync(async (engine, _) =>
     {
+        UsePlaybackRateCompatibilityPath(engine);
         Assert.True(await engine.TrySetPlaybackRateAsync(2f));
         Assert.True(IsPlaybackRateRecoveryPending(engine), "The seek must invalidate a request waiting on actual HLS audio recovery.");
         var pending = engine.TrySetPlaybackRateAsync(1.75f);
@@ -344,6 +349,7 @@ internal static partial class ApplicationTestCatalog
 
     private static Task NativePlaybackRateCancellationAsync() => WithPlaybackRateReplayAsync(async (engine, _) =>
     {
+        UsePlaybackRateCompatibilityPath(engine);
         Assert.True(await engine.TrySetPlaybackRateAsync(2f));
         using var cancellation = new CancellationTokenSource();
         var pending = engine.TrySetPlaybackRateAsync(0.5f, cancellation.Token);
@@ -414,9 +420,8 @@ internal static partial class ApplicationTestCatalog
     private static async Task<Task<bool>> BeginNativeSlowRecoveryAsync(IPlaybackEngine engine, CancellationToken cancellationToken = default)
     {
         // Exercise the managed fallback used when the verified corrected core is
-        // unavailable. The normal bundled path applies the target before preroll.
-        typeof(LibVlcPlaybackEngine).GetField("rateAwareReplayPreroll",
-            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(engine, false);
+        // unavailable. The normal bundled path retains the buffered input.
+        UsePlaybackRateCompatibilityPath(engine);
         Assert.True(engine.TryGetPlaybackHealth(out var before));
         Assert.True(await engine.TrySetPlaybackRateAsync(2f));
         await WaitForRateChangeVideoAsync(engine, before);
@@ -431,6 +436,10 @@ internal static partial class ApplicationTestCatalog
 
     private static IntPtr ReadNativePlaybackRatePlayer(IPlaybackEngine engine) =>
         (IntPtr)typeof(LibVlcPlaybackEngine).GetField("player", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(engine)!;
+
+    private static void UsePlaybackRateCompatibilityPath(IPlaybackEngine engine) =>
+        typeof(LibVlcPlaybackEngine).GetField("rateAwareReplayPreroll",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(engine, false);
 
     [DllImport("libvlc", EntryPoint = "libvlc_media_player_get_rate", CallingConvention = CallingConvention.Cdecl)]
     private static extern float ReadNativeRequestedPlaybackRate(IntPtr player);

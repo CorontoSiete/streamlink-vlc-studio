@@ -1,0 +1,109 @@
+{
+  "data": {
+    "user": {
+      "displayName": "ImperialHal__",
+      "description": "",
+      "profileImageURL": "https://static-cdn.jtvnw.net/jtv_user_pictures/6d306649-dd15-4db8-82d8-655694ba692f-profile_image-150x150.png",
+      "followers": {
+        "totalCount": 2108518
+      },
+      "roles": {
+        "isPartner": true
+      },
+      "broadcastSettings": {
+        "title": "GAMESIR WINNERS BRACKET 6 PM CT",
+        "game": {
+          "name": "Apex Legends"
+        }
+      },
+      "stream": {
+        "title": "GAMESIR WINNERS BRACKET 6 PM CT",
+        "viewersCount": 1837,
+        "createdAt": "2026-10-22T20:05:14Z",
+        "game": {
+          "name": "Apex Legends"
+        },
+        "freeformTags": [
+          {
+            "name": "English"
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": null,
+          "linkURL": null
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": null,
+          "linkURL": null
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-e7a5bffd-3ee6-4459-a001-589d9f106b52",
+          "linkURL": "http://bit.ly/df_2nd_anniversary_imperialhal"
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": null,
+          "linkURL": null
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": "Eligible only for purchases from 10/27/25 until 3/31/27 at 11:59 PM PST. Coupon code must be entered in the promo code box at checkout before completion of order. Only redeemable on electronics.sony.com. Offer valid in US only.",
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-f29f2e86-c07c-4b93-ad2c-5cf3db2d1da3",
+          "linkURL": "https://bit.ly/4tC7jiM"
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-bdb627b6-a7eb-44ac-96db-e03c14c8d234",
+          "linkURL": "http://www.tiktok.com/@imperialhalofficial"
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": "Hi! My name is Phillip, I'm currently 26 years old from Florida and now a Professional Apex legends player for Falcons . Business email: imperialhal@liftsm.com",
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-018a3d52-8581-4d36-a2ff-41a7c1b56240",
+          "linkURL": "https://twitter.com/ImperialHal"
+        },
+        {
+          "type": "EXTENSION"
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-a49ea84c-7b1e-4217-89b5-06684030d827",
+          "linkURL": "https://www.youtube.com/channel/UCoBPNJrFc88ZTA31LKx2X1g?view_as=subscriber"
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": "If you donate please leave a message so I can read it on strum! Donations are non-refundable and it is not 100% for sure they will be read/done on stream! I do my best to read them all! I most likely won't watch your link :) Thank you for supporting! ",
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-9f2fa582-4c36-4f0f-a046-223099ad689c",
+          "linkURL": "https://streamelements.com/imperialhal__/tip"
+        },
+        {
+          "type": "DEFAULT",
+          "title": null,
+          "description": null,
+          "imageURL": "https://panels.twitch.tv/panel-146922206-image-e53fe650-afb4-40d8-b853-98f44487919f",
+          "linkURL": "https://www.instagram.com/imperialhal/"
+        }
+      ]
+    }
+  }
+}

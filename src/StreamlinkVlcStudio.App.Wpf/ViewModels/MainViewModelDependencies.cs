@@ -41,6 +41,7 @@ internal sealed record MainViewModelDependencies
     public ITwitchSubOnlyVodResolver? TwitchSubOnlyVodResolver { get; init; }
     public ITwitchClipService? TwitchClipService { get; init; }
     public IKickClipService? KickClipService { get; init; }
+    public IChannelFollowService? ChannelFollowService { get; init; }
     public IAppUpdateService? AppUpdateService { get; init; }
     public ReleaseNotesCatalog? ReleaseNotesCatalog { get; init; }
     public Action<Uri>? OpenBrowser { get; init; }

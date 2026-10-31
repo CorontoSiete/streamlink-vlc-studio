@@ -6,6 +6,10 @@ internal static partial class ApplicationTestCatalog
     internal static IReadOnlyList<(string Name, Func<Task> Run)> StudioExperienceTests { get; } =
     [
         ("studio experience: toolbar accents follow palette changes and stream card menus preserve background opening", StudioToolbarAndCardActionsAsync),
+        ("studio experience: Following stream menus open channel VODs on Twitch and Kick", () => ChannelVodsFromMenuAsync(fromSearch: false)),
+        ("studio experience: search result menus open channel VODs on Twitch and Kick", () => ChannelVodsFromMenuAsync(fromSearch: true)),
+        ("studio experience: search result menus open live channels and keep browsing on Twitch and Kick", SearchResultOpeningFromMenuAsync),
+        ("studio experience: non-live search result menus keep the channel VOD action", NonLiveSearchResultMenuAsync),
         ("studio experience: picture-in-picture title chrome follows every palette", StudioPictureInPicturePalettesAsync),
         ("studio experience: download URL errors are visible, clear on editing and do not overwrite newer input", DownloadInputFeedbackAsync),
         ("studio experience: Enter queues a download once and the empty library updates immediately", DownloadEnterAsync)
@@ -54,6 +58,260 @@ internal static partial class ApplicationTestCatalog
         finally
         {
             ThemeManager.ApplyTheme(AppTheme.Dark);
+        }
+    });
+
+    private static Task ChannelVodsFromMenuAsync(bool fromSearch) => TestSta.RunOffscreenAsync(async () =>
+    {
+        foreach (var platform in new[] { PlatformKind.Twitch, PlatformKind.Kick })
+        {
+            const string channel = "vodmenu";
+            var url = platform == PlatformKind.Twitch
+                ? $"https://www.twitch.tv/{channel}"
+                : $"https://kick.com/{channel}";
+            var live = new FollowedLiveStream(platform, channel, "VOD Menu", "Live stream", "", 42,
+                "", null, false, "en", url);
+            var followed = new FakeFollowedStreamsService();
+            followed.EnqueueResult(_ => Task.FromResult(new FollowedLiveStreamsResult(
+                [live], [], [platform], [], [])));
+            var search = new FakeStreamSearchService(new StreamSearchResult(
+                StreamSearchResultStatus.Available,
+                [new StreamSearchChannel(platform, channel, "VOD Menu", url, "", "", "",
+                    StreamSearchChannelState.Live, StreamSearchSourceStatus.Available, "Live", true)],
+                "1 live channel result."));
+            var twitch = new FakeTwitchVodService(new TwitchVodSearchResult(
+                TwitchVodSearchStatus.Available, null, [], "", ""));
+            var kick = new FakeKickVodService(new KickVodSearchResult(
+                KickVodSearchStatus.Available, [], "", ""));
+            var settings = new AppSettings();
+            settings.Chat.ConnectAutomatically = false;
+            await using var main = TestViewModels.CreateMain(settings, new FakeSettingsService(settings),
+                new FakeStreamlinkService(), new FakePlaybackEngineFactory(), new FakeChatClientFactory(),
+                new MemoryLogger(), action => action(), followedStreamsService: followed,
+                twitchVodService: twitch, kickVodService: kick, streamSearchService: search);
+            var window = new MainWindow { DataContext = main };
+            RemoveMainWindowAutomaticStartup(window);
+            SetMainWindowViewModel(window, main);
+            try
+            {
+                if (fromSearch)
+                {
+                    window.WindowStartupLocation = WindowStartupLocation.Manual;
+                    window.Left = -32000;
+                    window.Top = -32000;
+                    window.Width = 1320;
+                    window.Height = 820;
+                    window.Show();
+                    main.NewStreamText = channel;
+                    await main.AddAndPlayCommand.ExecuteAsync();
+                    Assert.Equal(1, main.StreamSearchResults.Count);
+                }
+                else
+                {
+                    await main.RefreshFollowedChannelsCommand.ExecuteAsync();
+                    Assert.Equal(1, main.LiveFollowedChannels.Count);
+                }
+
+                LayoutStudioPolishWindow(window, new Size(1320, 820));
+                var command = fromSearch
+                    ? main.StreamSearchResults.Single().OpenCommand
+                    : main.LiveFollowedChannels.Single().OpenCommand;
+                var visualRoot = window.Content;
+                if (fromSearch)
+                {
+                    var popup = (System.Windows.Controls.Primitives.Popup)window.FindName("HomeStreamSearchPopup");
+                    var popupContent = (FrameworkElement)popup.Child;
+                    popupContent.Measure(new Size(560, 360));
+                    popupContent.Arrange(new Rect(new Point(), new Size(560, 360)));
+                    popupContent.UpdateLayout();
+                    visualRoot = popupContent;
+                }
+                var card = FindVisualDescendants<Button>((DependencyObject)visualRoot)
+                    .Single(button => ReferenceEquals(button.Command, command));
+                var menu = card.ContextMenu!;
+                Assert.NotNull(menu);
+                menu.PlacementTarget = card;
+                menu.DataContext = card.DataContext;
+                menu.IsOpen = true;
+                var items = menu.Items.OfType<MenuItem>().ToArray();
+                Assert.Equal(3, items.Length);
+                Assert.Equal("Open stream", items[0].Header);
+                Assert.Equal("Open and keep browsing", items[1].Header);
+                Assert.Equal("Go to VODs", items[2].Header);
+                var openCommand = fromSearch
+                    ? main.StreamSearchResults.Single().OpenCommand
+                    : main.LiveFollowedChannels.Single().OpenCommand;
+                var keepBrowsingCommand = fromSearch
+                    ? main.StreamSearchResults.Single().OpenAndStayOnHomeCommand
+                    : main.LiveFollowedChannels.Single().OpenAndStayOnHomeCommand;
+                Assert.True(ReferenceEquals(openCommand, items[0].Command));
+                Assert.True(ReferenceEquals(keepBrowsingCommand, items[1].Command));
+                Assert.Equal(Visibility.Visible, items[0].Visibility);
+                Assert.Equal(Visibility.Visible, items[1].Visibility);
+                Assert.Equal("Ctrl+click", items[1].InputGestureText);
+                var goToVods = menu.Items.OfType<MenuItem>()
+                    .Single(item => Equals(item.Header, "Go to VODs"));
+                goToVods.GetBindingExpression(MenuItem.CommandProperty)?.UpdateTarget();
+                Assert.Equal(Visibility.Visible, goToVods.Visibility);
+                if (fromSearch) Assert.True(ContextMenuService.GetShowOnDisabled(card));
+                var vodCommand = fromSearch
+                    ? main.StreamSearchResults.Single().GoToVodsCommand
+                    : main.LiveFollowedChannels.Single().GoToVodsCommand;
+                Assert.True(ReferenceEquals(vodCommand, goToVods.Command),
+                    $"Menu command: {goToVods.Command?.GetType().Name ?? "null"}; card context: {card.DataContext?.GetType().Name ?? "null"}.");
+                Assert.True(vodCommand.CanExecute(null));
+                menu.IsOpen = false;
+                await vodCommand.ExecuteAsync();
+
+                Assert.True(main.IsHomeSelected && main.IsTwitchVodsHomePageSelected);
+                Assert.Equal(platform, main.SelectedVodPlatform);
+                Assert.Equal(channel, main.TwitchVodSearchText);
+                Assert.Equal(0, main.Tabs.Count);
+                Assert.Equal(platform == PlatformKind.Twitch ? 1 : 0, twitch.CallCount);
+                Assert.Equal(platform == PlatformKind.Kick ? 1 : 0, kick.CallCount);
+                if (platform == PlatformKind.Twitch) Assert.Equal(channel, twitch.Requests.Single().Streamer);
+                else Assert.Equal(channel, kick.Requests.Single().Channel);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+    });
+
+    private static Task SearchResultOpeningFromMenuAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        foreach (var platform in new[] { PlatformKind.Twitch, PlatformKind.Kick })
+            foreach (var keepBrowsing in new[] { false, true })
+            {
+                const string channel = "searchmenu";
+                var url = platform == PlatformKind.Twitch
+                    ? $"https://www.twitch.tv/{channel}"
+                    : $"https://kick.com/{channel}";
+                var search = new FakeStreamSearchService(new StreamSearchResult(
+                    StreamSearchResultStatus.Available,
+                    [new StreamSearchChannel(platform, channel, "Search Menu", url, "", "", "",
+                    StreamSearchChannelState.Live, StreamSearchSourceStatus.Available, "Live", true)],
+                    "1 live channel result."));
+                var settings = new AppSettings
+                {
+                    StreamlinkPath = "streamlink.exe",
+                    VlcDirectory = @"C:\Program Files\VideoLAN\VLC"
+                };
+                settings.Chat.ConnectAutomatically = false;
+                await using var main = TestViewModels.CreateMain(settings, new FakeSettingsService(settings),
+                    new FakeStreamlinkService(), new FakePlaybackEngineFactory(), new FakeChatClientFactory(),
+                    new MemoryLogger(), action => action(), streamSearchService: search);
+                var window = new MainWindow
+                {
+                    DataContext = main,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    Left = -32000,
+                    Top = -32000,
+                    Width = 1320,
+                    Height = 820
+                };
+                RemoveMainWindowAutomaticStartup(window);
+                SetMainWindowViewModel(window, main);
+                try
+                {
+                    window.Show();
+                    main.NewStreamText = channel;
+                    await main.AddAndPlayCommand.ExecuteAsync();
+                    var result = main.StreamSearchResults.Single();
+                    LayoutStudioPolishWindow(window, new Size(1320, 820));
+                    var popup = (System.Windows.Controls.Primitives.Popup)window.FindName("HomeStreamSearchPopup");
+                    var popupContent = (FrameworkElement)popup.Child;
+                    popupContent.Measure(new Size(560, 360));
+                    popupContent.Arrange(new Rect(new Point(), new Size(560, 360)));
+                    popupContent.UpdateLayout();
+                    var card = FindVisualDescendants<Button>(popupContent)
+                        .Single(button => ReferenceEquals(button.Command, result.OpenCommand));
+                    var menu = card.ContextMenu!;
+                    Assert.NotNull(menu);
+                    menu.PlacementTarget = card;
+                    menu.DataContext = card.DataContext;
+                    menu.IsOpen = true;
+                    var item = menu.Items.OfType<MenuItem>()
+                        .Single(entry => Equals(entry.Header, keepBrowsing ? "Open and keep browsing" : "Open stream"));
+                    var expectedCommand = keepBrowsing ? result.OpenAndStayOnHomeCommand : result.OpenCommand;
+                    Assert.Equal(Visibility.Visible, item.Visibility);
+                    Assert.True(ReferenceEquals(expectedCommand, item.Command));
+                    Assert.True(item.Command.CanExecute(null));
+                    menu.IsOpen = false;
+
+                    await ((AsyncRelayCommand)item.Command).ExecuteAsync();
+
+                    Assert.Equal(1, main.Tabs.Count);
+                    Assert.Equal(platform, main.Tabs[0].Target.Platform);
+                    Assert.Equal(channel, main.Tabs[0].Target.Channel);
+                    Assert.Equal(keepBrowsing, main.IsHomeSelected);
+                }
+                finally
+                {
+                    window.Close();
+                }
+            }
+    });
+
+    private static Task NonLiveSearchResultMenuAsync() => TestSta.RunOffscreenAsync(async () =>
+    {
+        foreach (var state in new[] { StreamSearchChannelState.Offline, StreamSearchChannelState.Unavailable })
+        {
+            var settings = new AppSettings();
+            settings.Chat.ConnectAutomatically = false;
+            var search = new FakeStreamSearchService(new StreamSearchResult(
+                StreamSearchResultStatus.Available,
+                [new StreamSearchChannel(PlatformKind.Twitch, "searchmenu", "Search Menu",
+                    "https://www.twitch.tv/searchmenu", "", "", "", state,
+                    StreamSearchSourceStatus.Available, "Not live", false)],
+                "1 channel result."));
+            await using var main = TestViewModels.CreateMain(settings, new FakeSettingsService(settings),
+                new FakeStreamlinkService(), new FakePlaybackEngineFactory(), new FakeChatClientFactory(),
+                new MemoryLogger(), action => action(), streamSearchService: search);
+            var window = new MainWindow
+            {
+                DataContext = main,
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                Left = -32000,
+                Top = -32000,
+                Width = 1320,
+                Height = 820
+            };
+            RemoveMainWindowAutomaticStartup(window);
+            SetMainWindowViewModel(window, main);
+            try
+            {
+                window.Show();
+                main.NewStreamText = "searchmenu";
+                await main.AddAndPlayCommand.ExecuteAsync();
+                var result = main.StreamSearchResults.Single();
+                LayoutStudioPolishWindow(window, new Size(1320, 820));
+                var popup = (System.Windows.Controls.Primitives.Popup)window.FindName("HomeStreamSearchPopup");
+                var popupContent = (FrameworkElement)popup.Child;
+                popupContent.Measure(new Size(560, 360));
+                popupContent.Arrange(new Rect(new Point(), new Size(560, 360)));
+                popupContent.UpdateLayout();
+                var card = FindVisualDescendants<Button>(popupContent)
+                    .Single(button => ReferenceEquals(button.Command, result.OpenCommand));
+                var menu = card.ContextMenu!;
+                Assert.NotNull(menu);
+                menu.PlacementTarget = card;
+                menu.DataContext = card.DataContext;
+                menu.IsOpen = true;
+                var items = menu.Items.OfType<MenuItem>().ToArray();
+                Assert.Equal(3, items.Length);
+                Assert.Equal(Visibility.Collapsed, items[0].Visibility);
+                Assert.Equal(Visibility.Collapsed, items[1].Visibility);
+                Assert.Equal("Go to VODs", items[2].Header);
+                Assert.True(items[2].Command.CanExecute(null));
+                Assert.True(ContextMenuService.GetShowOnDisabled(card));
+                menu.IsOpen = false;
+            }
+            finally
+            {
+                window.Close();
+            }
         }
     });
 

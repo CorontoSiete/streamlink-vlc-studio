@@ -61,6 +61,7 @@ public partial class MainWindow : Window
     private const int WmMouseMove = 0x0200;
     private const int WmRightButtonUp = 0x0205;
     private const int WmGetMinMaxInfo = 0x0024;
+    private const int WmWindowPosChanging = 0x0046;
     private const int WmAppTrayIcon = 0x8001;
     private const int WmAppCommand = 0x0319;
     private const int SmCxDrag = 68;
@@ -252,6 +253,13 @@ public partial class MainWindow : Window
                 limits.MinTrackSize = new WindowPoint { X = 1, Y = 1 };
                 Marshal.StructureToPtr(limits, lParam, false);
             }
+            handled = true;
+        }
+        else if (msg == WmWindowPosChanging && !fullscreen &&
+            ConstrainMaximizedWindowPosition(hwnd, lParam))
+        {
+            // The final placement must respect this monitor's taskbar, including when
+            // Windows compensates for a different primary-monitor resolution.
             handled = true;
         }
         else if (msg == WmTaskbarCreated && ShouldMarkTaskbarFullscreen())
@@ -573,6 +581,15 @@ public partial class MainWindow : Window
         }
 
         if (viewModel?.IsStreamSearchPanelVisible != true)
+        {
+            return;
+        }
+
+        // WPF routes mouse input from the search Popup through this window too.
+        // Treat its content as inside the search UI so context menus can open.
+        if (e.OriginalSource is DependencyObject source &&
+            HomeStreamSearchPopup.Child is Visual popupChild &&
+            (ReferenceEquals(source, popupChild) || popupChild.IsAncestorOf(source)))
         {
             return;
         }
@@ -1023,6 +1040,13 @@ public partial class MainWindow : Window
         var twitchClipService = new TwitchClipService();
         var kickVodService = new KickVodService(logger);
         var browseService = new BrowseService(logger);
+        var vodHistory = new JsonVodPlaybackHistory(
+            Path.Combine(Path.GetDirectoryName(settingsService.SettingsPath)!, "vod-history.json"), logger);
+        var vodDownloads = new VodDownloadService(
+            settings.Downloads.Directory ?? VodDownloadService.GetDefaultDownloadDirectory(),
+            streamlinkService, logger, twitchSubOnlyVodResolver, settings.Downloads.PreviousDirectories);
+        var kickClipService = new Kick.KickClipService(this);
+        var channelFollowService = new Follows.ChannelFollowService(this);
         var liveNotificationService = new ToastLiveNotificationService(logger);
         var appUpdateService = new StagedAppUpdateService(logger);
         this.liveNotificationService = liveNotificationService;
@@ -1043,11 +1067,8 @@ public partial class MainWindow : Window
             StreamMetadataService = streamMetadataService,
             ReplayResolver = replayResolver,
             VodChatProvider = vodChatProvider,
-            VodPlaybackHistory = new JsonVodPlaybackHistory(
-                Path.Combine(Path.GetDirectoryName(settingsService.SettingsPath)!, "vod-history.json"), logger),
-            VodDownloadService = new VodDownloadService(
-                settings.Downloads.Directory ?? VodDownloadService.GetDefaultDownloadDirectory(),
-                streamlinkService, logger, twitchSubOnlyVodResolver, settings.Downloads.PreviousDirectories),
+            VodPlaybackHistory = vodHistory,
+            VodDownloadService = vodDownloads,
             ConfirmDeleteVodDownload = item => MessageBox.Show(this,
                 $"Permanently delete the downloaded VOD ‘{item.Target.DisplayTitle}’ and its local media files?",
                 "Delete downloaded VOD", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes,
@@ -1058,11 +1079,16 @@ public partial class MainWindow : Window
             LiveNotificationService = liveNotificationService,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver,
             TwitchClipService = twitchClipService,
-            KickClipService = new Kick.KickClipService(this),
+            KickClipService = kickClipService,
+            ChannelFollowService = channelFollowService,
             AppUpdateService = appUpdateService,
             RequestShutdown = RequestApplicationExit,
             TryDispatch = TryDispatchToUi
         });
+
+        ConfigureLocalWebServer(settings, streamlinkService, streamSearchService, followedStreamsService, browseService,
+            twitchVodService, kickVodService, vodDownloads, vodHistory, vodChatProvider, replayResolver,
+            twitchSubOnlyVodResolver, twitchClipService, kickClipService, channelFollowService, logger);
 
         twitchChannelPoints = new TwitchChannelPointsController(
             settings, viewModel.LiveFollowedChannels, () => viewModel.SelectedTab, websiteBrowser, logger,
@@ -1119,6 +1145,7 @@ public partial class MainWindow : Window
         }
 
         shutdownStarted = true;
+        await StopLocalWebServerAsync();
         twitchChannelPoints?.Dispose();
         twitchChannelPoints = null;
         twitchWebsiteBrowser?.Dispose();

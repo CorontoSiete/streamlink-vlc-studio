@@ -32,6 +32,7 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     private DateTimeOffset? kickTokenExpiresAtUtc;
     private string kickClientId = "";
     private string kickClientSecret = "";
+    private bool kickUseTokenService;
     private bool kickSendAsBot;
     private readonly KickIdentityStore kickIdentityStore = new();
 
@@ -153,6 +154,12 @@ public sealed class ChatSettings : NotifyPropertyChangedObject
     {
         get => kickSendAsBot;
         set => SetProperty(ref kickSendAsBot, value);
+    }
+
+    public bool KickUseTokenService
+    {
+        get => kickUseTokenService;
+        set => SetProperty(ref kickUseTokenService, value);
     }
 
     public Dictionary<string, string> KickChatroomIds

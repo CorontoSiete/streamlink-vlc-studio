@@ -20,10 +20,10 @@ Launch. The app includes its .NET, graphics, and text runtimes; no separate .NET
 SDK, Python installation, or Visual C++ redistributable is required for the
 reviewed payload. Streamlink's Windows installer includes its Python runtime.
 
-The app checks for stable releases automatically. A managed Program Files
-installation offers Download update, verifies it, and then offers the separate
-Restart and install action. Release-zip installs are notification-only and open
-the release page; they do not launch the per-machine updater.
+The app checks for stable releases automatically. Setup and owned release-zip
+installations offer Download update, verify the signed package, and then offer
+the separate Restart and install action. ZIP updates replace the app in its
+existing folder, preserve personal files, and reopen StreamStudio.exe.
 
 Automatic checks continue while the app is open and retry network failures.
 Download progress and Cancel download are available in the update banner and

@@ -63,18 +63,27 @@ public sealed class LiveStreamCardViewModel : ObservableObject, IHomeStreamOpenI
     public LiveStreamCardViewModel(
         LiveStreamCardData stream,
         Func<LiveStreamCardViewModel, bool, Task> openAsync,
-        long thumbnailCacheVersion = 0)
+        long thumbnailCacheVersion = 0,
+        Func<PlatformKind, string, Task>? openVodsAsync = null)
     {
         this.stream = stream;
         ThumbnailCacheVersion = thumbnailCacheVersion;
         ThumbnailImageRequest = new AnimatedImageRequest(stream.ThumbnailUrl, thumbnailCacheVersion);
         OpenCommand = new AsyncRelayCommand(() => openAsync(this, ShouldStayOnHomeForOpenCommand()));
         OpenAndStayOnHomeCommand = new AsyncRelayCommand(() => openAsync(this, true));
+        HasGoToVodsAction = openVodsAsync is not null;
+        GoToVodsCommand = new AsyncRelayCommand(
+            () => openVodsAsync!(Platform, Channel),
+            () => openVodsAsync is not null && !string.IsNullOrWhiteSpace(Channel));
     }
 
     public AsyncRelayCommand OpenCommand { get; }
 
     public AsyncRelayCommand OpenAndStayOnHomeCommand { get; }
+
+    public AsyncRelayCommand GoToVodsCommand { get; }
+
+    public bool HasGoToVodsAction { get; }
 
     public LiveStreamCardSource Source => stream.Source;
 

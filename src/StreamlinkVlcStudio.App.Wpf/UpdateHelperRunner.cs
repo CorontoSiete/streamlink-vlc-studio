@@ -37,6 +37,7 @@ internal static class UpdateHelperRunner
         var setup = Path.GetFullPath(Required(args, "--setup"));
         var setupLength = long.Parse(Required(args, "--setup-length"), System.Globalization.CultureInfo.InvariantCulture);
         var setupSha256 = Required(args, "--setup-sha256");
+        var packageKind = ReadPackageKind(args);
         var targetVersion = Version.Parse(Required(args, "--target-version"));
         var installDirectory = Path.GetFullPath(Required(args, "--install-dir"));
         var resultPath = Path.GetFullPath(Required(args, "--result"));
@@ -46,20 +47,29 @@ internal static class UpdateHelperRunner
         try
         {
             await WaitForParentAsync(parentId).ConfigureAwait(false);
-            ValidatePathsAndPackage(setup, setupLength, setupSha256, resultPath, logPath);
+            ValidatePathsAndPackage(setup, setupLength, setupSha256, resultPath, logPath, packageKind);
             // Keep the verified bytes locked against replacement until Setup has exited.
             using var packageLock = new FileStream(setup, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (!string.Equals(Convert.ToHexString(SHA256.HashData(packageLock)), setupSha256, StringComparison.OrdinalIgnoreCase))
                 throw new CryptographicException("The staged Setup package changed before launch.");
-            var info = new ProcessStartInfo(setup) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(setup)! };
-            foreach (var argument in new[] { "/passive", "/norestart", "/log", logPath }) info.ArgumentList.Add(argument);
-            using var installer = Process.Start(info) ?? throw new InvalidOperationException("Setup did not start.");
-            await installer.WaitForExitAsync().ConfigureAwait(false);
-            var code = installer.ExitCode;
+            int code;
+            if (packageKind == AppUpdatePackageKind.Zip)
+            {
+                code = await ZipUpdateInstaller.InstallAsync(packageLock, Path.GetDirectoryName(setup)!,
+                    installDirectory, targetVersion, logPath).ConfigureAwait(false);
+            }
+            else
+            {
+                var info = new ProcessStartInfo(setup) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(setup)! };
+                foreach (var argument in new[] { "/passive", "/norestart", "/log", logPath }) info.ArgumentList.Add(argument);
+                using var installer = Process.Start(info) ?? throw new InvalidOperationException("Setup did not start.");
+                await installer.WaitForExitAsync().ConfigureAwait(false);
+                code = installer.ExitCode;
+            }
             var outcome = MapExitCode(code);
             if (outcome == AppUpdateCompletionOutcome.Succeeded)
             {
-                var installedTarget = Path.Combine(installDirectory, AppIdentity.ManagedExecutableName);
+                var installedTarget = Path.Combine(installDirectory, ExecutableName(packageKind));
                 var actual = ReadVersion(installedTarget);
                 if (actual is null || Normalize(actual) != Normalize(targetVersion))
                 {
@@ -90,7 +100,8 @@ internal static class UpdateHelperRunner
             completion = new(operationId, AppUpdateCompletionOutcome.Failed, -1, logPath, $"Update failed. {ex.Message}", DateTimeOffset.UtcNow, targetVersion);
         }
 
-        await CompleteAndRelaunchAsync(resultPath, completion, installDirectory, info => Process.Start(info)?.Dispose()).ConfigureAwait(false);
+        await CompleteAndRelaunchAsync(resultPath, completion, installDirectory,
+            info => Process.Start(info)?.Dispose(), packageKind).ConfigureAwait(false);
         return completion.Outcome is AppUpdateCompletionOutcome.Succeeded or AppUpdateCompletionOutcome.SucceededRebootRequired ? 0 : 1;
     }
 
@@ -98,7 +109,8 @@ internal static class UpdateHelperRunner
         string resultPath,
         AppUpdateCompletion completion,
         string installDirectory,
-        Action<ProcessStartInfo> startProcess)
+        Action<ProcessStartInfo> startProcess,
+        AppUpdatePackageKind packageKind = AppUpdatePackageKind.Setup)
     {
         try
         {
@@ -119,7 +131,7 @@ internal static class UpdateHelperRunner
         {
             // A locked completion record must not leave the user without the app
             // after Setup exits. Reboot-required outcomes still leave it closed.
-            RelaunchAfterUpdate(completion.Outcome, installDirectory, startProcess);
+            RelaunchAfterUpdate(completion.Outcome, installDirectory, startProcess, packageKind);
         }
     }
 
@@ -139,12 +151,13 @@ internal static class UpdateHelperRunner
     internal static void RelaunchAfterUpdate(
         AppUpdateCompletionOutcome outcome,
         string installDirectory,
-        Action<ProcessStartInfo> startProcess)
+        Action<ProcessStartInfo> startProcess,
+        AppUpdatePackageKind packageKind = AppUpdatePackageKind.Setup)
     {
         // Windows Installer may still have queued replacements for locked binaries.
         // Keep the recorded completion for the next launch after Windows restarts.
         if (outcome == AppUpdateCompletionOutcome.SucceededRebootRequired) return;
-        var installed = Path.Combine(installDirectory, AppIdentity.ManagedExecutableName);
+        var installed = Path.Combine(installDirectory, ExecutableName(packageKind));
         if (File.Exists(installed))
         {
             try
@@ -175,8 +188,19 @@ internal static class UpdateHelperRunner
         AppUpdateCompletionOutcome.Succeeded => "The update was installed successfully.",
         AppUpdateCompletionOutcome.SucceededRebootRequired => "The update was installed. Windows must restart to finish.",
         AppUpdateCompletionOutcome.Canceled => "The update was canceled.",
-        _ => $"Setup failed with exit code {code}."
+        _ => $"Update installation failed with exit code {code}."
     };
+
+    private static string ExecutableName(AppUpdatePackageKind kind) => kind == AppUpdatePackageKind.Zip
+        ? AppIdentity.ZipExecutableName
+        : AppIdentity.ManagedExecutableName;
+
+    private static AppUpdatePackageKind ReadPackageKind(string[] args)
+    {
+        if (!args.Contains("--package-kind", StringComparer.OrdinalIgnoreCase)) return AppUpdatePackageKind.Setup;
+        return Enum.TryParse<AppUpdatePackageKind>(Required(args, "--package-kind"), ignoreCase: true, out var kind) &&
+            Enum.IsDefined(kind) ? kind : throw new ArgumentException("The update package type is unsupported.");
+    }
 
     private static async Task WaitForParentAsync(int id)
     {
@@ -185,7 +209,7 @@ internal static class UpdateHelperRunner
         catch (InvalidOperationException) { }
     }
 
-    private static Version? ReadVersion(string path)
+    internal static Version? ReadVersion(string path)
     {
         if (!File.Exists(path)) return null;
         var value = FileVersionInfo.GetVersionInfo(path).ProductVersion?.Split('+')[0];
@@ -217,16 +241,19 @@ internal static class UpdateHelperRunner
         long expectedLength,
         string expectedSha256,
         string resultPath,
-        string logPath)
+        string logPath,
+        AppUpdatePackageKind packageKind)
     {
         var helperDirectory = Path.TrimEndingDirectorySeparator(AppIdentity.ExecutableDirectory);
         if (!string.Equals(Path.GetDirectoryName(setup), helperDirectory, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(Path.GetFileName(setup), AppIdentity.SetupAssetName, StringComparison.Ordinal) ||
+            !string.Equals(Path.GetFileName(setup), packageKind == AppUpdatePackageKind.Zip
+                ? AppIdentity.ZipAssetName : AppIdentity.SetupAssetName, StringComparison.Ordinal) ||
             expectedLength is <= 0 or > 1024L * 1024L * 1024L ||
             expectedSha256.Length != 64 || !expectedSha256.All(Uri.IsHexDigit))
         {
             throw new InvalidDataException("The staged update helper paths or package metadata are invalid.");
         }
+        ZipUpdateInstaller.AssertNoReparsePoints(setup);
 
         var updateRoot = Path.GetFullPath(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

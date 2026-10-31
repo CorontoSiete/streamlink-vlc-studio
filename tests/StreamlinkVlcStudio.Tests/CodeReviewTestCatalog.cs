@@ -1,11 +1,15 @@
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Io;
 
-internal static class CodeReviewTestCatalog
+internal static partial class CodeReviewTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
         ("review: atomic writes preserve the destination on cancellation and failure", AtomicWritesPreserveDestinationAsync),
+        ("review: atomic writes survive a temporary sharing lock", AtomicWriteTemporaryLockAsync),
+        ("review: atomic write retries honor cancellation and preserve the original", AtomicWriteRetryCancellationAsync),
+        ("review: permanent atomic write locks preserve the original and remove temporary files", AtomicWritePermanentLockAsync),
+        ("review: rapid durable metadata writes commit every revision", AtomicWriteRapidRevisionsAsync),
         ("review: settings accept a UTF-8 BOM without discarding saved preferences", SettingsAcceptUtf8BomAsync),
         ("review: duplicate settings properties recover without crashing", DuplicateSettingsRecoverAsync),
         ("review: HTTP text removes UTF-8 BOM with and without a charset", HttpTextRemovesUtf8BomAsync),

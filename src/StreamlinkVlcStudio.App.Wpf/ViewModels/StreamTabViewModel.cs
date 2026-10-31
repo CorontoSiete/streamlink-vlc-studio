@@ -14,6 +14,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
+using StreamlinkVlcStudio.Infrastructure.Logging;
 using StreamlinkVlcStudio.Infrastructure.Threading;
 using StreamlinkVlcStudio.Infrastructure.Vlc;
 
@@ -65,6 +66,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private readonly BoundedUiLogBuffer<string> logBuffer;
     private readonly PlaybackResourceCoordinator playbackResourceCoordinator;
     private readonly PlaybackCleanupController playbackCleanupController;
+    private readonly IVodDownloadPlayback? offlinePlayback;
+    private Task offlinePlaybackRelease = Task.CompletedTask;
     private readonly ChatClientEventCoordinator chatClientEventCoordinator;
     private readonly object disposalGate = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
@@ -225,6 +228,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         var twitchLiveDvrPromotionPollInterval = dependencies.TwitchLiveDvrPromotionPollInterval;
 
         Target = target;
+        offlinePlayback = dependencies.OfflinePlayback;
         if (target.IsOfflineVod) isChatVisible = false;
         replayClock = new ReplayClockState(Target, () => Status, () => IsReplayMode,
             () => Volatile.Read(ref replaySeekOperationVersion), IsReplayClockSampleCurrent,
@@ -304,7 +308,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     public RelayCommand AddTwitchPredictionOutcomeCommand { get; }
     public event EventHandler? AudioStateApplied;
 
-    internal Task PlaybackCleanupIdleTask => playbackCleanupController.IdleTask;
+    internal Task PlaybackCleanupIdleTask => Task.WhenAll(playbackCleanupController.IdleTask, offlinePlaybackRelease);
     internal CancellationToken LifetimeToken => lifetimeCancellation.Token;
 
     internal NativeChatOverlayController NativeOverlay => nativeOverlay;
@@ -2906,7 +2910,36 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     }
 
     public ValueTask DisposeAsync() =>
-        new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposalTask, DisposeCoreAsync));
+        new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposalTask, DisposeWithOfflinePlaybackAsync));
+
+    private async Task DisposeWithOfflinePlaybackAsync()
+    {
+        try { await DisposeCoreAsync(); }
+        finally
+        {
+            if (offlinePlayback is not null && playbackEngine is null)
+            {
+                var cleanup = playbackCleanupController.IdleTask;
+                offlinePlaybackRelease = ReleaseOfflinePlaybackWhenIdleAsync(cleanup);
+                // A timed-out native teardown stays tracked in the background;
+                // retain the whole HLS package until that player really exits.
+                if (cleanup.IsCompleted) await offlinePlaybackRelease;
+            }
+        }
+    }
+
+    private async Task ReleaseOfflinePlaybackWhenIdleAsync(Task cleanup)
+    {
+        try
+        {
+            await cleanup.ConfigureAwait(false);
+            await offlinePlayback!.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "Could not release an offline playback copy for cleanup.", exception);
+        }
+    }
 
     private async Task DisposeCoreAsync()
     {

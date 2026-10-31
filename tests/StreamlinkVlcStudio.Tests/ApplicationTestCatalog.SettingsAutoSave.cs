@@ -62,11 +62,16 @@ internal static partial class ApplicationTestCatalog
                 main.SelectedSettingsCategory = SettingsCategory.Downloads;
                 LayoutStudioPolishWindow(window, new Size(1320, 820));
                 ((ComboBox)window.FindName("VodDownloadQualityComboBox")).SetCurrentValue(ComboBox.SelectedValueProperty, "480p");
+                ((ComboBox)window.FindName("VodDownloadFormatComboBox")).SetCurrentValue(ComboBox.SelectedValueProperty, VodDownloadFormat.Mp4);
                 var bandwidth = (TextBox)window.FindName("VodDownloadBandwidthLimitTextBox");
                 bandwidth.SetCurrentValue(TextBox.TextProperty, "1.25");
                 bandwidth.GetBindingExpression(TextBox.TextProperty)!.UpdateSource();
 
                 main.SelectedSettingsCategory = SettingsCategory.Accounts;
+                LayoutStudioPolishWindow(window, new Size(1320, 820));
+                foreach (var section in FindVisualDescendants<Expander>((FrameworkElement)window.FindName("AccountsSettingsPage"))
+                    .Where(section => section.Header as string == "Advanced account settings").ToArray())
+                    section.IsExpanded = true;
                 LayoutStudioPolishWindow(window, new Size(1320, 820));
                 var token = FindVisualDescendants<PasswordBox>((FrameworkElement)window.FindName("AccountsSettingsPage"))
                     .Single(control => AutomationProperties.GetName(control) == "Twitch OAuth token");
@@ -79,6 +84,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal("720p", reloaded.DefaultQuality);
                 Assert.Equal(false, reloaded.PauseInactiveVodTabs);
                 Assert.Equal("480p", reloaded.Downloads.Quality);
+                Assert.Equal(VodDownloadFormat.Mp4, reloaded.Downloads.Format);
                 Assert.Equal(1.25, reloaded.Downloads.BandwidthLimitMegabytesPerSecond);
                 Assert.Equal(false, reloaded.Replay.Enabled);
                 Assert.Equal(false, reloaded.FollowedChannels.NotifyWhenLive);
@@ -138,6 +144,7 @@ internal static partial class ApplicationTestCatalog
         oldChat.FontSize = 32;
         oldReplay.Enabled = false;
         oldDownloads.Quality = "worst";
+        oldDownloads.Format = VodDownloadFormat.Mp4;
         oldDownloads.BandwidthLimitMegabytesPerSecond = 2;
         oldHotkeys.GoBack = "Ctrl+B";
         oldFollowed.NotifyWhenLive = false;
@@ -148,6 +155,7 @@ internal static partial class ApplicationTestCatalog
         settings.Chat.FontSize = 24;
         settings.Replay.Enabled = false;
         settings.Downloads.Quality = "720p";
+        settings.Downloads.Format = VodDownloadFormat.Mp4;
         settings.Downloads.BandwidthLimitMegabytesPerSecond = 0.5;
         settings.Hotkeys.GoBack = "Ctrl+B";
         settings.FollowedChannels.NotifyWhenLive = false;
@@ -157,6 +165,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(24d, saved.Chat.FontSize);
         Assert.Equal(false, saved.Replay.Enabled);
         Assert.Equal("720p", saved.Downloads.Quality);
+        Assert.Equal(VodDownloadFormat.Mp4, saved.Downloads.Format);
         Assert.Equal(0.5, saved.Downloads.BandwidthLimitMegabytesPerSecond);
         Assert.Equal("Ctrl+B", saved.Hotkeys.GoBack);
         Assert.Equal(false, saved.FollowedChannels.NotifyWhenLive);

@@ -4,7 +4,9 @@ using StreamlinkVlcStudio.Infrastructure.Viewers;
 
 namespace StreamlinkVlcStudio.App.Wpf.Kick;
 
-internal sealed class KickFollowedChannelsBrowserClient(CoreWebView2 core)
+internal sealed class KickFollowedChannelsBrowserClient(
+    CoreWebView2 core,
+    Func<string?, int, Exception>? errorFactory = null)
 {
     private readonly string sessionId = Guid.NewGuid().ToString("N");
     private bool firstPage = true;
@@ -35,7 +37,8 @@ internal sealed class KickFollowedChannelsBrowserClient(CoreWebView2 core)
                 if (status == 200 && root.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String)
                     completion.TrySetResult(body.GetString()!);
                 else
-                    completion.TrySetException(new InvalidOperationException(ErrorMessage(error, status)));
+                    completion.TrySetException(errorFactory?.Invoke(error, status) ??
+                        new InvalidOperationException(ErrorMessage(error, status)));
             }
             catch (JsonException) { /* Ignore unrelated website messages. */ }
             catch (InvalidOperationException) { /* Ignore unrelated website messages. */ }

@@ -2057,6 +2057,100 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, publicCard.IsSubscriberOnly);
         Assert.Equal(false, publicCard.IsTwitchVodAccessUnknown);
     }),
+    ("batches Twitch VOD access checks and preserves successful batches", async () =>
+    {
+        var settings = new AppSettings();
+        settings.Chat.TwitchClientId = "twitch-client-id";
+        settings.Chat.TwitchOAuthToken = "vod-batch-token";
+        var logger = new MemoryLogger();
+        var batchSizes = new List<int>();
+        var batchNumber = 0;
+        var failSecondBatch = false;
+        using var httpClient = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.Host == "id.twitch.tv")
+            {
+                return CreateTwitchTokenValidationResponse("twitch-client-id");
+            }
+
+            if (request.RequestUri.AbsolutePath == "/helix/users")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":[{"id":"1","login":"xqc","display_name":"xQc"}]}""")
+                };
+            }
+
+            if (request.RequestUri.AbsolutePath == "/helix/videos")
+            {
+                var videos = Enumerable.Range(0, 100).Select(index => new
+                {
+                    id = (2915062847L + index).ToString(CultureInfo.InvariantCulture),
+                    url = $"https://www.twitch.tv/videos/{2915062847L + index}"
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new { data = videos, pagination = new { } }))
+                };
+            }
+
+            Assert.Equal("gql.twitch.tv", request.RequestUri.Host);
+            var requestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var requestDocument = JsonDocument.Parse(requestBody);
+            var variables = requestDocument.RootElement.GetProperty("variables")
+                .EnumerateObject().ToArray();
+            batchNumber++;
+            batchSizes.Add(variables.Length);
+            if (variables.Length > 15)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{"errors":[{"message":"The number of root field aliases exceeds the limit allowed (15)"}]}""")
+                };
+            }
+
+            if (failSecondBatch && batchNumber == 2)
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("""{"errors":[{"message":"temporary batch failure"}]}""")
+                };
+            }
+
+            var tokens = variables.ToDictionary(
+                variable => variable.Name,
+                variable => new
+                {
+                    value = JsonSerializer.Serialize(new
+                    {
+                        authorization = new { forbidden = false },
+                        chansub = new { restricted_bitrates = Array.Empty<string>() },
+                        vod_id = variable.Value.GetString()
+                    })
+                });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new { data = tokens }))
+            };
+        }));
+
+        var service = new TwitchVodService(logger, httpClient);
+        var first = await service.SearchAsync(new TwitchVodSearchRequest("xqc"), settings);
+        Assert.Equal(100, first.Videos.Count);
+        Assert.True(first.Videos.All(video => video.AccessKind == TwitchVodAccessKind.Public));
+        Assert.SequenceEqual(new[] { 15, 15, 15, 15, 15, 15, 10 }, batchSizes);
+
+        batchNumber = 0;
+        failSecondBatch = true;
+        var second = await service.SearchAsync(new TwitchVodSearchRequest("xqc"), settings);
+        Assert.Equal(100, second.Videos.Count);
+        Assert.True(second.Videos.Take(15).All(video => video.AccessKind == TwitchVodAccessKind.Public));
+        Assert.True(second.Videos.Skip(15).Take(15).All(video => video.AccessKind == TwitchVodAccessKind.Unknown));
+        Assert.True(second.Videos.Skip(30).All(video => video.AccessKind == TwitchVodAccessKind.Public));
+        Assert.Contains("Access could not be checked for 15 VODs", second.Message);
+        Assert.True(logger.Entries.Any(entry => entry.Message.Contains("temporary batch failure", StringComparison.Ordinal)));
+        Assert.SequenceEqual(new[] { 15, 15, 15, 15, 15, 15, 10, 15, 15, 15, 15, 15, 15, 10 }, batchSizes);
+    }),
     ("keeps Twitch VOD access unknown when playback metadata cannot be verified", async () =>
     {
         var settings = new AppSettings();

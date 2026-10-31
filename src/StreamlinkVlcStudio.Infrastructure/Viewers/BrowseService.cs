@@ -37,17 +37,31 @@ public sealed class BrowseService : IBrowseService
         kick = new KickBrowseProvider(logger, httpClient, kickTokenProvider);
     }
 
-    public async Task<BrowseResult<BrowseCategory>> GetCategoriesAsync(
+    public Task<BrowseResult<BrowseCategory>> GetCategoriesAsync(
         BrowseCategoryRequest request,
         AppSettings settings,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        GetCategoriesCoreAsync(request, settings, null, cancellationToken);
+
+    public Task<BrowseResult<BrowseCategory>> GetCategoriesAsync(
+        BrowseCategoryRequest request,
+        AppSettings settings,
+        IProgress<IReadOnlyList<BrowseCategory>> categoriesProgress,
+        CancellationToken cancellationToken = default) =>
+        GetCategoriesCoreAsync(request, settings, categoriesProgress, cancellationToken);
+
+    private async Task<BrowseResult<BrowseCategory>> GetCategoriesCoreAsync(
+        BrowseCategoryRequest request,
+        AppSettings settings,
+        IProgress<IReadOnlyList<BrowseCategory>>? categoriesProgress,
+        CancellationToken cancellationToken)
     {
         try
         {
             return request.Platform switch
             {
                 PlatformKind.Twitch => await twitch.GetTwitchCategoriesAsync(request, settings.Chat, cancellationToken).ConfigureAwait(false),
-                PlatformKind.Kick => await kick.GetKickCategoriesAsync(request, settings.Chat, cancellationToken).ConfigureAwait(false),
+                PlatformKind.Kick => await kick.GetKickCategoriesAsync(request, settings.Chat, cancellationToken, categoriesProgress).ConfigureAwait(false),
                 _ => BrowseResult<BrowseCategory>.Unavailable($"Browse does not support {request.Platform}.")
             };
         }

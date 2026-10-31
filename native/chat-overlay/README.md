@@ -167,3 +167,12 @@ The real VLC resize test now checks 112 alternating row/column samples at 50%
 scale, in addition to text visibility and stable layout. Stock GDI fails at
 0/112 preserved samples; filtered GDI passes at 112/112 for both native/live
 and WPF/replay frames. Evidence is in `artifacts/overlay-filtered-scaling`.
+
+## Kick connection discovery
+
+The host supplies `--kick-channel-id` separately from `--kick-chatroom-id`.
+Before every connection, the controller asks Kick’s anonymous channel-chat
+negotiation endpoint for a supported Pusher application and cluster. It waits
+for the connection acknowledgement before subscribing and displays provider
+rejection and close details. The managed chat client uses the same discovery
+contract. See [diagnosis and verification](../../docs/kick-chat-reconnect-2026-10-21.md).

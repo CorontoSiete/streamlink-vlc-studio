@@ -5,7 +5,9 @@ public sealed record FollowedChannel(
     string Channel,
     string DisplayName,
     string Url,
-    string ProfileImageUrl = "")
+    string ProfileImageUrl = "",
+    string BannerImageUrl = "",
+    DateTimeOffset? LastLiveAtUtc = null)
 {
     public StreamTarget Target => new(Platform, Channel, Url, ProfileImageUrl: ProfileImageUrl);
 }

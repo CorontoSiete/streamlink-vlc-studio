@@ -1,4 +1,4 @@
-# VLC 3.0.23 Windows condition waits and replay timing
+# VLC 3.0.23 Windows condition waits and playback timing
 
 This folder contains the reproducible source patch and build configuration for
 the bundled `libvlccore.dll` used with one exact official VLC 3.0.23 Windows
@@ -23,14 +23,25 @@ timestamp on time. The calculation is unchanged at 1x. This lets completed
 FFmpeg HLS replay finish accurate seek preroll at slow and fast speeds without
 placing decoder timestamps far in the future or past.
 
-The managed engine uses this capability only with this verified bundled core.
+The playback-rate patch keeps the next audio block adjacent to samples already
+queued at the previous speed. Frames before that boundary retain their previous
+timestamp mapping, so changing speed does not flush or seek the input. PCR
+lateness checks use the same rate-adjusted decoder delay as presentation;
+otherwise a slowdown can incorrectly trigger rebuffering. Seek and discontinuity
+resets clear these boundaries, and pause/resume shifts them with the input clock.
+Decoded audio is submitted up to 250 ms ahead of presentation, so selections
+do not wait behind the former two-second output queue. Encoded input caching
+retains its existing settings. A retained speed is set before a new player starts.
+
+The managed engine uses these capabilities only with this verified bundled core.
 Other VLC builds retain the managed 1x recovery before a high-to-slow transition.
 Playback-rate regression tests measure media time against elapsed wall time
 and require continuing decoded video, including transitions from 2x to 0.5x.
 
 The upstream VLC source is VideoLAN VLC 3.0.23 from the exact archive and hash
-in `provenance.json`. The two patches change only `src/win32/thread.c` and
-`src/input/es_out.c`; that upstream source is LGPL-2.1-or-later and its
+in `provenance.json`. The patches change only `src/win32/thread.c`,
+`src/input/es_out.c`, `src/input/clock.c`, its private header, and
+`src/input/decoder.c`; that upstream source is LGPL-2.1-or-later and its
 `COPYING.LIB` is included.
 
 The Windows DLL statically links `libintl.a`, `libiconv.a`, `libidn.a`,

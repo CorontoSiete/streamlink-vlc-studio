@@ -10,8 +10,78 @@ internal static partial class ApplicationTestCatalog
         ("search popup dismissal: switching windows cancels a pending automatic search", SearchPopupDebounceAfterWindowSwitchAsync),
         ("search popup dismissal: an automatic search queued before switching windows stays canceled", SearchPopupQueuedSearchAfterWindowSwitchAsync),
         ("search popup dismissal: minimizing the owner closes the native popup", SearchPopupOwnerMinimizedAsync),
-        ("search popup dismissal: hiding the owner closes the native popup", SearchPopupOwnerHiddenAsync)
+        ("search popup dismissal: hiding the owner closes the native popup", SearchPopupOwnerHiddenAsync),
+        ("search popup dismissal: right clicking a result keeps its menu and search results open", SearchPopupResultRightClickAsync)
     ];
+
+    private static Task SearchPopupResultRightClickAsync() =>
+        WithSearchDismissalWindowAsync(async (window, main, popup) =>
+        {
+            Assert.True(NativeWindowTest.TryGetCursorPosition(out var previousCursor));
+            var previousForeground = NativeWindowTest.GetForegroundWindow();
+            try
+            {
+                main.NewStreamText = "searchfixture";
+                await main.AddAndPlayCommand.ExecuteAsync();
+                PumpResponsiveLayout(window);
+                Assert.True(popup.IsOpen && main.IsStreamSearchPanelVisible);
+                var popupRoot = (FrameworkElement)popup.Child;
+                var button = FindVisualDescendants<Button>(popupRoot)
+                    .Single(item => ReferenceEquals(item.Command, main.StreamSearchResults.Single().OpenCommand));
+                var menu = button.ContextMenu!;
+                Assert.NotNull(menu);
+                var events = new List<string>();
+                window.Deactivated += (_, _) => events.Add("owner deactivated");
+                window.PreviewMouseDown += (_, _) => events.Add("owner mouse down");
+                popup.PreviewMouseDown += (_, _) => events.Add("popup mouse down");
+                popup.Closed += (_, _) => events.Add("search popup closed");
+                button.ContextMenuOpening += (_, _) => events.Add("context menu opening");
+                menu.Opened += (_, _) => events.Add("context menu opened");
+                menu.Closed += (_, _) => events.Add("context menu closed");
+                var screenPoint = button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight / 2));
+                var x = (int)Math.Round(screenPoint.X);
+                var y = (int)Math.Round(screenPoint.Y);
+                var popupHandle = ((HwndSource)PresentationSource.FromVisual(popupRoot)!).Handle;
+                await TestWait.UntilAsync(() => NativeWindowTest.IsWindowVisible(popupHandle), TimeSpan.FromSeconds(2),
+                    "The search popup HWND must become visible before physical input");
+                await TestWait.UntilAsync(() => NativeWindowTest.IsRootWindowAtPoint(popupHandle, x, y),
+                    TimeSpan.FromSeconds(2), "The search popup must finish its fade-in and accept pointer input");
+                Assert.True(NativeWindowTest.IsRootWindowAtPoint(popupHandle, x, y),
+                    $"The physical right click must land in the search result popup: {NativeWindowTest.DescribeWindowAtPoint(x, y)}; " +
+                    $"popup handle={popupHandle}, bounds={NativeWindowTest.GetWindowBounds(popupHandle)}, " +
+                    $"popup topmost={NativeWindowTest.IsTopmost(popupHandle)}, owner handle={new WindowInteropHelper(window).Handle}, " +
+                    $"button size={button.ActualWidth:0.##}x{button.ActualHeight:0.##}");
+
+                NativeWindowTest.SendRightClick(x, y);
+                await TestWait.UntilAsync(() => menu.IsOpen || !popup.IsOpen, TimeSpan.FromSeconds(2),
+                    "A physical right click must either open the result menu or expose the premature popup dismissal");
+                PumpResponsiveLayout(window);
+
+                var observed = $"events=[{string.Join(", ", events)}], popup={popup.IsOpen}, menu={menu.IsOpen}, " +
+                    $"panel={main.IsStreamSearchPanelVisible}, foreground={NativeWindowTest.GetForegroundWindow()}";
+                Assert.True(menu.IsOpen, $"Search result context menu did not remain open: {observed}");
+                Assert.True(popup.IsOpen && main.IsStreamSearchPanelVisible,
+                    $"Search results disappeared on right click: {observed}");
+                Assert.Equal(0, main.Tabs.Count);
+                menu.IsOpen = false;
+
+                var content = (FrameworkElement)window.FindName("HomeContentScrollViewer");
+                var outside = content.PointToScreen(new Point(content.ActualWidth / 2, content.ActualHeight - 30));
+                var outsideX = (int)Math.Round(outside.X);
+                var outsideY = (int)Math.Round(outside.Y);
+                Assert.True(NativeWindowTest.IsRootWindowAtPoint(new WindowInteropHelper(window).Handle,
+                    outsideX, outsideY), "The outside click must land in the main window.");
+                NativeWindowTest.SendLeftClick(outsideX, outsideY);
+                await TestWait.UntilAsync(() => !popup.IsOpen, TimeSpan.FromSeconds(2),
+                    "A click outside the search popup must still dismiss it");
+                Assert.True(main.HasStreamSearchResults);
+            }
+            finally
+            {
+                NativeWindowTest.SetCursorPosition(previousCursor.X, previousCursor.Y);
+                NativeWindowTest.ActivateWindow(previousForeground);
+            }
+        });
 
     private static Task SearchPopupWindowSwitchAsync() => WithSearchDismissalWindowAsync(async (window, main, popup) =>
     {

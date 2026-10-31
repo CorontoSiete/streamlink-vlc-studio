@@ -18,6 +18,8 @@ namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
 public sealed class TwitchVodService : ITwitchVodService
 {
+    // Twitch rejects GraphQL requests with more than 15 root field aliases.
+    private const int MaximumVodAccessAliasesPerRequest = 15;
     private const string VideoMetadataQuery = """
         query StreamStudioVodMetadata($id: ID!) {
           video(id: $id) {
@@ -251,11 +253,21 @@ public sealed class TwitchVodService : ITwitchVodService
         TwitchVodItem[] videos,
         CancellationToken cancellationToken)
     {
-        if (videos.Length == 0)
+        var classified = new TwitchVodItem[videos.Length];
+        for (var start = 0; start < videos.Length; start += MaximumVodAccessAliasesPerRequest)
         {
-            return videos;
+            var batch = videos[start..Math.Min(start + MaximumVodAccessAliasesPerRequest, videos.Length)];
+            var result = await PopulateAccessBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+            Array.Copy(result, 0, classified, start, result.Length);
         }
 
+        return classified;
+    }
+
+    private async Task<TwitchVodItem[]> PopulateAccessBatchAsync(
+        TwitchVodItem[] videos,
+        CancellationToken cancellationToken)
+    {
         try
         {
             // Helix documents "viewable" as always "public", so it cannot identify
@@ -277,7 +289,7 @@ public sealed class TwitchVodService : ITwitchVodService
                 logger.Write(
                     AppLogLevel.Warning,
                     "VODs",
-                    $"Twitch VOD access lookup failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody, includeBodyFallback: false)}".Trim());
+                    $"Twitch VOD access lookup failed: {(int)response.StatusCode} {response.ReasonPhrase}. {GraphQlErrorReader.ExtractResponseMessage(responseBody)}".Trim());
                 return videos;
             }
 

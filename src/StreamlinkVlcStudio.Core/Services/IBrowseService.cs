@@ -10,6 +10,18 @@ public interface IBrowseService
         AppSettings settings,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reports provisional category snapshots while enrichment is in progress.
+    /// Snapshots may be replaced; only the returned result determines success,
+    /// final ordering and pagination.
+    /// </summary>
+    Task<BrowseResult<BrowseCategory>> GetCategoriesAsync(
+        BrowseCategoryRequest request,
+        AppSettings settings,
+        IProgress<IReadOnlyList<BrowseCategory>> categoriesProgress,
+        CancellationToken cancellationToken = default) =>
+        GetCategoriesAsync(request, settings, cancellationToken);
+
     Task<BrowseResult<BrowseCategoryViewerCount>> GetCategoryViewerCountsAsync(
         BrowseCategoryViewerCountRequest request,
         AppSettings settings,

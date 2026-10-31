@@ -13,7 +13,7 @@ using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vod;
 
-public sealed class VodDownloadService : IVodDownloadService
+public sealed partial class VodDownloadService : IVodDownloadService
 {
     private readonly IStreamlinkService streamlink;
     private readonly ITwitchSubOnlyVodResolver? twitchFallback;
@@ -31,6 +31,7 @@ public sealed class VodDownloadService : IVodDownloadService
     private readonly Dictionary<Guid, Job> jobs = [];
     private readonly VodDownloadBandwidthLimiter bandwidthLimiter = new();
     private readonly Task worker;
+    private readonly Task cleanupWorker;
     private readonly object disposalGate = new();
     private Task? disposal;
     private bool loaded;
@@ -45,7 +46,8 @@ public sealed class VodDownloadService : IVodDownloadService
     internal VodDownloadService(string downloadDirectory, IStreamlinkService streamlink, IAppLogger logger,
         ITwitchSubOnlyVodResolver? twitchFallback, HttpClient? client, ReplayUrlSecurityValidator? validator,
         Func<StreamTarget, CancellationToken, Task<StreamTarget>>? resolveKick = null,
-        IEnumerable<string>? previousDownloadDirectories = null)
+        IEnumerable<string>? previousDownloadDirectories = null, IVodMediaConverter? mediaConverter = null,
+        TimeSpan? cleanupInterval = null)
     {
         DownloadDirectory = NormalizeDownloadDirectory(downloadDirectory);
         libraryDirectories.Add(DownloadDirectory);
@@ -64,7 +66,9 @@ public sealed class VodDownloadService : IVodDownloadService
         ownsClient = client is null;
         this.validator = validator ?? ReplayUrlSecurityValidator.Shared;
         this.resolveKick = resolveKick;
+        converter = mediaConverter ?? new FfmpegVodMediaConverter();
         worker = Task.Run(ProcessQueueAsync);
+        cleanupWorker = Task.Run(() => ProcessCleanupAsync(cleanupInterval ?? TimeSpan.FromSeconds(30)));
     }
 
     public string DownloadDirectory { get; private set; }
@@ -75,6 +79,7 @@ public sealed class VodDownloadService : IVodDownloadService
     public async Task ChangeDownloadDirectoryAsync(string downloadDirectory, CancellationToken cancellationToken = default)
     {
         var directory = NormalizeDownloadDirectory(downloadDirectory);
+        List<VodDownloadItem> changed = [];
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -88,8 +93,10 @@ public sealed class VodDownloadService : IVodDownloadService
             await LoadDirectoryCoreAsync(directory, cancellationToken).ConfigureAwait(false);
             libraryDirectories.Add(directory);
             DownloadDirectory = directory;
+            changed = await ApplyDownloadFormatCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally { gate.Release(); }
+        foreach (var item in changed) Publish(item);
     }
 
     private static string NormalizeDownloadDirectory(string downloadDirectory)
@@ -177,11 +184,14 @@ public sealed class VodDownloadService : IVodDownloadService
             await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
             if (!items.TryGetValue(id, out var item) || !item.IsActive) return;
             jobs.TryGetValue(id, out jobToCancel);
-            if (item.State == VodDownloadState.Queued)
+            if (item.State is VodDownloadState.Queued or VodDownloadState.ConversionQueued)
             {
-                changed = item with { State = VodDownloadState.Canceled, Revision = item.Revision + 1 };
+                changed = item.State == VodDownloadState.ConversionQueued
+                    ? RestoreOriginalAfterConversion(item, "Conversion canceled. The original download has been kept.")
+                    : item with { State = VodDownloadState.Canceled, Revision = item.Revision + 1 };
                 await SaveCoreAsync(changed, cancellationToken).ConfigureAwait(false);
                 items[id] = changed;
+                CleanupTemporaryMediaCore(id);
             }
         }
         finally
@@ -196,7 +206,7 @@ public sealed class VodDownloadService : IVodDownloadService
 
     public async Task RetryAsync(Guid id, VodDownloadOptions options, CancellationToken cancellationToken = default)
     {
-        options = CopyOptions(options);
+        ArgumentNullException.ThrowIfNull(options);
         VodDownloadItem changed;
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -204,29 +214,45 @@ public sealed class VodDownloadService : IVodDownloadService
             ThrowIfDisposed();
             await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
             var item = GetItemCore(id);
-            if (item.State is not (VodDownloadState.Failed or VodDownloadState.Canceled or VodDownloadState.Interrupted))
-                throw new InvalidOperationException("Only failed, canceled, or interrupted VOD downloads can be retried.");
-            changed = item with
+            if (item.CanRetryConversion)
             {
-                State = VodDownloadState.Queued,
-                Error = "",
-                CompletedSegments = 0,
-                TotalSegments = 0,
-                BytesDownloaded = 0,
-                LocalMediaPath = "",
-                Revision = item.Revision + 1
-            };
-            await SaveCoreAsync(changed, cancellationToken).ConfigureAwait(false);
-            items[id] = changed;
-            var job = new Job(id, changed.Target, options, shutdown.Token);
-            jobs[id] = job;
-            queue.Writer.TryWrite(job);
+                changed = await QueueConversionCoreAsync(item, item.RequestedFormat!.Value, options, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                options = CopyOptions(options);
+                if (item.State is not (VodDownloadState.Failed or VodDownloadState.Canceled or VodDownloadState.Interrupted))
+                    throw new InvalidOperationException("Only failed, canceled, or interrupted VOD downloads can be retried.");
+                EnsureDownloadNotInUseCore(id);
+                EnsureNoMediaWriterCore(id);
+                changed = item with
+                {
+                    State = VodDownloadState.Queued,
+                    Error = "",
+                    CompletedSegments = 0,
+                    TotalSegments = 0,
+                    BytesDownloaded = 0,
+                    LocalMediaPath = "",
+                    Revision = item.Revision + 1
+                };
+                await SaveCoreAsync(changed, cancellationToken).ConfigureAwait(false);
+                items[id] = changed;
+                var job = new Job(id, changed.Target, options, shutdown.Token);
+                jobs[id] = job;
+                queue.Writer.TryWrite(job);
+            }
         }
         finally { gate.Release(); }
         Publish(changed);
     }
 
-    public async Task<StreamTarget> GetOfflineTargetAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<StreamTarget> GetOfflineTargetAsync(Guid id, CancellationToken cancellationToken = default) =>
+        (await GetOfflinePlaybackCoreAsync(id, retain: false, cancellationToken).ConfigureAwait(false)).Target;
+
+    public async Task<IVodDownloadPlayback> AcquireOfflinePlaybackAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await GetOfflinePlaybackCoreAsync(id, retain: true, cancellationToken).ConfigureAwait(false);
+
+    private async Task<OfflinePlayback> GetOfflinePlaybackCoreAsync(Guid id, bool retain, CancellationToken cancellationToken)
     {
         VodDownloadItem? changed = null;
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -235,15 +261,23 @@ public sealed class VodDownloadService : IVodDownloadService
             ThrowIfDisposed();
             await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
             var item = GetItemCore(id);
-            if (item.State != VodDownloadState.Completed) throw new InvalidOperationException("This VOD has not finished downloading.");
+            if (item.State is not (VodDownloadState.Completed or VodDownloadState.ConversionQueued or VodDownloadState.Converting))
+                throw new InvalidOperationException("This VOD has not finished downloading.");
             try
             {
-                ValidateOwnedPaths(id);
+                ValidateItemDirectory(id);
                 await OfflineVodPackage.ValidateAsync(MediaDirectory(id), cancellationToken).ConfigureAwait(false);
-                return item.OfflineTarget with
+                var target = item.OfflineTarget with
                 {
                     ProfileImageUrl = OfflineVodProfileImage.GetUrl(MediaDirectory(id), item.Target)
                 };
+                if (retain)
+                {
+                    var key = (id, item.MediaFolder);
+                    playbackUsers.TryGetValue(key, out var count);
+                    playbackUsers[key] = count + 1;
+                }
+                return new OfflinePlayback(retain ? this : null, id, item.MediaFolder, target);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -274,16 +308,26 @@ public sealed class VodDownloadService : IVodDownloadService
             ThrowIfDisposed();
             await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
             if (GetItemCore(id).IsActive) throw new InvalidOperationException("Cancel this download before deleting it.");
+            EnsureDownloadNotInUseCore(id);
+            EnsureNoMediaWriterCore(id);
             DeleteOwnedDirectory(id, ItemDirectory(id));
             items.Remove(id);
             itemRoots.Remove(id);
+            pendingCleanup.RemoveWhere(entry => entry.Id == id);
+            pendingCleanupScans.Remove(id);
         }
         finally { gate.Release(); }
     }
 
-    private async Task LoadCoreAsync(CancellationToken cancellationToken)
+    private Task LoadCoreAsync(CancellationToken cancellationToken)
     {
-        if (loaded) return;
+        // The caller owns gate. Directory enumeration and package validation perform
+        // synchronous file operations even when their async reads complete from cache.
+        return loaded ? Task.CompletedTask : Task.Run(() => LoadLibrariesCoreAsync(cancellationToken), cancellationToken);
+    }
+
+    private async Task LoadLibrariesCoreAsync(CancellationToken cancellationToken)
+    {
         foreach (var directory in libraryDirectories.OrderBy(directory => !directory.Equals(DownloadDirectory, StringComparison.OrdinalIgnoreCase)))
         {
             try { await LoadDirectoryCoreAsync(directory, cancellationToken).ConfigureAwait(false); }
@@ -308,14 +352,17 @@ public sealed class VodDownloadService : IVodDownloadService
                 itemRoots[id] = root;
                 try
                 {
-                    ValidateOwnedPaths(id);
+                    ValidateItemDirectory(id);
                     var metadataPath = Path.Combine(directory, "download.json");
                     OfflineVodPackage.RequireRegularPath(metadataPath);
                     var bytes = await BoundedByteReader.ReadFileAsync(metadataPath, 128 * 1024, cancellationToken).ConfigureAwait(false);
                     if (bytes is null) continue;
                     var item = JsonSerializer.Deserialize<VodDownloadItem>(bytes);
-                    if (item is null || item.Id != id || !Enum.IsDefined(item.State) || item.Revision < 0)
+                    if (item is null || item.Id != id || !Enum.IsDefined(item.State) || !Enum.IsDefined(item.Format) ||
+                        (item.RequestedFormat is { } requested && !Enum.IsDefined(requested)) || !IsMediaFolder(item.MediaFolder) || item.Revision < 0)
                         throw new InvalidDataException("Invalid VOD download metadata.");
+                    var mediaDirectory = MediaDirectory(id, item.MediaFolder);
+                    OfflineVodPackage.RequireRegularPath(mediaDirectory);
                     item = item with
                     {
                         Target = CanonicalTarget(item.Target),
@@ -323,11 +370,11 @@ public sealed class VodDownloadService : IVodDownloadService
                         LocalMediaPath = ""
                     };
                     var recovered = false;
-                    if (Directory.Exists(MediaDirectory(id)))
+                    if (Directory.Exists(mediaDirectory))
                     {
                         try
                         {
-                            var package = await OfflineVodPackage.ValidateAsync(MediaDirectory(id), cancellationToken).ConfigureAwait(false);
+                            var package = await OfflineVodPackage.ValidateAsync(mediaDirectory, cancellationToken).ConfigureAwait(false);
                             item = CompleteItem(item, package);
                             recovered = true;
                         }
@@ -346,6 +393,8 @@ public sealed class VodDownloadService : IVodDownloadService
                             Revision = item.Revision + 1
                         };
                     items[id] = item;
+                    CleanupTemporaryMediaCore(id);
+                    if (recovered) CleanupObsoleteMediaCore(id);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -365,7 +414,11 @@ public sealed class VodDownloadService : IVodDownloadService
         {
             await foreach (var job in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
             {
-                try { await RunJobAsync(job).ConfigureAwait(false); }
+                try
+                {
+                    if (job.IsConversion) await RunConversionJobAsync(job).ConfigureAwait(false);
+                    else await RunJobAsync(job).ConfigureAwait(false);
+                }
                 catch (Exception exception)
                 {
                     await FinishFailedJobAsync(job, exception).ConfigureAwait(false);
@@ -375,7 +428,13 @@ public sealed class VodDownloadService : IVodDownloadService
                     await gate.WaitAsync().ConfigureAwait(false);
                     try
                     {
+                        job.WorkingFolder = null;
                         if (jobs.TryGetValue(job.Id, out var current) && ReferenceEquals(job, current)) jobs.Remove(job.Id);
+                        if (items.ContainsKey(job.Id))
+                        {
+                            CleanupTemporaryMediaCore(job.Id);
+                            if (job.UncommittedMediaFolder is { } folder) QueueDirectoryCleanupCore(job.Id, folder);
+                        }
                     }
                     finally { gate.Release(); }
                     job.Cancellation.Dispose();
@@ -395,12 +454,14 @@ public sealed class VodDownloadService : IVodDownloadService
             if (!jobs.TryGetValue(job.Id, out var current) || !ReferenceEquals(current, job) ||
                 !items.TryGetValue(job.Id, out item!) || item.State != VodDownloadState.Queued) return;
             job.Cancellation.Token.ThrowIfCancellationRequested();
+            EnsureDownloadNotInUseCore(job.Id);
             partialDirectory = PartialDirectory(job.Id);
             DeleteOwnedDirectory(job.Id, partialDirectory);
             DeleteOwnedDirectory(job.Id, MediaDirectory(job.Id));
             item = item with { State = VodDownloadState.Resolving, Revision = item.Revision + 1 };
             await SaveCoreAsync(item, job.Cancellation.Token).ConfigureAwait(false);
             items[job.Id] = item;
+            job.WorkingFolder = ".partial";
         }
         finally { gate.Release(); }
         Publish(item);
@@ -453,15 +514,24 @@ public sealed class VodDownloadService : IVodDownloadService
         try
         {
             token.ThrowIfCancellationRequested();
-            ValidateOwnedPaths(job.Id);
-            Directory.Move(PartialDirectory(job.Id), MediaDirectory(job.Id));
+            await PromoteMediaCoreAsync(job.Id, ".partial", GetItemCore(job.Id).MediaFolder, token).ConfigureAwait(false);
+            job.WorkingFolder = null;
             item = CompleteItem(GetItemCore(job.Id), package);
+            if (downloadFormat != item.Format)
+            {
+                item = item with { State = VodDownloadState.ConversionQueued, RequestedFormat = downloadFormat };
+            }
             await SaveCoreAsync(item, CancellationToken.None).ConfigureAwait(false);
             items[job.Id] = item;
+            // A failed download commit still belongs to the download failure path.
+            // Hand off to conversion only after its complete source is committed.
+            job.IsConversion = item.State == VodDownloadState.ConversionQueued;
+            CleanupObsoleteMediaCore(job.Id);
         }
         finally { gate.Release(); }
         Publish(item);
         logger.WriteSafely(AppLogLevel.Info, "VOD downloads", $"Downloaded {item.Target.Platform} VOD {item.Target.MediaId}: {item.CompletedSegments} segments, {item.BytesDownloaded} bytes.");
+        if (job.IsConversion) await RunConversionJobAsync(job).ConfigureAwait(false);
     }
 
     private async Task<Uri> ResolveKickPlaylistAsync(Job job, StreamTarget canonicalTarget,
@@ -532,6 +602,11 @@ public sealed class VodDownloadService : IVodDownloadService
 
     private async Task FinishFailedJobAsync(Job job, Exception exception)
     {
+        if (job.IsConversion)
+        {
+            await FinishFailedConversionAsync(job, exception).ConfigureAwait(false);
+            return;
+        }
         VodDownloadItem? changed = null;
         await gate.WaitAsync().ConfigureAwait(false);
         try
@@ -542,10 +617,10 @@ public sealed class VodDownloadService : IVodDownloadService
                 job.Cancellation.IsCancellationRequested ? VodDownloadState.Canceled : VodDownloadState.Failed;
             var error = state == VodDownloadState.Failed ? ErrorText(exception, job.Options) :
                 state == VodDownloadState.Interrupted ? "The app closed before this download finished. Retry to download it again." : "";
-            try { DeleteOwnedDirectory(job.Id, PartialDirectory(job.Id)); }
-            catch (Exception cleanupException) { logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "Partial VOD files could not be removed.", cleanupException); }
+            job.WorkingFolder = null;
             changed = item with { State = state, Error = error, LocalMediaPath = "", Revision = item.Revision + 1 };
             items[job.Id] = changed;
+            CleanupTemporaryMediaCore(job.Id);
             try { await SaveCoreAsync(changed, CancellationToken.None).ConfigureAwait(false); }
             catch (Exception saveException) { logger.WriteSafely(AppLogLevel.Error, "VOD downloads", "Could not save the download failure; the previous record remains recoverable.", saveException); }
             if (state == VodDownloadState.Failed) logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", $"Download {job.Id:N} failed: {error}");
@@ -554,7 +629,7 @@ public sealed class VodDownloadService : IVodDownloadService
         if (changed is not null) Publish(changed);
     }
 
-    private VodDownloadItem CompleteItem(VodDownloadItem item, OfflineVodPackage package) => item with
+    private VodDownloadItem CompleteItem(VodDownloadItem item, OfflineVodPackage package, string? mediaFolder = null) => item with
     {
         State = VodDownloadState.Completed,
         CompletedSegments = package.SegmentCount,
@@ -562,7 +637,10 @@ public sealed class VodDownloadService : IVodDownloadService
         BytesDownloaded = package.BytesDownloaded,
         Duration = package.Duration,
         Error = "",
-        LocalMediaPath = Path.Combine(MediaDirectory(item.Id), OfflineVodPackage.ManifestName),
+        Format = package.Format,
+        RequestedFormat = null,
+        MediaFolder = mediaFolder ?? item.MediaFolder,
+        LocalMediaPath = Path.Combine(MediaDirectory(item.Id, mediaFolder ?? item.MediaFolder), package.MediaFileName),
         Revision = item.Revision + 1
     };
 
@@ -576,6 +654,8 @@ public sealed class VodDownloadService : IVodDownloadService
         OfflineVodPackage.RequireRegularPath(directory);
         Directory.CreateDirectory(directory);
         ValidateOwnedPaths(item.Id);
+        if (!IsMediaFolder(item.MediaFolder)) throw new InvalidDataException("Invalid VOD media folder.");
+        OfflineVodPackage.RequireRegularPath(MediaDirectory(item.Id, item.MediaFolder));
         var path = Path.Combine(directory, "download.json");
         OfflineVodPackage.RequireRegularPath(path);
         var stored = item with { LocalMediaPath = "" };
@@ -583,16 +663,52 @@ public sealed class VodDownloadService : IVodDownloadService
             cancellationToken, flushToDisk: true);
     }
 
+    private async Task PromoteMediaCoreAsync(Guid id, string sourceFolder, string mediaFolder, CancellationToken cancellationToken)
+    {
+        const int maximumRetries = 20;
+        const int accessDenied = unchecked((int)0x80070005);
+        const int sharingViolation = unchecked((int)0x80070020);
+        const int lockViolation = unchecked((int)0x80070021);
+        if (sourceFolder is not (".partial" or ".conversion") || !IsMediaFolder(mediaFolder))
+            throw new InvalidDataException("Invalid VOD media promotion.");
+        var source = Path.Combine(ItemDirectory(id), sourceFolder);
+        var destination = MediaDirectory(id, mediaFolder);
+        for (var attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ValidateOwnedPaths(id);
+            OfflineVodPackage.RequireRegularPath(destination);
+            try
+            {
+                Directory.Move(source, destination);
+                return;
+            }
+            catch (Exception exception) when (attempt < maximumRetries &&
+                exception is IOException or UnauthorizedAccessException &&
+                exception.HResult is accessDenied or sharingViolation or lockViolation)
+            {
+                // An open segment can briefly block renaming its parent on Windows.
+                // Retry the rename with the complete staging copy still protected
+                // from cleanup; never delete the destination to make room.
+                await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     private void DeleteOwnedDirectory(Guid id, string path)
     {
-        ValidateOwnedPaths(id);
+        ValidateItemDirectory(id);
         var owned = ItemDirectory(id);
         path = Path.GetFullPath(path);
-        if (path != owned && path != PartialDirectory(id) && path != MediaDirectory(id))
+        if (!string.Equals(path, owned, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(path, PartialDirectory(id), StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(path, ConversionDirectory(id), StringComparison.OrdinalIgnoreCase) &&
+            !(string.Equals(Path.GetDirectoryName(path), owned, StringComparison.OrdinalIgnoreCase) && IsMediaFolder(Path.GetFileName(path))))
             throw new IOException("Refusing to delete files outside this VOD download.");
+        OfflineVodPackage.RequireRegularPath(path);
         if (!Directory.Exists(path)) return;
-        foreach (var entry in Directory.EnumerateFileSystemEntries(path)) ValidateDeleteTree(entry);
-        Directory.Delete(path, recursive: true);
+        ValidateDeleteTree(path);
+        DeleteValidatedTree(path);
     }
 
     private static void ValidateDeleteTree(string path)
@@ -604,6 +720,14 @@ public sealed class VodDownloadService : IVodDownloadService
 
     private void ValidateOwnedPaths(Guid id)
     {
+        ValidateItemDirectory(id);
+        OfflineVodPackage.RequireRegularPath(PartialDirectory(id));
+        OfflineVodPackage.RequireRegularPath(MediaDirectory(id));
+        OfflineVodPackage.RequireRegularPath(ConversionDirectory(id));
+    }
+
+    private void ValidateItemDirectory(Guid id)
+    {
         if (id == Guid.Empty) throw new InvalidDataException("Invalid VOD download identity.");
         var directory = ItemDirectory(id);
         var root = ItemRoot(id);
@@ -612,14 +736,13 @@ public sealed class VodDownloadService : IVodDownloadService
             throw new IOException("The VOD download path is outside its library.");
         OfflineVodPackage.RequireRegularPath(root);
         OfflineVodPackage.RequireRegularPath(directory);
-        OfflineVodPackage.RequireRegularPath(PartialDirectory(id));
-        OfflineVodPackage.RequireRegularPath(MediaDirectory(id));
     }
 
     private string ItemRoot(Guid id) => itemRoots.TryGetValue(id, out var root) ? root : DownloadDirectory;
     private string ItemDirectory(Guid id) => Path.Combine(ItemRoot(id), id.ToString("N"));
     private string PartialDirectory(Guid id) => Path.Combine(ItemDirectory(id), ".partial");
-    private string MediaDirectory(Guid id) => Path.Combine(ItemDirectory(id), "media");
+    private string MediaDirectory(Guid id, string? folder = null) => Path.Combine(ItemDirectory(id),
+        folder ?? (items.TryGetValue(id, out var item) ? item.MediaFolder : "media"));
     private VodDownloadItem GetItemCore(Guid id) => items.TryGetValue(id, out var item) ? item :
         throw new KeyNotFoundException("This VOD download is no longer in the library.");
 
@@ -692,7 +815,7 @@ public sealed class VodDownloadService : IVodDownloadService
         }
         finally { gate.Release(); }
         CancellationSourceCleanup.Cancel(shutdown, ReportCancellationFailure);
-        try { await worker.ConfigureAwait(false); }
+        try { await Task.WhenAll(worker, cleanupWorker).ConfigureAwait(false); }
         finally
         {
             try { await ReleaseJobsAsync().ConfigureAwait(false); }
@@ -714,18 +837,22 @@ public sealed class VodDownloadService : IVodDownloadService
             while (queue.Reader.TryRead(out var queuedJob)) queuedJob.Cancellation.Dispose();
             foreach (var item in items.Values.Where(item => item.IsActive).ToArray())
             {
-                var interrupted = item with
-                {
-                    State = VodDownloadState.Interrupted,
-                    Error = "The app closed before this download finished. Retry to download it again.",
-                    Revision = item.Revision + 1
-                };
+                var interrupted = item.State is VodDownloadState.ConversionQueued or VodDownloadState.Converting
+                    ? RestoreOriginalAfterConversion(item, "Conversion interrupted. The original download has been kept.")
+                    : item with
+                    {
+                        State = VodDownloadState.Interrupted,
+                        Error = "The app closed before this download finished. Retry to download it again.",
+                        Revision = item.Revision + 1
+                    };
                 items[item.Id] = interrupted;
+                CleanupTemporaryMediaCore(item.Id);
                 try { await SaveCoreAsync(interrupted, CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception exception) { logger.WriteSafely(AppLogLevel.Warning, "VOD downloads", "Could not save an interrupted download.", exception); }
             }
             foreach (var job in jobs.Values) job.Cancellation.Dispose();
             jobs.Clear();
+            RetryPendingCleanupCore();
         }
         finally { gate.Release(); }
     }
@@ -735,6 +862,10 @@ public sealed class VodDownloadService : IVodDownloadService
         internal Guid Id { get; } = id;
         internal StreamTarget Target { get; } = target;
         internal VodDownloadOptions Options { get; } = options;
+        internal bool IsConversion { get; set; }
+        internal string? UncommittedMediaFolder { get; set; }
+        internal string? WorkingFolder { get; set; }
+        internal bool SourceValidationFailed { get; set; }
         internal CancellationTokenSource Cancellation { get; } = CancellationTokenSource.CreateLinkedTokenSource(shutdown);
     }
 }

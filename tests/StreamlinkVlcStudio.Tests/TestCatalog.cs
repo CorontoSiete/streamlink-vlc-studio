@@ -1,6 +1,6 @@
 internal static class TestCatalog
 {
-    private const int CharacterizedTestCount = 703;
+    private const int CharacterizedTestCount = 704;
 
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } = Build();
 
@@ -28,6 +28,11 @@ internal static class TestCatalog
         (string Name, Func<Task> Run)[] all =
             [
                 .. characterized,
+                .. CredentialSecurityTestCatalog.All,
+                .. LocalWebTestCatalog.All,
+                .. AccountConnectionTestCatalog.All,
+                .. ApplicationTestCatalog.AccountSignInTests,
+                .. KickChatConnectionTestCatalog.All,
                 .. ApplicationTestCatalog.ChangelogTests,
                 .. CodeCleanupTestCatalog.All,
                 .. BrowseCategorySearchOrderingTestCatalog.All,
@@ -69,6 +74,7 @@ internal static class TestCatalog
                 .. UpdateModernizationTestCatalog.ReleaseTests,
                 .. UpdateModernizationTestCatalog.CleanupTests,
                 .. UpdateModernizationTestCatalog.DependencyRecoveryTests,
+                .. UpdateModernizationTestCatalog.ZipTests,
                 .. ApplicationTestCatalog.ReplaySeekOverlayTests,
                 .. ApplicationTestCatalog.ResponsiveLayoutTests,
                 .. ApplicationTestCatalog.StudioShellTests,
@@ -83,6 +89,7 @@ internal static class TestCatalog
                 .. ApplicationTestCatalog.ResizeFlashTests,
                 .. ApplicationTestCatalog.VolumeOverlaySizingTests,
                 .. ApplicationTestCatalog.MainFullscreenEdgeTests,
+                .. ApplicationTestCatalog.MaximizedWorkAreaTests,
                 .. ApplicationTestCatalog.StreamBottomEdgeTests,
                 .. ApplicationTestCatalog.PictureInPictureResizeTests,
                 .. ApplicationTestCatalog.PictureInPictureResizeVlcTests,
@@ -162,7 +169,11 @@ internal static class TestCatalog
                 .. KickFollowImportTestCatalog.All,
                 .. KickCategorySearchTestCatalog.All,
                 .. KickCategorySearchTestCatalog.LiveProbeTests,
+                .. KickCategoryLoadingTestCatalog.All,
+                .. KickCategoryProgressTestCatalog.All,
+                .. KickCategoryLoadingTestCatalog.LiveProbeTests,
                 .. KickClipTestCatalog.All,
+                .. ChannelFollowTestCatalog.All,
                 .. ReviewContinuationTestCatalog.All,
                 .. ServiceResilienceTestCatalog.All,
                 .. ProfileImageLookupTestCatalog.All,
@@ -182,7 +193,9 @@ internal static class TestCatalog
                 .. CommandLifetimeTestCatalog.All,
                 .. ChatSendLifetimeTestCatalog.All,
                 .. ChatCatalogLifecycleTestCatalog.All,
+                .. TwitchBadgeTestCatalog.All,
                 .. OfflineFollowedChannelsTestCatalog.All,
+                .. LoadingConcurrencyTestCatalog.All,
                 .. EmojiTitleTestCatalog.All,
                 .. NativeInputFocusTestCatalog.All
             ];

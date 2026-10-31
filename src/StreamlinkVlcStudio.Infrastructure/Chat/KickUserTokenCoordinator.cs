@@ -30,7 +30,7 @@ internal sealed class KickUserTokenCoordinator(
         if (!string.IsNullOrWhiteSpace(token) && !forceRefresh && !KickOAuthService.ShouldRefresh(credentials.ToSettings()))
             return token;
         if (string.IsNullOrWhiteSpace(credentials.RefreshToken) || string.IsNullOrWhiteSpace(credentials.ClientId) ||
-            string.IsNullOrWhiteSpace(credentials.ClientSecret))
+            (!credentials.UsesTokenService && string.IsNullOrWhiteSpace(credentials.ClientSecret)))
             return rejectedToken is null && token.Length > 0 ? token : null;
 
         Task<KickOAuthTokenResult?> pending;
@@ -63,7 +63,7 @@ internal sealed class KickUserTokenCoordinator(
         // Another surviving waiter may already have published this same rotation.
         var rotated = new KickCredentialSnapshot(refreshed.AccessToken.Trim(),
             string.IsNullOrWhiteSpace(refreshed.RefreshToken) ? credentials.RefreshToken : refreshed.RefreshToken.Trim(),
-            credentials.ClientId, credentials.ClientSecret, refreshed.ExpiresAtUtc);
+            credentials.ClientId, credentials.ClientSecret, refreshed.ExpiresAtUtc, credentials.UsesTokenService);
         Task publication;
         lock (gate)
         {

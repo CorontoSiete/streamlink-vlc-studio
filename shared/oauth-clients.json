@@ -1,0 +1,5 @@
+{
+  "TwitchClientId": "gl9psxrunyx92fxbwh3sedjfe4wgr1",
+  "KickClientId": "01KSRPMC6B2H8FSGJZTHND0KDN",
+  "KickTokenServiceUrl": "https://stream-studio-accounts.stream-studio-account-service.workers.dev/v1/kick/token"
+}

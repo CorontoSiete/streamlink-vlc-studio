@@ -19,7 +19,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 public sealed class KickChatClient : IChatClient
 {
-    private const string PusherAppKey = "32cbd69e4b950bf97679";
+    private readonly string realtimeClientId = Guid.NewGuid().ToString();
     private const int KickRecentChatInitialBackfillLimit = 25;
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DisconnectCleanupTimeout = TimeSpan.FromSeconds(2);
@@ -139,11 +139,13 @@ public sealed class KickChatClient : IChatClient
             }
         }
 
+        var connection = await KickPusherConnection.ResolveAsync(channelInfo.ChannelId, realtimeClientId, cancellationToken)
+            .ConfigureAwait(false);
         RaiseStatusChanged("Connecting to Kick chat...");
         var connectedWebSocket = new ClientWebSocket();
         webSocket = connectedWebSocket;
-        var uri = new Uri($"wss://ws-us2.pusher.com/app/{PusherAppKey}?protocol=7&client=dotnet&version=0.1&flash=false");
-        await connectedWebSocket.ConnectAsync(uri, cancellationToken);
+        connectedWebSocket.Options.SetRequestHeader("Origin", "https://kick.com");
+        await connectedWebSocket.ConnectAsync(connection.WebSocketUri, cancellationToken);
 
         var subscriptionChannel = $"chatrooms.{channelInfo.ChatroomId}.v2";
         await WaitForPusherAcknowledgementAsync(
@@ -517,7 +519,9 @@ public sealed class KickChatClient : IChatClient
                     .ConfigureAwait(false);
                 if (payload is null)
                 {
-                    RaiseStatusChanged("Kick chat disconnected by the server.");
+                    var reason = $"Kick chat closed by the server ({(int?)connectedWebSocket.CloseStatus}): {connectedWebSocket.CloseStatusDescription}";
+                    logger.WriteSafely(AppLogLevel.Warning, "KickChat", reason);
+                    RaiseStatusChanged(reason);
                     return;
                 }
 
@@ -535,6 +539,7 @@ public sealed class KickChatClient : IChatClient
                     continue;
                 }
 
+                ThrowIfPusherError(payload);
                 var message = KickPusherParser.TryParse(payload, channel);
                 if (message is not null)
                 {
@@ -609,6 +614,22 @@ public sealed class KickChatClient : IChatClient
     {
         var bytes = Encoding.UTF8.GetBytes(payload);
         await connectedWebSocket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+    }
+
+    internal static void ThrowIfPusherError(string payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("event", out var eventElement) && eventElement.ValueKind == JsonValueKind.String &&
+                eventElement.GetString() is "pusher:error" or "pusher:subscription_error")
+                throw new InvalidOperationException($"Kick rejected the chat connection: {ReadPusherError(root)}");
+        }
+        catch (JsonException)
+        {
+        }
     }
 
     internal static bool IsPusherPing(string payload)

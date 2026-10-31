@@ -894,6 +894,8 @@
                     <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                         <MenuItem Header="Open stream" Command="{Binding OpenCommand}" />
                         <MenuItem Header="Open and keep browsing" Command="{Binding OpenAndStayOnHomeCommand}" InputGestureText="Ctrl+click" />
+                        <MenuItem Header="Go to VODs" Command="{Binding GoToVodsCommand}"
+                                  Visibility="{Binding HasGoToVodsAction, Converter={StaticResource BoolToVisibility}}" />
                     </ContextMenu>
                 </Button.ContextMenu>
                 <Grid>
@@ -969,35 +971,67 @@
 
         <DataTemplate x:Key="OfflineFollowedChannelTemplate" DataType="{x:Type vm:OfflineFollowedChannelViewModel}">
             <Grid>
-                <Button Style="{StaticResource HomeCardButton}" Command="{Binding OpenCommand}" MinHeight="104"
-                        AutomationProperties.Name="{Binding DisplayName}" ToolTip="Browse this channel's videos">
-                    <Grid Margin="14">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="50" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="36" />
-                        </Grid.ColumnDefinitions>
-                        <controls:RoundedClipBorder Width="48" Height="48" CornerRadius="24"
-                                                    Background="{DynamicResource StudioSurface2Brush}" VerticalAlignment="Center">
+                <Button Style="{StaticResource HomeCardButton}" Command="{Binding OpenCommand}" MinHeight="146" Height="146"
+                        AutomationProperties.Name="{Binding DisplayName}" AutomationProperties.HelpText="{Binding LastLiveText}"
+                        ToolTip="Browse this channel's videos">
+                    <Button.ContextMenu>
+                        <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                            <MenuItem Header="Go to VODs" Command="{Binding OpenCommand}" />
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                    <Grid Margin="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="64" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <controls:RoundedClipBorder CornerRadius="11,11,0,0" Background="{DynamicResource StudioSurface2Brush}">
                             <Grid>
-                                <TextBlock x:Name="ProfileAvatarPlaceholder" Text="&#xE77B;" FontFamily="Segoe MDL2 Assets" FontSize="22" Visibility="Collapsed"
-                                           Foreground="{DynamicResource StudioTextDimBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                <controls:AnimatedEmoteImage x:Name="ProfileAvatarImage" ImageUrl="{Binding ProfileImageUrl}" Stretch="UniformToFill" />
+                                <Border x:Name="OfflineBannerFallback">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                            <GradientStop Color="{DynamicResource StudioSurface3Color}" Offset="0" />
+                                            <GradientStop Color="{DynamicResource StudioSurface2Color}" Offset="1" />
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <controls:AnimatedEmoteImage x:Name="OfflineBannerImage" ImageUrl="{Binding BannerImageUrl}"
+                                    Stretch="UniformToFill" DecodePixelWidth="640"
+                                    IsRefreshRunning="{Binding DataContext.IsFollowedChannelsRefreshing, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                <Border Background="#28000000" />
+                                <Border Background="#DC14171C" CornerRadius="5" Padding="7,4" Margin="10"
+                                        HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                    <TextBlock Text="OFFLINE" Foreground="#F2F5F3" FontSize="10" FontWeight="Bold" />
+                                </Border>
                             </Grid>
                         </controls:RoundedClipBorder>
-                        <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="Offline" FontSize="12" Foreground="{DynamicResource StudioTextSecondaryBrush}" Margin="0,4,0,0" />
-                            <TextBlock Text="View videos" FontSize="12" Foreground="{DynamicResource StudioAccentBrush}" Margin="0,5,0,0" />
-                        </StackPanel>
-                        <Border Grid.Column="2" Style="{StaticResource HomePlatformBadgeStyle}" Width="26" Height="26"
-                                Padding="6" BorderThickness="0" VerticalAlignment="Bottom" HorizontalAlignment="Right" ToolTip="{Binding PlatformText}">
-                            <Viewbox><Path Style="{StaticResource HomePlatformIconStyle}" /></Viewbox>
-                        </Border>
+                        <Grid Grid.Row="1" Margin="12,10,12,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="50" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="32" />
+                            </Grid.ColumnDefinitions>
+                            <controls:RoundedClipBorder Width="48" Height="48" CornerRadius="24"
+                                                        Background="{DynamicResource StudioSurface2Brush}" VerticalAlignment="Center">
+                                <Grid>
+                                    <TextBlock x:Name="ProfileAvatarPlaceholder" Text="&#xE77B;" FontFamily="Segoe MDL2 Assets" FontSize="22" Visibility="Collapsed"
+                                               Foreground="{DynamicResource StudioTextDimBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    <controls:AnimatedEmoteImage x:Name="ProfileAvatarImage" ImageUrl="{Binding ProfileImageUrl}" Stretch="UniformToFill" />
+                                </Grid>
+                            </controls:RoundedClipBorder>
+                            <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding LastLiveText}" ToolTip="{Binding LastLiveToolTip}" FontSize="12"
+                                           Foreground="{DynamicResource StudioTextSecondaryBrush}" Margin="0,5,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <Border Grid.Column="2" Style="{StaticResource HomePlatformBadgeStyle}" Width="26" Height="26"
+                                    Padding="6" BorderThickness="0" VerticalAlignment="Bottom" HorizontalAlignment="Right" ToolTip="{Binding PlatformText}">
+                                <Viewbox><Path Style="{StaticResource HomePlatformIconStyle}" /></Viewbox>
+                            </Border>
+                        </Grid>
                     </Grid>
                 </Button>
                 <Button x:Name="OfflineFollowedPinButton" Command="{Binding TogglePinCommand}"
-                        Width="32" Height="32" MinHeight="32" Margin="0,12,12,0"
+                        Width="32" Height="32" MinHeight="32" Margin="0,72,12,0"
                         HorizontalAlignment="Right" VerticalAlignment="Top"
                         ToolTip="{Binding PinActionText}" AutomationProperties.Name="{Binding PinActionText}"
                         AutomationProperties.ItemStatus="{Binding PinStatusText}">
@@ -1369,6 +1403,24 @@
             <Setter Property="Background" Value="{DynamicResource StudioSurface1Brush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource StudioBorderBrush}" />
             <Setter Property="CornerRadius" Value="{StaticResource StudioCornerMedium}" />
+        </Style>
+
+        <Style x:Key="AccountSignInBadgeStyle" TargetType="Border">
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Margin" Value="0,0,0,12" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="{DynamicResource StudioSurface2Brush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StudioTextMutedBrush}" />
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioTextMutedBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource StudioSuccessSubtleBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource StudioSuccessBorderBrush}" />
+                    <Setter Property="TextElement.Foreground" Value="{DynamicResource StudioSuccessTextBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="SettingsCardHeaderStyle" TargetType="TextBlock">
@@ -2257,6 +2309,7 @@
                                                         <DataTemplate>
                                                             <Button Command="{Binding OpenCommand}"
                                                                     AutomationProperties.Name="{Binding DisplayName}"
+                                                                    ContextMenuService.ShowOnDisabled="True"
                                                                     PreviewMouseDown="HomeStreamItemButton_PreviewMouseDown"
                                                                     Margin="0,0,0,6"
                                                                     Padding="0"
@@ -2264,6 +2317,15 @@
                                                                     Background="{DynamicResource StudioSurfaceCardBrush}"
                                                                     BorderBrush="{DynamicResource StudioBorderBrush}"
                                                                     BorderThickness="1">
+                                                                <Button.ContextMenu>
+                                                                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                                                        <MenuItem Header="Open stream" Command="{Binding OpenCommand}"
+                                                                                  Visibility="{Binding IsLive, Converter={StaticResource BoolToVisibility}}" />
+                                                                        <MenuItem Header="Open and keep browsing" Command="{Binding OpenAndStayOnHomeCommand}" InputGestureText="Ctrl+click"
+                                                                                  Visibility="{Binding IsLive, Converter={StaticResource BoolToVisibility}}" />
+                                                                        <MenuItem Header="Go to VODs" Command="{Binding GoToVodsCommand}" />
+                                                                    </ContextMenu>
+                                                                </Button.ContextMenu>
                                                                 <Button.Template>
                                                                     <ControlTemplate TargetType="Button">
                                                                         <Border x:Name="ResultChrome"
@@ -4044,6 +4106,15 @@
                                 </Path>
                             </Grid>
                         </Button>
+                        <Button x:Name="TopFollowButton"
+                                Style="{StaticResource PlaybackTopControlIconButton}"
+                                Width="Auto" MinWidth="82" Padding="9,0"
+                                FontFamily="Segoe UI" FontSize="12"
+                                Content="{Binding FollowButtonText}"
+                                Command="{Binding FollowSelectedChannelCommand}"
+                                ToolTip="{Binding FollowButtonToolTip}"
+                                ToolTipService.ShowOnDisabled="True"
+                                AutomationProperties.Name="{Binding FollowButtonAccessibleName}" />
                         <Button Style="{StaticResource PlaybackChatToggleIconButton}"
                                 Content="&#xE8F2;"
                                 Command="{Binding ToggleChatCommand}"
@@ -4567,8 +4638,17 @@
                                     <Border Grid.Column="0" Style="{StaticResource SettingsSectionCard}" VerticalAlignment="Top">
                                         <StackPanel>
                                             <ContentControl Content="VOD downloads" Tag="{StaticResource StudioIconDownload}" Style="{StaticResource StudioSectionHeading}" />
-                                            <TextBlock Text="Choose the quality and connection usage for offline Twitch and Kick VODs."
+                                            <TextBlock Text="Choose the format, quality and connection usage for offline Twitch and Kick VODs."
                                                        Style="{StaticResource SettingsPageDescriptionStyle}" Margin="0,0,0,16" />
+                                            <TextBlock Text="Download format" Style="{StaticResource StudioFieldLabelStyle}" />
+                                            <ComboBox x:Name="VodDownloadFormatComboBox" SelectedValuePath="Tag"
+                                                      SelectedValue="{Binding Settings.Downloads.Format, Mode=TwoWay}"
+                                                      AutomationProperties.Name="VOD download format" Margin="0,0,0,8">
+                                                <ComboBoxItem Content="HLS (original)" Tag="{x:Static models:VodDownloadFormat.Hls}" />
+                                                <ComboBoxItem Content="MP4 (.mp4)" Tag="{x:Static models:VodDownloadFormat.Mp4}" />
+                                            </ComboBox>
+                                            <TextBlock Text="MP4 removes H.264 filler when present and keeps the original picture and audio. Savings vary by VOD. Changing format also converts completed downloads."
+                                                       Style="{StaticResource SettingsPageDescriptionStyle}" Margin="0,0,0,20" />
                                             <TextBlock Text="Download quality" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <ComboBox x:Name="VodDownloadQualityComboBox" ItemsSource="{Binding QualityOptions}"
                                                       DisplayMemberPath="DisplayName" SelectedValuePath="Id"
@@ -4643,6 +4723,23 @@
                                                            Margin="0"
                                                            VerticalAlignment="Center" />
                                             </DockPanel>
+                                            <Border Style="{StaticResource AccountSignInBadgeStyle}" Tag="{Binding IsTwitchSignedIn}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="7" Height="7" Margin="0,0,7,0"
+                                                             Fill="{Binding (TextElement.Foreground), RelativeSource={RelativeSource AncestorType=Border}}" />
+                                                    <TextBlock x:Name="TwitchAccountSignInStatus" Text="{Binding TwitchAccountSignInStatus}"
+                                                               FontWeight="SemiBold" FontSize="12"
+                                                               AutomationProperties.Name="{Binding TwitchAccountSignInStatus, StringFormat=Twitch account: {0}}"
+                                                               AutomationProperties.LiveSetting="Polite" />
+                                                </StackPanel>
+                                            </Border>
+                                            <TextBlock Text="{Binding TwitchAccountSignInDescription}"
+                                                       TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <TextBlock x:Name="TwitchAccountUsername" Text="{Binding Settings.Chat.TwitchUsername}"
+                                                       Visibility="{Binding IsTwitchSignedIn, Converter={StaticResource BoolToVisibility}}"
+                                                       Foreground="{DynamicResource StudioSuccessTextBrush}" Margin="0,0,0,12" />
+                                            <Expander Header="Advanced account settings" Foreground="{DynamicResource StudioTextMutedBrush}" IsExpanded="False" Margin="0,0,0,16">
+                                                <StackPanel Margin="0,12,0,0">
                                             <TextBlock Text="Username" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding Settings.Chat.TwitchUsername, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
                                             <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
@@ -4655,6 +4752,8 @@
                                                          controls:PasswordBoxBinding.Password="{Binding Settings.Chat.TwitchOAuthToken, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Twitch OAuth token"
                                                          Margin="0,0,0,16" ToolTip="The oauth: or Bearer prefix is optional." />
+                                                </StackPanel>
+                                            </Expander>
                                             <WrapPanel Orientation="Horizontal">
                                                 <Button Content="Connect Twitch"
                                                         Style="{StaticResource StudioPrimaryButtonStyle}"
@@ -4740,6 +4839,23 @@
                                                            Margin="0"
                                                            VerticalAlignment="Center" />
                                             </DockPanel>
+                                            <Border Style="{StaticResource AccountSignInBadgeStyle}" Tag="{Binding IsKickSignedIn}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="7" Height="7" Margin="0,0,7,0"
+                                                             Fill="{Binding (TextElement.Foreground), RelativeSource={RelativeSource AncestorType=Border}}" />
+                                                    <TextBlock x:Name="KickAccountSignInStatus" Text="{Binding KickAccountSignInStatus}"
+                                                               FontWeight="SemiBold" FontSize="12"
+                                                               AutomationProperties.Name="{Binding KickAccountSignInStatus, StringFormat=Kick account: {0}}"
+                                                               AutomationProperties.LiveSetting="Polite" />
+                                                </StackPanel>
+                                            </Border>
+                                            <TextBlock Text="{Binding KickAccountSignInDescription}"
+                                                       TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <TextBlock x:Name="KickAccountUsername" Text="{Binding Settings.Chat.KickUsername}"
+                                                       Visibility="{Binding IsKickSignedIn, Converter={StaticResource BoolToVisibility}}"
+                                                       Foreground="{DynamicResource StudioSuccessTextBrush}" Margin="0,0,0,12" />
+                                            <Expander Header="Advanced account settings" Foreground="{DynamicResource StudioTextMutedBrush}" IsExpanded="False" Margin="0,0,0,16">
+                                                <StackPanel Margin="0,12,0,0">
                                             <TextBlock Text="Username" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <TextBox Text="{Binding Settings.Chat.KickUsername, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
                                             <TextBlock Text="User access token" Style="{StaticResource StudioFieldLabelStyle}" />
@@ -4757,6 +4873,8 @@
                                                          controls:PasswordBoxBinding.Password="{Binding Settings.Chat.KickClientSecret, UpdateSourceTrigger=PropertyChanged}"
                                                          AutomationProperties.Name="Kick client secret"
                                                          Margin="0,0,0,16" ToolTip="Saved in settings; treat it as account-sensitive." />
+                                                </StackPanel>
+                                            </Expander>
                                             <WrapPanel Orientation="Horizontal" Margin="0,0,0,14">
                                                 <Button Content="Connect Kick"
                                                         Style="{StaticResource StudioPrimaryButtonStyle}"
@@ -5247,6 +5365,9 @@
                                             VerticalAlignment="Top">
                                         <StackPanel>
                                             <ContentControl Content="Playback tools" Tag="{StaticResource StudioIconTools}" Style="{StaticResource StudioSectionHeading}" />
+                                            <Button Content="LAN browser server…" Click="LocalWebServerButton_Click" Margin="0,0,0,8" HorizontalAlignment="Left" />
+                                            <TextBlock Text="Watch on a TV or Linux browser over your local network. HTTPS and a web account are required."
+                                                       TextWrapping="Wrap" Style="{StaticResource SettingsPageDescriptionStyle}" Margin="0,0,0,16" />
                                             <TextBlock Text="Streamlink executable" Style="{StaticResource StudioFieldLabelStyle}" />
                                             <DockPanel Margin="0,0,0,14">
                                                 <Button DockPanel.Dock="Right"
@@ -5288,7 +5409,7 @@
                                                           Margin="0,0,0,8"
                                                           Content="Download verified updates automatically"
                                                           ContentTemplate="{StaticResource SettingsWrappedToggleContent}" />
-                                                <TextBlock Text="For Setup installations. Downloads can be canceled, and you choose when to restart and install."
+                                                <TextBlock Text="For Setup and ZIP installations. Downloads can be canceled, and you choose when to restart and install."
                                                            Style="{StaticResource SettingsPageDescriptionStyle}"
                                                            Margin="0,0,0,12" />
                                                 <Button Style="{StaticResource StudioPrimaryButtonStyle}"
@@ -5296,7 +5417,7 @@
                                                         MinWidth="156"
                                                         HorizontalAlignment="Left"
                                                         Margin="0,0,0,12"
-                                                        AutomationProperties.Name="Update from GitHub">
+                                                        AutomationProperties.Name="Update application">
                                                     <StackPanel Orientation="Horizontal">
                                                         <TextBlock Text="&#xE895;"
                                                                    FontFamily="Segoe MDL2 Assets"

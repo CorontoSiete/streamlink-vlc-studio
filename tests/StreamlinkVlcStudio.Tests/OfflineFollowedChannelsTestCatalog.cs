@@ -2,6 +2,19 @@ internal static partial class OfflineFollowedChannelsTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
+        ("loading workflow: Twitch cards are usable while Kick is pending", () => FastProviderBeforeSlowProviderAsync(PlatformKind.Kick)),
+        ("loading workflow: Kick cards are usable while Twitch is pending", () => FastProviderBeforeSlowProviderAsync(PlatformKind.Twitch)),
+        ("loading workflow: partial refresh preserves pending cards pins commands and notification history", PendingProviderCardsAsync),
+        ("loading workflow: shutdown cancels the pending provider after showing partial results", StopProgressiveProviderAsync),
+        ("loading workflow: late partial results from superseded accounts cannot replace current cards", SupersededProgressiveProviderAsync),
+        ("loading workflow: a provider failure preserves the other providers successful result", ProgressiveProviderFailureAsync),
+        ("loading workflow: stopping progressive enumeration cancels and drains unfinished provider requests", StopProviderEnumerationAsync),
+        ("offline followed channels: Twitch startup displays usable channels before optional banner requests finish", () => StartupBeforeBannersAsync(PlatformKind.Twitch)),
+        ("offline followed channels: Kick startup displays usable channels before optional banner requests finish", () => StartupBeforeBannersAsync(PlatformKind.Kick)),
+        ("offline followed channels: cached Twitch artwork displays immediately and refreshes to changed website banners", CachedBannerSnapshotAsync),
+        ("offline followed channels: superseded optional metadata cannot update displayed cards", SupersededMetadataAsync),
+        ("offline followed channels: shutdown cancels optional metadata and ignores late results", ShutdownDuringMetadataAsync),
+        ("offline followed channels: optional metadata failures preserve usable lists and successful refresh status", MetadataFailureAfterSnapshotAsync),
         ("offline followed channels: Twitch loads every follow page and excludes all live channels", TwitchPaginationAsync),
         ("offline followed channels: Twitch batches avatars across live and offline channels", TwitchProfileBatchingAsync),
         ("offline followed channels: a follow-list error does not hide live streams or alter notification health", TwitchFollowListFailureAsync),
@@ -13,6 +26,19 @@ internal static partial class OfflineFollowedChannelsTestCatalog
         ("offline followed channels: Kick imports and manual follows share channel and avatar batches", KickBatchingAsync),
         ("offline followed channels: Kick never treats missing or malformed channels as offline", KickUnavailableAsync),
         ("offline followed channels: matching channel names on different platforms remain distinct", PlatformIdentityAsync),
+        ("offline followed channels: Twitch loads verified banners and last broadcasts in batches", TwitchOfflineMetadataAsync),
+        ("offline followed channels: Twitch channels without offline images use their actual profile banners", TwitchOfflineBannerFallbackAsync),
+        ("offline followed channels: optional metadata caches expire and recover without losing confirmed history", OfflineMetadataCacheAsync),
+        ("offline followed channels: live transitions invalidate older offline metadata", OfflineMetadataLiveTransitionAsync),
+        ("offline followed channels: missing malformed or future broadcast history stays unavailable", OfflineMetadataUnavailableAsync),
+        ("offline followed channels: Kick banners and UTC broadcast start times use distinct verified fields", KickOfflineMetadataAsync),
+        ("offline followed channels: Kick offline banners use advertised responsive artwork instead of stale API paths", KickOfflineBannerSourcesAsync),
+        ("offline followed channels: Kick banner failures retry while preserving confirmed artwork and history", KickOfflineBannerRecoveryAsync),
+        ("offline followed channels: Kick history deadlines preserve independently loaded banners", KickOfflineBannerHistoryDeadlineAsync),
+        ("offline followed channels: optional history requests have bounded concurrency and a deadline", OfflineMetadataDeadlineAsync),
+        ("offline followed channels: cancellation during optional history loading propagates", OfflineMetadataCancellationAsync),
+        ("offline followed channels: last-live labels handle elapsed boundaries and metadata changes", LastLiveLabelsAsync),
+        ("offline followed channels: banners render with fallbacks and last-live text in every theme", OfflineBannerRenderingAsync),
         ("offline followed channels: refresh moves channels between live and offline and removes unfollows", TransitionsAsync),
         ("offline followed channels: unchanged refreshes reuse cards and commands while metadata updates", CardReuseAsync),
         ("offline followed channels: refresh loading and failure states remain truthful", RefreshStatesAsync),
@@ -120,7 +146,9 @@ internal static partial class OfflineFollowedChannelsTestCatalog
         Assert.Equal("liveone", result.Streams.Single().Channel);
         Assert.Equal(0, result.OfflineChannels!.Count);
         Assert.Equal(false, result.SucceededPlatforms!.Contains(PlatformKind.Twitch));
-        Assert.Equal(0, fixture.Requests.Count(uri => uri.AbsolutePath == "/helix/channels/followed"));
+        // Inventory now starts alongside live status. Incomplete live pages must
+        // still discard that inventory instead of classifying any channel offline.
+        Assert.Equal(1, fixture.Requests.Count(uri => uri.AbsolutePath == "/helix/channels/followed"));
     }
 
     private static async Task TwitchPaginationGuardsAsync()
@@ -314,6 +342,12 @@ internal static partial class OfflineFollowedChannelsTestCatalog
             {
                 var uri = request.RequestUri!;
                 Requests.Add(uri);
+                if (uri.Host == "gql.twitch.tv")
+                {
+                    Assert.Equal(null, request.Headers.Authorization);
+                    Assert.Equal(TwitchGraphQlTransport.PublicClientId, request.Headers.GetValues("Client-Id").Single());
+                    return Response("{\"data\":{\"users\":[]}}");
+                }
                 Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
                 Assert.Equal("token", request.Headers.Authorization.Parameter);
                 if (uri.Host == "id.twitch.tv") return Response(Validation);

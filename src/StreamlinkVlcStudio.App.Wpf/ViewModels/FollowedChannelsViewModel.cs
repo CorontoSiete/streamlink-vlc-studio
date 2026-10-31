@@ -15,13 +15,13 @@ namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
 {
     private readonly Func<LiveStreamCardViewModel, bool, Task> openStream;
-    private readonly Func<FollowedChannel, Task> openOfflineChannel;
+    private readonly Func<PlatformKind, string, Task> openChannelVods;
     internal FollowedChannelsViewModel(MainViewModelDependencies dependencies, Action<string> setStatus,
         Func<LiveStreamCardViewModel, bool, Task> openStream,
-        Func<FollowedChannel, Task> openOfflineChannel) : base(dependencies, setStatus)
+        Func<PlatformKind, string, Task> openChannelVods) : base(dependencies, setStatus)
     {
         this.openStream = openStream;
-        this.openOfflineChannel = openOfflineChannel;
+        this.openChannelVods = openChannelVods;
         settingsService = dependencies.SettingsService;
         followedStreamsService = dependencies.FollowedStreamsService;
         liveNotificationService = dependencies.LiveNotificationService;
@@ -90,6 +90,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     private DateTimeOffset? followedChannelsLastUpdatedAt;
     private bool isFollowedChannelsRefreshing;
     private Task? activeFollowedChannelsRefreshTask;
+    private FollowedLiveStreamsResult? displayedFollowedResult;
     private string activeFollowedChannelsRefreshKey = "";
     private int followedChannelsRefreshGeneration;
     private int followedChannelsAutomaticRefreshActive;
@@ -161,6 +162,32 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     public string KickImportedFollowsSummary => Settings.FollowedChannels.KickFollowsImportedAtUtc is { } importedAt
         ? $"{Settings.FollowedChannels.KickImportedChannelSlugs.Count} Kick follows imported • {importedAt.ToLocalTime():g}"
         : "No Kick follows imported yet.";
+
+    internal void ApplyImportedKickFollows(IReadOnlyList<string> channels)
+    {
+        if (disposed) return;
+        Settings.FollowedChannels.KickImportedChannelSlugs = channels.ToList();
+        Settings.FollowedChannels.KickFollowsImportedAtUtc = DateTimeOffset.UtcNow;
+        OnPropertyChanged(nameof(KickImportedFollowsSummary));
+    }
+
+    public bool IsKickFollowChangeBusy => Volatile.Read(ref kickFollowImportBusy) != 0;
+
+    internal bool TryBeginKickFollowChange() => Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) == 0;
+
+    internal void NotifyKickFollowChange()
+    {
+        if (disposed) return;
+        OnPropertyChanged(nameof(IsKickFollowChangeBusy));
+        ImportKickFollowsCommand.RaiseCanExecuteChanged();
+        ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
+    }
+
+    internal void EndKickFollowChange()
+    {
+        Volatile.Write(ref kickFollowImportBusy, 0);
+        NotifyKickFollowChange();
+    }
 
     internal Task RefreshFollowedChannelsAsync()
     {
@@ -235,76 +262,94 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
             FollowedChannelsStatus = "Refreshing live followed channels";
             OfflineFollowedChannelsStatus = "Refreshing offline followed channels";
 
-            var result = await followedStreamsService.GetLiveFollowedStreamsAsync(Settings, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!IsCurrentFollowedRefresh(generation))
-            {
-                return;
-            }
-
+            var previousResult = displayedFollowedResult;
             var thumbnailCacheVersion = LiveThumbnailCacheVersion.Next();
-            UpdateLiveStreamCards(LiveFollowedChannels,
-                result.Streams.Select(LiveStreamCardData.FromFollowedStream), thumbnailCacheVersion);
-            var liveKeys = result.Streams.Select(stream => stream.Target.StateKey)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var offlineChannels = (result.OfflineChannels ?? [])
-                .Where(channel => !liveKeys.Contains(channel.Target.StateKey))
-                .DistinctBy(channel => channel.Target.StateKey, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            offlineFollowedChannelOrder.Clear();
-            for (var index = 0; index < offlineChannels.Length; index++)
-                offlineFollowedChannelOrder.Add(offlineChannels[index].Target.StateKey, index);
-            var pinnedKeys = Settings.FollowedChannels.PinnedOfflineChannelKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            PagedResultTracker.ApplyItems(OfflineFollowedChannels,
-                offlineChannels.OrderByDescending(channel => pinnedKeys.Contains(channel.Target.StateKey)),
-                card => card.Target.StateKey, channel => channel.Target.StateKey,
-                channel => new OfflineFollowedChannelViewModel(channel, OpenOfflineChannelAsync, () => !disposed,
-                    ToggleOfflineChannelPin, pinnedKeys.Contains(channel.Target.StateKey)),
-                (card, channel) =>
+            IReadOnlyList<FollowedChannel> channelsToEnrich = [];
+            await foreach (var update in followedStreamsService.GetFollowedStreamUpdatesAsync(Settings, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsCurrentFollowedRefresh(generation))
                 {
-                    card.Update(channel);
-                    card.IsPinned = pinnedKeys.Contains(channel.Target.StateKey);
-                }, reset: true);
+                    return;
+                }
 
-            ProcessFollowedChannelLiveNotifications(result);
+                var result = MergePendingFollowedPlatforms(update, previousResult);
+                UpdateLiveStreamCards(LiveFollowedChannels,
+                    result.Streams.Select(LiveStreamCardData.FromFollowedStream), thumbnailCacheVersion);
+                var liveKeys = result.Streams.Select(stream => stream.Target.StateKey)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var offlineChannels = (result.OfflineChannels ?? [])
+                    .Where(channel => !liveKeys.Contains(channel.Target.StateKey))
+                    .DistinctBy(channel => channel.Target.StateKey, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                offlineFollowedChannelOrder.Clear();
+                for (var index = 0; index < offlineChannels.Length; index++)
+                    offlineFollowedChannelOrder.Add(offlineChannels[index].Target.StateKey, index);
+                var pinnedKeys = Settings.FollowedChannels.PinnedOfflineChannelKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                PagedResultTracker.ApplyItems(OfflineFollowedChannels,
+                    offlineChannels.OrderByDescending(channel => pinnedKeys.Contains(channel.Target.StateKey)),
+                    card => card.Target.StateKey, channel => channel.Target.StateKey,
+                    channel => new OfflineFollowedChannelViewModel(channel, OpenOfflineChannelAsync, () => !disposed,
+                        ToggleOfflineChannelPin, pinnedKeys.Contains(channel.Target.StateKey)),
+                    (card, channel) =>
+                    {
+                        card.Update(channel);
+                        card.IsPinned = pinnedKeys.Contains(channel.Target.StateKey);
+                    }, reset: true);
 
-            followedChannelsLastUpdatedAt = DateTimeOffset.Now;
-            OnPropertyChanged(nameof(FollowedChannelsLastUpdatedText));
+                displayedFollowedResult = result;
+                var isComplete = update.PendingPlatforms.Count == 0;
+                if (isComplete)
+                {
+                    ProcessFollowedChannelLiveNotifications(result);
 
-            var statusPrefix = LiveFollowedChannels.Count switch
-            {
-                0 => "No followed channels are live.",
-                1 => "1 followed channel is live.",
-                _ => $"{LiveFollowedChannels.Count} followed channels are live."
-            };
-            var messages = result.Messages.ToList();
-            if (invalidKickFollowedEntries.Count > 0)
-            {
-                var invalidMessage = FormatInvalidKickFollowedChannelsMessage(invalidKickFollowedEntries.Count);
-                messages.Add(invalidMessage);
-                logger.Write(
-                    AppLogLevel.Warning,
-                    "Followed",
-                    $"{invalidMessage} Entries: {string.Join(", ", invalidKickFollowedEntries)}");
+                    followedChannelsLastUpdatedAt = DateTimeOffset.Now;
+                    OnPropertyChanged(nameof(FollowedChannelsLastUpdatedText));
+                    channelsToEnrich = offlineChannels;
+                }
+
+                var statusPrefix = LiveFollowedChannels.Count switch
+                {
+                    0 => "No followed channels are live.",
+                    1 => "1 followed channel is live.",
+                    _ => $"{LiveFollowedChannels.Count} followed channels are live."
+                };
+                var messages = result.Messages.ToList();
+                if (invalidKickFollowedEntries.Count > 0)
+                {
+                    var invalidMessage = FormatInvalidKickFollowedChannelsMessage(invalidKickFollowedEntries.Count);
+                    messages.Add(invalidMessage);
+                    if (isComplete) logger.Write(
+                        AppLogLevel.Warning,
+                        "Followed",
+                        $"{invalidMessage} Entries: {string.Join(", ", invalidKickFollowedEntries)}");
+                }
+
+                var pendingText = $"Refreshing {string.Join(" and ", update.PendingPlatforms)} followed channels.";
+                FollowedChannelsStatus = !isComplete
+                    ? $"{pendingText} {LiveFollowedChannels.Count} live channels available. {string.Join(' ', messages)}".TrimEnd()
+                    : messages.Count == 0 ? statusPrefix : $"{statusPrefix} {string.Join(' ', messages)}";
+
+                var offlineMessages = (result.OfflineMessages ?? result.Messages).ToList();
+                if (invalidKickFollowedEntries.Count > 0)
+                    offlineMessages.Add(FormatInvalidKickFollowedChannelsMessage(invalidKickFollowedEntries.Count));
+                var offlineStatusPrefix = OfflineFollowedChannels.Count switch
+                {
+                    0 when offlineMessages.Count > 0 => "Offline followed channels could not be fully loaded.",
+                    0 => "No offline followed channels found.",
+                    1 => "1 followed channel is offline.",
+                    _ => $"{OfflineFollowedChannels.Count} followed channels are offline."
+                };
+                OfflineFollowedChannelsStatus = !isComplete
+                    ? $"{pendingText} {OfflineFollowedChannels.Count} offline channels available. {string.Join(' ', offlineMessages)}".TrimEnd()
+                    : offlineMessages.Count == 0 ? offlineStatusPrefix : $"{offlineStatusPrefix} {string.Join(' ', offlineMessages)}";
+
+                IsFollowedChannelsRefreshing = !isComplete;
             }
 
-            FollowedChannelsStatus = messages.Count == 0
-                ? statusPrefix
-                : $"{statusPrefix} {string.Join(' ', messages)}";
-
-            var offlineMessages = (result.OfflineMessages ?? result.Messages).ToList();
-            if (invalidKickFollowedEntries.Count > 0)
-                offlineMessages.Add(FormatInvalidKickFollowedChannelsMessage(invalidKickFollowedEntries.Count));
-            var offlineStatusPrefix = OfflineFollowedChannels.Count switch
-            {
-                0 when offlineMessages.Count > 0 => "Offline followed channels could not be fully loaded.",
-                0 => "No offline followed channels found.",
-                1 => "1 followed channel is offline.",
-                _ => $"{OfflineFollowedChannels.Count} followed channels are offline."
-            };
-            OfflineFollowedChannelsStatus = offlineMessages.Count == 0
-                ? offlineStatusPrefix
-                : $"{offlineStatusPrefix} {string.Join(' ', offlineMessages)}";
+            // Channel membership and live notifications are ready. Optional website metadata
+            // must not keep the home page in its loading state or delay usable stream cards.
+            await EnrichOfflineCardsAsync(channelsToEnrich, generation, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || disposed)
         {
@@ -332,12 +377,62 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         }
     }
 
+    private static FollowedLiveStreamsResult MergePendingFollowedPlatforms(
+        FollowedStreamsUpdate update, FollowedLiveStreamsResult? previous)
+    {
+        if (previous is null || update.PendingPlatforms.Count == 0) return update.Result;
+        // A pending provider has not confirmed removals or live/offline transitions yet.
+        // Keep its existing cards until its own result arrives.
+        var pending = update.PendingPlatforms.ToHashSet();
+        return update.Result with
+        {
+            Streams = update.Result.Streams.Concat(previous.Streams.Where(stream => pending.Contains(stream.Platform)))
+                .OrderByDescending(stream => stream.ViewerCount ?? -1)
+                .ThenBy(stream => stream.Platform)
+                .ThenBy(stream => stream.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray(),
+            OfflineChannels = (update.Result.OfflineChannels ?? [])
+                .Concat((previous.OfflineChannels ?? []).Where(channel => pending.Contains(channel.Platform)))
+                .OrderBy(channel => string.IsNullOrWhiteSpace(channel.DisplayName) ? channel.Channel : channel.DisplayName,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(channel => channel.Platform).ToArray()
+        };
+    }
+
+    private async Task EnrichOfflineCardsAsync(IReadOnlyList<FollowedChannel> channels, int generation,
+        CancellationToken cancellationToken)
+    {
+        if (channels.Count == 0 || followedStreamsService is null) return;
+        try
+        {
+            var enriched = await followedStreamsService.EnrichOfflineChannelsAsync(channels, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsCurrentFollowedRefresh(generation)) return;
+            var byKey = enriched.ToDictionary(channel => channel.Target.StateKey, StringComparer.OrdinalIgnoreCase);
+            foreach (var card in OfflineFollowedChannels)
+            {
+                if (byKey.TryGetValue(card.Target.StateKey, out var channel)) card.Update(channel);
+            }
+            if (displayedFollowedResult is { } displayed)
+            {
+                displayedFollowedResult = displayed with
+                {
+                    OfflineChannels = (displayed.OfflineChannels ?? [])
+                        .Select(channel => byKey.GetValueOrDefault(channel.Target.StateKey, channel)).ToArray()
+                };
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.Write(AppLogLevel.Info, "Followed", "Optional offline artwork or history could not be refreshed.", ex);
+        }
+    }
+
     internal void UpdateLiveStreamCards(ObservableCollection<LiveStreamCardViewModel> cards,
         IEnumerable<LiveStreamCardData> streams, long thumbnailCacheVersion)
     {
         PagedResultTracker.ApplyItems(cards, streams,
             card => card.Target.StateKey, data => data.Target.StateKey,
-            data => new LiveStreamCardViewModel(data, openStream, thumbnailCacheVersion),
+            data => new LiveStreamCardViewModel(data, openStream, thumbnailCacheVersion, openChannelVods),
             (card, data) => card.Update(data, thumbnailCacheVersion), reset: true);
     }
 
@@ -346,7 +441,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         if (disposed) return;
         try
         {
-            await Track(openOfflineChannel(channel));
+            await Track(openChannelVods(channel.Platform, channel.Channel));
         }
         catch (Exception ex)
         {
@@ -552,11 +647,11 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
     internal async Task ImportKickFollowsAsync()
     {
         if (kickFollowedChannelsImporter is null) return;
-        if (Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) != 0) return;
+        if (!TryBeginKickFollowChange()) return;
         var token = lifetimeCancellation.Token;
         try
         {
-            ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
+            NotifyKickFollowChange();
             KickFollowImportStatus = "Sign in to Kick and import your follows in the opened window.";
             var channels = await kickFollowedChannelsImporter.ImportAsync(token);
             token.ThrowIfCancellationRequested();
@@ -577,18 +672,17 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         }
         finally
         {
-            Volatile.Write(ref kickFollowImportBusy, 0);
-            ClearImportedKickFollowsCommand.RaiseCanExecuteChanged();
+            EndKickFollowChange();
         }
     }
 
     internal async Task ClearImportedKickFollowsAsync()
     {
-        if (Interlocked.CompareExchange(ref kickFollowImportBusy, 1, 0) != 0) return;
+        if (!TryBeginKickFollowChange()) return;
         var token = lifetimeCancellation.Token;
         try
         {
-            ImportKickFollowsCommand.RaiseCanExecuteChanged();
+            NotifyKickFollowChange();
             await SaveImportedKickFollowsAsync([], null, token);
             token.ThrowIfCancellationRequested();
             KickFollowImportStatus = "Imported Kick follows cleared.";
@@ -598,8 +692,7 @@ internal sealed class FollowedChannelsViewModel : HomeFeatureViewModel
         catch (Exception ex) when (!disposed) { KickFollowImportStatus = ex.Message; }
         finally
         {
-            Volatile.Write(ref kickFollowImportBusy, 0);
-            ImportKickFollowsCommand.RaiseCanExecuteChanged();
+            EndKickFollowChange();
         }
     }
 

@@ -14,15 +14,18 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
     private readonly Func<string> selectedQuality;
     private readonly Func<bool> canShowSearch;
     private readonly Func<StreamSearchResultViewModel, bool, Task> openSearchResult;
+    private readonly Func<PlatformKind, string, Task> openChannelVods;
     internal int CurrentGeneration => streamSearchController.CurrentGeneration;
 
     internal StreamSearchViewModel(MainViewModelDependencies dependencies, Action<string> setStatus,
-        Func<string> selectedQuality, Func<bool> canShowSearch, Func<StreamSearchResultViewModel, bool, Task> openSearchResult)
+        Func<string> selectedQuality, Func<bool> canShowSearch, Func<StreamSearchResultViewModel, bool, Task> openSearchResult,
+        Func<PlatformKind, string, Task> openChannelVods)
         : base(dependencies, setStatus)
     {
         this.selectedQuality = selectedQuality;
         this.canShowSearch = canShowSearch;
         this.openSearchResult = openSearchResult;
+        this.openChannelVods = openChannelVods;
         streamSearchService = dependencies.StreamSearchService;
         streamlinkService = dependencies.StreamlinkService;
         streamMetadataService = dependencies.StreamMetadataService;
@@ -446,13 +449,14 @@ internal sealed class StreamSearchViewModel : HomeFeatureViewModel
         foreach (var probe in probes)
         {
             StreamSearchResults.Add(probe.Channel is { } channel
-                ? new StreamSearchResultViewModel(channel, openSearchResult, probe.ViewerCount)
+                ? new StreamSearchResultViewModel(channel, openSearchResult, probe.ViewerCount, openChannelVods)
                 : new StreamSearchResultViewModel(
                     probe.Target,
                     probe.Result,
                     probe.Metadata,
                     openSearchResult,
-                    probe.ViewerCount));
+                    probe.ViewerCount,
+                    openChannelVods));
         }
     }
 

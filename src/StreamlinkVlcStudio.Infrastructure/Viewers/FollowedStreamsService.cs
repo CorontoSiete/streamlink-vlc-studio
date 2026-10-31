@@ -14,7 +14,7 @@ using static StreamlinkVlcStudio.Core.Text.StringValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.Viewers;
 
-public sealed class FollowedStreamsService : IFollowedStreamsService
+public sealed partial class FollowedStreamsService : IFollowedStreamsService
 {
     private const int TwitchPageSize = 100;
     private const int MaxTwitchPages = 100;
@@ -51,19 +51,58 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         AppSettings settings,
         CancellationToken cancellationToken = default)
     {
+        FollowedLiveStreamsResult result = new([], []);
+        await foreach (var update in GetFollowedStreamUpdatesAsync(settings, cancellationToken).ConfigureAwait(false))
+            result = update.Result;
+        return result;
+    }
+
+    public async IAsyncEnumerable<FollowedStreamsUpdate> GetFollowedStreamUpdatesAsync(
+        AppSettings settings,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        // Own both requests until completion, even if a consumer stops after the first snapshot.
+        cancellationToken.ThrowIfCancellationRequested();
+        using var loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var token = loadCancellation.Token;
+        var pending = new Dictionary<PlatformKind, Task<ObservedPlatformLoad>>
+        {
+            [PlatformKind.Twitch] = ObservePlatformResultAsync(PlatformKind.Twitch,
+                GetTwitchFollowedStreamsAsync(settings.Chat, token), token),
+            [PlatformKind.Kick] = ObservePlatformResultAsync(PlatformKind.Kick,
+                GetKickFollowedStreamsAsync(settings, token), token)
+        };
+        var observed = new List<ObservedPlatformLoad>();
+        try
+        {
+            while (pending.Count > 0)
+            {
+                await Task.WhenAny(pending.Values).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                // Coalesce providers that completed together into a single UI update.
+                foreach (var platform in pending.Keys.ToArray())
+                {
+                    if (!pending[platform].IsCompleted) continue;
+                    observed.Add(await pending[platform].ConfigureAwait(false));
+                    pending.Remove(platform);
+                }
+                yield return new(BuildFollowedResult(observed.OrderBy(load => load.Platform)), pending.Keys.ToArray());
+            }
+        }
+        finally
+        {
+            await loadCancellation.CancelAsync().ConfigureAwait(false);
+            await Task.WhenAll(pending.Values).ConfigureAwait(false);
+        }
+    }
+
+    private static FollowedLiveStreamsResult BuildFollowedResult(IEnumerable<ObservedPlatformLoad> observedLoads)
+    {
         var streams = new List<FollowedLiveStream>();
         var offlineChannels = new List<FollowedChannel>();
         var messages = new List<string>();
         var offlineMessages = new List<string>();
         var succeededPlatforms = new List<PlatformKind>();
-
-        var twitchLoad = GetTwitchFollowedStreamsAsync(settings.Chat, cancellationToken);
-        var kickLoad = GetKickFollowedStreamsAsync(settings, cancellationToken);
-        var observedLoads = await Task.WhenAll(
-            ObservePlatformResultAsync(PlatformKind.Twitch, twitchLoad, cancellationToken),
-            ObservePlatformResultAsync(PlatformKind.Kick, kickLoad, cancellationToken))
-            .ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
 
         foreach (var observed in observedLoads)
         {
@@ -166,90 +205,111 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
                 "Twitch: Client ID is required for followed streams.");
         }
 
-        var after = "";
-        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
-        var pageCount = 0;
-        var malformed = false;
-        do
+        // The account inventory and live status have independent pagination. Overlap
+        // their network waits, but own the inventory until this refresh has drained it.
+        using var inventoryCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var followedChannelsTask = GetTwitchFollowedChannelsAsync(
+            tokenInfo.UserId, token, clientId, inventoryCancellation.Token);
+        try
         {
-            if (++pageCount > MaxTwitchPages)
+            var after = "";
+            var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+            var pageCount = 0;
+            var malformed = false;
+            do
             {
-                const string message = "Twitch: followed streams pagination exceeded the safety limit.";
-                logger.Write(AppLogLevel.Warning, "Followed", message);
-                return new PlatformFollowedStreamsResult(streams, [message]);
+                if (++pageCount > MaxTwitchPages)
+                {
+                    const string message = "Twitch: followed streams pagination exceeded the safety limit.";
+                    logger.Write(AppLogLevel.Warning, "Followed", message);
+                    return new PlatformFollowedStreamsResult(streams, [message]);
+                }
+
+                var url = BuildTwitchFollowedUrl("streams", tokenInfo.UserId, after);
+                using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
+
+                using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
+                var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    logger.Write(
+                        AppLogLevel.Warning,
+                        "Followed",
+                        $"Twitch followed streams request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
+                    return new PlatformFollowedStreamsResult(
+                        streams,
+                        ["Twitch: followed streams unavailable. Check Twitch Client ID and OAuth token."]);
+                }
+
+                using var document = JsonDocument.Parse(responseBody);
+                if (!TryGetArray(document.RootElement, "data", out var data))
+                {
+                    malformed = true;
+                    break;
+                }
+
+                var page = ReadTwitchStreams(document.RootElement).ToArray();
+                streams.AddRange(page);
+                if (page.Length != data.GetArrayLength() ||
+                    (document.RootElement.TryGetProperty("pagination", out var pagination) &&
+                     (pagination.ValueKind != JsonValueKind.Object ||
+                      (pagination.TryGetProperty("cursor", out var cursor) && cursor.ValueKind != JsonValueKind.String))))
+                {
+                    malformed = true;
+                    break;
+                }
+
+                var nextCursor = ReadPaginationCursor(document.RootElement);
+                if (!string.IsNullOrWhiteSpace(nextCursor) && !seenCursors.Add(nextCursor))
+                {
+                    const string message = "Twitch: followed streams pagination repeated a cursor.";
+                    logger.Write(AppLogLevel.Warning, "Followed", message);
+                    return new PlatformFollowedStreamsResult(streams, [message]);
+                }
+
+                after = nextCursor;
+            }
+            while (!string.IsNullOrWhiteSpace(after));
+
+            var offlineResult = (Channels: new List<FollowedChannel>(), Messages: new List<string>());
+            if (!malformed)
+            {
+                offlineResult = await followedChannelsTask.ConfigureAwait(false);
+                // Classify only after every live page has succeeded. The inventory request
+                // never reads the live list while that list is still being populated.
+                var liveChannels = streams.Select(stream => stream.Channel)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                offlineResult.Channels.RemoveAll(channel => liveChannels.Contains(channel.Channel));
             }
 
-            var url = BuildTwitchFollowedUrl("streams", tokenInfo.UserId, after);
-            using var request = TwitchApiRequest.Create(HttpMethod.Get, url, token, clientId);
+            await EnrichTwitchProfileImagesAsync(
+                streams,
+                offlineResult.Channels,
+                token,
+                clientId,
+                cancellationToken).ConfigureAwait(false);
 
-            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken).ConfigureAwait(false);
-            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.Write(
-                    AppLogLevel.Warning,
-                    "Followed",
-                    $"Twitch followed streams request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {ApiErrorMessage.Extract(responseBody)}");
-                return new PlatformFollowedStreamsResult(
-                    streams,
-                    ["Twitch: followed streams unavailable. Check Twitch Client ID and OAuth token."]);
-            }
+            PrepareOfflineMetadata(PlatformKind.Twitch, streams, offlineResult.Channels);
 
-            using var document = JsonDocument.Parse(responseBody);
-            if (!TryGetArray(document.RootElement, "data", out var data))
-            {
-                malformed = true;
-                break;
-            }
-
-            var page = ReadTwitchStreams(document.RootElement).ToArray();
-            streams.AddRange(page);
-            if (page.Length != data.GetArrayLength() ||
-                (document.RootElement.TryGetProperty("pagination", out var pagination) &&
-                 (pagination.ValueKind != JsonValueKind.Object ||
-                  (pagination.TryGetProperty("cursor", out var cursor) && cursor.ValueKind != JsonValueKind.String))))
-            {
-                malformed = true;
-                break;
-            }
-
-            var nextCursor = ReadPaginationCursor(document.RootElement);
-            if (!string.IsNullOrWhiteSpace(nextCursor) && !seenCursors.Add(nextCursor))
-            {
-                const string message = "Twitch: followed streams pagination repeated a cursor.";
-                logger.Write(AppLogLevel.Warning, "Followed", message);
-                return new PlatformFollowedStreamsResult(streams, [message]);
-            }
-
-            after = nextCursor;
+            return malformed
+                ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Twitch, streams)
+                : new PlatformFollowedStreamsResult(streams, [], Succeeded: true,
+                    OfflineChannels: offlineResult.Channels, OfflineMessages: offlineResult.Messages);
         }
-        while (!string.IsNullOrWhiteSpace(after));
-
-        var offlineResult = (Channels: new List<FollowedChannel>(), Messages: new List<string>());
-        if (!malformed)
+        finally
         {
-            offlineResult = await GetTwitchOfflineChannelsAsync(
-                tokenInfo.UserId, token, clientId, streams, cancellationToken).ConfigureAwait(false);
+            // Live failures, malformed pages and consumer cancellation must not leave
+            // inventory requests running after the provider result has been returned.
+            await inventoryCancellation.CancelAsync().ConfigureAwait(false);
+            try { await followedChannelsTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (inventoryCancellation.IsCancellationRequested) { }
         }
-
-        await EnrichTwitchProfileImagesAsync(
-            streams,
-            offlineResult.Channels,
-            token,
-            clientId,
-            cancellationToken).ConfigureAwait(false);
-
-        return malformed
-            ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Twitch, streams)
-            : new PlatformFollowedStreamsResult(streams, [], Succeeded: true,
-                OfflineChannels: offlineResult.Channels, OfflineMessages: offlineResult.Messages);
     }
 
-    private async Task<(List<FollowedChannel> Channels, List<string> Messages)> GetTwitchOfflineChannelsAsync(
+    private async Task<(List<FollowedChannel> Channels, List<string> Messages)> GetTwitchFollowedChannelsAsync(
         string userId,
         string accessToken,
         string clientId,
-        IReadOnlyList<FollowedLiveStream> streams,
         CancellationToken cancellationToken)
     {
         try
@@ -297,10 +357,7 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             }
             while (!string.IsNullOrWhiteSpace(after));
 
-            var liveChannels = streams.Select(stream => stream.Channel)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            return (channels.Where(channel => !liveChannels.Contains(channel.Channel))
-                .DistinctBy(channel => channel.Channel, StringComparer.OrdinalIgnoreCase).ToList(), []);
+            return (channels.DistinctBy(channel => channel.Channel, StringComparer.OrdinalIgnoreCase).ToList(), []);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -373,6 +430,8 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
         await EnrichKickProfileImagesAsync(streams, offlineChannels, broadcasterUserIds, accessToken, cancellationToken)
             .ConfigureAwait(false);
 
+        PrepareOfflineMetadata(PlatformKind.Kick, streams, offlineChannels);
+
         return malformed
             ? PlatformFollowedStreamsResult.Malformed(PlatformKind.Kick, streams, offlineChannels)
             : new PlatformFollowedStreamsResult(streams, [], Succeeded: true,
@@ -397,8 +456,14 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
 
         try
         {
+            var banners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var profileImages = await ProfileImageLookup.GetTwitchAsync(
-                httpClient, accessToken, clientId, channels, cancellationToken).ConfigureAwait(false);
+                httpClient, accessToken, clientId, channels, cancellationToken,
+                user =>
+                {
+                    if (TryGetNonEmptyString(user, "login", out var login))
+                        banners[login] = NormalizeImageUrl(GetOptionalString(user, "offline_image_url"));
+                }).ConfigureAwait(false);
             for (var index = 0; index < streams.Count; index++)
             {
                 if (profileImages.TryGetValue(streams[index].Channel, out var profileImage))
@@ -409,8 +474,12 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             }
             for (var index = 0; index < offlineChannels.Count; index++)
             {
-                if (profileImages.TryGetValue(offlineChannels[index].Channel, out var profileImage))
-                    offlineChannels[index] = offlineChannels[index] with { ProfileImageUrl = profileImage };
+                var channel = offlineChannels[index];
+                offlineChannels[index] = channel with
+                {
+                    ProfileImageUrl = profileImages.GetValueOrDefault(channel.Channel, channel.ProfileImageUrl),
+                    BannerImageUrl = banners.GetValueOrDefault(channel.Channel, "")
+                };
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -545,7 +614,8 @@ public sealed class FollowedStreamsService : IFollowedStreamsService
             if (payload.State == LiveChannelState.Offline)
             {
                 offlineChannels.Add(new FollowedChannel(
-                    PlatformKind.Kick, target.Channel, target.Channel, target.Url, profileImage));
+                    PlatformKind.Kick, target.Channel, target.Channel, target.Url, profileImage,
+                    NormalizeImageUrl(GetOptionalString(item, "banner_picture"))));
                 continue;
             }
 

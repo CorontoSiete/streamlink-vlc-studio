@@ -30,7 +30,7 @@ public enum SettingsCategory
     Changelog
 }
 
-public sealed class MainViewModel : ObservableObject, IAsyncDisposable
+public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 {
     private static readonly TimeSpan DetachedDisposalWaitTimeout = TimeSpan.FromSeconds(4);
     private const int VlcPluginMultiViewChatDisableThreshold = 3;
@@ -72,6 +72,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly SemaphoreSlim chatSettingsApplyGate = new(1, 1);
     private readonly SemaphoreSlim vlcPluginMultiViewChatPolicyGate = new(1, 1);
     private readonly List<Task> detachedDisposals = [];
+    private readonly Dictionary<StreamTabViewModel, Task> closingOfflineTabs = [];
     private readonly BackgroundOperationController backgroundOperationController;
     private readonly TabGroupingController tabGroupingController = new();
     private readonly HashSet<StreamTabViewModel> vlcPluginMultiViewChatPolicyHiddenTabs = [];
@@ -154,6 +155,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         this.twitchSubOnlyVodResolver = twitchSubOnlyVodResolver;
         this.twitchClipService = twitchClipService;
         kickClipService = dependencies.KickClipService;
+        channelFollowService = dependencies.ChannelFollowService;
         this.appUpdateService = appUpdateService;
         if (appUpdateService is not null)
         {
@@ -180,7 +182,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         selectedQuality = settings.DefaultQuality;
 
         streamSearch = new StreamSearchViewModel(dependencies, value => StatusMessage = value,
-            () => SelectedQuality, () => IsHomeVisible && !IsSettingsOpen, OpenSearchResultAsync);
+            () => SelectedQuality, () => IsHomeVisible && !IsSettingsOpen, OpenSearchResultAsync, OpenChannelVodsAsync);
         streamSearch.PropertyChanged += HomeFeatureOnPropertyChanged;
         GoBackCommand = new RelayCommand(GoBack, () => CanGoBack);
         SelectHomeCommand = new RelayCommand(SelectHome);
@@ -193,10 +195,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             OpenLiveStreamCardAsync, RecordNavigation, () => IsBrowseHomePageVisible);
         browse.PropertyChanged += HomeFeatureOnPropertyChanged;
         followed = new FollowedChannelsViewModel(dependencies, value => StatusMessage = value, OpenLiveStreamCardAsync,
-            channel => OpenChannelVodsAsync(channel.Platform, channel.Channel));
+            OpenChannelVodsAsync);
         followed.PropertyChanged += HomeFeatureOnPropertyChanged;
         downloads = new VodDownloadsViewModel(dependencies, value => StatusMessage = value,
-            () => SelectedVodDownloadQuality, OpenOfflineVodAsync, EnsureDownloadNotOpen);
+            () => SelectedVodDownloadQuality, OpenOfflineVodAsync, EnsureDownloadNotOpenAsync);
         downloads.PropertyChanged += HomeFeatureOnPropertyChanged;
         vodLibrary = new VodLibraryViewModel(dependencies, value => StatusMessage = value, OpenTwitchVodAsync,
             downloads.CreateDownloadCommand);
@@ -208,6 +210,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         PauseSelectedCommand = CreateCommand(PauseSelectedAsync, () => SelectedTab is not null);
         CloseSelectedCommand = CreateCommand(CloseSelectedAsync, () => SelectedTab is not null);
         CreateClipCommand = CreateCommand(CreateClipAsync, CanCreateClip);
+        FollowSelectedChannelCommand = CreateCommand(FollowSelectedChannelAsync, CanFollowSelectedChannel);
         SaveSettingsCommand = CreateCommand(SaveSettingsAsync);
         AuthorizeTwitchCommand = CreateCommand(AuthorizeTwitchAsync);
         ClearTwitchTokenCommand = CreateCommand(ClearTwitchTokenAsync, HasTwitchToken);
@@ -425,6 +428,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(IsSelectedTabDetached));
             OnPropertyChanged(nameof(IsReplaySeekBarVisible));
             OnPropertyChanged(nameof(ClipButtonToolTip));
+            RaiseFollowButtonState();
             RaiseChatVisibilityProperties();
             RaiseCommandStates();
             ApplySelectedTabSelection();
@@ -818,6 +822,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             {
                 if (value) DismissStreamSearchDropdown();
                 else backgroundOperationController.Track(settingsAutoSave.FlushAsync());
+                RefreshAccountSignInProperties();
                 OnPropertyChanged(nameof(IsPlaybackWorkspaceVisible));
                 OnPropertyChanged(nameof(IsStreamSearchPanelVisible));
                 RecordNavigation();
@@ -848,6 +853,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(IsHotkeysSettingsSelected));
             OnPropertyChanged(nameof(IsAdvancedSettingsSelected));
             OnPropertyChanged(nameof(IsChangelogSelected));
+            RefreshAccountSignInProperties();
         }
     }
 
@@ -1413,10 +1419,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task OpenOfflineVodAsync(StreamTarget target, string quality)
+    private async Task OpenOfflineVodAsync(IVodDownloadPlayback playback, string quality)
     {
         IsHomeSelected = false;
-        try { await OpenStreamAsync(target, quality: quality); }
+        try { await OpenStreamAsync(playback.Target, quality: quality, offlinePlayback: playback); }
         catch
         {
             IsHomeSelected = true;
@@ -1426,13 +1432,28 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void EnsureDownloadNotOpen(VodDownloadItem item)
+    private async Task EnsureDownloadNotOpenAsync(VodDownloadItem item)
     {
         var itemDirectoryName = item.Id.ToString("N");
-        if (Tabs.Any(tab => tab.Target.IsOfflineVod &&
+        bool Matches(StreamTabViewModel tab) => tab.Target.IsOfflineVod &&
             (string.Equals(tab.Target.LocalMediaPath, item.LocalMediaPath, StringComparison.OrdinalIgnoreCase) ||
              string.Equals(Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(tab.Target.LocalMediaPath))),
-                 itemDirectoryName, StringComparison.OrdinalIgnoreCase))))
+                 itemDirectoryName, StringComparison.OrdinalIgnoreCase));
+        if (Tabs.Any(Matches))
+            throw new InvalidOperationException("Close this VOD's offline playback tab before replacing or deleting its downloaded files.");
+
+        Task[] closing;
+        lock (detachedDisposalsGate)
+            closing = closingOfflineTabs.Where(entry => Matches(entry.Key)).Select(entry => entry.Value).ToArray();
+        try
+        {
+            await Task.WhenAll(closing).WaitAsync(DetachedDisposalWaitTimeout, lifetimeCancellation.Token);
+        }
+        catch (TimeoutException)
+        {
+            throw new InvalidOperationException("This VOD's player is still closing. Try again when playback cleanup finishes.");
+        }
+        if (Tabs.Any(Matches))
             throw new InvalidOperationException("Close this VOD's offline playback tab before replacing or deleting its downloaded files.");
     }
 
@@ -1924,37 +1945,41 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         StreamTarget target,
         bool clearInputOnSuccess = false,
         bool selectOpenedTab = true,
-        string? quality = null)
+        string? quality = null,
+        IVodDownloadPlayback? offlinePlayback = null)
     {
-        if (disposed) return;
-
-        // Capture the initiating search before playback can yield to new input.
-        int? searchGenerationToClear = clearInputOnSuccess ? streamSearch.CurrentGeneration : null;
-        if (TryOpenExistingTab(target, selectOpenedTab, searchGenerationToClear))
-        {
-            return;
-        }
-
-        await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
         try
         {
             if (disposed) return;
-            // Recheck after entering the gate so overlapping opens share the tab.
+
+            // Capture the initiating search before playback can yield to new input.
+            int? searchGenerationToClear = clearInputOnSuccess ? streamSearch.CurrentGeneration : null;
             if (TryOpenExistingTab(target, selectOpenedTab, searchGenerationToClear))
             {
                 return;
             }
 
-            var tab = quality is null
-                ? selectOpenedTab ? CreateAndSelectTab(target) : CreateTab(target)
-                : selectOpenedTab ? CreateAndSelectTabWithQuality(target, quality) : CreateTabWithQuality(target, quality);
-            StatusMessage = $"Starting {target.DisplayName}";
-            var openingMetadata = LoadOpeningTabMetadataInBackground(tab);
-            StartTabInBackground(tab, searchGenerationToClear, openingMetadata);
+            await streamOpenGate.WaitAsync(lifetimeCancellation.Token);
+            try
+            {
+                if (disposed) return;
+                // Recheck after entering the gate so overlapping opens share the tab.
+                if (TryOpenExistingTab(target, selectOpenedTab, searchGenerationToClear)) return;
+
+                var tab = quality is null && offlinePlayback is null
+                    ? CreateTab(target)
+                    : CreateTabWithQuality(target, quality, offlinePlayback);
+                offlinePlayback = null; // The tab now owns the validated media generation.
+                if (selectOpenedTab) SelectedTab = tab;
+                StatusMessage = $"Starting {target.DisplayName}";
+                var openingMetadata = LoadOpeningTabMetadataInBackground(tab);
+                StartTabInBackground(tab, searchGenerationToClear, openingMetadata);
+            }
+            finally { streamOpenGate.Release(); }
         }
         finally
         {
-            streamOpenGate.Release();
+            if (offlinePlayback is not null) await offlinePlayback.DisposeAsync();
         }
     }
 
@@ -1963,6 +1988,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
+        accountSignInExpiryTimer?.Dispose();
+        CancelFollowStatusChecks();
+        channelFollowStatusChecks.Clear();
+        if (activeChannelFollowCancellation is { } followCancellation)
+            CancellationSourceCleanup.Cancel(followCancellation);
         // Freeze every close snapshot before cleanup can yield or detach a tab.
         foreach (var tab in Tabs) tab.CaptureVodResumePosition(closing: true);
         var previewCleanup = HoverPreviews.DisposeAsync().AsTask();
@@ -2129,7 +2159,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         await vodLibrary.SearchChannelVodsAsync(platform, channel);
     }
 
-    private void HomeFeatureOnPropertyChanged(object? sender, PropertyChangedEventArgs e) => OnPropertyChanged(e.PropertyName);
+    private void HomeFeatureOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        OnPropertyChanged(e.PropertyName);
+        if (e.PropertyName == nameof(FollowedChannelsViewModel.IsKickFollowChangeBusy))
+            FollowSelectedChannelCommand.RaiseCanExecuteChanged();
+    }
 
     private void SetStreamSearchDropdownOpen(bool value) => streamSearch.SetStreamSearchDropdownOpen(value);
 
@@ -2243,18 +2278,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private StreamTabViewModel CreateAndSelectTab(StreamTarget target) => CreateAndSelectTabWithQuality(target, null);
-
-    private StreamTabViewModel CreateAndSelectTabWithQuality(StreamTarget target, string? quality)
-    {
-        var tab = quality is null ? CreateTab(target) : CreateTabWithQuality(target, quality);
-        SelectedTab = tab;
-        return tab;
-    }
-
     private StreamTabViewModel CreateTab(StreamTarget target) => CreateTabWithQuality(target, null);
 
-    private StreamTabViewModel CreateTabWithQuality(StreamTarget target, string? quality)
+    private StreamTabViewModel CreateTabWithQuality(StreamTarget target, string? quality, IVodDownloadPlayback? offlinePlayback = null)
     {
         var tab = new StreamTabViewModel(new StreamTabViewModelDependencies
         {
@@ -2271,6 +2297,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             ReplayResolver = replayResolver,
             VodChatProvider = vodChatProvider,
             VodPlaybackHistory = vodPlaybackHistory,
+            OfflinePlayback = offlinePlayback,
             TwitchSubOnlyVodResolver = twitchSubOnlyVodResolver
         });
         Tabs.Add(tab);
@@ -2998,6 +3025,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         lock (detachedDisposalsGate)
         {
             detachedDisposals.Add(disposalTask);
+            if (tab.Target.IsOfflineVod) closingOfflineTabs.Add(tab, disposalTask);
         }
 
         _ = disposalTask.ContinueWith(
@@ -3006,6 +3034,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 lock (detachedDisposalsGate)
                 {
                     detachedDisposals.Remove(completed);
+                    closingOfflineTabs.Remove(tab);
                 }
             },
             TaskScheduler.Default);
@@ -3049,6 +3078,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             await tab.DisposeAsync();
+            if (tab.Target.IsOfflineVod) await tab.PlaybackCleanupIdleTask;
         }
         catch (Exception ex)
         {
@@ -3231,7 +3261,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (disposed || Volatile.Read(ref updateActionInProgress) != 0 ||
             !Settings.Updates.AutomaticChecksEnabled || !Settings.Updates.AutomaticDownloadsEnabled ||
             !result.IsUpdateAvailable || result.IsNotifyOnly || result.Release is not { } release ||
-            result.InstallKind is not (AppInstallKind.Managed or AppInstallKind.LegacyManaged) ||
+            result.InstallKind is not (AppInstallKind.Managed or AppInstallKind.LegacyManaged or AppInstallKind.Zip) ||
             release.Version == canceledAutomaticDownloadVersion ||
             Settings.Updates.IsSnoozed(release.Version, DateTimeOffset.UtcNow) ||
             appUpdateService?.State is not { Phase: AppUpdatePhase.Available or AppUpdatePhase.DownloadFailed })
@@ -3463,6 +3493,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         PauseSelectedCommand.RaiseCanExecuteChanged();
         CloseSelectedCommand.RaiseCanExecuteChanged();
         CreateClipCommand.RaiseCanExecuteChanged();
+        FollowSelectedChannelCommand.RaiseCanExecuteChanged();
         ToggleChatCommand.RaiseCanExecuteChanged();
         MoveTabLeftCommand.RaiseCanExecuteChanged();
         MoveTabRightCommand.RaiseCanExecuteChanged();
@@ -3555,6 +3586,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         observedChatSettings = settings;
         observedChatSettings.PropertyChanged += ChatSettingsOnPropertyChanged;
+        RefreshAccountSignInProperties();
         OnPropertyChanged(nameof(SelectedVlcOverlayFontSize));
         RaiseChatTextSizeProperties();
 
@@ -3586,6 +3618,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (disposed || !ReferenceEquals(sender, observedChatSettings))
         {
             return;
+        }
+
+        if (IsAccountSignInSetting(e.PropertyName))
+        {
+            RefreshAccountSignInProperties();
         }
 
         if (e.PropertyName == nameof(ChatSettings.Layout) &&
@@ -3785,6 +3822,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             nameof(ChatSettings.KickUsername) or
             nameof(ChatSettings.KickClientId) or
             nameof(ChatSettings.KickClientSecret) or
+            nameof(ChatSettings.KickUseTokenService) or
             nameof(ChatSettings.KickSendAsBot) or
             nameof(ChatSettings.KickChatroomIds) or
             nameof(ChatSettings.KickBroadcasterUserIds);
@@ -3832,6 +3870,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void TabsOnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action != NotifyCollectionChangedAction.Move) RemoveClosedChannelFollowStatusChecks();
         navigationHistory.RemoveAll(destination => !IsNavigationDestinationAvailable(destination));
         RaiseNavigationCommandState();
 
@@ -3850,6 +3889,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                 ApplySavedStreamVolume(tab);
                 tab.PropertyChanged += TabOnPropertyChanged;
                 tab.AudioStateApplied += TabOnAudioStateApplied;
+                CheckOpenedChannelFollowStatus(tab);
             }
         }
 

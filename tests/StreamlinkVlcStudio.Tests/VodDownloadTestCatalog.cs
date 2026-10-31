@@ -4,6 +4,7 @@ internal static partial class VodDownloadTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
+        ("loading workflow: startup download format applies library validation off the WPF thread", StartupLibraryScanAsync),
         ("VOD downloads: accept Twitch and both Kick VOD ID formats, never live streams or clips", UrlsAsync),
         ("VOD downloads: reject incomplete, missing, master, DRM, and unsafe media", InvalidPlaylistsAsync),
         ("VOD downloads: preserve sequence, discontinuities, and muted segment repair markers", PlaylistTimelineAsync),
@@ -24,6 +25,12 @@ internal static partial class VodDownloadTestCatalog
         ("VOD downloads: cancel active and queued work and delete partial data", CancelAsync),
         ("VOD downloads: retry Kick with a refreshed page URL and current credentials", RetryAsync),
         ("VOD downloads: shutdown interrupts work and restart never marks partial data complete", InterruptedAsync),
+        ("VOD downloads: startup removes interrupted download and conversion files", InterruptedDownloadCleanupAsync),
+        ("VOD downloads: startup removes obsolete generations only after validating the current copy", () => StartupMediaCleanupAsync(false)),
+        ("VOD downloads: damaged current media preserves older generations for recovery", () => StartupMediaCleanupAsync(true)),
+        ("VOD downloads: locked interrupted files retry cleanup without another library load", LockedInterruptedCleanupAsync),
+        ("VOD downloads: temporary media locks do not discard a complete download during promotion", DownloadPromotionLockAsync),
+        ("VOD downloads: cleanup rejects junctions and still removes independent obsolete media", CleanupJunctionAsync),
         ("VOD downloads: recover fully committed media after an interrupted metadata update", CommitRecoveryAsync),
         ("VOD downloads: missing or truncated completed media disables offline playback", DamagedMediaAsync),
         ("VOD downloads: tampered playlists and escaping inventories cannot access external resources", TamperedPackageAsync),
@@ -56,7 +63,8 @@ internal static partial class VodDownloadTestCatalog
         ("VOD downloads: validate channel IDs across every Flight record", KickFlightRecordsAsync),
         ("VOD downloads: encryption key names do not inherit muted segment markers", MutedKeyNameAsync),
         ("VOD downloads: shutdown releases every canceled and replaced queued job", ReplacedQueuedJobsAsync),
-        .. ProfileImageTests
+        .. ProfileImageTests,
+        .. VodDownloadFormatTestCatalog.All
     ];
 
     private static Task UrlsAsync()

@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\StreamlinkVlcStudio.AccountService\StreamlinkVlcStudio.AccountService.csproj" />
     <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Core\StreamlinkVlcStudio.Core.csproj" />
     <ProjectReference Include="..\..\src\StreamlinkVlcStudio.Infrastructure\StreamlinkVlcStudio.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\StreamlinkVlcStudio.App.Wpf\StreamlinkVlcStudio.App.Wpf.csproj" />
@@ -28,8 +29,16 @@
     <None Update="Fixtures\replay-position-audio\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\playback-rate-tone\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\playback-rate-replay-tone\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\playback-rate-continuity\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\hover-preview-fmp4\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\h264-filler\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\hevc-video\*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\profile-images\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\profile-images\*.webp" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\channel-profiles\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\category-artwork\*.jpg" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\twitch-badges\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\twitch-badges\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

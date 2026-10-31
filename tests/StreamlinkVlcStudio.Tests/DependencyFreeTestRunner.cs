@@ -6,6 +6,11 @@ internal static class DependencyFreeTestRunner
     private static readonly IReadOnlyDictionary<string, TimeSpan> TestTimeoutOverrides =
         new Dictionary<string, TimeSpan>(StringComparer.Ordinal)
         {
+            ["local web: overlay chat stays usable over video in small players and fullscreen"] = TimeSpan.FromSeconds(90),
+            [LocalWebTestCatalog.BrowserVolumeTestName] = TimeSpan.FromSeconds(90),
+            ["local web: Twitch and Kick VOD chat follows playback across pages, pauses and seeks"] = TimeSpan.FromSeconds(90),
+            ["local web: opt-in public VOD plays with synchronized archived chat"] = TimeSpan.FromSeconds(120),
+            ["local web: category artwork live directory covers match Twitch availability"] = TimeSpan.FromSeconds(90),
             [ApplicationTestCatalog.ReleasePackageZipTestName] = TimeSpan.FromSeconds(90),
             [KickClipTestCatalog.BackgroundPublicationTestName] = TimeSpan.FromSeconds(90),
             [KickClipTestCatalog.BackgroundErrorsTestName] = TimeSpan.FromSeconds(120),

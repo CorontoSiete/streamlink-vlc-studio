@@ -20,8 +20,8 @@ internal static class RegressionTestCatalog
         ("Hotkey settings expose stable defaults and reset every binding", HotkeySettingsDefaultsAndReset),
         ("Hotkey recorder captures without native input and preserves two-way binding", HotkeyRecorderCapturesAndUpdatesBindingAsync),
         ("Configured hotkeys route through main window preview input", ConfiguredHotkeyRoutesThroughMainWindowAsync),
-        ("Setup wizard footer actions follow entered account credentials", SetupWizardFooterActionsFollowAccountCredentialsAsync),
-        ("Setup wizard Kick step requires client secret before footer connects", SetupWizardKickStepRequiresClientSecretAsync),
+        ("Setup wizard navigation remains available with personal credentials", SetupWizardFooterActionsFollowAccountCredentialsAsync),
+        ("Setup wizard advanced Kick credentials enable a personal connection", SetupWizardKickStepRequiresClientSecretAsync),
         ("Update command reports status and requests shutdown after launch", UpdateCommandReportsStatusAndRequestsShutdownAsync),
         ("Update command keeps app open when updater reports latest version", UpdateCommandKeepsAppOpenWhenUpdaterReportsLatestAsync),
         ("Installer OS gates allow 64-bit Windows 10 and 11 without build-specific blocks", InstallerOsGatesAllow64BitWindows10And11)
@@ -396,17 +396,17 @@ internal static class RegressionTestCatalog
         return TestSta.RunOffscreenAsync(() =>
         {
             var settings = new AppSettings();
-            var wizard = new SetupWizardWindow(settings, new FakeSettingsService(settings), new MemoryLogger());
+            var wizard = new SetupWizardWindow(settings, new FakeSettingsService(settings), new MemoryLogger(), new AccountConnectionConfiguration());
             var changed = new List<string>();
             wizard.PropertyChanged += (_, e) => changed.Add(e.PropertyName ?? "");
 
             try
             {
-                Assert.Equal("Continue", wizard.TwitchFooterActionText);
-                Assert.Equal("Continue", wizard.KickFooterActionText);
+                Assert.Equal("Skip for now", wizard.TwitchFooterActionText);
+                Assert.Equal("Skip for now", wizard.KickFooterActionText);
 
                 settings.Chat.TwitchClientId = "twitch-client-id";
-                Assert.Equal("Connect Twitch", wizard.TwitchFooterActionText);
+                Assert.Equal("Skip for now", wizard.TwitchFooterActionText);
                 Assert.True(changed.Contains(nameof(SetupWizardWindow.TwitchFooterActionText), StringComparer.Ordinal));
 
                 changed.Clear();
@@ -415,11 +415,11 @@ internal static class RegressionTestCatalog
                 Assert.True(changed.Contains(nameof(SetupWizardWindow.TwitchFooterActionText), StringComparer.Ordinal));
 
                 settings.Chat.KickClientId = "kick-client-id";
-                Assert.Equal("Continue", wizard.KickFooterActionText);
+                Assert.Equal("Skip for now", wizard.KickFooterActionText);
 
                 changed.Clear();
                 settings.Chat.KickClientSecret = "kick-client-secret";
-                Assert.Equal("Connect Kick", wizard.KickFooterActionText);
+                Assert.Equal("Skip for now", wizard.KickFooterActionText);
                 Assert.True(changed.Contains(nameof(SetupWizardWindow.KickFooterActionText), StringComparer.Ordinal));
 
                 changed.Clear();
@@ -441,7 +441,7 @@ internal static class RegressionTestCatalog
         return TestSta.RunOffscreenAsync(() =>
         {
             var settings = new AppSettings();
-            var wizard = new SetupWizardWindow(settings, new FakeSettingsService(settings), new MemoryLogger());
+            var wizard = new SetupWizardWindow(settings, new FakeSettingsService(settings), new MemoryLogger(), new AccountConnectionConfiguration());
 
             try
             {
@@ -450,18 +450,18 @@ internal static class RegressionTestCatalog
                 Assert.True(
                     FindSetupWizardLogicalDescendants<TextBlock>(contentRoot!)
                         .Any(text => string.Equals(text.Text, "Client Secret", StringComparison.Ordinal)),
-                    "The first-run Kick step must ask for a Client Secret.");
+                    "Personal Kick app credentials remain available under Advanced.");
 
                 var secretBox = wizard.FindName("KickClientSecretBox") as PasswordBox;
                 Assert.NotNull(secretBox);
                 settings.Chat.KickClientId = "kick-client-id";
-                Assert.Equal("Continue", wizard.KickFooterActionText);
+                Assert.Equal("Skip for now", wizard.KickFooterActionText);
                 Assert.Equal(false, wizard.CanConnectKick);
 
                 secretBox!.Password = "kick-client-secret";
 
                 Assert.Equal("kick-client-secret", settings.Chat.KickClientSecret);
-                Assert.Equal("Connect Kick", wizard.KickFooterActionText);
+                Assert.Equal("Skip for now", wizard.KickFooterActionText);
                 Assert.True(wizard.CanConnectKick);
             }
             finally

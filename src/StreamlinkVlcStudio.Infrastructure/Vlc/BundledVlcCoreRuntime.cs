@@ -15,7 +15,7 @@ internal static class BundledVlcCoreRuntime
     private const string ReferenceCoreSha256 =
         "d3475b834dd3eb77910f37f71b0341d358bcbdda5b9f04cc4a3a8e2be1bc8e35";
     private const string BundledCoreSha256 =
-        "11405e61822376a94db5fec69138fb1f646cf0b38a8cce21e929ddcbed7e5745";
+        "d1dbe4b571422df97c73e25ce357cc28c82d703b475f8dc5b8c6c7203da4549c";
 
     internal static LibVlcCoreSelection Select(string vlcDirectory)
     {

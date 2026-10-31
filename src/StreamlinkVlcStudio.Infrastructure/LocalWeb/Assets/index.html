@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0e0e10">
+  <title>Stream Studio</title>
+  <link rel="stylesheet" href="/app.css">
+  <script defer src="/hls.min.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#library">Skip to content</a>
+  <main id="login">
+    <div class="login-story">
+      <div class="wordmark"><span class="brand-symbol" data-icon="studio" aria-hidden="true"></span>stream<span class="wordmark-light">studio</span><span class="edition">LOCAL</span></div>
+      <div class="login-editorial"><div class="eyebrow"><span class="status-dot"></span> YOUR PERSONAL STREAMING SPACE</div><h1>All your streams.<br><em>Right at home.</em></h1><p>Live moments. Familiar faces. One beautiful place<br>for everything you love to watch.</p><div class="login-platforms"><span class="platform-mark twitch">Twitch</span><span class="platform-mark kick">Kick</span><span>One studio.</span></div></div>
+      <div class="login-footnote"><span data-icon="shield"></span> Your accounts stay on your desktop.</div>
+      <div class="signal-art" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    </div>
+    <div class="login-panel"><div class="login-card">
+      <span class="login-icon" data-icon="monitor"></span>
+      <div class="eyebrow">CONNECT THIS DEVICE</div>
+      <h2>Welcome to your studio.</h2>
+      <p>Connect to Stream Studio on your desktop to start watching on this device.</p>
+      <form id="login-form">
+        <label for="username">Username</label>
+        <input id="username" type="text" maxlength="32" autocomplete="username" aria-describedby="login-help login-error" required autofocus>
+        <label for="password">Password</label>
+        <input id="password" type="password" maxlength="128" autocomplete="current-password" aria-describedby="login-help login-error" required>
+        <p id="login-help" class="field-help">Use a web account created in the desktop app’s <strong>LAN browser server</strong> window.</p>
+        <button type="submit" class="primary">Connect to studio <span data-icon="arrow-right"></span></button>
+      </form>
+      <p id="login-error" role="alert"></p>
+      <details class="connection-help"><summary>Need a hand connecting?</summary><ol><li>Keep Stream Studio open on your Windows desktop.</li><li>Open Settings → Advanced → Playback tools → LAN browser server.</li><li>Create a web account, start the server and sign in here. Both devices need to be on the same network.</li></ol></details>
+      <div class="security-note"><span data-icon="shield"></span><p>Before connecting, match this HTTPS certificate’s fingerprint with the one shown on your desktop.</p></div>
+    </div><div class="login-device-note">Your desktop powers it. This screen makes it yours.</div></div>
+  </main>
+  <div id="studio" hidden>
+    <header class="topbar">
+      <div class="topbar-brand"><a href="#" id="brand" class="wordmark" aria-label="Stream Studio home"><span class="brand-symbol" data-icon="studio" aria-hidden="true"></span><span>stream<span class="wordmark-light">studio</span></span></a><nav class="topbar-nav" aria-label="Browse"><button data-nav-page="following">Following</button><button data-nav-page="discover">Browse</button></nav></div>
+      <form id="search-form" role="search">
+        <label class="sr-only" for="platform">Platform</label><select id="platform"><option value="twitch">Twitch</option><option value="kick">Kick</option></select>
+        <div class="search-field"><span data-icon="search"></span><label class="sr-only" for="query">Channel, category, or video URL</label><input id="query" type="search" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="search-options" aria-expanded="false" aria-describedby="search-help" placeholder="Search channels or paste a URL" maxlength="250" autocomplete="off" spellcheck="false" aria-keyshortcuts="/"></div>
+        <select id="vod-type" aria-label="Video type" hidden><option value="archive">Past broadcasts</option><option value="highlight">Highlights</option><option value="upload">Uploads</option><option value="all">All videos</option></select>
+        <button type="submit" hidden>Search</button><button type="button" id="download-input" class="secondary" hidden><span data-icon="download"></span> Download URL</button>
+        <div id="search-dropdown" class="search-dropdown" hidden>
+          <div class="search-dropdown-heading"><span id="search-kind">CHANNELS</span><span id="search-context"></span></div>
+          <div id="search-options" role="listbox" aria-label="Search suggestions" aria-busy="false"></div>
+          <div id="search-feedback" class="search-feedback" hidden></div>
+          <div class="search-dropdown-footer" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> navigate <kbd>↵</kbd> select</span><span><kbd>esc</kbd> close</span></div>
+        </div>
+        <span id="search-help" class="sr-only">Results appear as you type. Use the up and down arrow keys to choose a result, Enter to select, and Escape to close.</span><span id="search-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+      </form>
+      <div class="topbar-actions"><span class="connection-label" title="Signed in web account"><i class="status-dot"></i> <span id="signed-in-user"></span></span><button id="channels-toggle" class="channels-toggle" aria-label="Following channels and open streams" aria-haspopup="dialog" aria-controls="channels-dialog" aria-expanded="false" title="Following channels and open streams"><span data-icon="users"></span><span class="channels-label">Following</span><span id="open-player-count" class="open-player-count"></span></button><button id="mobile-logout" class="icon-button" aria-label="Disconnect device" title="Disconnect device"><span data-icon="logout"></span></button></div>
+      <span id="location-label" class="sr-only">Following</span>
+    </header>
+    <aside id="studio-sidebar" class="sidebar">
+      <div class="sidebar-label sidebar-heading"><span class="sidebar-heading-text">YOUR STUDIO</span><button id="sidebar-toggle" type="button" aria-label="Collapse sidebar" aria-controls="studio-sidebar" aria-expanded="true" title="Collapse sidebar"><span data-icon="panel-close"></span></button></div>
+      <nav aria-label="Library">
+        <button data-page="following" title="Following"><span data-icon="home"></span><span>Following</span><span id="following-count" class="nav-count" hidden></span></button>
+        <button data-page="discover" title="Discover"><span data-icon="compass"></span><span>Discover</span></button>
+        <button data-page="vods" title="Videos"><span data-icon="video"></span><span>Videos</span></button>
+        <div class="nav-divider"></div><div class="sidebar-label">LIBRARY</div>
+        <button data-page="recent" title="Recently watched"><span data-icon="history"></span><span>Recently watched</span></button>
+        <button data-page="downloads" title="Downloads"><span data-icon="download"></span><span>Downloads</span></button>
+        <button data-page="settings" title="Preferences"><span data-icon="settings"></span><span>Preferences</span></button>
+      </nav>
+      <div id="sidebar-channels-host"><section id="channel-navigation" class="followed-section" aria-labelledby="followed-heading"><div class="sidebar-label" id="followed-heading">FOLLOWING <span id="sidebar-live-count" class="sidebar-live-count"></span></div><div id="followed-channels"><p class="sidebar-empty">Your followed channels will appear here.</p></div></section></div>
+      <div class="sidebar-bottom"><div class="host-card"><span class="host-icon" data-icon="monitor"></span><div><strong>Your desktop</strong><span><i class="status-dot"></i> Connected securely</span></div></div><button id="logout" title="Disconnect device"><span data-icon="logout"></span> Disconnect device</button></div>
+    </aside>
+    <div class="workspace">
+      <div id="notice" role="status" aria-live="polite" hidden></div>
+      <section id="watch" hidden aria-label="Players">
+        <div id="players"></div>
+      </section>
+      <main id="library" tabindex="-1">
+        <div class="page-heading"><div><div class="eyebrow" id="page-eyebrow">YOUR DAILY LINEUP</div><h1 id="page-title">Following</h1><p id="page-description">The channels you follow. All in one place.</p></div><button id="refresh" class="secondary" aria-label="Refresh library"><span data-icon="refresh"></span> Refresh</button></div>
+        <div class="library-tools">
+          <div id="platform-filters" class="segmented" role="group" aria-label="Filter followed channels"><button data-filter="all" aria-pressed="true">All platforms</button><button data-filter="twitch" aria-pressed="false"><span class="provider-dot twitch"></span>Twitch</button><button data-filter="kick" aria-pressed="false"><span class="provider-dot kick"></span>Kick</button></div>
+        </div>
+        <div id="breadcrumbs"></div>
+        <div id="results-heading" class="results-heading"><h2 id="results-title">Your channels</h2><div><span id="result-count"></span><label id="live-filter-label" class="live-filter"><input id="live-filter" class="switch" type="checkbox"> Live only</label><label id="sort-label" class="sort-control"><span class="sr-only">Sort channels</span><select id="channel-sort" aria-label="Sort channels"><option value="recommended">Default order</option><option value="viewers">Most viewers</option><option value="name">Name A–Z</option></select></label></div></div>
+        <div id="cards" class="cards" aria-label="Browse results" aria-busy="false"></div>
+        <div id="empty-state" class="empty-state" hidden></div>
+        <div class="load-more"><button id="more" class="secondary" hidden>Load more <span data-icon="arrow-down"></span></button></div>
+        <form id="preferences" hidden>
+          <section class="settings-panel"><div class="settings-heading"><span data-icon="play"></span><div><h2>Playback</h2><p>Set the defaults for your next stream.</p></div><span class="scope-badge">Your account</span></div><div class="setting-row"><div><label for="default-quality">Default quality</label><p>Choose the balance of clarity and bandwidth.</p></div><select id="default-quality"></select></div><div class="setting-row"><div><label for="low-latency">Low latency</label><p>Stay closer to the live broadcast.</p></div><input id="low-latency" class="switch" type="checkbox"></div></section>
+          <section class="settings-panel"><div class="settings-heading"><span data-icon="grid"></span><div><h2>Multi-stream</h2><p>Make switching between channels feel right.</p></div><span class="scope-badge">Your account</span></div><div class="setting-row"><div><label for="keep-inactive">Keep inactive streams playing</label><p>Other streams continue playing in the background, muted.</p></div><input id="keep-inactive" class="switch" type="checkbox"></div><div class="setting-row"><div><label for="pause-inactive-vod">Pause inactive videos</label><p>Keep your place when switching away from a video.</p></div><input id="pause-inactive-vod" class="switch" type="checkbox" checked></div></section>
+          <section class="settings-panel"><div class="settings-heading"><span data-icon="chat"></span><div><h2>Chat appearance</h2><p>Your conversation, your way.</p></div><span class="scope-badge">Your account</span></div><div class="setting-row"><div><label for="chat-layout">Chat layout</label><p>Beside your stream, over it, or out of the way.</p></div><select id="chat-layout"><option value="docked">Beside the video</option><option value="overlay">Over the video</option><option value="hidden">Hidden</option></select></div><div class="setting-row"><label for="chat-size">Text size</label><div class="range-control"><input id="chat-size" type="range" min="12" max="32" step="1" value="16"><output for="chat-size" id="chat-size-value">16px</output></div></div><div class="setting-row"><label for="chat-opacity">Overlay background opacity</label><div class="range-control"><input id="chat-opacity" type="range" min="0" max="100" value="90"><output for="chat-opacity" id="chat-opacity-value">90%</output></div></div></section>
+          <section class="settings-panel hotkeys-panel"><div class="settings-heading"><span data-icon="sliders"></span><div><h2>Keyboard shortcuts</h2><p>Choose how you navigate and control your streams.</p></div><span class="scope-badge">Your account</span></div><p id="hotkey-help" class="field-help">Focus a shortcut field and press a key, key combination, or mouse side button (Mouse4 or Mouse5). Shortcut changes save to your account. Arrow keys can switch stream tabs. Tab moves to the next control. Clear disables a shortcut. Back returns to the previous page; audio shortcuts affect the selected stream. Shortcuts pause while typing or using a dialog. Some browser or system shortcuts may be unavailable.</p><div id="hotkey-bindings"></div><div class="hotkey-footer"><button id="reset-hotkeys" type="button" class="secondary">Restore defaults</button><p id="hotkey-status" role="status" aria-live="polite"></p></div></section>
+          <section class="settings-panel account-panel"><div class="settings-heading"><span data-icon="shield"></span><div><h2>Connected accounts</h2><p>Managed securely by your desktop app.</p></div></div><div id="account-status"></div><p class="field-help">Connect accounts, import follows and manage download folders and formats in Stream Studio on your desktop.</p></section>
+          <div class="settings-save"><p id="save-status" role="status" aria-live="polite">Changes save automatically.</p><button id="retry-settings" type="button" class="secondary" hidden>Retry save</button></div>
+        </form>
+      </main>
+      <footer><span class="footer-brand">streamstudio <span class="edition">LOCAL</span></span><span>Your streams. Your space.</span><details class="footer-help"><summary>Keyboard &amp; credits</summary><p>/ focuses search. Ctrl/⌘ K opens a stream. Arrow keys move between controls. Configure navigation and stream shortcuts in Preferences → Keyboard shortcuts.</p><a href="/hls.LICENSE.txt" target="_blank" rel="noopener">hls.js notices</a> · <a href="/hls.APACHE-2.0.txt" target="_blank" rel="noopener">Apache 2.0</a></details></footer>
+    </div>
+  </div>
+  <dialog id="channels-dialog" aria-labelledby="channels-dialog-title"><div class="channels-dialog-heading"><div><h2 id="channels-dialog-title">Your channels</h2><p>Open a followed channel, or switch and close streams.</p></div><button id="close-channels" class="icon-button" aria-label="Close channel list"><span data-icon="close"></span></button></div><div id="channels-dialog-list"></div></dialog>
+  <dialog id="open-dialog" aria-labelledby="open-dialog-title"><form id="open-form"><div class="dialog-heading"><span class="login-icon" data-icon="play"></span><button type="button" id="close-open" class="icon-button" aria-label="Close dialog"><span data-icon="close"></span></button></div><div class="eyebrow">OPEN A STREAM</div><h2 id="open-dialog-title">Your next watch starts here.</h2><p>Paste a stream or video URL, or enter a channel name.</p><label for="open-platform">Platform</label><select id="open-platform"><option value="twitch">Twitch</option><option value="kick">Kick</option></select><label for="open-query">URL or channel name</label><input id="open-query" type="text" maxlength="250" placeholder="e.g. twitch.tv/channel" required><p id="open-error" role="alert"></p><button type="submit" class="primary"><span data-icon="play"></span> Start watching</button></form></dialog>
+  <template id="player-template">
+    <article class="player">
+      <div class="player-heading" aria-hidden="true"><div><span class="player-provider"></span><h2 class="player-title"></h2></div></div>
+      <div class="video-chat">
+        <div class="screen">
+          <div class="video-surface"><video controls playsinline preload="metadata" tabindex="0" aria-label="Stream video"></video><span class="video-live-badge">LIVE</span><p class="player-status" role="status"></p></div>
+          <section class="channel-information" aria-label="Channel information">
+            <div class="channel-summary">
+              <a class="channel-avatar-link" target="_blank" rel="noopener noreferrer"><span class="channel-avatar avatar"></span><span class="channel-live-badge">LIVE</span></a>
+              <div class="channel-copy"><h2><a class="channel-name" target="_blank" rel="noopener noreferrer"></a><span class="channel-verified" title="Verified partner" aria-label="Verified partner" hidden><span data-icon="verified"></span></span></h2><p class="broadcast-title"></p><div class="channel-category-tags"><button class="channel-category"></button><div class="channel-tags"></div></div></div>
+              <div class="channel-actions"><button data-action="follow" class="channel-follow" title="Follow channel"><span data-icon="heart"></span><span class="follow-label">Follow</span></button><a class="channel-bits channel-action-link" target="_blank" rel="noopener noreferrer"><span data-icon="bits"></span> Bits</a><a class="channel-gift channel-action-link" target="_blank" rel="noopener noreferrer"><span data-icon="gift"></span> Gift a Sub</a><a class="channel-subscribe channel-action-link" target="_blank" rel="noopener noreferrer"><span data-icon="star"></span> Subscribe <span data-icon="chevron-down"></span></a><div class="channel-stats"><span class="channel-viewers" hidden><span data-icon="users"></span><span></span></span><span class="channel-uptime"></span><button data-action="share" class="icon-button" title="Share channel" aria-label="Share channel"><span data-icon="share"></span></button></div></div>
+            </div>
+            <div class="channel-details">
+              <section class="channel-about" aria-label="About this streamer"><h3>About <span class="about-name"></span><span class="about-verified channel-verified" hidden><span data-icon="verified"></span></span></h3><div class="channel-about-card"><div class="channel-bio"><p class="channel-followers" hidden></p><div class="channel-description">Loading channel bio…</div><p class="channel-profile-status" role="status"></p></div><nav class="channel-socials" aria-label="Streamer social links"></nav></div></section>
+              <div class="channel-panels" role="region" aria-label="Streamer panels" tabindex="-1"></div>
+              <a class="channel-extensions" target="_blank" rel="noopener noreferrer" hidden>View interactive panels and leaderboards on Twitch <span data-icon="external"></span></a>
+            </div>
+          </section>
+        </div>
+        <aside class="chat" aria-label="Stream chat">
+          <div class="chat-heading"><span data-icon="chat"></span> Stream chat <span class="chat-live-indicator">LIVE</span></div>
+          <button type="button" class="chat-move" aria-label="Move chat overlay" aria-description="Drag or use arrow keys to move. Hold Shift for larger steps. Home resets position. Escape cancels a drag." title="Drag to move · Arrow keys to adjust · Home to reset · Esc to cancel">
+            <span data-icon="move" aria-hidden="true"></span>
+          </button>
+          <div class="chat-messages" tabindex="0" aria-live="off"></div>
+          <p class="chat-status" role="status"></p>
+          <form class="chat-form"><input aria-label="Chat message" maxlength="500" placeholder="Send a message…"><button type="submit" class="primary icon-button" aria-label="Send message"><span data-icon="send"></span></button></form>
+          <button type="button" class="chat-resize" aria-label="Resize chat overlay" aria-description="Drag the lower-left corner or use arrow keys to resize. Hold Shift for larger steps. Home resets size. Escape cancels a drag." title="Drag to resize · Arrow keys to adjust · Home to reset · Esc to cancel">
+            <span data-icon="resize"></span><span class="chat-resize-tooltip" aria-hidden="true"><span class="chat-resize-label">Resize chat</span><span class="chat-resize-feedback"></span></span>
+          </button>
+        </aside>
+      </div>
+      <div class="player-controls">
+        <input class="video-seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="Seek through video" hidden>
+        <div class="control-group"><button data-action="play" class="icon-button" title="Pause" aria-label="Pause"><span data-icon="pause"></span></button><button data-action="mute" class="icon-button" title="Mute" aria-label="Mute"><span data-icon="volume"></span></button><input class="video-volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"><button data-action="live" class="live-control"><span class="live-dot"></span> LIVE</button><span class="video-time"></span></div>
+        <div class="control-group"><button data-action="clip" class="video-clip" title="Create clip"><span data-icon="clip"></span> Clip</button><details class="playback-settings"><summary title="Playback settings" aria-label="Playback settings"><span data-icon="settings"></span></summary><div class="playback-settings-menu"><label class="multistream-setting">Multi-stream<input class="multistream-toggle switch" type="checkbox" role="switch" aria-label="Multi-stream" title="Watch all open streams together"></label><label>Quality<select class="quality" aria-label="Stream quality"></select></label><label>Speed<select class="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></label><button data-action="back" title="Back 30 seconds">−30s</button><button data-action="forward" title="Forward 30 seconds">+30s</button><button data-action="replay"><span data-icon="history"></span> Replay</button></div></details><button data-action="chat" class="icon-button" title="Toggle chat" aria-label="Toggle chat" aria-pressed="true"><span data-icon="chat"></span></button><button data-action="pip" class="icon-button" title="Picture in picture" aria-label="Picture in picture"><span data-icon="pip"></span></button><button data-action="theater" class="icon-button" title="Theater mode" aria-label="Theater mode" aria-pressed="false"><span data-icon="theater"></span></button><button data-action="fullscreen" class="icon-button" title="Fullscreen" aria-label="Fullscreen"><span data-icon="fullscreen"></span></button></div>
+      </div>
+      <details class="player-options"><summary title="Stream options" aria-label="Stream options"><span data-icon="more"></span></summary><div class="player-option-body"><div class="stream-actions"><button data-action="reload"><span data-icon="refresh"></span> Reload</button><button data-action="stop">Stop playback</button><button data-action="unfollow">Unfollow</button><button data-action="download"><span data-icon="download"></span> Download video</button><button data-action="predictions">Predictions</button><button data-action="close"><span data-icon="close"></span> Close stream</button></div><div class="tab-controls"><label>Stream name <input class="rename" aria-label="Stream name" maxlength="80"></label><button data-action="left" aria-label="Move player left"><span data-icon="arrow-left"></span></button><button data-action="right" aria-label="Move player right"><span data-icon="arrow-right"></span></button><label><input class="never-mute" type="checkbox"> Always keep audio on</label></div></div></details>
+      <div class="prediction-panel" hidden></div>
+    </article>
+  </template>
+</body>
+</html>

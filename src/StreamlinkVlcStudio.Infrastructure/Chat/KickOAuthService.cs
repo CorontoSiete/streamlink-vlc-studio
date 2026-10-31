@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using StreamlinkVlcStudio.Authentication;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
@@ -14,13 +15,13 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 public static class KickOAuthService
 {
-    public const string LocalRedirectUri = "http://localhost:39177";
+    public const string LocalRedirectUri = KickOAuthContract.RedirectUri;
     private const string AuthorizationEndpoint = "https://id.kick.com/oauth/authorize";
     private const string TokenEndpoint = "https://id.kick.com/oauth/token";
     private static readonly TimeSpan AuthorizationTimeout = TimeSpan.FromMinutes(4);
     private static readonly TimeSpan RefreshSkew = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan AppAccessTokenFallbackLifetime = TimeSpan.FromMinutes(50);
-    private static readonly string[] RequiredScopes = ["user:read", "channel:read", "chat:write"];
+    private static readonly string[] RequiredScopes = KickOAuthContract.Scopes;
     private static readonly SemaphoreSlim AppAccessTokenGate = new(1, 1);
     private static KickAppAccessTokenCache? appAccessTokenCache;
 
@@ -29,8 +30,12 @@ public static class KickOAuthService
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var clientId = OAuthTokenHelpers.RequireSetting(settings.KickClientId, "Kick Client ID", "Kick");
-        var clientSecret = OAuthTokenHelpers.RequireSetting(settings.KickClientSecret, "Kick Client Secret", "Kick");
+        var configuration = AccountConnectionConfiguration.Current;
+        var useTokenService = !AccountConnectionConfiguration.HasPersonalKickCredentials(settings);
+        if (useTokenService && !configuration.CanUseKickTokenService(settings))
+            throw new InvalidOperationException(AccountConnectionConfiguration.KickUnavailableMessage);
+        var clientId = useTokenService ? configuration.KickClientId.Trim() : settings.KickClientId.Trim();
+        var clientSecret = useTokenService ? "" : settings.KickClientSecret.Trim();
         var state = CreateBase64UrlSecret(32);
         var codeVerifier = CreateBase64UrlSecret(32);
         var codeChallenge = CreateCodeChallenge(codeVerifier);
@@ -47,28 +52,24 @@ public static class KickOAuthService
         });
 
         var code = await WaitForAuthorizationCodeAsync(listener, state, cancellationToken);
-        return await ExchangeAuthorizationCodeAsync(clientId, clientSecret, code, codeVerifier, cancellationToken);
+        var credentials = new ChatSettings { KickClientId = clientId, KickClientSecret = clientSecret, KickUseTokenService = useTokenService };
+        using var httpClient = CreateTokenHttpClient();
+        using var request = CreateTokenRequest(credentials, "authorization_code", code, codeVerifier, configuration);
+        return (await SendTokenRequestAsync(httpClient, request, fallbackRefreshToken: null, cancellationToken, useTokenService))
+            with
+        { ClientId = clientId, UsesTokenService = useTokenService };
     }
 
     public static async Task<KickOAuthTokenResult> RefreshUserTokenAsync(
         ChatSettings settings,
         CancellationToken cancellationToken = default)
     {
-        var clientId = OAuthTokenHelpers.RequireSetting(settings.KickClientId, "Kick Client ID", "Kick");
-        var clientSecret = OAuthTokenHelpers.RequireSetting(settings.KickClientSecret, "Kick Client Secret", "Kick");
         var refreshToken = OAuthTokenHelpers.RequireSetting(settings.KickRefreshToken, "Kick refresh token", "Kick");
-
-        using var httpClient = HttpClientFactory.CreateDefault();
-        using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
-        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["grant_type"] = "refresh_token",
-            ["client_id"] = clientId,
-            ["client_secret"] = clientSecret,
-            ["refresh_token"] = refreshToken
-        });
-
-        return await SendTokenRequestAsync(httpClient, request, fallbackRefreshToken: refreshToken, cancellationToken);
+        using var httpClient = CreateTokenHttpClient();
+        using var request = CreateTokenRequest(settings, "refresh_token", refreshToken, null, AccountConnectionConfiguration.Current);
+        return (await SendTokenRequestAsync(httpClient, request, fallbackRefreshToken: refreshToken, cancellationToken, settings.KickUseTokenService))
+            with
+        { ClientId = settings.KickClientId.Trim(), UsesTokenService = settings.KickUseTokenService };
     }
 
     public static async Task<string?> GetUsableAccessTokenAsync(
@@ -104,6 +105,12 @@ public static class KickOAuthService
 
     public static void ApplyTokenResult(ChatSettings settings, KickOAuthTokenResult token)
     {
+        if (!string.IsNullOrWhiteSpace(token.ClientId))
+        {
+            settings.KickClientId = token.ClientId;
+            settings.KickUseTokenService = token.UsesTokenService;
+            if (token.UsesTokenService) settings.KickClientSecret = "";
+        }
         settings.KickOAuthToken = token.AccessToken;
         if (!string.IsNullOrWhiteSpace(token.RefreshToken))
         {
@@ -118,6 +125,7 @@ public static class KickOAuthService
         settings.KickOAuthToken = "";
         settings.KickRefreshToken = "";
         settings.KickTokenExpiresAtUtc = null;
+        settings.KickUseTokenService = false;
     }
 
     public static async Task<string?> TryGetCurrentUsernameAsync(
@@ -231,8 +239,15 @@ public static class KickOAuthService
         return OAuthTokenHelpers.NormalizeBearerToken(token);
     }
 
-    public static async Task<string?> TryGetAppAccessTokenAsync(
+    public static Task<string?> TryGetAppAccessTokenAsync(
         ChatSettings settings,
+        IAppLogger? logger = null,
+        CancellationToken cancellationToken = default) =>
+        TryGetAppAccessTokenAsync(settings, CreateTokenHttpClient, logger, cancellationToken);
+
+    internal static async Task<string?> TryGetAppAccessTokenAsync(
+        ChatSettings settings,
+        Func<HttpClient> createHttpClient,
         IAppLogger? logger = null,
         CancellationToken cancellationToken = default)
     {
@@ -255,7 +270,7 @@ public static class KickOAuthService
                 return appAccessTokenCache.AccessToken;
             }
 
-            using var httpClient = HttpClientFactory.CreateDefault();
+            using var httpClient = createHttpClient();
             using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
             request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -265,13 +280,14 @@ public static class KickOAuthService
             });
 
             using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
-            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", $"Kick app token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
+                // Provider bodies and reason phrases may echo the submitted client secret.
+                logger.WriteSafely(AppLogLevel.Warning, "KickOAuth", $"Kick app token request failed (HTTP {(int)response.StatusCode}).");
                 return null;
             }
 
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
             using var document = JsonDocument.Parse(responseBody);
             var accessToken = GetOptionalString(document.RootElement, "access_token");
             if (string.IsNullOrWhiteSpace(accessToken))
@@ -340,41 +356,61 @@ public static class KickOAuthService
         return null;
     }
 
-    private static async Task<KickOAuthTokenResult> ExchangeAuthorizationCodeAsync(
-        string clientId,
-        string clientSecret,
-        string code,
-        string codeVerifier,
-        CancellationToken cancellationToken)
-    {
-        using var httpClient = HttpClientFactory.CreateDefault();
-        using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
-        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["grant_type"] = "authorization_code",
-            ["client_id"] = clientId,
-            ["client_secret"] = clientSecret,
-            ["redirect_uri"] = LocalRedirectUri,
-            ["code_verifier"] = codeVerifier,
-            ["code"] = code
-        });
+    // Token grants carry credentials in the POST body, which 307/308 redirects can resend.
+    internal static HttpClient CreateTokenHttpClient() => HttpClientFactory.Create(
+        TimeSpan.FromSeconds(20), includeUserAgent: true, acceptJson: true, allowAutoRedirect: false);
 
-        return await SendTokenRequestAsync(httpClient, request, fallbackRefreshToken: null, cancellationToken);
+    internal static HttpRequestMessage CreateTokenRequest(
+        ChatSettings settings, string grantType, string credential, string? codeVerifier,
+        AccountConnectionConfiguration configuration)
+    {
+        var clientId = OAuthTokenHelpers.RequireSetting(settings.KickClientId, "Kick Client ID", "Kick");
+        var endpoint = settings.KickUseTokenService ? configuration.RequireKickTokenServiceUri(clientId) : new Uri(TokenEndpoint);
+        var form = new Dictionary<string, string>
+        {
+            ["grant_type"] = grantType,
+            ["client_id"] = clientId,
+        };
+        if (!settings.KickUseTokenService)
+            form["client_secret"] = OAuthTokenHelpers.RequireSetting(settings.KickClientSecret, "Kick Client Secret", "Kick");
+        if (grantType == "authorization_code")
+        {
+            form["redirect_uri"] = LocalRedirectUri;
+            form["code_verifier"] = codeVerifier ?? throw new ArgumentNullException(nameof(codeVerifier));
+            form["code"] = credential;
+        }
+        else if (grantType == "refresh_token") form["refresh_token"] = credential;
+        else throw new ArgumentException("Unsupported Kick grant type.", nameof(grantType));
+        return new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = new FormUrlEncodedContent(form) };
     }
 
-    private static async Task<KickOAuthTokenResult> SendTokenRequestAsync(
+    internal static async Task<KickOAuthTokenResult> SendTokenRequestAsync(
         HttpClient httpClient,
         HttpRequestMessage request,
         string? fallbackRefreshToken,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireManagedScopes = false)
     {
-        using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
-        var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            throw new InvalidOperationException($"Kick OAuth token request failed ({(int)response.StatusCode} {response.ReasonPhrase}). {ApiErrorMessage.Extract(responseBody)}");
-        }
+            using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, cancellationToken);
+            var responseBody = await BoundedHttpContentReader.ReadJsonAsync(response.Content, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException($"Kick connection failed (HTTP {(int)response.StatusCode}). Please try connecting again.");
+            }
 
+            return ParseTokenResponse(responseBody, fallbackRefreshToken, requireManagedScopes);
+        }
+        catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.NameResolutionError)
+        {
+            throw new InvalidOperationException(
+                $"Your network's DNS could not find the Kick connection server ({request.RequestUri?.DnsSafeHost}). Reconnect your network or VPN, then try Connect Kick again.", ex);
+        }
+    }
+
+    internal static KickOAuthTokenResult ParseTokenResponse(string responseBody, string? fallbackRefreshToken, bool requireManagedScopes)
+    {
         using var document = JsonDocument.Parse(responseBody);
         var root = document.RootElement;
         var accessToken = GetRequiredString(root, "access_token", "Kick token response did not include an access token.");
@@ -387,6 +423,9 @@ public static class KickOAuthService
         {
             throw new InvalidOperationException("Kick authorization succeeded, but the token is missing the chat:write scope.");
         }
+
+        if (requireManagedScopes && (!RequiredScopes.All(scopes.Contains) || expiresAt is null || string.IsNullOrWhiteSpace(refreshToken)))
+            throw new InvalidOperationException("Kick did not return a complete renewable account connection. Please connect again and approve all requested permissions.");
 
         return new KickOAuthTokenResult(
             accessToken,
@@ -453,4 +492,6 @@ public sealed record KickOAuthTokenResult(
     string RefreshToken,
     DateTimeOffset? ExpiresAtUtc,
     string TokenType,
-    HashSet<string> Scopes);
+    HashSet<string> Scopes,
+    string ClientId = "",
+    bool UsesTokenService = false);

@@ -16,6 +16,7 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
 {
     private readonly ISettingsService settingsService;
     private readonly IAppLogger logger;
+    private readonly AccountConnectionConfiguration accountConfiguration;
     private readonly ClipboardService clipboardService = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly object operationGate = new();
@@ -27,13 +28,15 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
     private bool dialogResultAssigned;
     private int currentStep;
     private bool isBusy;
-    private string statusMessage = "Use Next to connect the platforms you want to use.";
+    private string statusMessage = "Connect the platforms you want to use, or skip them for now.";
 
-    public SetupWizardWindow(AppSettings settings, ISettingsService settingsService, IAppLogger logger)
+    public SetupWizardWindow(AppSettings settings, ISettingsService settingsService, IAppLogger logger,
+        AccountConnectionConfiguration? accountConfiguration = null)
     {
         Settings = settings ?? throw new ArgumentNullException(nameof(settings));
         this.settingsService = settingsService ?? throw new ArgumentNullException(nameof(settingsService));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.accountConfiguration = accountConfiguration ?? AccountConnectionConfiguration.Current;
 
         InitializeComponent();
         DataContext = this;
@@ -119,19 +122,21 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         }
     }
 
-    public bool CanConnectTwitch => !IsBusy && !string.IsNullOrWhiteSpace(Settings.Chat.TwitchClientId);
+    public string TwitchConnectionHelp => accountConfiguration.CanConnectTwitch(Settings.Chat)
+        ? "Sign in to Twitch in your browser and approve access. Stream Studio saves your connection automatically."
+        : AccountConnectionConfiguration.TwitchUnavailableMessage;
 
-    public bool CanConnectKick => !IsBusy &&
-        !string.IsNullOrWhiteSpace(Settings.Chat.KickClientId) &&
-        !string.IsNullOrWhiteSpace(Settings.Chat.KickClientSecret);
+    public string KickConnectionHelp => accountConfiguration.CanConnectKick(Settings.Chat)
+        ? "Sign in to Kick in your browser and approve access. Stream Studio saves your connection and renews it automatically."
+        : AccountConnectionConfiguration.KickUnavailableMessage;
 
-    public string TwitchFooterActionText => ShouldConnectTwitchFromFooter
-        ? "Connect Twitch"
-        : "Continue";
+    public bool CanConnectTwitch => !IsBusy && accountConfiguration.CanConnectTwitch(Settings.Chat);
 
-    public string KickFooterActionText => ShouldConnectKickFromFooter
-        ? "Connect Kick"
-        : "Continue";
+    public bool CanConnectKick => !IsBusy && accountConfiguration.CanConnectKick(Settings.Chat);
+
+    public string TwitchFooterActionText => HasTwitchConnection ? "Continue" : "Skip for now";
+
+    public string KickFooterActionText => HasKickConnection ? "Continue" : "Skip for now";
 
     public string TwitchAccountStatus => HasTwitchConnection
         ? string.IsNullOrWhiteSpace(Settings.Chat.TwitchUsername)
@@ -164,15 +169,6 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
 
     private bool HasKickConnection => !string.IsNullOrWhiteSpace(Settings.Chat.KickOAuthToken) ||
         !string.IsNullOrWhiteSpace(Settings.Chat.KickRefreshToken);
-
-    private bool ShouldConnectTwitchFromFooter =>
-        !HasTwitchConnection &&
-        !string.IsNullOrWhiteSpace(Settings.Chat.TwitchClientId);
-
-    private bool ShouldConnectKickFromFooter =>
-        !HasKickConnection &&
-        !string.IsNullOrWhiteSpace(Settings.Chat.KickClientId) &&
-        !string.IsNullOrWhiteSpace(Settings.Chat.KickClientSecret);
 
     private void SetupWizardWindowLoaded(object sender, RoutedEventArgs e)
     {
@@ -219,34 +215,6 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         }
 
         CurrentStep = Math.Max(CurrentStep - 1, 0);
-    }
-
-    private async void TwitchFooterActionButtonClick(object sender, RoutedEventArgs e)
-    {
-        if (ShouldConnectTwitchFromFooter)
-        {
-            if (await ConnectTwitchAsync() && IsTwitchVisible)
-            {
-                CurrentStep = Math.Min(CurrentStep + 1, 3);
-            }
-            return;
-        }
-
-        NextButtonClick(sender, e);
-    }
-
-    private async void KickFooterActionButtonClick(object sender, RoutedEventArgs e)
-    {
-        if (ShouldConnectKickFromFooter)
-        {
-            if (await ConnectKickAsync() && IsKickVisible)
-            {
-                CurrentStep = Math.Min(CurrentStep + 1, 3);
-            }
-            return;
-        }
-
-        NextButtonClick(sender, e);
     }
 
     private async void CopyRedirectButtonClick(object sender, RoutedEventArgs e)
@@ -297,6 +265,12 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
         Settings.Chat.KickClientSecret = KickClientSecretBox.Password;
         OnPropertyChanged(nameof(CanConnectKick));
         OnPropertyChanged(nameof(KickFooterActionText));
+        OnPropertyChanged(nameof(KickConnectionHelp));
+    }
+
+    private async void ConnectKickButtonClick(object sender, RoutedEventArgs e)
+    {
+        await ConnectKickAsync();
     }
 
     private async void ConnectTwitchButtonClick(object sender, RoutedEventArgs e)
@@ -308,7 +282,7 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
     {
         if (!CanConnectTwitch)
         {
-            StatusMessage = "Enter the Twitch Client ID first.";
+            StatusMessage = TwitchConnectionHelp;
             return false;
         }
 
@@ -323,6 +297,7 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             var token = await TwitchOAuthService.AuthorizeUserTokenAsync(
                 Settings.Chat,
                 lifetimeCancellation.Token);
+            lifetimeCancellation.Token.ThrowIfCancellationRequested();
             TwitchOAuthService.ApplyTokenResult(Settings.Chat, token);
             await settingsService.SaveAsync(Settings, lifetimeCancellation.Token);
             StatusMessage = string.IsNullOrWhiteSpace(Settings.Chat.TwitchUsername)
@@ -357,7 +332,7 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
     {
         if (!CanConnectKick)
         {
-            StatusMessage = "Enter the Kick Client ID and Client Secret first.";
+            StatusMessage = KickConnectionHelp;
             return false;
         }
 
@@ -372,6 +347,7 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
             var token = await KickOAuthService.AuthorizeUserTokenAsync(
                 Settings.Chat,
                 lifetimeCancellation.Token);
+            lifetimeCancellation.Token.ThrowIfCancellationRequested();
             KickOAuthService.ApplyTokenResult(Settings.Chat, token);
 
             if (string.IsNullOrWhiteSpace(Settings.Chat.KickUsername))
@@ -509,6 +485,8 @@ public partial class SetupWizardWindow : Window, INotifyPropertyChanged
 
     private void ChatSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        OnPropertyChanged(nameof(TwitchConnectionHelp));
+        OnPropertyChanged(nameof(KickConnectionHelp));
         OnPropertyChanged(nameof(CanConnectTwitch));
         OnPropertyChanged(nameof(CanConnectKick));
         OnPropertyChanged(nameof(TwitchAccountStatus));

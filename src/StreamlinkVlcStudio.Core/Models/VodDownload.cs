@@ -10,7 +10,9 @@ public enum VodDownloadState
     Completed,
     Failed,
     Canceled,
-    Interrupted
+    Interrupted,
+    ConversionQueued,
+    Converting
 }
 
 public sealed record VodDownloadOptions(string StreamlinkPath, IReadOnlyList<string> CustomArguments);
@@ -29,13 +31,21 @@ public sealed record VodDownloadItem(
     TimeSpan Duration = default,
     string Error = "",
     string LocalMediaPath = "",
-    long Revision = 0)
+    long Revision = 0,
+    VodDownloadFormat Format = VodDownloadFormat.Hls,
+    VodDownloadFormat? RequestedFormat = null,
+    string MediaFolder = "media")
 {
     [JsonIgnore]
-    public bool IsActive => State is VodDownloadState.Queued or VodDownloadState.Resolving or VodDownloadState.Downloading;
+    public bool IsActive => State is VodDownloadState.Queued or VodDownloadState.Resolving or VodDownloadState.Downloading or
+        VodDownloadState.ConversionQueued or VodDownloadState.Converting;
 
     [JsonIgnore]
-    public StreamTarget OfflineTarget => State == VodDownloadState.Completed && !string.IsNullOrWhiteSpace(LocalMediaPath)
+    public bool CanRetryConversion => State == VodDownloadState.Completed && RequestedFormat is { } requested && requested != Format;
+
+    [JsonIgnore]
+    public StreamTarget OfflineTarget => (State is VodDownloadState.Completed or VodDownloadState.ConversionQueued or VodDownloadState.Converting) &&
+        !string.IsNullOrWhiteSpace(LocalMediaPath)
         ? Target with { LocalMediaPath = LocalMediaPath, MediaDuration = Duration }
         : throw new InvalidOperationException("This VOD has not finished downloading.");
 }

@@ -10,8 +10,9 @@ function Assert-Lifecycle([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
-# Load only filesystem helpers. Network, dependency installation, registry,
-# shortcuts, settings, and process termination are never invoked by these fixtures.
+# Load only filesystem helpers. The settings fixture below loads its helpers into
+# an isolated scope and redirects APPDATA to a temporary directory. Network,
+# dependency installation, registry, shortcuts and process termination are never invoked.
 $tokens = $null
 $parseErrors = $null
 $installer = [Management.Automation.Language.Parser]::ParseFile(
@@ -47,6 +48,42 @@ function Invoke-LifecycleTest([string]$Name, [scriptblock]$Test) {
 
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
+    Invoke-LifecycleTest 'upgrade settings rewrite preserves per-stream web chat layouts' {
+        foreach ($definition in $installer.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -in @('Update-AppSettings', 'Set-ObjectProperty')
+                }, $false)) {
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        function Write-Step([string]$Message) { }
+        $savedAppData = $env:APPDATA
+        try {
+            $env:APPDATA = Join-Path $testRoot 'settings-appdata'
+            $settingsDirectory = Join-Path $env:APPDATA 'StreamStudio'
+            New-Item -ItemType Directory -Path $settingsDirectory -Force | Out-Null
+            $settingsPath = Join-Path $settingsDirectory 'settings.json'
+            $before = [pscustomobject]@{
+                DefaultQuality = '720p'
+                WebChatOverlayLayouts = [pscustomobject]@{
+                    'Twitch:streamer' = [pscustomobject]@{ Width = 420; Height = 260; X = 0.23; Y = 0.87 }
+                    'Kick:streamer' = [pscustomobject]@{ Width = $null; Height = $null; X = 0; Y = 1 }
+                }
+                ProtectedSecrets = [pscustomobject]@{ Scheme = 'fixture'; Ciphertext = 'preserve-me' }
+            }
+            $before | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+            Update-AppSettings -StreamlinkPath 'C:\New Install\streamlink.exe' -VlcDirectory 'C:\New Install\vlc'
+            $after = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            Assert-Lifecycle (($after.WebChatOverlayLayouts | ConvertTo-Json -Depth 50 -Compress) -ceq
+                ($before.WebChatOverlayLayouts | ConvertTo-Json -Depth 50 -Compress)) 'Upgrade changed or removed a saved chat layout.'
+            Assert-Lifecycle ($after.DefaultQuality -ceq '720p') 'Upgrade changed unrelated preferences.'
+            Assert-Lifecycle ($after.ProtectedSecrets.Ciphertext -ceq 'preserve-me') 'Upgrade changed protected account settings.'
+            Assert-Lifecycle ($after.StreamlinkPath -ceq 'C:\New Install\streamlink.exe') 'The real installer settings update did not run.'
+        } finally {
+            $env:APPDATA = $savedAppData
+        }
+    }
+
     Invoke-LifecycleTest 'installation lease matches the native uninstaller and normalizes path aliases' {
         $expected = 'Local\StreamStudio.Installation.25549A2C6E0AAF49EA87B4987F6EAC72914EA313C86CB5E31C88CBCFE33BFB02'
         foreach ($directory in @('C:\Stream Studio\Install\', 'C:/stream studio/install/../install')) {

@@ -9,6 +9,12 @@ namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
 internal sealed class BrowseViewModel : HomeFeatureViewModel
 {
+    private sealed class CategoryProgress(Action<IReadOnlyList<BrowseCategory>> report)
+        : IProgress<IReadOnlyList<BrowseCategory>>
+    {
+        public void Report(IReadOnlyList<BrowseCategory> value) => report(value);
+    }
+
     private readonly Func<LiveStreamCardViewModel, bool, Task> openStream;
     private readonly Action recordNavigation;
     private readonly Func<bool> isBrowseHomeVisible;
@@ -64,6 +70,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
     private bool isBrowseCategoriesLoading;
     private Task? activeBrowseCategoryTask;
     private int activeBrowseCategoryGeneration;
+    private int? progressiveBrowseCategoryGeneration;
     private (PlatformKind Platform, string Query) activeBrowseCategorySearch;
     private bool hasBrowseCategorySearchCompleted;
     private bool isBrowseStreamsLoading;
@@ -480,12 +487,37 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
         browseCategoryStatus = BrowseStatus;
         StatusMessage = BrowseStatus;
 
+        var acceptingProgress = true;
+        var previewDisplayed = false;
         try
         {
             var result = await browseService!.GetCategoriesAsync(
                 request,
                 Settings,
+                new CategoryProgress(categories => dispatch(() =>
+                {
+                    if (!acceptingProgress || !reset || searchCancellation.IsCancellationRequested ||
+                        !IsCurrentBrowseCategorySearch(searchGeneration, platform, query) ||
+                        (BrowseCategories.Count > 0 && !previewDisplayed) || categories.Count == 0)
+                        return;
+
+                    // A preview never records a completed page or replaces refreshed
+                    // cards. Final reconciliation enriches these same card instances.
+                    PagedResultTracker.ApplyItems(BrowseCategories, categories,
+                        card => $"{card.Platform}:{card.Id}", category => $"{category.Platform}:{category.Id}",
+                        category => new BrowseCategoryViewModel(category, SelectBrowseCategoryAsync),
+                        (card, category) => card.Update(category), reset: true);
+                    previewDisplayed = true;
+                    progressiveBrowseCategoryGeneration = searchGeneration;
+                    browseCategoryStatus = $"Loading {platform} categories and viewer counts";
+                    if (!IsStreamsPageSelected)
+                    {
+                        BrowseStatus = browseCategoryStatus;
+                        StatusMessage = BrowseStatus;
+                    }
+                })),
                 searchCancellation.Token);
+            acceptingProgress = false;
             if (!IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
             {
                 return;
@@ -509,12 +541,24 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
                 {
                     SortBrowseCategoriesByViewerCount();
                 }
+                if (SelectedBrowseCategory is not null)
+                {
+                    OnPropertyChanged(nameof(SelectedBrowseCategoryName));
+                    OnPropertyChanged(nameof(BrowseStreamsTitle));
+                }
+            }
+            else if (previewDisplayed)
+            {
+                ClearBrowseCategories(clearStatus: false);
             }
 
             HasBrowseCategorySearchCompleted = true;
-            BrowseStatus = result.Message;
             browseCategoryStatus = result.Message;
-            StatusMessage = result.Message;
+            if (!IsStreamsPageSelected)
+            {
+                BrowseStatus = result.Message;
+                StatusMessage = result.Message;
+            }
             if (result.IsAvailable) StartBrowseCategoryViewerCountLoad(platform, query);
         }
         catch (OperationCanceledException) when (searchCancellation.IsCancellationRequested)
@@ -527,14 +571,21 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
                 return;
             }
 
+            if (previewDisplayed) ClearBrowseCategories(clearStatus: false);
             HasBrowseCategorySearchCompleted = true;
-            BrowseStatus = ex.Message;
             browseCategoryStatus = ex.Message;
-            StatusMessage = ex.Message;
+            if (!IsStreamsPageSelected)
+            {
+                BrowseStatus = ex.Message;
+                StatusMessage = ex.Message;
+            }
             logger.Write(AppLogLevel.Error, "Browse", $"{platform} category browse failed.", ex);
         }
         finally
         {
+            acceptingProgress = false;
+            if (progressiveBrowseCategoryGeneration == searchGeneration)
+                progressiveBrowseCategoryGeneration = null;
             if (IsCurrentBrowseCategorySearch(searchGeneration, platform, query))
             {
                 IsBrowseCategoriesLoading = false;
@@ -824,12 +875,16 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
             return;
         }
 
-        vodBrowseController.AdvanceBrowseCategoryGeneration();
         CancelBrowseCategorySearchDebounce();
-        CancelActiveBrowseCategorySearch();
-        // The canceled generation no longer owns this flag and cannot clear it in
-        // its finally block. Returning to categories must be able to load again.
-        IsBrowseCategoriesLoading = false;
+        // Opening an early card keeps that page's enrichment alive, so returning
+        // to categories has complete counts and pagination without another fetch.
+        if (progressiveBrowseCategoryGeneration != vodBrowseController.CurrentBrowseCategoryGeneration)
+        {
+            vodBrowseController.AdvanceBrowseCategoryGeneration();
+            CancelActiveBrowseCategorySearch();
+            // A canceled generation can no longer clear its own loading flag.
+            IsBrowseCategoriesLoading = false;
+        }
         CancelActiveBrowseCategoryViewerCountLoad();
         vodBrowseController.AdvanceBrowseStreamGeneration();
         CancelActiveBrowseStreamSearch();

@@ -49,7 +49,8 @@ public sealed partial class StreamlinkService
         const string prefix = "Available streams:";
         var index = line.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
         if (index < 0) return false;
-        var names = StreamAliasesPattern().Replace(line[(index + prefix.Length)..], "")
+        var available = line[(index + prefix.Length)..].Split(['\r', '\n'], 2)[0];
+        var names = StreamAliasesPattern().Replace(available, "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return names.Length > 0 && names.All(name =>
             name.Equals("audio_only", StringComparison.OrdinalIgnoreCase) || name.Equals("audio", StringComparison.OrdinalIgnoreCase));

@@ -1,5 +1,13 @@
 # Third-Party Notices
 
+## Browser platform logos
+
+The LAN browser UI embeds unmodified Twitch and KICK SVG wordmarks to identify
+channels by platform. `twitch-logo.svg` is the flat purple wordmark from
+[Twitch's official brand assets](https://brand.twitch.com/uploads/Twitch-Brand.zip).
+`kick-logo.svg` is from [KICK's official brand site](https://static.kick.com/kick-logo.svg).
+The names and logos are trademarks of their respective owners.
+
 ## Bundled VLC condition-wait core
 
 `libvlccore.dll` is built from VLC 3.0.23 with the narrow Windows
@@ -173,3 +181,8 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+## hls.js
+
+The LAN browser player bundles hls.js 1.7.3, copyright its contributors, under the Apache License 2.0.
+Source: https://github.com/video-dev/hls.js/tree/v1.7.3
+The upstream copyright/derivation notices are included at `src/StreamlinkVlcStudio.Infrastructure/LocalWeb/Assets/hls.LICENSE.txt`; the full Apache 2.0 license is in `hls.APACHE-2.0.txt` alongside it. Both are embedded and served with the browser assets.

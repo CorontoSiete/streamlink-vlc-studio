@@ -226,6 +226,9 @@ internal static partial class LibVlcNative
     internal static extern IntPtr libvlc_video_get_track_description(IntPtr player);
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int libvlc_video_get_track(IntPtr player);
+
+    [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int libvlc_video_set_track(IntPtr player, int track);
 
     [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]

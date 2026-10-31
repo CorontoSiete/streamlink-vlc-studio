@@ -352,8 +352,9 @@ internal sealed class RecentStreamsViewModel : HomeFeatureViewModel
         if (metadata.State != StreamMetadataState.Available) return stream;
         var displayName = FirstNonEmpty(metadata.DisplayName, stream.DisplayName, stream.Channel);
         var thumbnailUrl = NormalizeImageUrl(FirstNonEmpty(metadata.ThumbnailUrl, stream.ThumbnailUrl));
+        var profileImageUrl = NormalizeImageUrl(FirstNonEmpty(metadata.ProfileImageUrl, stream.ProfileImageUrl));
         var categoryName = FirstNonEmpty(metadata.CategoryName, stream.CategoryName);
-        if (displayName == stream.DisplayName && thumbnailUrl == stream.ThumbnailUrl && categoryName == stream.CategoryName)
+        if (displayName == stream.DisplayName && thumbnailUrl == stream.ThumbnailUrl && categoryName == stream.CategoryName && profileImageUrl == stream.ProfileImageUrl)
             return stream;
 
         // Merge into the latest settings, preserving watch order, quality and timestamps
@@ -366,6 +367,7 @@ internal sealed class RecentStreamsViewModel : HomeFeatureViewModel
             DisplayName = displayName,
             CategoryName = categoryName,
             ThumbnailUrl = thumbnailUrl,
+            ProfileImageUrl = profileImageUrl,
             LastQuality = stream.LastQuality,
             LastWatchedAtUtc = stream.LastWatchedAtUtc
         };
@@ -524,6 +526,7 @@ internal sealed class RecentStreamsViewModel : HomeFeatureViewModel
                 hint?.ThumbnailUrl,
                 metadata?.ThumbnailUrl,
                 existing?.ThumbnailUrl),
+            ProfileImageUrl = FirstNonEmpty(metadata?.ProfileImageUrl, target.ProfileImageUrl, existing?.ProfileImageUrl),
             CategoryName = FirstNonEmpty(
                 target.CategoryName,
                 hint?.CategoryName,

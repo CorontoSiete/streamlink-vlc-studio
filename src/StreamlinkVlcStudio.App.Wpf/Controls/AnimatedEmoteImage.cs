@@ -64,6 +64,10 @@ public sealed class AnimatedEmoteImage : Image
         typeof(AnimatedEmoteImage),
         new PropertyMetadata(DefaultMaxImageBytes, OnImageSourceChanged));
 
+    public static readonly DependencyProperty DecodePixelWidthProperty = DependencyProperty.Register(
+        nameof(DecodePixelWidth), typeof(int), typeof(AnimatedEmoteImage),
+        new PropertyMetadata(0, OnImageSourceChanged));
+
     private static readonly DependencyPropertyKey HasImageLoadFailedPropertyKey = DependencyProperty.RegisterReadOnly(
         nameof(HasImageLoadFailed),
         typeof(bool),
@@ -106,6 +110,13 @@ public sealed class AnimatedEmoteImage : Image
     }
 
     public bool HasImageLoadFailed => (bool)GetValue(HasImageLoadFailedProperty);
+
+    /// <summary>Limits retained bitmap width for large artwork; zero preserves original pixels.</summary>
+    public int DecodePixelWidth
+    {
+        get => (int)GetValue(DecodePixelWidthProperty);
+        set => SetValue(DecodePixelWidthProperty, value);
+    }
 
     public bool IsRefreshRunning
     {
@@ -360,7 +371,10 @@ public sealed class AnimatedEmoteImage : Image
         }
 
         var maxImageBytes = Math.Clamp(MaxImageBytes, 1, AbsoluteMaxImageBytes);
-        var key = CreateCacheKey(uri, maxImageBytes, imageRequest?.CacheVersion ?? 0);
+        var key = CreateCacheKey(uri, maxImageBytes, imageRequest?.CacheVersion ?? 0) with
+        {
+            DecodePixelWidth = Math.Clamp(DecodePixelWidth, 0, 2048)
+        };
         currentImageCacheKey = key;
         imageLoadPending = true;
         DecodedEmoteImage? image;
@@ -502,7 +516,7 @@ public sealed class AnimatedEmoteImage : Image
         DecodedEmoteImage? image = null;
         try
         {
-            image = await LoadAndDecodeImageAsync(key.Url, key.MaxImageBytes, httpClient).ConfigureAwait(false);
+            image = await LoadAndDecodeImageAsync(key.Url, key.MaxImageBytes, httpClient, key.DecodePixelWidth).ConfigureAwait(false);
             return image;
         }
         finally
@@ -707,7 +721,8 @@ public sealed class AnimatedEmoteImage : Image
         }
     }
 
-    private static Task<DecodedEmoteImage?> LoadAndDecodeImageAsync(string url, int maxImageBytes, HttpClient? httpClient)
+    private static Task<DecodedEmoteImage?> LoadAndDecodeImageAsync(string url, int maxImageBytes, HttpClient? httpClient,
+        int decodePixelWidth)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !ImageUriPolicy.IsSupported(uri))
         {
@@ -715,11 +730,12 @@ public sealed class AnimatedEmoteImage : Image
         }
 
         return uri.IsFile
-            ? ReadAndDecodeFileAsync(uri.LocalPath, maxImageBytes)
-            : DownloadAndDecodeImageAsync(url, maxImageBytes, httpClient ?? SharedHttpClient);
+            ? ReadAndDecodeFileAsync(uri.LocalPath, maxImageBytes, decodePixelWidth)
+            : DownloadAndDecodeImageAsync(url, maxImageBytes, httpClient ?? SharedHttpClient, decodePixelWidth);
     }
 
-    private static async Task<DecodedEmoteImage?> DownloadAndDecodeImageAsync(string url, int maxImageBytes, HttpClient httpClient)
+    private static async Task<DecodedEmoteImage?> DownloadAndDecodeImageAsync(string url, int maxImageBytes, HttpClient httpClient,
+        int decodePixelWidth)
     {
         using var deadline = new CancellationTokenSource(ImageLoadDeadline);
         try
@@ -769,7 +785,7 @@ public sealed class AnimatedEmoteImage : Image
                         continue;
                     }
 
-                    var image = await Task.Run(() => DecodeImage(bytes), deadline.Token).ConfigureAwait(false);
+                    var image = await Task.Run(() => DecodeImage(bytes, decodePixelWidth), deadline.Token).ConfigureAwait(false);
                     if (image is not null)
                     {
                         return image;
@@ -796,7 +812,7 @@ public sealed class AnimatedEmoteImage : Image
         }
     }
 
-    private static async Task<DecodedEmoteImage?> ReadAndDecodeFileAsync(string path, int maxImageBytes)
+    private static async Task<DecodedEmoteImage?> ReadAndDecodeFileAsync(string path, int maxImageBytes, int decodePixelWidth)
     {
         await ImageWorkGate.WaitAsync().ConfigureAwait(false);
         try
@@ -813,7 +829,7 @@ public sealed class AnimatedEmoteImage : Image
                 return null;
             }
 
-            return await Task.Run(() => DecodeImage(bytes)).ConfigureAwait(false);
+            return await Task.Run(() => DecodeImage(bytes, decodePixelWidth)).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or ArgumentException)
         {
@@ -825,11 +841,37 @@ public sealed class AnimatedEmoteImage : Image
         }
     }
 
-    private static DecodedEmoteImage? DecodeImage(byte[] bytes)
+    private static DecodedEmoteImage? DecodeImage(byte[] bytes, int decodePixelWidth = 0)
     {
-        return DecodeAnimatedImageWithSkia(bytes) ??
+        var image = DecodeAnimatedImageWithSkia(bytes) ??
             DecodeImageWithWpf(bytes) ??
             DecodeStaticImageWithSkia(bytes);
+        if (image is null || decodePixelWidth <= 0 || image.Frames[0] is not BitmapSource firstFrame ||
+            firstFrame.PixelWidth <= decodePixelWidth)
+            return image;
+
+        var frames = new List<ImageSource>(image.Frames.Count);
+        foreach (var source in image.Frames)
+        {
+            if (source is not BitmapSource frame)
+            {
+                frames.Add(source);
+                continue;
+            }
+            var scale = (double)decodePixelWidth / frame.PixelWidth;
+            var resized = new TransformedBitmap(frame, new ScaleTransform(scale, scale));
+            var converted = new FormatConvertedBitmap(resized, PixelFormats.Pbgra32, null, 0);
+            var stride = converted.PixelWidth * 4;
+            var pixels = new byte[stride * converted.PixelHeight];
+            converted.CopyPixels(pixels, stride, 0);
+            // Copy into an independent bitmap: retaining a TransformedBitmap would also keep
+            // its full-resolution Source alive for every visible banner.
+            var bitmap = BitmapSource.Create(converted.PixelWidth, converted.PixelHeight, 96, 96,
+                PixelFormats.Pbgra32, null, pixels, stride);
+            bitmap.Freeze();
+            frames.Add(bitmap);
+        }
+        return new DecodedEmoteImage(frames, image.Delays);
     }
 
     internal static bool TryDecodeImageForTest(byte[] bytes, out int frameCount, out int width, out int height)
@@ -1535,7 +1577,7 @@ public sealed class AnimatedEmoteImage : Image
     }
 }
 
-internal readonly record struct AnimatedEmoteImageCacheKey(string Url, int MaxImageBytes, long CacheVersion);
+internal readonly record struct AnimatedEmoteImageCacheKey(string Url, int MaxImageBytes, long CacheVersion, int DecodePixelWidth = 0);
 
 public sealed record AnimatedImageRequest(string Url, long CacheVersion);
 

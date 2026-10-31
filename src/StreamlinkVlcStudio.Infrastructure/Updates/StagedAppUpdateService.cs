@@ -155,7 +155,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 TryCleanup(() => DeleteCacheEntry(Path.Combine(updateRoot, "pending-repair.json")));
             var repairing = release.Version == current &&
                 (HasRepairableRelease(release) || pendingRepair?.TargetVersion == current);
-            if (repairing && kind is AppInstallKind.Managed or AppInstallKind.LegacyManaged &&
+            if (repairing && kind is AppInstallKind.Managed or AppInstallKind.LegacyManaged or AppInstallKind.Zip &&
                 await verifyInstallation(cancellationToken).ConfigureAwait(false))
             {
                 await ResolveRepairAsync(current, cancellationToken).ConfigureAwait(false);
@@ -164,8 +164,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
                 PendingRepairVersion = ReadPendingRepair()?.TargetVersion;
             }
             var available = release.Version > current || repairing;
-            var notifyOnly = available && kind is AppInstallKind.Zip or AppInstallKind.Unmanaged;
-            if (release.Version >= current && kind is AppInstallKind.Managed or AppInstallKind.LegacyManaged)
+            var notifyOnly = available && kind == AppInstallKind.Unmanaged;
+            if (release.Version >= current && kind is AppInstallKind.Managed or AppInstallKind.LegacyManaged or AppInstallKind.Zip)
             {
                 var prepared = await RestorePreparedAsync(release, cancellationToken).ConfigureAwait(false);
                 if (prepared is not null)
@@ -232,10 +232,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         IProgress<AppUpdateProgress>? progress,
         CancellationToken cancellationToken)
     {
-        if (detectInstallKind() is AppInstallKind.Zip or AppInstallKind.Unmanaged)
-        {
-            throw new InvalidOperationException("This installation can only be notified about verified releases.");
-        }
+        var packageKind = GetPackageKind(detectInstallKind());
+        var asset = GetPackageAsset(release, packageKind);
 
         ValidateRelease(release);
         if (lastVerifiedRelease is null || !ReleaseEquals(lastVerifiedRelease, release))
@@ -261,19 +259,19 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         var operation = Path.Combine(operationsRoot, id.ToString("N"));
         Directory.CreateDirectory(operation);
         AssertNotReparsePoint(operation);
-        var setupPath = Path.Combine(operation, SetupAssetName);
+        var setupPath = Path.Combine(operation, asset.Name);
         try
         {
             SetState(new(AppUpdatePhase.Downloading, $"Downloading {release.Version}...", release));
-            await DownloadExactAsync(release, setupPath, progress, cancellationToken).ConfigureAwait(false);
-            SetState(new(AppUpdatePhase.Verifying, "Verifying the downloaded installer...", release));
-            await Task.Run(() => AssertFile(setupPath, release.Setup), cancellationToken).ConfigureAwait(false);
+            await DownloadExactAsync(release, asset, setupPath, progress, cancellationToken).ConfigureAwait(false);
+            SetState(new(AppUpdatePhase.Verifying, "Verifying the downloaded update...", release));
+            await Task.Run(() => AssertFile(setupPath, asset), cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             var processPath = Environment.ProcessPath ?? throw new InvalidOperationException("The running executable path is unavailable.");
             var helperPath = Path.Combine(operation, Path.GetFileName(processPath));
             File.Copy(processPath, helperPath, overwrite: false);
-            var prepared = new PreparedAppUpdate(id, release, operation, setupPath, helperPath, utcNow());
+            var prepared = new PreparedAppUpdate(id, release, operation, setupPath, helperPath, utcNow(), packageKind);
             await WriteAtomicJsonAsync(Path.Combine(operation, "operation.json"), prepared, cancellationToken).ConfigureAwait(false);
             if (repairing)
             {
@@ -313,7 +311,7 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            if (detectInstallKind() is not (AppInstallKind.Managed or AppInstallKind.LegacyManaged) ||
+            if (detectInstallKind() is not (AppInstallKind.Managed or AppInstallKind.LegacyManaged or AppInstallKind.Zip) ||
                 lastVerifiedRelease is null || !ReleaseEquals(lastVerifiedRelease, update.Release) ||
                 getCurrentVersion() is not { } current || update.Release.Version < current ||
                 (update.Release.Version == current && !IsFailedOperation(update.OperationId)))
@@ -333,9 +331,15 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         AssertNotReparsePoint(Path.GetDirectoryName(resultPath)!);
         AssertNotReparsePoint(Path.GetDirectoryName(logPath)!);
         var info = new ProcessStartInfo(update.HelperPath) { UseShellExecute = true, WorkingDirectory = update.OperationDirectory };
-        foreach (var argument in new[] { "--update-helper", update.OperationId.ToString("D"), "--parent-pid", Environment.ProcessId.ToString(), "--setup", update.SetupPath, "--setup-length", update.Release.Setup.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), "--setup-sha256", update.Release.Setup.Sha256, "--target-version", update.Release.Version.ToString(3), "--install-dir", applicationDirectory, "--result", resultPath, "--log", logPath })
+        var asset = GetPackageAsset(update.Release, update.PackageKind);
+        foreach (var argument in new[] { "--update-helper", update.OperationId.ToString("D"), "--parent-pid", Environment.ProcessId.ToString(), "--setup", update.PackagePath, "--setup-length", asset.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), "--setup-sha256", asset.Sha256, "--target-version", update.Release.Version.ToString(3), "--install-dir", applicationDirectory, "--result", resultPath, "--log", logPath })
         {
             info.ArgumentList.Add(argument);
+        }
+        if (update.PackageKind == AppUpdatePackageKind.Zip)
+        {
+            info.ArgumentList.Add("--package-kind");
+            info.ArgumentList.Add(nameof(AppUpdatePackageKind.Zip));
         }
 
         try
@@ -561,9 +565,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         return new(value.Name, uri, value.Length, value.Sha256.ToLowerInvariant());
     }
 
-    private async Task DownloadExactAsync(AppUpdateRelease release, string destination, IProgress<AppUpdateProgress>? progress, CancellationToken token)
+    private async Task DownloadExactAsync(AppUpdateRelease release, AppUpdateAsset asset, string destination, IProgress<AppUpdateProgress>? progress, CancellationToken token)
     {
-        var asset = release.Setup;
         using var request = new HttpRequestMessage(HttpMethod.Get, asset.DownloadUri);
         using var response = await BoundedHttpResponseSender.SendAsync(httpClient, request, token, PackageDownloadTimeout).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
@@ -617,6 +620,9 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
 
     private void AssertPrepared(PreparedAppUpdate update, bool verifyHelper = true)
     {
+        if (update.PackageKind != GetPackageKind(detectInstallKind()))
+            throw new InvalidDataException("The downloaded package does not match this installation type. Download the update again.");
+        var asset = GetPackageAsset(update.Release, update.PackageKind);
         if (!IsPackageFresh(update.VerifiedAt))
             throw new InvalidDataException("The downloaded update expired or has a future verification time. Download it again before installing.");
         var processPath = Environment.ProcessPath ?? throw new InvalidOperationException("The running executable path is unavailable.");
@@ -625,14 +631,14 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
         if (update.OperationId == Guid.Empty || !IsSamePath(operation, Path.Combine(operationsRoot, update.OperationId.ToString("N"))) ||
             !string.Equals(Path.GetFileName(operation), update.OperationId.ToString("N"), StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetDirectoryName(Path.GetFullPath(update.SetupPath)), operation, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(Path.GetFileName(update.SetupPath), SetupAssetName, StringComparison.Ordinal) ||
+            !string.Equals(Path.GetFileName(update.PackagePath), asset.Name, StringComparison.Ordinal) ||
             !string.Equals(Path.GetDirectoryName(Path.GetFullPath(update.HelperPath)), operation, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetFileName(update.HelperPath), Path.GetFileName(processPath), StringComparison.OrdinalIgnoreCase) ||
             (verifyHelper && !File.Exists(update.HelperPath))) throw new InvalidDataException("The prepared update paths are invalid.");
         AssertPathNoReparsePoints(operation);
         AssertNotReparsePoint(update.SetupPath);
         if (File.Exists(update.HelperPath)) AssertNotReparsePoint(update.HelperPath);
-        AssertFile(update.SetupPath, update.Release.Setup);
+        AssertFile(update.PackagePath, asset);
         if (verifyHelper)
         {
             using var original = File.OpenRead(processPath);
@@ -706,15 +712,38 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
 
     private static void ValidateRelease(AppUpdateRelease release)
     {
-        if (release.ProtocolVersion != SupportedProtocolVersion || release.Tag != "v" + release.Version.ToString(3) || release.Setup.Name != SetupAssetName) throw new InvalidDataException("The update release is unsupported.");
+        if (release.ProtocolVersion != SupportedProtocolVersion || release.Tag != "v" + release.Version.ToString(3) ||
+            release.Setup.Name != SetupAssetName || release.Zip.Name != ZipAssetName)
+            throw new InvalidDataException("The update release is unsupported.");
     }
+
+    private static AppUpdatePackageKind GetPackageKind(AppInstallKind kind) => kind switch
+    {
+        AppInstallKind.Managed or AppInstallKind.LegacyManaged => AppUpdatePackageKind.Setup,
+        AppInstallKind.Zip => AppUpdatePackageKind.Zip,
+        _ => throw new InvalidOperationException("This application folder is not an owned installation. Install a complete release before updating it.")
+    };
+
+    private static AppUpdateAsset GetPackageAsset(AppUpdateRelease release, AppUpdatePackageKind kind) => kind switch
+    {
+        AppUpdatePackageKind.Setup => release.Setup,
+        AppUpdatePackageKind.Zip => release.Zip,
+        _ => throw new InvalidDataException("The update package type is unsupported.")
+    };
 
     private static bool ReleaseEquals(AppUpdateRelease left, AppUpdateRelease right) =>
         left.Version == right.Version &&
         string.Equals(left.Tag, right.Tag, StringComparison.Ordinal) &&
         string.Equals(left.Commit, right.Commit, StringComparison.Ordinal) &&
         left.ProtocolVersion == right.ProtocolVersion &&
-        left.Setup == right.Setup;
+        left.Setup == right.Setup &&
+        left.Zip == right.Zip &&
+        string.Equals(left.Repository, right.Repository, StringComparison.Ordinal) &&
+        left.ReleasePage == right.ReleasePage &&
+        left.DependencyMinimums is { } leftMinimums && right.DependencyMinimums is { } rightMinimums &&
+        leftMinimums.Count == rightMinimums.Count &&
+        leftMinimums.All(entry => rightMinimums.TryGetValue(entry.Key, out var value) &&
+            string.Equals(entry.Value, value, StringComparison.Ordinal));
 
     private bool IsPackageFresh(DateTimeOffset verifiedAt)
     {
@@ -777,7 +806,8 @@ public sealed class StagedAppUpdateService : IAppUpdateService, IDisposable
     private async Task<bool> VerifyInstalledRuntimeAsync(CancellationToken token)
     {
         if (!OperatingSystem.IsWindows() || !SupportsDependencyVerification()) return false;
-        var executable = Path.Combine(applicationDirectory, AppIdentity.ManagedExecutableName);
+        var executable = Path.Combine(applicationDirectory, detectInstallKind() == AppInstallKind.Zip
+            ? AppIdentity.ZipExecutableName : AppIdentity.ManagedExecutableName);
         if (!File.Exists(executable)) return false;
         try
         {

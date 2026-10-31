@@ -32,7 +32,7 @@ internal static partial class UpdateModernizationTestCatalog
         ("signed updater preserves prepared trust when a newer refresh is canceled", PreparedTrustSurvivesLateCancellationAsync),
         ("automatic updater retries preparation failures without installing", AutomaticPreparationRetriesAsync),
         ("automatic update downloads are opt-in and preserve settings", AutomaticDownloadSettings),
-        ("automatic updater only downloads eligible managed releases", AutomaticDownloadEligibilityAsync),
+        ("automatic updater only downloads eligible installed releases", AutomaticDownloadEligibilityAsync),
         ("automatic updater prepares downloads without restarting", AutomaticDownloadReadyAsync),
         ("automatic updater cancellation pauses that version for the session", AutomaticDownloadCancellationAsync),
         ("automatic updater stops downloading when preferences are disabled", AutomaticDownloadPreferenceChangeAsync),
@@ -234,7 +234,7 @@ internal static partial class UpdateModernizationTestCatalog
             try
             {
                 using var service = new StagedAppUpdateService(new MemoryLogger(), client, root, Path.Combine(root, "updates"),
-                    detectInstallKind: () => phase == AppUpdatePhase.NotifyOnly ? AppInstallKind.Zip : AppInstallKind.Managed,
+                    detectInstallKind: () => phase == AppUpdatePhase.NotifyOnly ? AppInstallKind.Unmanaged : AppInstallKind.Managed,
                     getCurrentVersion: () => new Version(1, 7, 0), trustedKey: rsa.ExportParameters(false));
                 var check = await service.CheckAsync(UpdateCheckReason.Manual);
                 if (phase == AppUpdatePhase.DownloadFailed)
@@ -597,7 +597,7 @@ internal static partial class UpdateModernizationTestCatalog
 
     private static async Task AutomaticDownloadEligibilityAsync()
     {
-        foreach (var scenario in new[] { "default", "disabled", "zip", "unmanaged", "notify", "snoozed", "current", "ready" })
+        foreach (var scenario in new[] { "default", "disabled", "unmanaged", "notify", "snoozed", "current", "ready" })
         {
             var updater = new InteractiveUpdateService { CompleteDownload = true };
             await using var viewModel = CreateUpdateViewModel(updater, () => throw new InvalidOperationException("Unexpected shutdown"));
@@ -610,7 +610,7 @@ internal static partial class UpdateModernizationTestCatalog
             }
             if (scenario == "ready") updater.Prepare();
             var result = AvailableResult(updater,
-                scenario == "zip" ? AppInstallKind.Zip : scenario == "unmanaged" ? AppInstallKind.Unmanaged : AppInstallKind.Managed,
+                scenario == "unmanaged" ? AppInstallKind.Unmanaged : AppInstallKind.Managed,
                 scenario == "notify");
             if (scenario == "current") result = result with { IsUpdateAvailable = false };
             await viewModel.PrepareAutomaticUpdateAsync(result, CancellationToken.None);
@@ -620,7 +620,7 @@ internal static partial class UpdateModernizationTestCatalog
 
     private static async Task AutomaticDownloadReadyAsync()
     {
-        foreach (var kind in new[] { AppInstallKind.Managed, AppInstallKind.LegacyManaged })
+        foreach (var kind in new[] { AppInstallKind.Managed, AppInstallKind.LegacyManaged, AppInstallKind.Zip })
         {
             var updater = new InteractiveUpdateService { CompleteDownload = true };
             await using var viewModel = CreateUpdateViewModel(updater, () => throw new InvalidOperationException("Unexpected shutdown"));
@@ -732,9 +732,9 @@ internal static partial class UpdateModernizationTestCatalog
 
             var first = await service.CheckAsync(UpdateCheckReason.Manual);
             Assert.True(first.IsUpdateAvailable);
-            Assert.True(first.IsNotifyOnly);
+            Assert.Equal(false, first.IsNotifyOnly);
             Assert.Equal(new Version(1, 8, 0), first.Release!.Version);
-            Assert.Equal(AppUpdatePhase.NotifyOnly, service.State.Phase);
+            Assert.Equal(AppUpdatePhase.Available, service.State.Phase);
             Assert.Equal(1, fixture.Handler.ApiRequests);
 
             var cached = await service.CheckAsync(UpdateCheckReason.Startup);
@@ -1589,12 +1589,12 @@ internal static partial class UpdateModernizationTestCatalog
         }
     }
 
-    private static MainViewModel CreateUpdateViewModel(IAppUpdateService updater, Action shutdown)
+    private static MainViewModel CreateUpdateViewModel(IAppUpdateService updater, Action shutdown, Action<Uri>? openBrowser = null)
     {
         var settings = new AppSettings();
         return TestViewModels.CreateMain(settings, new FakeSettingsService(settings), new FakeStreamlinkService(),
             new FakePlaybackEngineFactory(), new FakeChatClientFactory(), new MemoryLogger(), action => action(),
-            appUpdateService: updater, requestShutdown: shutdown);
+            appUpdateService: updater, requestShutdown: shutdown, openBrowser: openBrowser);
     }
 
     private sealed class InteractiveUpdateService : IAppUpdateService
@@ -1737,7 +1737,9 @@ internal static partial class UpdateModernizationTestCatalog
     {
         public int ApiRequests { get; private set; }
         public int SetupRequests { get; private set; }
+        public int ZipRequests { get; private set; }
         public byte[]? SetupOverride { get; set; }
+        public byte[]? ZipOverride { get; set; }
         public Func<HttpContent>? SetupContent { get; set; }
         public bool FailApi { get; set; }
         public UpdateHttpHandler? NextRelease { get; set; }
@@ -1770,6 +1772,7 @@ internal static partial class UpdateModernizationTestCatalog
             }
 
             if (path == "/setup") SetupRequests++;
+            if (path == "/zip") ZipRequests++;
             var response = path switch
             {
                 "/manifest" => Response(manifest),
@@ -1777,7 +1780,7 @@ internal static partial class UpdateModernizationTestCatalog
                 "/setup" => SetupContent is { } createContent
                     ? new HttpResponseMessage(HttpStatusCode.OK) { Content = createContent() }
                     : Response(SetupOverride ?? setup),
-                "/zip" => Response(zip),
+                "/zip" => Response(ZipOverride ?? zip),
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound)
             };
             response.RequestMessage = request;

@@ -19,7 +19,8 @@ public static class OAuthTokenHelpers
     /// </summary>
     public static string NormalizeBearerToken(string token)
     {
-        var normalized = token.Trim();
+        // Preserve the separator until prefix removal, including when no token follows it.
+        var normalized = token.TrimStart();
         if (normalized.StartsWith("oauth:", StringComparison.OrdinalIgnoreCase))
         {
             normalized = normalized["oauth:".Length..];

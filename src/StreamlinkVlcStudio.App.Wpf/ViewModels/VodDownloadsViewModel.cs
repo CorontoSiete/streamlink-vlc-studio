@@ -15,8 +15,8 @@ internal sealed class VodDownloadsViewModel : HomeFeatureViewModel
 {
     private readonly IVodDownloadService? service;
     private readonly Func<string> getQuality;
-    private readonly Func<StreamTarget, string, Task> openOffline;
-    private readonly Action<VodDownloadItem> ensureNotOpen;
+    private readonly Func<IVodDownloadPlayback, string, Task> openOffline;
+    private readonly Func<VodDownloadItem, Task> ensureNotOpen;
     private readonly Func<VodDownloadItem, bool>? confirmDelete;
     private readonly Dictionary<Guid, VodDownloadViewModel> cards = [];
     private readonly HashSet<Guid> removed = [];
@@ -29,7 +29,7 @@ internal sealed class VodDownloadsViewModel : HomeFeatureViewModel
     private string downloadsStatus = "Download a completed Twitch or Kick VOD to watch without internet.";
 
     internal VodDownloadsViewModel(MainViewModelDependencies dependencies, Action<string> setStatus,
-        Func<string> getQuality, Func<StreamTarget, string, Task> openOffline, Action<VodDownloadItem> ensureNotOpen)
+        Func<string> getQuality, Func<IVodDownloadPlayback, string, Task> openOffline, Func<VodDownloadItem, Task> ensureNotOpen)
         : base(dependencies, setStatus)
     {
         service = dependencies.VodDownloadService;
@@ -118,6 +118,7 @@ internal sealed class VodDownloadsViewModel : HomeFeatureViewModel
         observedDownloadSettings = Settings.Downloads;
         observedDownloadSettings.PropertyChanged += OnDownloadSettingsChanged;
         service?.SetBandwidthLimit(observedDownloadSettings.BandwidthLimitBytesPerSecond);
+        Track(ApplyDownloadFormatAsync(announce: false));
         OnPropertyChanged(nameof(MainViewModel.SelectedVodDownloadQuality));
         RefreshVodCards();
     }
@@ -127,6 +128,11 @@ internal sealed class VodDownloadsViewModel : HomeFeatureViewModel
         if (disposed || !ReferenceEquals(sender, observedDownloadSettings)) return;
         if (arguments.PropertyName == nameof(DownloadSettings.BandwidthLimitMegabytesPerSecond))
             service?.SetBandwidthLimit(Settings.Downloads.BandwidthLimitBytesPerSecond);
+        if (arguments.PropertyName == nameof(DownloadSettings.Format))
+            dispatch(() =>
+            {
+                if (!disposed && ReferenceEquals(sender, observedDownloadSettings)) Track(ApplyDownloadFormatAsync(announce: true));
+            });
         if (arguments.PropertyName != nameof(DownloadSettings.Quality)) return;
         dispatch(() =>
         {
@@ -134,6 +140,24 @@ internal sealed class VodDownloadsViewModel : HomeFeatureViewModel
             OnPropertyChanged(nameof(MainViewModel.SelectedVodDownloadQuality));
             RefreshVodCards();
         });
+    }
+
+    private async Task ApplyDownloadFormatAsync(bool announce)
+    {
+        if (service is null || disposed) return;
+        var format = Settings.Downloads.Format;
+        try
+        {
+            await service.ChangeDownloadFormatAsync(format, new VodDownloadOptions(Settings.StreamlinkPath ?? "", []), lifetimeCancellation.Token);
+            if (!disposed && announce && Settings.Downloads.Format == format)
+                StatusMessage = $"VOD format set to {(format == VodDownloadFormat.Mp4 ? "MP4" : "HLS")}. Existing downloads are queued for conversion in Downloads.";
+        }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (!disposed) StatusMessage = $"Could not apply VOD download format: {exception.Message}";
+            logger.Write(AppLogLevel.Warning, "VOD downloads", "Could not apply the download format.", exception);
+        }
     }
 
     internal AsyncRelayCommand CreateDownloadCommand(VodViewModel vod) =>
@@ -282,25 +306,27 @@ internal sealed class VodDownloadsViewModel : HomeFeatureViewModel
         var ready = VodDownloads.Count(card => card.CanPlay);
         var active = VodDownloads.Count(card => card.CanCancel);
         DownloadsStatus = VodDownloads.Count == 0 ? "No downloaded VODs yet. Paste a VOD URL or download one from Past broadcasts." :
-            $"{ready} ready to watch offline · {active} queued or downloading";
+            $"{ready} ready to watch offline · {active} queued, downloading or converting";
     }
 
     private async Task PlayAsync(VodDownloadViewModel card)
     {
-        var target = await service!.GetOfflineTargetAsync(card.Id, lifetimeCancellation.Token);
-        if (!disposed) await openOffline(target, card.Item.Quality);
+        var playback = await service!.AcquireOfflinePlaybackAsync(card.Id, lifetimeCancellation.Token);
+        if (disposed) await playback.DisposeAsync();
+        else await openOffline(playback, card.Item.Quality);
     }
 
     private Task CancelAsync(VodDownloadViewModel card) => service!.CancelAsync(card.Id, lifetimeCancellation.Token);
-    private Task RetryAsync(VodDownloadViewModel card)
+    private async Task RetryAsync(VodDownloadViewModel card)
     {
-        ensureNotOpen(card.Item);
-        return service!.RetryAsync(card.Id, Options(), lifetimeCancellation.Token);
+        if (!card.Item.CanRetryConversion) await ensureNotOpen(card.Item);
+        var options = card.Item.CanRetryConversion ? new VodDownloadOptions(Settings.StreamlinkPath ?? "", []) : Options();
+        await service!.RetryAsync(card.Id, options, lifetimeCancellation.Token);
     }
 
     private async Task DeleteAsync(VodDownloadViewModel card)
     {
-        ensureNotOpen(card.Item);
+        await ensureNotOpen(card.Item);
         if (confirmDelete is not null && !confirmDelete(card.Item)) return;
         await service!.RemoveAsync(card.Id, lifetimeCancellation.Token);
         if (disposed) return;

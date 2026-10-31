@@ -220,9 +220,7 @@ internal static class AudioSwitchVlcTestCatalog
             "completed FFmpeg HLS replay",
             () => PcmFixture.CreateAsync(PlaybackAudioState.Audible, capturePcm: false,
                 mediaUri: mediaUri, completedReplayGateway: gateway),
-            // A completed replay may wait for both the preceding recovery and its
-            // own 1x preroll recovery. Each has the production five-second bound.
-            maximumRequestMilliseconds: 10_000,
+            maximumRequestMilliseconds: 500,
             observationDuration: TimeSpan.FromSeconds(3),
             rateTransitions: [.. PlaybackRateTransitions, (2f, 0.5f), (2f, 0.75f)]);
     });

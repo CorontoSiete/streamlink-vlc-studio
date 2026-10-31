@@ -29,6 +29,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private List<RecentStreamSettings> recentStreams = [];
     private Dictionary<string, TwitchBonusClaimHistory> twitchBonusClaims = new(StringComparer.Ordinal);
     private Dictionary<string, int> streamVolumes = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, WebChatOverlayLayout> webChatOverlayLayouts = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, double> streamVlcOverlayFontSizes = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, bool> streamPictureInPictureTopBarVisibility = new(StringComparer.OrdinalIgnoreCase);
     private PictureInPictureWindowLocation? pictureInPictureWindowLocation;
@@ -194,6 +195,13 @@ public sealed class AppSettings : NotifyPropertyChangedObject
             static size => ChatSettings.NormalizeFontSize(size, ChatSettings.DefaultVlcOverlayFontSize), double.IsFinite));
     }
 
+    public Dictionary<string, WebChatOverlayLayout> WebChatOverlayLayouts
+    {
+        get => webChatOverlayLayouts;
+        set => SetProperty(ref webChatOverlayLayouts, NormalizeStreamValues(value,
+            includeValue: WebChatOverlayLayout.IsValid));
+    }
+
     public Dictionary<string, bool> StreamPictureInPictureTopBarVisibility
     {
         get => streamPictureInPictureTopBarVisibility;
@@ -274,6 +282,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
                     : value.DisplayName.Trim(),
                 CategoryName = value.CategoryName?.Trim() ?? "",
                 ThumbnailUrl = NormalizeImageUrl(value.ThumbnailUrl),
+                ProfileImageUrl = NormalizeImageUrl(value.ProfileImageUrl),
                 LastQuality = value.LastQuality?.Trim() ?? "",
                 LastWatchedAtUtc = lastWatchedAtUtc
             });

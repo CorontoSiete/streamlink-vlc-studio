@@ -499,6 +499,12 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                     return false;
                 }
 
+                if (kickInfo.ChannelId is null)
+                {
+                    AddSystemMessage("Native VLC chat overlay could not resolve the Kick channel ID for connection setup. Try reconnecting chat.");
+                    return false;
+                }
+
                 kickToken = await ResolveKickOverlayTokenAsync(settings.Chat, cancellationToken);
                 launchKey = BuildNativeOverlayLaunchKey(settings, kickInfo, kickToken, kickBadgeManifestPath: kickBadgeManifestPath);
             }
@@ -575,6 +581,11 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
 
                 startInfo.ArgumentList.Add("--kick-chatroom-id");
                 startInfo.ArgumentList.Add(kickInfo!.ChatroomId!);
+                if (kickInfo.ChannelId is not null)
+                {
+                    startInfo.ArgumentList.Add("--kick-channel-id");
+                    startInfo.ArgumentList.Add(kickInfo.ChannelId);
+                }
 
                 if (settings.Chat.KickSendAsBot)
                 {
@@ -1695,6 +1706,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         long? broadcasterUserId = null;
         var hasConfiguredBroadcasterUserId = false;
         var cachedInfo = resolvedKickOverlayChannelInfo;
+        var channelId = cachedInfo?.ChannelId;
 
         if (settings.TryGetKickChatroomId(Target.Channel, out var configuredChatroomId) &&
             !string.IsNullOrWhiteSpace(configuredChatroomId))
@@ -1712,14 +1724,15 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         chatroomId ??= cachedInfo?.ChatroomId;
         broadcasterUserId ??= cachedInfo?.BroadcasterUserId;
 
-        if (!string.IsNullOrWhiteSpace(chatroomId) && (sendAsBot || broadcasterUserId is not null))
+        if (channelId is not null && !string.IsNullOrWhiteSpace(chatroomId) && (sendAsBot || broadcasterUserId is not null))
         {
-            return CacheResolvedKickOverlayChannelInfo(new KickOverlayChannelInfo(chatroomId, broadcasterUserId));
+            return CacheResolvedKickOverlayChannelInfo(new KickOverlayChannelInfo(chatroomId, broadcasterUserId) { ChannelId = channelId });
         }
 
         try
         {
             var metadata = await TryResolveKickChannelMetadataAsync(Target.Channel, cancellationToken);
+            channelId ??= metadata.ChannelId;
             chatroomId ??= metadata.ChatroomId;
             broadcasterUserId ??= metadata.BroadcasterUserId;
         }
@@ -1742,7 +1755,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
             }
         }
 
-        return CacheResolvedKickOverlayChannelInfo(new KickOverlayChannelInfo(chatroomId, broadcasterUserId));
+        return CacheResolvedKickOverlayChannelInfo(new KickOverlayChannelInfo(chatroomId, broadcasterUserId) { ChannelId = channelId });
     }
 
     internal KickOverlayChannelInfo CacheResolvedKickOverlayChannelInfo(KickOverlayChannelInfo info)
@@ -1750,7 +1763,10 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         var cached = resolvedKickOverlayChannelInfo;
         var merged = new KickOverlayChannelInfo(
             string.IsNullOrWhiteSpace(info.ChatroomId) ? cached?.ChatroomId : info.ChatroomId,
-            info.BroadcasterUserId ?? cached?.BroadcasterUserId);
+            info.BroadcasterUserId ?? cached?.BroadcasterUserId)
+        {
+            ChannelId = info.ChannelId ?? cached?.ChannelId
+        };
 
         if (!string.IsNullOrWhiteSpace(merged.ChatroomId) || merged.BroadcasterUserId is not null)
         {
@@ -1793,7 +1809,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
         if (body is null) return null;
         using var document = JsonDocument.Parse(body);
         var info = KickChannelInfoJson.Read(document.RootElement);
-        return new KickOverlayChannelInfo(info.ChatroomId, info.BroadcasterUserId);
+        return new KickOverlayChannelInfo(info.ChatroomId, info.BroadcasterUserId) { ChannelId = info.ChannelId };
     }
 
     internal void QueueNativeChatOverlayUpdateAfterReplayWindowApply()
@@ -3081,4 +3097,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
 
 internal sealed record DetachedNativeOverlayChat(Process? Process, string? PipeName, string? TokenFile);
 
-internal sealed record KickOverlayChannelInfo(string? ChatroomId, long? BroadcasterUserId);
+internal sealed record KickOverlayChannelInfo(string? ChatroomId, long? BroadcasterUserId)
+{
+    public string? ChannelId { get; init; }
+}

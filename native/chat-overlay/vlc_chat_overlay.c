@@ -245,6 +245,8 @@ static char          g_channel_display_name[MAX_CHANNEL_DISPLAY] = {0};
 static bool          g_channel_display_name_explicit = false;
 static int           g_chat_provider            = CHAT_PROVIDER_TWITCH;
 static char          g_kick_chatroom_id[64]     = {0};
+static char          g_kick_channel_id[64]      = {0};
+static char          g_kick_realtime_client_id[37] = {0};
 static char          g_kick_broadcaster_user_id[64] = {0};
 static char          g_kick_chat_token[MAX_OAUTH_TOKEN] = {0};
 static char          g_kick_chat_token_file[MAX_PATH] = {0};
@@ -1610,6 +1612,14 @@ static bool https_post_json_bytes(const wchar_t *host, const wchar_t *path,
                                            WINHTTP_DEFAULT_ACCEPT_TYPES,
                                            WINHTTP_FLAG_SECURE);
     if (!request) {
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    if (!WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy, sizeof(redirect_policy))) {
+        WinHttpCloseHandle(request);
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
         return false;
@@ -6060,6 +6070,15 @@ static DWORD WINAPI irc_thread(LPVOID arg) {
 
 /* ===== Kick Pusher WebSocket =========================================== */
 
+typedef struct {
+    char host[64];
+    char path[256];
+} kick_pusher_connection_t;
+
+/* Owned by the Kick network thread; frame tests also inspect the close result. */
+static unsigned g_kick_close_code;
+static char g_kick_close_reason[124];
+
 static bool ws_read_exact(tls_conn_t *tls, void *buf, int len) {
     char *p = (char *)buf;
     int got_total = 0;
@@ -6125,6 +6144,93 @@ static bool make_websocket_accept(const char *key, char *out, int out_cap) {
     return ok;
 }
 
+/* Kick assigns the application and cluster per channel. Never retry a compiled key. */
+static bool kick_connection_identifier(const char *value, size_t maximum, bool hyphen) {
+    size_t length = strlen(value);
+    if (!length || length > maximum || value[0] == '-' || value[length - 1] == '-') return false;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)value[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || (hyphen && c == '-'))) return false;
+    }
+    return true;
+}
+
+static bool kick_numeric_channel_id(const char *value) {
+    size_t length = strlen(value);
+    if (!length || length >= sizeof(g_kick_channel_id)) return false;
+    for (size_t i = 0; i < length; i++) if (value[i] < '0' || value[i] > '9') return false;
+    return true;
+}
+
+static bool kick_parse_pusher_connection(const char *json, size_t length,
+                                        kick_pusher_connection_t *connection) {
+    const char *end = json + length;
+    const char *root = json_document_root(json, end);
+    const char *data = NULL, *data_end = NULL, *array = NULL, *array_end = NULL;
+    char mode[32];
+    memset(connection, 0, sizeof(*connection));
+    if (!json_get_object_direct(root, end, "data", &data, &data_end) ||
+        !json_get_string_direct(data, data_end, "mode", mode, sizeof(mode)) ||
+        strcmp(mode, "websocket") != 0 ||
+        !json_get_array_direct(data, data_end, "connections", &array, &array_end)) return false;
+    const char *cursor = array + 1;
+    while (cursor < array_end) {
+        const char *item = NULL, *item_end = NULL, *credentials = NULL, *credentials_end = NULL;
+        char provider[32], key[129], cluster[33];
+        if (!json_next_array_value(&cursor, array_end, &item, &item_end)) return false;
+        if (!json_get_string_direct(item, item_end, "provider", provider, sizeof(provider)) ||
+            strcmp(provider, "pusher") != 0 ||
+            !json_get_object_direct(item, item_end, "credentials", &credentials, &credentials_end) ||
+            !json_get_string_direct(credentials, credentials_end, "app_key", key, sizeof(key)) ||
+            !json_get_string_direct(credentials, credentials_end, "cluster", cluster, sizeof(cluster)) ||
+            !kick_connection_identifier(key, 128, false) ||
+            !kick_connection_identifier(cluster, 32, true)) continue;
+        snprintf(connection->host, sizeof(connection->host), "ws-%s.pusher.com", cluster);
+        snprintf(connection->path, sizeof(connection->path),
+                 "/app/%s?protocol=7&client=js&version=8.4.0&flash=false", key);
+        return true;
+    }
+    return false;
+}
+
+typedef bool (*kick_connection_post_t)(const wchar_t *, const wchar_t *, const wchar_t *,
+                                       const char *, size_t, size_t, DWORD *, byte_buf_t *);
+
+static bool kick_negotiate_pusher_connection(kick_pusher_connection_t *connection,
+                                             kick_connection_post_t post) {
+    if (g_stop || !kick_numeric_channel_id(g_kick_channel_id)) {
+        log_msg("Kick chat connection setup requires the channel ID (separate from the chatroom ID)");
+        return false;
+    }
+    if (!g_kick_realtime_client_id[0]) {
+        GUID id;
+        if (CoCreateGuid(&id) != S_OK) return false;
+        snprintf(g_kick_realtime_client_id, sizeof(g_kick_realtime_client_id),
+                 "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                 (unsigned long)id.Data1, id.Data2, id.Data3, id.Data4[0], id.Data4[1],
+                 id.Data4[2], id.Data4[3], id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
+    }
+    wchar_t channel[64], path[160];
+    if (!utf8_to_wide_path(g_kick_channel_id, channel, 64)) return false;
+    swprintf(path, 160, L"/api/v1/realtime/channels/%ls/chat/connection", channel);
+    char body[256];
+    int size = snprintf(body, sizeof(body),
+        "{\"client\":{\"id\":\"%s\",\"type\":\"web\"},"
+        "\"capabilities\":{\"accepted_providers\":[{\"provider\":\"pusher\"}]}}",
+        g_kick_realtime_client_id);
+    if (size <= 0 || size >= (int)sizeof(body)) return false;
+    DWORD status = 0;
+    byte_buf_t response = {0};
+    bool ok = post(L"web.kick.com", path, L"Origin: https://kick.com\r\nx-app-platform: web\r\n",
+                   body, (size_t)size, 65536, &status, &response);
+    ok = ok && status >= 200 && status < 300 && !g_stop && response.data &&
+         kick_parse_pusher_connection((const char *)response.data, response.size, connection);
+    if (!ok) log_msg("Kick chat connection setup failed (HTTP %lu); no compatible Pusher connection", (unsigned long)status);
+    byte_buf_free(&response);
+    return ok;
+}
+
 static bool http_header_has_token(const char *value, const char *token) {
     size_t length = strlen(token);
     while (*value) {
@@ -6173,14 +6279,14 @@ static bool websocket_validate_upgrade(char *response, const char *key) {
     return false;
 }
 
-static bool websocket_handshake(tls_conn_t *tls) {
+static bool websocket_handshake(tls_conn_t *tls, const kick_pusher_connection_t *connection) {
     char key[32];
     if (g_stop || !make_websocket_key(key, sizeof(key))) return false;
 
     char request[1024];
     int request_len = snprintf(request, sizeof(request),
-        "GET /app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false HTTP/1.1\r\n"
-        "Host: ws-us2.pusher.com\r\n"
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Key: %s\r\n"
@@ -6188,7 +6294,7 @@ static bool websocket_handshake(tls_conn_t *tls) {
         "Origin: https://kick.com\r\n"
         "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36\r\n"
         "\r\n",
-        key);
+        connection->path, connection->host, key);
     if (request_len <= 0 || request_len >= (int)sizeof(request)) return false;
     if (tls_send(tls, request, request_len) < 0) return false;
 
@@ -6279,6 +6385,8 @@ static bool websocket_read_frame_header(tls_conn_t *tls, uint64_t *payload_len,
 
 /* Assemble one bounded text message; control frames can interrupt any fragment. */
 static bool websocket_read_text(tls_conn_t *tls, char *payload, size_t capacity) {
+    g_kick_close_code = 0;
+    g_kick_close_reason[0] = '\0';
     if (capacity == 0 || capacity > INT_MAX) return false;
     size_t used = 0;
     bool fragmented = false;
@@ -6291,7 +6399,18 @@ static bool websocket_read_text(tls_conn_t *tls, char *payload, size_t capacity)
         if (opcode & 0x8u) {
             char control[125];
             if (!ws_read_exact(tls, control, (int)length)) return false;
-            if (opcode == 8) return false;
+            if (opcode == 8) {
+                unsigned code = length >= 2 ? ((unsigned char)control[0] << 8) | (unsigned char)control[1] : 0;
+                g_kick_close_code = code;
+                size_t reason_length = length >= 2 ? (size_t)length - 2 : 0;
+                if (reason_length && utf8_valid_prefix_bytes(control + 2, reason_length) == reason_length) {
+                    memcpy(g_kick_close_reason, control + 2, reason_length);
+                    g_kick_close_reason[reason_length] = '\0';
+                    for (char *p = g_kick_close_reason; *p; p++) if ((unsigned char)*p < 32) *p = ' ';
+                }
+                log_msg("Kick websocket server close code=%u reason=%s", code, g_kick_close_reason);
+                return false;
+            }
             if (opcode == 9 && !websocket_send_frame(tls, 10, control, (size_t)length)) return false;
             continue;
         }
@@ -7188,34 +7307,52 @@ static int kick_collect_badges_from_object(const char *obj, const char *obj_end,
     return count;
 }
 
-static void kick_handle_pusher_text(tls_conn_t *tls, const char *text) {
+static bool kick_handle_pusher_text(tls_conn_t *tls, const char *text) {
     const char *end = text + strlen(text);
     char event[128] = {0};
     if (!json_get_string_direct(text, end, "event", event, sizeof(event))) {
-        return;
+        return true;
     }
 
+    if (strcmp(event, "pusher:error") == 0 || strcmp(event, "pusher:subscription_error") == 0) {
+        const char *data = NULL, *data_end = NULL;
+        char decoded[1024], code[32] = "unknown", message[256] = "unknown error";
+        if (!json_get_object_direct(text, end, "data", &data, &data_end) &&
+            json_get_string_direct(text, end, "data", decoded, sizeof(decoded))) {
+            data = decoded;
+            data_end = decoded + strlen(decoded);
+        }
+        if (data) {
+            (void)json_get_scalar_string_direct(data, data_end, "code", code, sizeof(code));
+            (void)json_get_string_direct(data, data_end, "message", message, sizeof(message));
+        }
+        char notice[384];
+        snprintf(notice, sizeof(notice), "Kick chat rejected (%s): %s", code, message);
+        for (char *p = notice; *p; p++) if ((unsigned char)*p < 32) *p = ' ';
+        log_msg("%s", notice);
+        queue_push(&g_queue, "chat", notice, true);
+        return false;
+    }
     if (strcmp(event, "pusher:ping") == 0) {
-        websocket_send_text(tls, "{\"event\":\"pusher:pong\",\"data\":{}}");
-        return;
+        return websocket_send_text(tls, "{\"event\":\"pusher:pong\",\"data\":{}}");
     }
     if (strcmp(event, "pusher:connection_established") == 0) {
         queue_push(&g_queue, "chat", "connected to Kick chat", true);
-        return;
+        return true;
     }
     if (strcmp(event, "pusher_internal:subscription_succeeded") == 0) {
         char joined[96];
         snprintf(joined, sizeof(joined), "joined #%s", g_channel);
         queue_push(&g_queue, "chat", joined, true);
-        return;
+        return true;
     }
     if (strcmp(event, "App\\Events\\ChatMessageEvent") != 0) {
-        return;
+        return true;
     }
 
     char data[WS_MAX_PAYLOAD];
     if (!json_get_string_direct(text, end, "data", data, sizeof(data))) {
-        return;
+        return true;
     }
 
     const char *data_start = data;
@@ -7223,12 +7360,12 @@ static void kick_handle_pusher_text(tls_conn_t *tls, const char *text) {
     const char *data_end = data + strlen(data);
     bool nested = false;
     const char *obj_end = json_object_end(data_start, data_end, &nested);
-    if (!obj_end) return;
+    if (!obj_end) return true;
 
     char content[2048] = {0};
     if (!json_get_string_direct(data_start, obj_end,
                                 "content", content, sizeof(content))) {
-        return;
+        return true;
     }
 
     char user[MAX_USERNAME] = {0};
@@ -7256,28 +7393,34 @@ static void kick_handle_pusher_text(tls_conn_t *tls, const char *text) {
                                                       badges, MAX_MSG_BADGES,
                                                       badge_count);
     }
-    if (!user[0]) return;
+    if (!user[0]) return true;
 
     char plain[MAX_MSG_TEXT] = {0};
     html_to_plain_text(content, plain, sizeof(plain));
-    if (!plain[0]) return;
+    if (!plain[0]) return true;
 
     chat_emote_t emotes[MAX_MSG_EMOTES];
     int emote_count = kick_collect_emotes_from_text(plain, emotes,
                                                     MAX_MSG_EMOTES);
     queue_push_ex(&g_queue, user, plain, false,
                   badges, badge_count, emotes, emote_count);
+    return true;
 }
 
-static void kick_session(void) {
-    tls_conn_t *tls = tls_connect("ws-us2.pusher.com", "443");
+static void kick_session(kick_connection_post_t post) {
+    kick_pusher_connection_t connection;
+    if (!kick_negotiate_pusher_connection(&connection, post)) {
+        if (!g_stop) queue_push(&g_queue, "chat", "Kick chat connection setup failed; retrying...", true);
+        return;
+    }
+    tls_conn_t *tls = tls_connect(connection.host, "443");
     if (!tls) {
         log_msg("Kick TLS connect failed: %s", tls_last_error());
         queue_push(&g_queue, "chat", "Kick chat reconnecting (tls failed)", true);
         return;
     }
 
-    if (!websocket_handshake(tls)) {
+    if (!websocket_handshake(tls, &connection)) {
         log_msg("Kick websocket handshake failed: %s", tls_last_error());
         tls_close(tls);
         queue_push(&g_queue, "chat", "Kick chat reconnecting (websocket failed)", true);
@@ -7289,20 +7432,31 @@ static void kick_session(void) {
     snprintf(subscribe, sizeof(subscribe),
              "{\"event\":\"pusher:subscribe\",\"data\":{\"auth\":\"\",\"channel\":\"chatrooms.%s.v2\"}}",
              g_kick_chatroom_id);
-    if (!websocket_send_text(tls, subscribe)) {
-        log_msg("Kick websocket subscribe send failed: %s", tls_last_error());
-        tls_close(tls);
-        return;
-    }
+    bool subscription_sent = false;
     queue_push(&g_queue, "chat", "connecting to Kick chat...", true);
 
     char payload[WS_MAX_PAYLOAD];
     while (!g_stop) {
         if (!websocket_read_text(tls, payload, sizeof(payload))) {
+            if (g_kick_close_code) {
+                char notice[192];
+                snprintf(notice, sizeof(notice), "Kick chat closed (%u): %s", g_kick_close_code, g_kick_close_reason);
+                queue_push(&g_queue, "chat", notice, true);
+            }
             log_msg("Kick websocket closed or returned an invalid message: %s", tls_last_error());
             break;
         }
-        kick_handle_pusher_text(tls, payload);
+        if (!kick_handle_pusher_text(tls, payload)) break;
+        char event[128];
+        if (!subscription_sent && json_get_string_direct(payload, payload + strlen(payload),
+                                                          "event", event, sizeof(event)) &&
+            strcmp(event, "pusher:connection_established") == 0) {
+            if (!websocket_send_text(tls, subscribe)) {
+                log_msg("Kick websocket subscribe send failed: %s", tls_last_error());
+                break;
+            }
+            subscription_sent = true;
+        }
     }
 
     tls_close(tls);
@@ -7317,7 +7471,7 @@ static DWORD WINAPI kick_thread(LPVOID arg) {
     kick_badges_load_channel();
     add_builtin_emote_fallbacks();
     while (!g_stop) {
-        kick_session();
+        kick_session(https_post_json_bytes);
         if (g_stop) break;
         Sleep(RECONNECT_MS);
     }
@@ -10688,6 +10842,10 @@ static bool parse_args(int argc, char **argv) {
                 fprintf(stderr, "unknown provider: %s\n", next);
                 return false;
             }
+            i++;
+        } else if (arg_matches(a, "--kick-channel-id", "-KickChannelId")) {
+            if (!next || !kick_numeric_channel_id(next)) return false;
+            strcpy(g_kick_channel_id, next);
             i++;
         } else if (arg_matches(a, "--kick-chatroom-id", "-KickChatroomId")) {
             if (!next) return false;

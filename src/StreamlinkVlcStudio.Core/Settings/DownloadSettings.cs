@@ -1,10 +1,12 @@
 using System.Text.Json.Serialization;
+using StreamlinkVlcStudio.Core.Models;
 
 namespace StreamlinkVlcStudio.Core.Settings;
 
 public sealed class DownloadSettings : NotifyPropertyChangedObject
 {
     private string quality = "best";
+    private VodDownloadFormat format;
     private double bandwidthLimitMegabytesPerSecond;
     private string? directory;
     private List<string> previousDirectories = [];
@@ -13,6 +15,12 @@ public sealed class DownloadSettings : NotifyPropertyChangedObject
     {
         get => quality;
         set => SetProperty(ref quality, string.IsNullOrWhiteSpace(value) ? "best" : value.Trim());
+    }
+
+    public VodDownloadFormat Format
+    {
+        get => format;
+        set => SetProperty(ref format, Enum.IsDefined(value) ? value : VodDownloadFormat.Hls);
     }
 
     public double BandwidthLimitMegabytesPerSecond

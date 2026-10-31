@@ -31,16 +31,23 @@ internal static class StartupHook
             var expectedTag = Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_EXPECTED_TAG");
             if (!string.IsNullOrEmpty(expectedTag))
             {
+                var checkOnly = Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_CHECK_ONLY") == "true";
+                var expectedKind = Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_EXPECTED_INSTALL_KIND") ?? "Managed";
                 using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                if (Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_CONSUME_COMPLETION") == "true")
+                {
+                    var completion = (Task)type.GetMethod("ConsumeCompletionAsync")!.Invoke(service, [cancellation.Token])!;
+                    completion.GetAwaiter().GetResult();
+                }
                 var checkMethod = type.GetMethod("CheckAsync")!;
                 var reason = Enum.Parse(checkMethod.GetParameters()[0].ParameterType, "Manual");
                 var check = AwaitResult(checkMethod.Invoke(service, [reason, cancellation.Token])!);
                 var release = ReadProperty(check, "Release");
                 if (ReadProperty(check, "Checked") is not true ||
-                    ReadProperty(check, "IsNotifyOnly") is not false ||
-                    ReadProperty(check, "InstallKind").ToString() != "Managed" ||
+                    (!checkOnly && (ReadProperty(check, "IsNotifyOnly") is not false ||
+                        ReadProperty(check, "InstallKind").ToString() != expectedKind)) ||
                     ReadProperty(release, "Tag").ToString() != expectedTag)
-                    throw new InvalidOperationException("The installed updater did not authenticate the expected managed release.");
+                    throw new InvalidOperationException("The installed updater did not authenticate the expected release and installation type.");
 
                 var download = Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_DOWNLOAD") == "true";
                 object? prepared = null;
@@ -51,13 +58,25 @@ internal static class StartupHook
                     prepared = AwaitResult(type.GetMethod("DownloadAsync")!.Invoke(service,
                         [release, null, cancellation.Token])!);
                 }
-                else if (ReadProperty(check, "IsUpdateAvailable") is not false)
+                else if (!checkOnly && ReadProperty(check, "IsUpdateAvailable") is not false)
                     throw new InvalidOperationException("The upgraded application still offers an update to its installed version.");
 
                 var phase = ReadProperty(ReadProperty(service, "State"), "Phase").ToString();
-                if (phase != (download ? "Ready" : "Completed"))
+                if (!checkOnly && phase != (download ? "Ready" : "Completed"))
                     throw new InvalidOperationException($"The published updater ended in unexpected phase {phase}.");
-                liveUpdate = new { Check = check, PreparedUpdate = prepared, Phase = phase };
+                object? launch = null;
+                if (Environment.GetEnvironmentVariable("SVS_UPDATE_PROBE_APPLY") == "true")
+                {
+                    if (!download || checkOnly || prepared is null)
+                        throw new InvalidOperationException("The upgrade probe must download and verify an update before applying it.");
+                    Environment.SetEnvironmentVariable("SVS_UPDATE_PROBE_DOWNLOAD", "false");
+                    Environment.SetEnvironmentVariable("SVS_UPDATE_PROBE_APPLY", "false");
+                    Environment.SetEnvironmentVariable("SVS_UPDATE_PROBE_CONSUME_COMPLETION", "true");
+                    launch = AwaitResult(type.GetMethod("ApplyAndRestartAsync")!.Invoke(service, [prepared, cancellation.Token])!);
+                    if (ReadProperty(launch, "Started") is not true)
+                        throw new InvalidOperationException("The real update helper did not start.");
+                }
+                liveUpdate = new { Check = check, PreparedUpdate = prepared, Phase = phase, Launch = launch };
             }
             var report = JsonSerializer.Serialize(new
             {

@@ -71,6 +71,11 @@ internal sealed class ReplayUrlSecurityValidator
             return false;
         }
 
+        if (address.AddressFamily == AddressFamily.InterNetworkV6 && address.ScopeId != 0)
+        {
+            return false;
+        }
+
         if (address.IsIPv4MappedToIPv6)
         {
             return IsPublicAddress(address.MapToIPv4());
@@ -100,12 +105,18 @@ internal sealed class ReplayUrlSecurityValidator
             return false;
         }
 
-        // Unique-local fc00::/7, link-local fe80::/10, multicast ff00::/8,
-        // and the documentation range 2001:db8::/32 are not public endpoints.
-        return (bytes[0] & 0xFE) != 0xFC &&
-            !(bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80) &&
-            !(bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0xC0) &&
-            bytes[0] != 0xFF &&
-            !(bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0D && bytes[3] == 0xB8);
+        // DNS64 can synthesize the well-known NAT64 /96 prefix on IPv6-only networks.
+        // Its embedded IPv4 destination must pass the same checks as a native IPv4 address.
+        if (bytes.AsSpan(0, 12).SequenceEqual(new byte[] { 0, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0 }))
+            return IsPublicAddress(new IPAddress(bytes.AsSpan(12)));
+
+        // Provider CDNs use global unicast (2000::/3). Exclude IETF protocol assignments
+        // (including Teredo and benchmarks), 6to4 tunnels, and both documentation prefixes.
+        // This also rejects compatible IPv4, local NAT64 and discard-only addresses.
+        return (bytes[0] & 0xE0) == 0x20 &&
+            !(bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] < 2) &&
+            !(bytes[0] == 0x20 && bytes[1] == 0x02) &&
+            !(bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0D && bytes[3] == 0xB8) &&
+            !(bytes[0] == 0x3F && bytes[1] == 0xFF && (bytes[2] & 0xF0) == 0);
     }
 }

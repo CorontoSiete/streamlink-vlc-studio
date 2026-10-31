@@ -119,7 +119,11 @@ public sealed partial class StreamlinkService : IStreamlinkService
     private async Task<StreamlinkResolvedUrl> ResolveWithStreamlinkAsync(StreamTransportRequest request, CancellationToken cancellationToken)
     {
         var elapsed = Stopwatch.StartNew();
-        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, BuildStreamUrlArguments(request));
+        // Browser HLS playback needs the same website identity as the desktop HTTP transport.
+        var playbackToken = RequiresTwitchVideo(request) && twitchPlaybackTokenProvider is not null &&
+            !HasCustomTwitchPlaybackIdentity(request.CustomArguments)
+            ? await ReadTwitchPlaybackTokenAsync(cancellationToken).ConfigureAwait(false) : null;
+        var psi = CreateRedirectedStartInfo(request.StreamlinkPath, WithTwitchPlaybackToken(BuildStreamUrlArguments(request), playbackToken));
         logger.Write(AppLogLevel.Info, "Streamlink", $"Resolving direct stream URL for {request.Target.Url} ({request.Quality})");
 
         var result = await RunRedirectedProcessAsync(psi, StartupTimeout, cancellationToken).ConfigureAwait(false);
@@ -133,6 +137,8 @@ public sealed partial class StreamlinkService : IStreamlinkService
             throw new InvalidDataException("Streamlink returned more output than the safety limit allows.");
         }
 
+        if (RequiresTwitchVideo(request) && (HasOnlyAudioStreams(result.StandardOutput) || HasOnlyAudioStreams(result.StandardError)))
+            throw new TwitchVideoUnavailableException();
         if (result.ExitCode == 0 && TryReadFirstAbsoluteUri(result.StandardOutput, out var streamUri))
         {
             logger.Write(AppLogLevel.Info, "Streamlink", $"Resolved direct stream URL in {elapsed.ElapsedMilliseconds} ms.");
@@ -140,6 +146,7 @@ public sealed partial class StreamlinkService : IStreamlinkService
         }
 
         var message = BuildProbeMessage(result.StandardOutput, result.StandardError);
+        if (!string.IsNullOrEmpty(playbackToken)) message = message.Replace(playbackToken, "[REDACTED]", StringComparison.Ordinal);
         throw new InvalidOperationException(string.IsNullOrWhiteSpace(message)
             ? $"Streamlink exited with code {result.ExitCode} while resolving the direct stream URL."
             : message);

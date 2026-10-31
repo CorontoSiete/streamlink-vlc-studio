@@ -132,7 +132,27 @@ internal static partial class OfflineFollowedChannelsTestCatalog
         var kick = new FakeKickVodService(new KickVodSearchResult(KickVodSearchStatus.Available, [], "", ""));
         await using var model = CreateModel(followed, twitch, kick);
         await model.RefreshFollowedChannelsCommand.ExecuteAsync();
-        await model.OfflineFollowedChannels.Single().OpenCommand.ExecuteAsync();
+        var window = new MainWindow { DataContext = model };
+        ApplicationTestCatalog.RemoveMainWindowAutomaticStartup(window);
+        try
+        {
+            var root = (FrameworkElement)window.Content;
+            Layout(root, 1320);
+            var card = model.OfflineFollowedChannels.Single();
+            var button = Descendants<Button>(root)
+                .Single(candidate => ReferenceEquals(candidate.Command, card.OpenCommand));
+            var menu = button.ContextMenu!;
+            Assert.NotNull(menu);
+            menu.PlacementTarget = button;
+            menu.DataContext = button.DataContext;
+            var goToVods = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Go to VODs"));
+            Assert.True(ReferenceEquals(card.OpenCommand, goToVods.Command));
+            await card.OpenCommand.ExecuteAsync();
+        }
+        finally
+        {
+            window.Close();
+        }
         Assert.True(model.IsHomeSelected);
         Assert.True(model.IsTwitchVodsHomePageSelected);
         Assert.Equal(platform, model.SelectedVodPlatform);
@@ -330,5 +350,5 @@ internal static partial class OfflineFollowedChannelsTestCatalog
             Logger = new MemoryLogger(),
             Dispatch = action => action(),
             FollowedStreamsService = followed
-        }, _ => { }, (_, _) => Task.CompletedTask, _ => Task.CompletedTask);
+        }, _ => { }, (_, _) => Task.CompletedTask, (_, _) => Task.CompletedTask);
 }

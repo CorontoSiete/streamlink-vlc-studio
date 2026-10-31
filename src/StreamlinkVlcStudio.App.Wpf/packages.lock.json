@@ -64,7 +64,7 @@
       "streamlinkvlcstudio.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "StreamlinkVlcStudio.Core": "[1.7.0, )"
+          "StreamlinkVlcStudio.Core": "[1.8.7, )"
         }
       }
     },

@@ -12,10 +12,35 @@ internal static partial class TwitchPlaybackAuthenticationTestCatalog
         ("Twitch video authentication: cancellation during cookie lookup leaves no transport process", CancellationAsync),
         ("Twitch video authentication: rejected and malformed website sessions expose no credentials", RejectedSessionAsync),
         ("Twitch video authentication: authentication never substitutes a different requested quality", RequestedQualityAsync),
+        ("Twitch video authentication: browser HLS resolution preserves website identity and quality", BrowserResolutionAsync),
+        ("Twitch video authentication: browser HLS rejects silent audio fallback", BrowserAudioAsync),
         .. (Environment.GetEnvironmentVariable("SVS_TEST_SABLEOC_LIVE") == "true"
             ? new (string, Func<Task>)[] { ("Twitch video authentication: live SableOC renders the authenticated source video and audio", LiveSableOcAsync) }
             : [])
     ];
+
+    private static async Task BrowserResolutionAsync()
+    {
+        using var fixture = new Fixture("video-with-session");
+        var reads = 0;
+        var service = StreamlinkService.WithTwitchWebsiteSession(fixture.Logger, _ => { reads++; return Task.FromResult<string?>(WebsiteToken); });
+        var resolved = await service.ResolveStreamUrlAsync(fixture.Request() with { Quality = "1440p60" });
+        Assert.Equal("https://cdn.example/selected.m3u8", resolved.StreamUri.AbsoluteUri);
+        Assert.Equal(1, reads); Assert.True(fixture.Attempts.Single().HasAuthorization);
+        Assert.Equal("1440p60", fixture.Attempts.Single().Quality);
+        Assert.True(fixture.Logger.Entries.All(e => !e.Message.Contains(WebsiteToken, StringComparison.Ordinal)));
+        await AssertExitedAsync(fixture.Attempts);
+    }
+
+    private static async Task BrowserAudioAsync()
+    {
+        using var fixture = new Fixture("always-audio");
+        var service = StreamlinkService.WithTwitchWebsiteSession(fixture.Logger, _ => Task.FromResult<string?>(WebsiteToken));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResolveStreamUrlAsync(fixture.Request()));
+        Assert.Contains("Twitch returned only audio", error.Message);
+        Assert.Equal(false, error.ToString().Contains(WebsiteToken, StringComparison.Ordinal));
+        await AssertExitedAsync(fixture.Attempts);
+    }
 
     private static async Task WebsiteRecoveryAsync()
     {
@@ -243,6 +268,11 @@ internal static partial class TwitchPlaybackAuthenticationTestCatalog
         {
             Console.Error.WriteLine("[cli][error] The requested quality " + arguments[^1] + " is unavailable.");
             return 1;
+        }
+        if (arguments.Contains("--stream-url", StringComparer.Ordinal))
+        {
+            Console.WriteLine("https://cdn.example/selected.m3u8");
+            return 0;
         }
         Console.WriteLine("[cli][info] Starting server, access with: http://127.0.0.1:12345/");
         await Task.Delay(Timeout.InfiniteTimeSpan);

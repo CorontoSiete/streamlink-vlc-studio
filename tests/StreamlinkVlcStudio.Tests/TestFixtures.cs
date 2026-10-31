@@ -755,6 +755,15 @@ internal static class NativeWindowTest
         mouse_event(leftUp, 0, 0, 0, UIntPtr.Zero);
     }
 
+    public static void SendRightClick(int screenX, int screenY)
+    {
+        const uint rightDown = 0x0008;
+        const uint rightUp = 0x0010;
+        SetCursorPosition(screenX, screenY);
+        mouse_event(rightDown, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(rightUp, 0, 0, 0, UIntPtr.Zero);
+    }
+
     public static void SendUnicodeText(string text)
     {
         const uint inputKeyboard = 1;

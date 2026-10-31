@@ -192,16 +192,24 @@ internal static partial class ApplicationTestCatalog
         await using var model = CreateDownloadCardsMain(service, [], action => action());
         var original = model.Settings.Downloads;
         original.BandwidthLimitMegabytesPerSecond = 1.5;
+        original.Format = VodDownloadFormat.Mp4;
+        Assert.Equal(VodDownloadFormat.Mp4, service.DownloadFormat);
         Assert.Equal(1_500_000L, service.BandwidthLimit);
         model.Settings.Downloads = new DownloadSettings { Quality = "720p", BandwidthLimitMegabytesPerSecond = 0.25 };
         Assert.Equal("720p", model.SelectedVodDownloadQuality);
+        Assert.Equal(VodDownloadFormat.Hls, service.DownloadFormat);
         Assert.Equal(250_000L, service.BandwidthLimit);
         original.BandwidthLimitMegabytesPerSecond = 9;
         original.Quality = "worst";
+        original.Format = VodDownloadFormat.Hls;
+        original.Format = VodDownloadFormat.Mp4;
+        Assert.Equal(VodDownloadFormat.Hls, service.DownloadFormat);
         Assert.Equal("720p", model.SelectedVodDownloadQuality);
         Assert.Equal(250_000L, service.BandwidthLimit);
         await model.DisposeAsync();
         model.Settings.Downloads.BandwidthLimitMegabytesPerSecond = 10;
+        model.Settings.Downloads.Format = VodDownloadFormat.Mp4;
+        Assert.Equal(VodDownloadFormat.Hls, service.DownloadFormat);
         Assert.Equal(250_000L, service.BandwidthLimit);
     });
 }

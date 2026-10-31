@@ -6,8 +6,10 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
 using StreamlinkVlcStudio.Core.Security;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Core.Time;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Limits;
+using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.Infrastructure.Vod;
 
@@ -30,6 +32,9 @@ internal sealed class KickVodDownloadResolver
         var page = VodDownloadUrlParser.Parse(target.Url);
         if (!target.IsExplicitKickVod || page.Platform != PlatformKind.Kick || page.MediaId != target.MediaId)
             throw new ArgumentException("A matching Kick VOD page is required.", nameof(target));
+        if (Guid.TryParse(page.MediaId, out _) &&
+            await TryResolveRecordedVideoAsync(target, page, cancellationToken).ConfigureAwait(false) is { } recorded)
+            return recorded;
         var direct = await reader.ReadDirectAsync(page.Url, page.Url, cancellationToken, KickWebsitePayloadKind.Html).ConfigureAwait(false);
         long channelId;
         try { channelId = ReadChannelId(direct.Body ?? ""); }
@@ -63,6 +68,45 @@ internal sealed class KickVodDownloadResolver
             BroadcasterId = channelId.ToString(CultureInfo.InvariantCulture),
             DisplayTitle = string.IsNullOrWhiteSpace(title) ? target.DisplayTitle : title,
             CategoryName = category
+        };
+    }
+
+    private async Task<StreamTarget?> TryResolveRecordedVideoAsync(
+        StreamTarget target, StreamTarget page, CancellationToken cancellationToken)
+    {
+        // Kick's UUID video resource includes the original broadcast clock. Keep it when
+        // resolving a pasted page so historical chat can be projected onto playback offsets.
+        var url = $"https://kick.com/api/v1/video/{Uri.EscapeDataString(page.MediaId)}";
+        var json = await reader.ReadAsync(url, page.Url, cancellationToken).ConfigureAwait(false);
+        if (json is null) return null; // Other Kick VOD identities use the website metadata below.
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !ReadString(root, "uuid").Equals(page.MediaId, StringComparison.OrdinalIgnoreCase) ||
+            !root.TryGetProperty("livestream", out var stream) || stream.ValueKind != JsonValueKind.Object ||
+            !stream.TryGetProperty("channel", out var channel) || channel.ValueKind != JsonValueKind.Object ||
+            !ReadString(channel, "slug").Equals(page.Channel, StringComparison.OrdinalIgnoreCase) ||
+            TryGetInt64(channel, "id") is not { } channelId || channelId <= 0 ||
+            TryGetInt64(stream, "channel_id") != channelId)
+            throw new InvalidDataException("Kick returned metadata for a different VOD or channel.");
+        if (!Uri.TryCreate(ReadString(root, "source"), UriKind.Absolute, out var source) ||
+            !ProviderUriPolicy.IsApprovedReplayUri(source, PlatformKind.Kick) ||
+            !source.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Kick did not return an approved VOD playlist URL.");
+        var startedAt = TryGetDateTimeOffset(stream, "start_time");
+        var duration = TryGetInt64(stream, "duration") is { } milliseconds &&
+            DurationValues.TryCreatePositive(milliseconds, TimeSpan.TicksPerMillisecond, out var parsedDuration)
+                ? parsedDuration : target.MediaDuration;
+        var title = ReadString(stream, "session_title");
+        var id = channelId.ToString(CultureInfo.InvariantCulture);
+        return target with
+        {
+            Url = source.AbsoluteUri,
+            BroadcasterId = id,
+            ChatRoomId = id,
+            MediaStartedAtUtc = startedAt ?? target.MediaStartedAtUtc,
+            MediaDuration = duration,
+            DisplayTitle = string.IsNullOrWhiteSpace(title) ? target.DisplayTitle : title
         };
     }
 

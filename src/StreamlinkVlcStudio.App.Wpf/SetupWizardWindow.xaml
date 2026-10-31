@@ -164,9 +164,9 @@
                                            FontSize="14"
                                            FontWeight="SemiBold"
                                            Margin="0,0,0,12" />
-                                <TextBlock Text="1. Create or choose a Twitch/Kick developer app." Margin="0,0,0,8" />
-                                <TextBlock Text="2. Enter the required app credentials here and use the platform's browser authorization." Margin="0,0,0,8" />
-                                <TextBlock Text="3. The app validates and saves the resulting account connection locally." />
+                                <TextBlock Text="1. Click Connect for the platform you want to use." Margin="0,0,0,8" />
+                                <TextBlock Text="2. Sign in and approve access in your browser." Margin="0,0,0,8" />
+                                <TextBlock Text="3. Your account connection is saved automatically on this computer." />
                             </StackPanel>
                         </Border>
 
@@ -176,121 +176,123 @@
                     </StackPanel>
 
                     <StackPanel Visibility="{Binding IsTwitchVisible, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="Connect Twitch"
-                                   Style="{StaticResource StudioSectionTitleStyle}" />
-                        <TextBlock Text="Twitch requires a Client ID for this desktop OAuth flow. Create the app once, then the Connect button opens Twitch and saves the validated user token for chat, follows, VODs, and predictions."
-                                   TextWrapping="Wrap"
-                                   Foreground="{DynamicResource StudioTextMutedBrush}"
-                                   Margin="0,0,0,16" />
-
-                        <Border Background="{DynamicResource StudioTwitchSubtleBrush}"
-                                BorderBrush="{DynamicResource StudioTwitchBrush}"
-                                BorderThickness="1"
-                                CornerRadius="12"
-                                Padding="14"
-                                Margin="0,0,0,18">
-                            <StackPanel>
-                                <TextBlock Text="Before connecting"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource StudioTwitchTextBrush}"
-                                           Margin="0,0,0,8" />
-                                <TextBlock Text="Open the Twitch Developer Console, create an application, and set its OAuth Redirect URL to exactly:"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource StudioTwitchTextBrush}" />
-                                <DockPanel Margin="0,8,0,0">
-                                    <Button DockPanel.Dock="Right"
-                                            Content="Copy"
-                                            Tag="http://localhost:39178"
-                                            Click="CopyRedirectButtonClick"
-                                            MinWidth="72"
-                                            Margin="8,0,0,0" />
-                                    <TextBox Text="http://localhost:39178"
-                                             IsReadOnly="True"
-                                             ToolTip="This value must match the Twitch developer app exactly." />
-                                </DockPanel>
-                                <Button Content="Open Twitch Developer Console"
-                                        Tag="https://dev.twitch.tv/console/apps"
-                                        Click="OpenUrlButtonClick"
-                                        HorizontalAlignment="Left"
-                                        Margin="0,12,0,0" />
-                            </StackPanel>
-                        </Border>
-
-                        <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
-                        <TextBox Text="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=PropertyChanged}"
-                                 Margin="0,0,0,12"
-                                 ToolTip="Paste the Client ID from your Twitch developer app." />
-                        <TextBlock Text="The app requests these scopes: chat:read, chat:edit, user:read:follows, channel:manage:predictions, clips:edit."
-                                   TextWrapping="Wrap"
-                                   Foreground="{DynamicResource StudioTextMutedBrush}"
-                                   Margin="0,0,0,12" />
+                        <TextBlock Text="Connect Twitch" Style="{StaticResource StudioSectionTitleStyle}" />
+                        <TextBlock Text="{Binding TwitchConnectionHelp}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource StudioTextMutedBrush}" Margin="0,0,0,20" />
                         <TextBlock Text="{Binding TwitchAccountStatus}"
                                    TextWrapping="Wrap"
                                    Foreground="{DynamicResource StudioSuccessTextBrush}"
                                    Margin="0,0,0,12" />
-                        <Button Content="Connect Twitch"
-                                Click="ConnectTwitchButtonClick"
+                        <Button Content="Connect Twitch" Click="ConnectTwitchButtonClick"
                                 IsEnabled="{Binding CanConnectTwitch}"
                                 Style="{StaticResource StudioPrimaryButtonStyle}"
-                                HorizontalAlignment="Left"
-                                MinWidth="140" />
-                    </StackPanel>
-
-                    <StackPanel Visibility="{Binding IsKickVisible, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="Connect Kick"
-                                   Style="{StaticResource StudioSectionTitleStyle}" />
-                        <TextBlock Text="Kick uses OAuth 2.1 with PKCE. Create a Kick developer app, enter its Client ID and Client Secret, then authorize in the browser. The refresh token is saved so the app can refresh access when needed."
-                                   TextWrapping="Wrap"
-                                   Foreground="{DynamicResource StudioTextMutedBrush}"
-                                   Margin="0,0,0,16" />
-
-                        <Border Background="{DynamicResource StudioKickSubtleBrush}"
-                                BorderBrush="{DynamicResource StudioKickBrush}"
-                                BorderThickness="1"
-                                CornerRadius="12"
-                                Padding="14"
-                                Margin="0,0,0,18">
-                            <StackPanel>
-                                <TextBlock Text="Before connecting"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource StudioKickTextBrush}"
-                                           Margin="0,0,0,8" />
-                                <TextBlock Text="Open Kick Account Settings &gt; Developer, create an app, and set its redirect URL to exactly:"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource StudioKickTextBrush}" />
-                                <DockPanel Margin="0,8,0,0">
-                                    <Button DockPanel.Dock="Right"
-                                            Content="Copy"
-                                            Tag="http://localhost:39177"
-                                            Click="CopyRedirectButtonClick"
-                                            MinWidth="72"
-                                            Margin="8,0,0,0" />
-                                    <TextBox Text="http://localhost:39177"
-                                             IsReadOnly="True"
-                                             ToolTip="This value must match the Kick developer app exactly." />
-                                </DockPanel>
-                                <Button Content="Open Kick Developer Settings"
-                                        Tag="https://kick.com/settings/developer"
-                                        Click="OpenUrlButtonClick"
-                                        HorizontalAlignment="Left"
-                                        Margin="0,12,0,0" />
-                            </StackPanel>
-                        </Border>
-
-                        <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
-                        <TextBox Text="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=PropertyChanged}"
-                                 Margin="0,0,0,12" />
-                        <TextBlock Text="Client Secret" Style="{StaticResource StudioFieldLabelStyle}" />
-                        <PasswordBox x:Name="KickClientSecretBox"
-                                     PasswordChanged="KickClientSecretBoxPasswordChanged"
-                                     Margin="0,0,0,12" />
-                        <TextBlock Text="The app requests these scopes: user:read, channel:read, chat:write."
+                                HorizontalAlignment="Left" MinWidth="160" Margin="0,16,0,20" />
+                        <TextBlock Text="Connect to use followed channels, chat, videos, predictions, and clips."
                                    TextWrapping="Wrap"
                                    Foreground="{DynamicResource StudioTextMutedBrush}"
                                    Margin="0,0,0,12" />
+                        <Expander Header="Advanced: use your own developer application" Foreground="{DynamicResource StudioTextMutedBrush}" IsExpanded="False" Margin="0,16,0,0">
+                            <StackPanel Margin="0,12,0,0" IsEnabled="{Binding IsNotBusy}">
+                                <Border Background="{DynamicResource StudioTwitchSubtleBrush}"
+                                        BorderBrush="{DynamicResource StudioTwitchBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="12"
+                                        Padding="14"
+                                        Margin="0,0,0,18">
+                                    <StackPanel>
+                                        <TextBlock Text="Before connecting"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource StudioTwitchTextBrush}"
+                                                   Margin="0,0,0,8" />
+                                        <TextBlock Text="Open the Twitch Developer Console, create an application, and set its OAuth Redirect URL to exactly:"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource StudioTwitchTextBrush}" />
+                                        <DockPanel Margin="0,8,0,0">
+                                            <Button DockPanel.Dock="Right"
+                                                    Content="Copy"
+                                                    Tag="http://localhost:39178"
+                                                    Click="CopyRedirectButtonClick"
+                                                    MinWidth="72"
+                                                    Margin="8,0,0,0" />
+                                            <TextBox Text="http://localhost:39178"
+                                                     IsReadOnly="True"
+                                                     ToolTip="This value must match the Twitch developer app exactly." />
+                                        </DockPanel>
+                                        <Button Content="Open Twitch Developer Console"
+                                                Tag="https://dev.twitch.tv/console/apps"
+                                                Click="OpenUrlButtonClick"
+                                                HorizontalAlignment="Left"
+                                                Margin="0,12,0,0" />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
+                                <TextBox Text="{Binding Settings.Chat.TwitchClientId, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,0,0,12"
+                                         ToolTip="Paste the Client ID from your Twitch developer app." />
+                            </StackPanel>
+                        </Expander>
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding IsKickVisible, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="Connect Kick" Style="{StaticResource StudioSectionTitleStyle}" />
+                        <TextBlock Text="{Binding KickConnectionHelp}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource StudioTextMutedBrush}" Margin="0,0,0,20" />
                         <TextBlock Text="{Binding KickAccountStatus}"
                                    TextWrapping="Wrap"
-                                   Foreground="{DynamicResource StudioSuccessTextBrush}" />
+                                   Foreground="{DynamicResource StudioSuccessTextBrush}" Margin="0,0,0,12" />
+                        <Button Content="Connect Kick" Click="ConnectKickButtonClick"
+                                IsEnabled="{Binding CanConnectKick}"
+                                Style="{StaticResource StudioPrimaryButtonStyle}"
+                                HorizontalAlignment="Left" MinWidth="160" Margin="0,16,0,20" />
+                        <TextBlock Text="Allow Stream Studio to read your profile and channels and send chat messages."
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource StudioTextMutedBrush}"
+                                   Margin="0,0,0,12" />
+                        <Expander Header="Advanced: use your own developer application" Foreground="{DynamicResource StudioTextMutedBrush}" IsExpanded="False" Margin="0,16,0,0">
+                            <StackPanel Margin="0,12,0,0" IsEnabled="{Binding IsNotBusy}">
+                                <Border Background="{DynamicResource StudioKickSubtleBrush}"
+                                        BorderBrush="{DynamicResource StudioKickBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="12"
+                                        Padding="14"
+                                        Margin="0,0,0,18">
+                                    <StackPanel>
+                                        <TextBlock Text="Before connecting"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource StudioKickTextBrush}"
+                                                   Margin="0,0,0,8" />
+                                        <TextBlock Text="Open Kick Account Settings &gt; Developer, create an app, and set its redirect URL to exactly:"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource StudioKickTextBrush}" />
+                                        <DockPanel Margin="0,8,0,0">
+                                            <Button DockPanel.Dock="Right"
+                                                    Content="Copy"
+                                                    Tag="http://localhost:39177"
+                                                    Click="CopyRedirectButtonClick"
+                                                    MinWidth="72"
+                                                    Margin="8,0,0,0" />
+                                            <TextBox Text="http://localhost:39177"
+                                                     IsReadOnly="True"
+                                                     ToolTip="This value must match the Kick developer app exactly." />
+                                        </DockPanel>
+                                        <Button Content="Open Kick Developer Settings"
+                                                Tag="https://kick.com/settings/developer"
+                                                Click="OpenUrlButtonClick"
+                                                HorizontalAlignment="Left"
+                                                Margin="0,12,0,0" />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Text="Client ID" Style="{StaticResource StudioFieldLabelStyle}" />
+                                <TextBox Text="{Binding Settings.Chat.KickClientId, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,0,0,12" />
+                                <TextBlock Text="Client Secret" Style="{StaticResource StudioFieldLabelStyle}" />
+                                <PasswordBox x:Name="KickClientSecretBox"
+                                             PasswordChanged="KickClientSecretBoxPasswordChanged"
+                                             Margin="0,0,0,12" />
+                            </StackPanel>
+                        </Expander>
                     </StackPanel>
 
                     <StackPanel Visibility="{Binding IsCompleteVisible, Converter={StaticResource BoolToVisibility}}">
@@ -352,13 +354,13 @@
                         Style="{StaticResource StudioPrimaryButtonStyle}"
                         MinWidth="96" />
                 <Button Content="{Binding TwitchFooterActionText}"
-                        Click="TwitchFooterActionButtonClick"
+                        Click="NextButtonClick"
                         Visibility="{Binding IsTwitchVisible, Converter={StaticResource BoolToVisibility}}"
                         IsEnabled="{Binding IsNotBusy}"
                         MinWidth="124"
                         Margin="0,0,8,0" />
                 <Button Content="{Binding KickFooterActionText}"
-                        Click="KickFooterActionButtonClick"
+                        Click="NextButtonClick"
                         Visibility="{Binding IsKickVisible, Converter={StaticResource BoolToVisibility}}"
                         IsEnabled="{Binding IsNotBusy}"
                         MinWidth="96"

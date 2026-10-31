@@ -16,12 +16,17 @@ internal static class ProfileImageLookup
         string accessToken,
         string clientId,
         IEnumerable<string> logins,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        Action<JsonElement>? readUser = null) =>
         GetAsync(httpClient, logins, 100, StringComparer.OrdinalIgnoreCase,
             batch => TwitchApiRequest.Create(HttpMethod.Get,
                 "https://api.twitch.tv/helix/users?" + BuildQuery("login", batch), accessToken, clientId),
-            item => (JsonElementReader.GetOptionalString(item, "login"),
-                JsonElementReader.GetOptionalString(item, "profile_image_url")),
+            item =>
+            {
+                readUser?.Invoke(item);
+                return (JsonElementReader.GetOptionalString(item, "login"),
+                    JsonElementReader.GetOptionalString(item, "profile_image_url"));
+            },
             "Twitch", cancellationToken);
 
     internal static Task<IReadOnlyDictionary<string, string>> GetKickAsync(

@@ -21,6 +21,20 @@ public static class ExecutableResolver
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "VideoLAN", "VLC"));
     }
 
+    public static string? FindFfmpeg(string? streamlinkPath = null)
+    {
+        var streamlinkDirectory = Path.GetDirectoryName(NormalizeCandidatePath(streamlinkPath));
+        return FirstExisting(
+            Environment.GetEnvironmentVariable("FFMPEG_PATH"),
+            streamlinkDirectory is null ? null : Path.Combine(streamlinkDirectory, "..", "ffmpeg", "ffmpeg.exe"),
+            streamlinkDirectory is null ? null : Path.Combine(streamlinkDirectory, "ffmpeg.exe"),
+            Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"),
+            Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe"),
+            FindOnPath("ffmpeg.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Streamlink", "ffmpeg", "ffmpeg.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Streamlink", "ffmpeg", "ffmpeg.exe"));
+    }
+
     internal static string? FindVlcDirectory(string? pluginPath, Func<string?> machineDirectory, params string?[] fallbackDirectories)
     {
         foreach (var entry in (pluginPath ?? "").Split(

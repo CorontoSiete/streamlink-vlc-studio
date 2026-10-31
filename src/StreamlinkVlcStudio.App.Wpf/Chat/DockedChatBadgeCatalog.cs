@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Parsing;
@@ -10,6 +11,7 @@ using StreamlinkVlcStudio.Core.Text;
 using StreamlinkVlcStudio.Infrastructure.Chat;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Processes;
+using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
@@ -25,6 +27,7 @@ internal sealed class DockedChatBadgeCatalog
     private readonly Dictionary<string, DockedChatEmoteImage> badges = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<int>> twitchNumericBadgeVersions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<int>> kickNumericBadgeVersions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> kickBroadcasterIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> catalogScopeByBadgeKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HashSet<string>> badgeKeysByCatalogScope = new(StringComparer.OrdinalIgnoreCase);
     private readonly CatalogLoadCoordinator loadCoordinator;
@@ -38,14 +41,19 @@ internal sealed class DockedChatBadgeCatalog
     {
     }
 
-    internal DockedChatBadgeCatalog(HttpClient httpClient)
+    internal DockedChatBadgeCatalog(HttpClient httpClient, TimeProvider? timeProvider = null)
     {
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        loadCoordinator = new CatalogLoadCoordinator(scopeEvicted: EvictCatalogScope);
+        loadCoordinator = new CatalogLoadCoordinator(timeProvider: timeProvider, scopeEvicted: EvictCatalogScope);
         catalogChangeNotifier = new CatalogChangeNotifier(this);
     }
 
     public event EventHandler? CatalogChanged;
+
+    internal long? GetKickBroadcasterId(string channel)
+    {
+        lock (sync) return kickBroadcasterIds.TryGetValue(NormalizePart(channel), out var id) ? id : null;
+    }
 
     public void ConfigureTwitchCredentials(string? clientId, string? oauthToken)
     {
@@ -122,7 +130,7 @@ internal sealed class DockedChatBadgeCatalog
             preserveFromEviction: true);
         loadCoordinator.Ensure(
             "badges:twitch:global",
-            () => LoadTwitchBadgesAsync("https://badges.twitch.tv/v1/badges/global/display"),
+            () => LoadTwitchBadgesAsync(),
             () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Twitch)),
             preserveFromEviction: true);
     }
@@ -144,12 +152,9 @@ internal sealed class DockedChatBadgeCatalog
             return;
         }
 
-        var escapedRoomId = Uri.EscapeDataString(normalizedRoomId);
         loadCoordinator.Ensure(
             $"badges:twitch:channel:{normalizedRoomId}",
-            () => LoadTwitchBadgesAsync(
-                $"https://badges.twitch.tv/v1/badges/channels/{escapedRoomId}/display",
-                normalizedRoomId),
+            () => LoadTwitchBadgesAsync(normalizedRoomId),
             () => QueueCatalogChanged(CatalogChangeScope.ForTwitchRoom(normalizedRoomId)));
     }
 
@@ -167,55 +172,57 @@ internal sealed class DockedChatBadgeCatalog
             () => QueueCatalogChanged(CatalogChangeScope.ForChannel(PlatformKind.Kick, normalizedChannel)));
     }
 
-    private async Task<CatalogLoadResult> LoadTwitchBadgesAsync(string url, string? roomId = null)
+    private async Task<CatalogLoadResult> LoadTwitchBadgesAsync(string? roomId = null)
     {
         var normalizedRoomId = NormalizePart(roomId);
+        var changed = await LoadTwitchHelixBadgesAsync(normalizedRoomId).ConfigureAwait(false)
+            ?? await LoadTwitchPublicBadgesAsync(normalizedRoomId).ConfigureAwait(false);
+        return changed.HasValue ? CatalogLoadResult.Successful(changed.Value) : CatalogLoadResult.Failed();
+    }
+
+    private async Task<bool?> LoadTwitchPublicBadgesAsync(string roomId)
+    {
+        // The former badges.twitch.tv fallback no longer resolves. Twitch's public
+        // web catalog supplies the same version IDs without an account credential.
+        var channel = roomId.Length > 0;
+        using var request = new HttpRequestMessage(HttpMethod.Post, TwitchGraphQlTransport.Endpoint);
+        request.Headers.TryAddWithoutValidation("Client-Id", TwitchGraphQlTransport.PublicClientId);
+        request.Content = new StringContent(JsonSerializer.Serialize(new
+        {
+            query = channel
+                ? "query StreamStudioChannelBadges($id: ID!) { user(id: $id) { id broadcastBadges { setID version title imageURL(size: DOUBLE) } } }"
+                : "query StreamStudioGlobalBadges { badges { setID version title imageURL(size: DOUBLE) } }",
+            variables = new { id = roomId }
+        }), Encoding.UTF8, "application/json");
+        using var document = await OptionalHttpJsonReader.SendAsync(httpClient, request, MaxJsonBytes).ConfigureAwait(false);
+        if (document is null || document.RootElement.ValueKind != JsonValueKind.Object ||
+            document.RootElement.TryGetProperty("errors", out var errors) &&
+            (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() > 0) ||
+            !document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+            return null;
+
+        JsonElement entries;
+        if (channel)
+        {
+            if (!data.TryGetProperty("user", out var user) || user.ValueKind != JsonValueKind.Object ||
+                !TryGetNonEmptyString(user, "id", out var returnedRoomId) || returnedRoomId != roomId ||
+                !user.TryGetProperty("broadcastBadges", out entries)) return null;
+        }
+        else if (!data.TryGetProperty("badges", out entries)) return null;
+        if (entries.ValueKind != JsonValueKind.Array) return null;
+
         var changed = false;
-        var helixChanged = await LoadTwitchHelixBadgesAsync(normalizedRoomId).ConfigureAwait(false);
-        if (helixChanged.HasValue)
+        foreach (var entry in entries.EnumerateArray())
         {
-            changed = helixChanged.Value;
+            if (!TryGetNonEmptyString(entry, "setID", out var id) ||
+                !TryGetNonEmptyString(entry, "version", out var version) ||
+                !TryGetNonEmptyString(entry, "imageURL", out var imageUrl)) continue;
+            var title = TryGetNonEmptyString(entry, "title", out var parsedTitle)
+                ? parsedTitle : GetBadgeToolTip(new ChatBadge(id, version));
+            if (!channel && HasTwitchBadge(null, id, version)) continue;
+            changed |= AddTwitchBadge(roomId, id, version, title, imageUrl);
         }
-        else
-        {
-            using var document = await TryGetJsonAsync(url).ConfigureAwait(false);
-            if (document is null)
-            {
-                throw new HttpRequestException("Twitch badge catalog was unavailable.");
-            }
-
-            if (!document.RootElement.TryGetProperty("badge_sets", out var badgeSets) ||
-                badgeSets.ValueKind != JsonValueKind.Object)
-            {
-                throw new InvalidDataException("Twitch badge catalog was malformed.");
-            }
-
-            foreach (var badgeSet in badgeSets.EnumerateObject())
-            {
-                if (badgeSet.Value.ValueKind != JsonValueKind.Object ||
-                    !badgeSet.Value.TryGetProperty("versions", out var versions) ||
-                    versions.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                foreach (var version in versions.EnumerateObject())
-                {
-                    if (version.Value.ValueKind != JsonValueKind.Object ||
-                        !TryGetPreferredBadgeImageUrl(version.Value, out var imageUrl))
-                    {
-                        continue;
-                    }
-
-                    var title = TryGetNonEmptyString(version.Value, "title", out var parsedTitle)
-                        ? parsedTitle
-                        : GetBadgeToolTip(new ChatBadge(badgeSet.Name, version.Name));
-                    changed |= AddTwitchBadge(normalizedRoomId, badgeSet.Name, version.Name, title, imageUrl);
-                }
-            }
-        }
-
-        return CatalogLoadResult.Successful(changed);
+        return changed;
     }
 
     private async Task<bool?> LoadTwitchHelixBadgesAsync(string roomId)
@@ -224,7 +231,7 @@ internal sealed class DockedChatBadgeCatalog
             ? $"/helix/chat/badges?broadcaster_id={Uri.EscapeDataString(roomId)}"
             : "/helix/chat/badges/global";
         using var document = await TryGetTwitchHelixJsonAsync(path).ConfigureAwait(false);
-        if (document is null ||
+        if (document is null || document.RootElement.ValueKind != JsonValueKind.Object ||
             !document.RootElement.TryGetProperty("data", out var data) ||
             data.ValueKind != JsonValueKind.Array)
         {
@@ -295,13 +302,21 @@ internal sealed class DockedChatBadgeCatalog
             throw new HttpRequestException("Kick badge catalog was unavailable.");
         }
 
+        var changed = false;
+        if (KickChannelInfoJson.Read(document.RootElement).BroadcasterUserId is { } broadcasterId)
+        {
+            lock (sync)
+            {
+                changed = !kickBroadcasterIds.TryGetValue(channel, out var previous) || previous != broadcasterId;
+                kickBroadcasterIds[channel] = broadcasterId;
+            }
+        }
         if (!document.RootElement.TryGetProperty("subscriber_badges", out var subscriberBadges) ||
             subscriberBadges.ValueKind != JsonValueKind.Array)
         {
-            return CatalogLoadResult.Successful();
+            return CatalogLoadResult.Successful(changed);
         }
 
-        var changed = false;
         foreach (var subscriberBadge in subscriberBadges.EnumerateArray())
         {
             var months = TryGetInt32(subscriberBadge, "months") ?? 0;
@@ -866,6 +881,7 @@ internal sealed class DockedChatBadgeCatalog
             else if (scope.StartsWith("badges:kick:channel:", StringComparison.OrdinalIgnoreCase))
             {
                 var channel = scope["badges:kick:channel:".Length..];
+                changed |= kickBroadcasterIds.Remove(channel);
                 RemoveVersionKeysLocked(kickNumericBadgeVersions, $"kick/channel/{channel}/");
             }
         }
