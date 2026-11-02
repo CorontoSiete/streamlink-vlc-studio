@@ -379,7 +379,6 @@ internal static partial class ApplicationTestCatalog
         internal async Task PositionAsync(double seconds)
         {
             await First.SeekReplayAsync(TimeSpan.FromSeconds(seconds));
-            MarkReplayClockSeekConfirmed(First);
         }
 
         internal KeyEventArgs KeyEvent(Key key) => new(Keyboard.PrimaryDevice, source, Environment.TickCount, key)
@@ -404,7 +403,6 @@ internal static partial class ApplicationTestCatalog
             await TestWait.UntilAsync(() => Engine.SeekCount > previousCount && !First.IsReplaySeekInProgress &&
                 First.SkipBackwardCommand.CanExecute(null) && First.SkipForwardCommand.CanExecute(null), TimeSpan.FromSeconds(3));
             Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), Engine.Position);
-            MarkReplayClockSeekConfirmed(First);
         }
 
         internal void Flush() => Window.Dispatcher.Invoke(() => { }, DispatcherPriority.DataBind);

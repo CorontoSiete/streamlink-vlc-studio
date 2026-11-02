@@ -12,30 +12,79 @@
 </head>
 <body>
   <a class="skip-link" href="#library">Skip to content</a>
-  <main id="login">
-    <div class="login-story">
-      <div class="wordmark"><span class="brand-symbol" data-icon="studio" aria-hidden="true"></span>stream<span class="wordmark-light">studio</span><span class="edition">LOCAL</span></div>
-      <div class="login-editorial"><div class="eyebrow"><span class="status-dot"></span> YOUR PERSONAL STREAMING SPACE</div><h1>All your streams.<br><em>Right at home.</em></h1><p>Live moments. Familiar faces. One beautiful place<br>for everything you love to watch.</p><div class="login-platforms"><span class="platform-mark twitch">Twitch</span><span class="platform-mark kick">Kick</span><span>One studio.</span></div></div>
-      <div class="login-footnote"><span data-icon="shield"></span> Your accounts stay on your desktop.</div>
-      <div class="signal-art" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
-    </div>
-    <div class="login-panel"><div class="login-card">
-      <span class="login-icon" data-icon="monitor"></span>
-      <div class="eyebrow">CONNECT THIS DEVICE</div>
-      <h2>Welcome to your studio.</h2>
-      <p>Connect to Stream Studio on your desktop to start watching on this device.</p>
-      <form id="login-form">
-        <label for="username">Username</label>
-        <input id="username" type="text" maxlength="32" autocomplete="username" aria-describedby="login-help login-error" required autofocus>
-        <label for="password">Password</label>
-        <input id="password" type="password" maxlength="128" autocomplete="current-password" aria-describedby="login-help login-error" required>
-        <p id="login-help" class="field-help">Use a web account created in the desktop app’s <strong>LAN browser server</strong> window.</p>
-        <button type="submit" class="primary">Connect to studio <span data-icon="arrow-right"></span></button>
-      </form>
-      <p id="login-error" role="alert"></p>
-      <details class="connection-help"><summary>Need a hand connecting?</summary><ol><li>Keep Stream Studio open on your Windows desktop.</li><li>Open Settings → Advanced → Playback tools → LAN browser server.</li><li>Create a web account, start the server and sign in here. Both devices need to be on the same network.</li></ol></details>
-      <div class="security-note"><span data-icon="shield"></span><p>Before connecting, match this HTTPS certificate’s fingerprint with the one shown on your desktop.</p></div>
-    </div><div class="login-device-note">Your desktop powers it. This screen makes it yours.</div></div>
+  <main id="login" aria-label="Sign in to Stream Studio">
+    <section class="login-story" aria-labelledby="login-story-title">
+      <div class="login-brand-row">
+        <div class="wordmark"><span class="brand-symbol" data-icon="studio" aria-hidden="true"></span><span>stream<span class="wordmark-light">studio</span></span></div>
+        <span class="login-local-badge"><span></span> THE WEB EXPERIENCE</span>
+      </div>
+      <div class="login-story-content">
+        <div class="login-editorial">
+          <div class="eyebrow"><span class="login-eyebrow-line"></span> A BETTER WAY TO TUNE IN</div>
+          <h1 id="login-story-title">Your world.<br><em>Now playing.</em></h1>
+          <p>All the streams you love. A space that feels like you.<br>Bring your desktop experience to any screen.</p>
+        </div>
+        <div class="studio-preview" aria-hidden="true">
+          <div class="preview-window">
+            <div class="preview-chrome"><span class="preview-app-brand"><span data-icon="studio"></span> Your studio</span><span class="preview-nav"><span>Following</span><span>Browse</span></span><span data-icon="search"></span></div>
+            <div class="preview-content">
+              <div class="preview-video">
+                <svg class="preview-landscape" viewBox="0 0 800 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <linearGradient id="login-sky" x1="400" y1="0" x2="400" y2="500" gradientUnits="userSpaceOnUse"><stop stop-color="#17172d"/><stop offset=".6" stop-color="#686397"/><stop offset="1" stop-color="#e3adb6"/></linearGradient>
+                    <radialGradient id="login-halo"><stop stop-color="#e5c9ff" stop-opacity=".42"/><stop offset="1" stop-color="#b49aff" stop-opacity="0"/></radialGradient>
+                    <linearGradient id="login-moon" x1="500" y1="75" x2="560" y2="230" gradientUnits="userSpaceOnUse"><stop stop-color="#fff0de"/><stop offset="1" stop-color="#c5b4ed"/></linearGradient>
+                    <linearGradient id="login-ridge" x1="240" y1="230" x2="400" y2="450" gradientUnits="userSpaceOnUse"><stop stop-color="#857baf"/><stop offset=".38" stop-color="#484366"/><stop offset="1" stop-color="#25243b"/></linearGradient>
+                    <linearGradient id="login-dune" x1="400" y1="300" x2="400" y2="500" gradientUnits="userSpaceOnUse"><stop stop-color="#8c79a5"/><stop offset=".1" stop-color="#514963"/><stop offset="1" stop-color="#171824"/></linearGradient>
+                    <linearGradient id="login-vignette" x1="400" y1="220" x2="400" y2="500" gradientUnits="userSpaceOnUse"><stop stop-color="#0c0d19" stop-opacity="0"/><stop offset="1" stop-color="#0c0d19" stop-opacity=".94"/></linearGradient>
+                    <filter id="login-grain"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".12"/></feComponentTransfer><feBlend in="SourceGraphic" mode="soft-light"/></filter>
+                  </defs>
+                  <path fill="url(#login-sky)" d="M0 0h800v500H0z"/>
+                  <circle cx="535" cy="152" r="205" fill="url(#login-halo)"/>
+                  <g fill="#f5edff"><circle cx="86" cy="63" r="1"/><circle cx="192" cy="111" r="1.1"/><circle cx="329" cy="44" r=".8"/><circle cx="671" cy="80" r="1"/><circle cx="728" cy="159" r=".9"/><circle cx="411" cy="97" r=".7"/><circle cx="265" cy="173" r=".8"/></g>
+                  <circle cx="535" cy="152" r="57" fill="url(#login-moon)"/>
+                  <path d="M0 335c92-31 155-18 247-60 98-45 147-23 227-9 102 18 181-67 326-52v286H0Z" fill="#8e80a5"/>
+                  <path d="M0 242c92-18 133-52 195-60 55-7 117 92 213 116 128 32 228 38 392 6v196H0Z" fill="url(#login-ridge)"/>
+                  <path d="M0 242c92-18 133-52 195-60 55-7 117 92 213 116" stroke="#c5afdb" stroke-opacity=".42"/>
+                  <path d="M0 384c105-99 225-125 337-115 176 17 246 136 463 101v130H0Z" fill="url(#login-dune)"/>
+                  <path d="M0 384c105-99 225-125 337-115 176 17 246 136 463 101" stroke="#cfb8de" stroke-opacity=".5"/>
+                  <path d="M0 412c154-78 247-89 369-53 134 40 260 93 431 32v109H0Z" fill="#262438"/>
+                  <path d="M0 459c154-78 247-89 369-53 134 40 260 93 431 32" stroke="#a592ba" stroke-opacity=".12"/>
+                  <path d="M0 0h800v500H0z" fill="transparent" filter="url(#login-grain)" opacity=".45"/>
+                  <path fill="url(#login-vignette)" d="M0 0h800v500H0z"/>
+                </svg>
+                <div class="preview-video-top"><span class="preview-live"><i></i> LIVE</span><span class="preview-quality">1080p <span>60</span></span></div>
+                <div class="preview-video-caption"><span class="preview-category">SOMEWHERE YOU WANT TO BE</span><strong>A little escape. A great view.</strong><span>Good company comes with the territory.</span></div>
+                <div class="preview-controls"><span data-icon="pause"></span><span data-icon="volume"></span><span class="preview-timeline"></span><span data-icon="fullscreen"></span></div>
+              </div>
+              <div class="preview-chat"><div class="preview-chat-heading">STREAM CHAT <span data-icon="chat"></span></div><div class="preview-chat-message"><i class="preview-avatar avatar-lilac">J</i><div><b>juniper</b><span>Now this is a view.</span></div></div><div class="preview-chat-message"><i class="preview-avatar avatar-peach">S</i><div><b>slowmornings</b><span>My kind of evening.</span></div></div><div class="preview-chat-message"><i class="preview-avatar avatar-sage">M</i><div><b>milesaway</b><span>Glad I made it here ♡</span></div></div><div class="preview-chat-compose">Send a message <span>♡</span></div></div>
+            </div>
+          </div>
+          <div class="preview-floating-note"><span class="preview-note-icon" data-icon="monitor"></span><div><strong>One studio. Every screen.</strong><span>Your favorites, always within reach.</span></div><span data-icon="check"></span></div>
+        </div>
+        <div class="login-platforms"><span>Two platforms. Zero switching.</span><img src="/twitch-logo.svg" alt="Twitch" width="62" height="19"><span class="login-platform-divider"></span><img src="/kick-logo.svg" alt="Kick" width="46" height="15"></div>
+      </div>
+      <div class="login-story-footer"><span>YOUR STREAMS. YOUR TERMS.</span><span><span data-icon="shield"></span> Powered by your desktop</span></div>
+    </section>
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="login-panel-top"><span><span data-icon="monitor"></span> WEB PLAYER</span><span class="login-access-label"><span></span> PRIVATE ACCESS</span></div>
+      <div class="login-card">
+        <span class="login-welcome-icon" data-icon="studio" aria-hidden="true"></span>
+        <div class="eyebrow">YOUR NEXT GREAT WATCH STARTS HERE</div>
+        <h2 id="login-title">Welcome back.</h2>
+        <p>Make yourself at home. Sign in to your studio.</p>
+        <form id="login-form">
+          <div class="login-field"><label for="username">Username</label><div class="login-input"><span data-icon="user" aria-hidden="true"></span><input id="username" type="text" maxlength="32" placeholder="Enter your web username" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="login-help login-error" required autofocus></div></div>
+          <div class="login-field"><label for="password">Password</label><div class="login-input"><span data-icon="lock" aria-hidden="true"></span><input id="password" type="password" maxlength="128" placeholder="Enter your password" autocomplete="current-password" aria-describedby="login-help login-error" required><button id="password-toggle" class="password-toggle" type="button" aria-label="Show password" aria-controls="password" aria-pressed="false"><span data-icon="eye"></span></button></div></div>
+          <p id="login-error" role="alert"></p>
+          <button id="login-submit" type="submit" class="primary"><span class="login-submit-label">Sign in to studio</span><span class="login-submit-arrow" data-icon="arrow-right"></span><span class="login-submit-spinner" aria-hidden="true"></span></button>
+          <p id="login-help" class="field-help">Use the web account created in your desktop app.</p>
+        </form>
+        <details class="connection-help"><summary><span>First time connecting?</span><span data-icon="plus" aria-hidden="true"></span></summary><ol><li>Keep Stream Studio open on your Windows desktop.</li><li>Open <strong>Settings → Advanced → Playback tools → LAN browser server.</strong></li><li>Create a web account and start the server. Sign in here with that account, with both devices on the same network.</li></ol></details>
+        <div class="security-note"><span data-icon="shield" aria-hidden="true"></span><p><strong>Your accounts stay on your desktop.</strong>Before signing in, match this site’s HTTPS certificate fingerprint with the one shown in your desktop app.</p></div>
+      </div>
+      <div class="login-device-note"><span class="login-footer-mark" aria-hidden="true"></span> Thoughtfully made for the way you watch.</div>
+    </section>
   </main>
   <div id="studio" hidden>
     <header class="topbar">

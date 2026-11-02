@@ -8,6 +8,12 @@ First-run setup and Settings > Accounts offer **Connect Twitch** and **Connect K
 
 ## Publisher configuration (once per app, not per user)
 
+The registered redirect strings below must have **no trailing slash**. A registration
+ending in `/` does not match the callback sent by v1.8.9. Removing that slash from
+both provider registrations resolved the reported sign-in failures on another
+user's v1.8.9 installation on 2026-11-02. The browser can display `/` on the final
+localhost page; that is separate from the exact OAuth parameter being registered.
+
 For the hosted setup without a container or paid server, use the prepared [Cloudflare Worker and provisioning command](../hosting/cloudflare/README.md). The ASP.NET Core deployment below is available for publishers who already operate a .NET host. Both implementations use the same desktop token-service contract.
 
 1. Keep the Twitch registration's redirect URI exactly `http://localhost:39178`. The existing implicit browser flow requests `chat:read chat:edit user:read:follows channel:manage:predictions clips:edit`, validates the resulting token and its issuing client ID, and saves the login and client ID automatically. This registration must support implicit authorization; Twitch Public applications support only Device Code Flow. This implementation preserves the app's existing implicit flow and its reconnect-on-expiry behavior. It does not claim automatic Twitch token renewal.

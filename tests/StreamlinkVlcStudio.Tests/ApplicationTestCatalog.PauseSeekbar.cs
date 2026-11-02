@@ -143,7 +143,7 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal(PlaybackStatus.Paused, tab.Status);
             Assert.True(engine.Paused);
             await StopReplayClockPollingAsync(tab);
-            MarkReplayClockSeekConfirmed(tab, TimeSpan.FromMinutes(5));
+            AgeReplayClockAnchor(tab, TimeSpan.FromMinutes(5));
             InvokeReplayClockUpdate(tab);
             AssertPauseClockPosition(tab, TimeSpan.FromMinutes(12));
             await tab.RewindReplay30SecondsAsync();
@@ -204,7 +204,7 @@ internal static partial class ApplicationTestCatalog
             await engine.SeekAsync(TimeSpan.FromSeconds(603));
             if (hidden) await tab.PauseForTabSwitchAsync();
             else await tab.PauseOrResumeAsync();
-            MarkReplayClockSeekConfirmed(tab, TimeSpan.FromMinutes(5));
+            AgeReplayClockAnchor(tab, TimeSpan.FromMinutes(5));
             var plays = engine.PlayCount;
             var seeks = engine.SeekCount;
             var resumes = engine.ResumeCount;
@@ -297,7 +297,7 @@ internal static partial class ApplicationTestCatalog
 
             // Advance the age of the clock's last observation, without sleeping. The decoder
             // remains at the same media position for this entire simulated 45-second pause.
-            MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(45));
+            AgeReplayClockAnchor(tab, TimeSpan.FromSeconds(45));
             InvokeReplayClockUpdate(tab);
             AssertPauseClockPosition(tab, position);
             if (unavailableOnResume)

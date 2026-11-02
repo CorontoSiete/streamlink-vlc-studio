@@ -235,6 +235,46 @@ internal static partial class LocalWebTestCatalog
         }
     }
 
+    private static async Task CategoryArtworkBodyDeadlineAsync()
+    {
+        var streams = new System.Collections.Concurrent.ConcurrentBag<CodeReviewTestCatalog.StalledReadStream>();
+        using var http = new HttpClient(new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("valid.jpg", StringComparison.Ordinal))
+                return new(HttpStatusCode.OK) { Content = new ByteArrayContent([0xff, 0xd8, 0xff]) };
+            var stream = new CodeReviewTestCatalog.StalledReadStream();
+            streams.Add(stream);
+            return new(HttpStatusCode.OK) { Content = new StreamContent(stream) };
+        }))
+        { Timeout = TimeSpan.FromMilliseconds(150) };
+        var artwork = new LocalWebCategoryArtwork(http);
+        using var cancellation = new CancellationTokenSource();
+        async Task Serve(int id)
+        {
+            var context = new DefaultHttpContext { RequestAborted = cancellation.Token };
+            await artwork.ServeAsync(context, ArtworkCdn + id + ".jpg");
+            Assert.Equal(404, context.Response.StatusCode);
+        }
+        var pending = Task.WhenAll(Enumerable.Range(0, 8).Select(Serve));
+        try
+        {
+            await pending.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(8, streams.Count);
+            Assert.True(streams.All(stream => stream.SawCancellation));
+            Assert.Equal(false, cancellation.IsCancellationRequested);
+            var context = new DefaultHttpContext();
+            context.Response.Body = new MemoryStream();
+            await artwork.ServeAsync(context, ArtworkCdn + "valid.jpg").WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(200, context.Response.StatusCode);
+            Assert.Equal(3L, context.Response.Body.Length);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            try { await pending; } catch (OperationCanceledException) { }
+        }
+    }
+
     private static async Task CategoryArtworkResourcesAsync()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

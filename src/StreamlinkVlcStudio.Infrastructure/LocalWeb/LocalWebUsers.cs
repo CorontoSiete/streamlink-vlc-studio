@@ -3,6 +3,7 @@ using System.Text.Json;
 using StreamlinkVlcStudio.Core;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Io;
+using static StreamlinkVlcStudio.Infrastructure.LocalWeb.LocalWebRequestValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
@@ -78,17 +79,6 @@ internal sealed record LocalWebPreferences
         var layout = new WebChatOverlayLayout(Number("width", true), Number("height", true), Number("x")!.Value, Number("y")!.Value);
         return WebChatOverlayLayout.IsValid(layout) ? layout : throw new ArgumentException("Invalid chat layout.");
     }
-
-    private static bool Boolean(JsonElement value) => value.ValueKind switch
-    {
-        JsonValueKind.True => true,
-        JsonValueKind.False => false,
-        _ => throw new ArgumentException("Invalid preference value.")
-    };
-
-    private static int Integer(JsonElement value, int min, int max) =>
-        value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number >= min && number <= max
-            ? number : throw new ArgumentException("Invalid preference value.");
 
     private static Dictionary<string, LocalWebHotkey?> ReadHotkeys(JsonElement value)
     {

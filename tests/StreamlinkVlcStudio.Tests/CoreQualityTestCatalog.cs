@@ -9,10 +9,41 @@ internal static class CoreQualityTestCatalog
         ("Windows command line tokenizer handles quote runs and rejects nulls", CommandLineTokenizerHandlesQuoteRuns),
         ("duration conversion rejects the rounded Int64 overflow boundary", DurationConversionRejectsOverflowBoundary),
         ("Core shared values are canonical and immutable", KickBadgeAliasesAreCanonical),
+        ("double clicks respect the centered Windows rectangle and reset boundary", DoubleClickBounds),
         ("test runner applies targeted budgets to slow integration smoke tests", TestRunnerUsesTargetedTimeout),
         ("test runner reports tests not started after a noncooperative timeout", TestRunnerReportsNotRunAsync),
         ("test runner rejects overflowing timeout configuration", TestRunnerRejectsOverflowingTimeout)
     ];
+
+    private static Task DoubleClickBounds()
+    {
+        var tracker = new DoubleClickTracker();
+        const int x = 100, y = 200;
+        const long now = 1000;
+        var width = GetSystemMetrics(36);
+        var height = GetSystemMetrics(37);
+        Assert.Equal(false, tracker.IsDoubleClick(now, x, y));
+        tracker.Capture(now, x, y);
+        Assert.True(tracker.IsDoubleClick(now + 1, x, y));
+        Assert.True(tracker.IsDoubleClick(now + 1, x - width / 2, y - height / 2));
+        Assert.Equal(false, tracker.IsDoubleClick(now + 1, x - width / 2 - 1, y));
+        Assert.Equal(false, tracker.IsDoubleClick(now + 1, x - width / 2 + width, y));
+        Assert.Equal(false, tracker.IsDoubleClick(now + 1, x, y - height / 2 - 1));
+        Assert.Equal(false, tracker.IsDoubleClick(now + 1, x, y - height / 2 + height));
+        Assert.Equal(false, tracker.IsDoubleClick(now - 1, x, y));
+        Assert.Equal(false, tracker.IsDoubleClick(now + GetDoubleClickTime() + 1, x, y));
+        tracker.Capture(now, int.MinValue, int.MaxValue);
+        Assert.Equal(false, tracker.IsDoubleClick(now + 1, 0, int.MaxValue));
+        tracker.Reset();
+        Assert.Equal(false, tracker.IsDoubleClick(now + 1, int.MinValue, int.MaxValue));
+        return Task.CompletedTask;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
 
     private static Task PlatformRoutePolicyRejectsLandingPages()
     {
@@ -356,8 +387,6 @@ internal static class CoreQualityTestCatalog
         var oldDrain = Environment.GetEnvironmentVariable("SVS_TEST_DRAIN_TIMEOUT_SECONDS");
         var oldOut = Console.Out;
         var oldError = Console.Error;
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var laterTestRan = false;
         using var output = new StringWriter();
 
         try
@@ -368,23 +397,37 @@ internal static class CoreQualityTestCatalog
             Console.SetOut(output);
             Console.SetError(output);
 
-            var result = await DependencyFreeTestRunner.RunAsync(
-            [
-                ("noncooperative", () => release.Task),
-                ("must not start", () =>
+            foreach (var synchronous in new[] { false, true })
+            {
+                var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var laterTestRan = false;
+                output.GetStringBuilder().Clear();
+                try
                 {
-                    laterTestRan = true;
-                    return Task.CompletedTask;
-                })
-            ]);
+                    var result = await DependencyFreeTestRunner.RunAsync(
+                    [
+                        ("noncooperative", () =>
+                        {
+                            if (!synchronous) return release.Task;
+                            release.Task.Wait(TimeSpan.FromSeconds(1));
+                            return Task.CompletedTask;
+                        }),
+                        ("must not start", () =>
+                        {
+                            laterTestRan = true;
+                            return Task.CompletedTask;
+                        })
+                    ]);
 
-            Assert.Equal(1, result);
-            Assert.Equal(false, laterTestRan);
-            Assert.True(output.ToString().Contains("1 not run", StringComparison.Ordinal));
+                    Assert.Equal(1, result);
+                    Assert.Equal(false, laterTestRan);
+                    Assert.True(output.ToString().Contains("1 not run", StringComparison.Ordinal));
+                }
+                finally { release.TrySetResult(); }
+            }
         }
         finally
         {
-            release.TrySetResult();
             Console.SetOut(oldOut);
             Console.SetError(oldError);
             Environment.SetEnvironmentVariable("SVS_TEST_FILTER", oldFilter);

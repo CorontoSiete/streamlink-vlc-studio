@@ -11,6 +11,7 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 public static class TwitchOAuthService
 {
+    // OAuth compares this registered string exactly, independently of the listener's trailing slash.
     public const string LocalRedirectUri = "http://localhost:39178";
     private const string AuthorizationEndpoint = "https://id.twitch.tv/oauth2/authorize";
     private static readonly TimeSpan AuthorizationTimeout = TimeSpan.FromMinutes(4);
@@ -27,17 +28,13 @@ public static class TwitchOAuthService
         if (string.IsNullOrWhiteSpace(clientId))
             throw new InvalidOperationException(AccountConnectionConfiguration.TwitchUnavailableMessage);
         var state = CreateBase64UrlSecret(32);
-        var authorizationUri = BuildAuthorizationUri(clientId, state);
+        var browserStartInfo = BuildAuthorizationStartInfo(clientId, state);
 
         using var listener = new HttpListener();
         listener.Prefixes.Add($"{LocalRedirectUri}/");
         listener.Start();
 
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = authorizationUri.ToString(),
-            UseShellExecute = true
-        });
+        Process.Start(browserStartInfo);
 
         var browserToken = await WaitForAuthorizationTokenAsync(listener, state, cancellationToken);
         var tokenInfo = await ValidateTokenAsync(browserToken.AccessToken, cancellationToken);
@@ -168,7 +165,7 @@ public static class TwitchOAuthService
             throw new InvalidOperationException("Twitch returned a token for a different application. Please connect again.");
     }
 
-    private static Uri BuildAuthorizationUri(string clientId, string state)
+    internal static ProcessStartInfo BuildAuthorizationStartInfo(string clientId, string state)
     {
         var query = new Dictionary<string, string>
         {
@@ -179,7 +176,12 @@ public static class TwitchOAuthService
             ["state"] = state
         };
 
-        return OAuthTokenHelpers.BuildAuthorizationUri(AuthorizationEndpoint, query);
+        return new ProcessStartInfo
+        {
+            // Uri.ToString() unescapes scope separators into literal spaces before the shell launch.
+            FileName = OAuthTokenHelpers.BuildAuthorizationUri(AuthorizationEndpoint, query).AbsoluteUri,
+            UseShellExecute = true
+        };
     }
 
     private static async Task<TwitchBrowserToken> WaitForAuthorizationTokenAsync(

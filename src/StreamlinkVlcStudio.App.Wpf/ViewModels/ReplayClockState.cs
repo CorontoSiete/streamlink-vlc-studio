@@ -50,8 +50,7 @@ internal sealed class ReplayClockState
             if (previous == PlaybackStatus.Paused && next == PlaybackStatus.Playing &&
                 replayMode && replayClockAnchorAvailable && pausedReplayClock is { } heldClock)
             {
-                SetReplayClockAnchor(heldClock.Position, heldClock.Duration,
-                    getSeekGeneration(), replayClockAnchorAwaitingSeekConfirmation);
+                SetReplayClockAnchor(heldClock.Position, heldClock.Duration, getSeekGeneration());
                 ResetReplayClockSampleTrackingCore();
             }
             pausedReplayClock = pauseClock;
@@ -91,10 +90,8 @@ internal sealed class ReplayClockState
     private TimeSpan replayClockAnchorOffset;
     private DateTimeOffset replayClockAnchorObservedAtUtc;
     private long replayClockAnchorSeekGeneration;
-    private bool replayClockAnchorAwaitingSeekConfirmation;
     private bool replayClockAcceptedSampleAvailable;
     private TimeSpan replayClockAcceptedSamplePosition;
-    private DateTimeOffset replayClockAcceptedSampleObservedAtUtc;
     private long replayClockAcceptedSampleSeekGeneration;
 
     internal ReplayClockSnapshot ResolveReplayClock(
@@ -277,7 +274,6 @@ internal sealed class ReplayClockState
         TimeSpan offset,
         TimeSpan duration,
         long seekGeneration,
-        bool awaitingSeekConfirmation,
         DateTimeOffset? observedAtUtc = null)
     {
         lock (replayClockAnchorGate)
@@ -286,7 +282,6 @@ internal sealed class ReplayClockState
             replayClockAnchorOffset = ClampReplayOffset(offset, duration);
             replayClockAnchorObservedAtUtc = observedAtUtc ?? DateTimeOffset.UtcNow;
             replayClockAnchorSeekGeneration = seekGeneration;
-            replayClockAnchorAwaitingSeekConfirmation = awaitingSeekConfirmation;
         }
     }
 
@@ -309,7 +304,7 @@ internal sealed class ReplayClockState
                     (getStatus() == PlaybackStatus.Paused && pausedReplayClock is { } heldClock
                         ? heldClock.Position
                         : EstimateReplayClockFromAnchor(duration, observedAtUtc));
-                SetReplayClockAnchor(position, duration, seekGeneration, awaitingSeekConfirmation: false, observedAtUtc);
+                SetReplayClockAnchor(position, duration, seekGeneration, observedAtUtc);
                 ResetReplayClockSampleTrackingCore();
             }
 
@@ -346,7 +341,6 @@ internal sealed class ReplayClockState
             var normalizedPosition = ClampReplayOffset(position, duration);
             replayClockAcceptedSampleAvailable = true;
             replayClockAcceptedSamplePosition = normalizedPosition;
-            replayClockAcceptedSampleObservedAtUtc = observedAtUtc;
             replayClockAcceptedSampleSeekGeneration = seekGeneration;
 
             if (!replayClockAnchorAvailable ||
@@ -359,7 +353,6 @@ internal sealed class ReplayClockState
                 replayClockAnchorSeekGeneration = seekGeneration;
             }
 
-            replayClockAnchorAwaitingSeekConfirmation = false;
             return true;
         }
     }
@@ -377,10 +370,8 @@ internal sealed class ReplayClockState
                 replayClockAnchorOffset,
                 replayClockAnchorObservedAtUtc,
                 replayClockAnchorSeekGeneration,
-                replayClockAnchorAwaitingSeekConfirmation,
                 replayClockAcceptedSampleAvailable,
                 replayClockAcceptedSamplePosition,
-                replayClockAcceptedSampleObservedAtUtc,
                 replayClockAcceptedSampleSeekGeneration);
         }
     }
@@ -393,7 +384,6 @@ internal sealed class ReplayClockState
             replayClockAnchorOffset = TimeSpan.Zero;
             replayClockAnchorObservedAtUtc = DateTimeOffset.MinValue;
             replayClockAnchorSeekGeneration = 0;
-            replayClockAnchorAwaitingSeekConfirmation = false;
             ResetReplayClockSampleTrackingCore();
         }
     }
@@ -402,7 +392,6 @@ internal sealed class ReplayClockState
     {
         replayClockAcceptedSampleAvailable = false;
         replayClockAcceptedSamplePosition = TimeSpan.Zero;
-        replayClockAcceptedSampleObservedAtUtc = DateTimeOffset.MinValue;
         replayClockAcceptedSampleSeekGeneration = 0;
     }
 
@@ -498,8 +487,6 @@ internal readonly record struct ReplayClockAnchorSnapshot(
         TimeSpan Offset,
         DateTimeOffset ObservedAtUtc,
         long SeekGeneration,
-        bool AwaitingSeekConfirmation,
         bool AcceptedSampleAvailable,
         TimeSpan AcceptedSamplePosition,
-        DateTimeOffset AcceptedSampleObservedAtUtc,
         long AcceptedSampleSeekGeneration);

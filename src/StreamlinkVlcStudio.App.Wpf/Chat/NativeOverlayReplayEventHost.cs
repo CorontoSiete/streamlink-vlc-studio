@@ -225,7 +225,7 @@ internal sealed class NativeOverlayReplayEventHost : IAsyncDisposable
                         PipeDirection.In,
                         1,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous);
+                        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                     await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
                     await ReadMessagesAsync(
                         pipe,

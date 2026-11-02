@@ -1,9 +1,10 @@
-using System.IO;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Http;
 
 namespace StreamlinkVlcStudio.App.Wpf.Kick;
 
@@ -147,27 +148,16 @@ internal sealed class KickClipBrowserClient : IDisposable
     private static async Task<string> ReadResponseBodyAsync(CoreWebView2WebResourceResponseView response, CancellationToken token)
     {
         if (response.StatusCode is < 200 or >= 300) return "";
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
-        var content = response.GetContentAsync();
-        Stream stream;
-        try { stream = await content.WaitAsync(timeout.Token); }
-        catch
+        try
         {
-            _ = DisposeLateContentAsync(content);
-            throw;
+            var bytes = await WebView2ResponseReader.ReadAsync(response.GetContentAsync(),
+                KickClipPublicationTracker.MaximumResponseBytes, TimeSpan.FromSeconds(15), token);
+            return new UTF8Encoding(false, true).GetString(bytes);
         }
-        using var responseStream = stream;
-        using var buffer = new MemoryStream();
-        var bytes = new byte[4096];
-        int read;
-        while ((read = await responseStream.ReadAsync(bytes, timeout.Token)) != 0)
+        catch (PayloadTooLargeException)
         {
-            if (buffer.Length + read > KickClipPublicationTracker.MaximumResponseBytes)
-                throw new InvalidOperationException("Kick's clip response was too large to verify.");
-            buffer.Write(bytes, 0, read);
+            throw new InvalidOperationException("Kick's clip response was too large to verify.");
         }
-        return new UTF8Encoding(false, true).GetString(buffer.ToArray());
     }
 
     private async Task ObserveResponseAsync(Task previous, Task<string> bodyTask, string method, string address,
@@ -189,12 +179,6 @@ internal sealed class KickClipBrowserClient : IDisposable
                 Failed?.Invoke(ex is InvalidOperationException ? ex.Message :
                     "The clip response could not be verified. Check your channel clips before trying again.");
         }
-    }
-
-    private static async Task DisposeLateContentAsync(Task<Stream> content)
-    {
-        try { (await content).Dispose(); }
-        catch (Exception) { /* The browser may already be closed. */ }
     }
 
     public void Dispose()

@@ -29,6 +29,7 @@ for (const grant of ['authorization_code', 'refresh_token']) {
       const sent = new URLSearchParams(options.body);
       assert.equal(sent.get('client_secret'), 'server-only-secret');
       assert.equal(sent.get('grant_type'), grant);
+      if (grant === 'authorization_code') assert.equal(sent.get('redirect_uri'), 'http://localhost:39177');
       return token();
     });
     assert.equal(response.status, 200);
@@ -46,6 +47,7 @@ test('invalid clients, injected secrets, grant types, duplicates, escapes and ca
     new URLSearchParams({ ...Object.fromEntries(form()), client_secret: 'injected' }),
     new URLSearchParams({ ...Object.fromEntries(form('authorization_code')), code_verifier: 'short' }),
     new URLSearchParams({ ...Object.fromEntries(form('authorization_code')), redirect_uri: 'https://attacker.example' }),
+    new URLSearchParams({ ...Object.fromEntries(form('authorization_code')), redirect_uri: 'http://localhost:39177/' }),
     `${form()}&refresh_token=duplicate`,
     `${form()}&invalid=%QZ`,
   ];

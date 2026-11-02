@@ -1225,7 +1225,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                     ".",
                     pipeName,
                     PipeDirection.Out,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 var connectTimeout = (int)Math.Clamp(
                     NativeOverlayPipeConnectTimeout.TotalMilliseconds,
                     1,
@@ -1366,7 +1366,7 @@ internal sealed class NativeChatOverlayController : IAsyncDisposable
                 try
                 {
                     await using var pipe = new NamedPipeClientStream(
-                        ".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous);
+                        ".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                     var connectTimeout = (int)Math.Clamp(NativeOverlayPipeConnectTimeout.TotalMilliseconds,
                         1, Math.Max(1, remaining.TotalMilliseconds));
                     // The same deadline covers connecting AND writing. A connected overlay that

@@ -39,17 +39,13 @@ public static class KickOAuthService
         var state = CreateBase64UrlSecret(32);
         var codeVerifier = CreateBase64UrlSecret(32);
         var codeChallenge = CreateCodeChallenge(codeVerifier);
-        var authorizationUri = BuildAuthorizationUri(clientId, state, codeChallenge);
+        var browserStartInfo = BuildAuthorizationStartInfo(clientId, state, codeChallenge);
 
         using var listener = new HttpListener();
         listener.Prefixes.Add($"{LocalRedirectUri}/");
         listener.Start();
 
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = authorizationUri.ToString(),
-            UseShellExecute = true
-        });
+        Process.Start(browserStartInfo);
 
         var code = await WaitForAuthorizationCodeAsync(listener, state, cancellationToken);
         var credentials = new ChatSettings { KickClientId = clientId, KickClientSecret = clientSecret, KickUseTokenService = useTokenService };
@@ -435,7 +431,7 @@ public static class KickOAuthService
             scopes);
     }
 
-    private static Uri BuildAuthorizationUri(string clientId, string state, string codeChallenge)
+    internal static ProcessStartInfo BuildAuthorizationStartInfo(string clientId, string state, string codeChallenge)
     {
         var query = new Dictionary<string, string>
         {
@@ -448,7 +444,12 @@ public static class KickOAuthService
             ["code_challenge_method"] = "S256"
         };
 
-        return OAuthTokenHelpers.BuildAuthorizationUri(AuthorizationEndpoint, query);
+        return new ProcessStartInfo
+        {
+            // Keep the encoded scope separators intact when Windows opens the system browser.
+            FileName = OAuthTokenHelpers.BuildAuthorizationUri(AuthorizationEndpoint, query).AbsoluteUri,
+            UseShellExecute = true
+        };
     }
 
     private static async Task<string> WaitForAuthorizationCodeAsync(

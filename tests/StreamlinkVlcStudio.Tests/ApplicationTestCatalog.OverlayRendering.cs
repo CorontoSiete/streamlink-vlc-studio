@@ -4896,7 +4896,7 @@ internal static partial class ApplicationTestCatalog
                 TimeSpan.FromSeconds(1));
             Assert.True(tab.ChatMessages.Any(message => message.Message == "captured chat ready for native overlay"));
 
-            MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(50));
+            AgeReplayClockAnchor(tab, TimeSpan.FromSeconds(50));
             forcedClockPosition = TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(50));
             InvokeReplayClockUpdate(tab);
             Assert.True(tab.ChatMessages.Any(message => message.Message == "captured chat ready for native overlay"));

@@ -9,6 +9,7 @@ internal static class KickChatConnectionTestCatalog
     [
         ("Kick chat connection: requests fresh channel-specific Pusher settings on reconnect", NegotiationAsync),
         ("Kick chat connection: rejects failed unsupported and malformed discovery", InvalidDiscoveryAsync),
+        ("Kick chat connection: discovery body honors timeout and caller cancellation", DiscoveryBodyDeadlineAsync),
         ("Kick chat connection: preserves channel identity independently of the chatroom", OverlayIdentityAsync),
         ("Kick chat connection: exposes Pusher rejection codes and messages", RejectionsAsync)
     ];
@@ -66,6 +67,34 @@ internal static class KickChatConnectionTestCatalog
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         await Assert.ThrowsAsync<OperationCanceledException>(() => KickPusherConnection.ResolveAsync(unavailable, "42", "reader", cancellation.Token));
+    }
+
+    private static async Task DiscoveryBodyDeadlineAsync()
+    {
+        foreach (var callerCancels in new[] { false, true })
+        {
+            using var stream = new CodeReviewTestCatalog.StalledReadStream();
+            using var http = new HttpClient(new FakeHttpMessageHandler(_ => new(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(stream)
+            }))
+            { Timeout = callerCancels ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(150) };
+            using var cancellation = new CancellationTokenSource();
+            var pending = KickPusherConnection.ResolveAsync(http, "42", "reader", cancellation.Token);
+            try
+            {
+                await stream.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                if (callerCancels) cancellation.Cancel();
+                await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(3)));
+                Assert.True(stream.SawCancellation);
+                Assert.Equal(callerCancels, cancellation.IsCancellationRequested);
+            }
+            finally
+            {
+                cancellation.Cancel();
+                try { await pending; } catch (OperationCanceledException) { }
+            }
+        }
     }
 
     private static Task OverlayIdentityAsync()

@@ -90,7 +90,9 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
                     Title,
                     twitch.BroadcasterId,
                     twitch.Duration,
-                    ProfileImageUrl: twitch.ProfileImageUrl);
+                    ProfileImageUrl: twitch.ProfileImageUrl,
+                    MediaThumbnailUrl: twitch.ThumbnailUrl,
+                    MediaPublishedAtUtc: twitch.PublishedAtUtc ?? twitch.CreatedAtUtc);
             }
 
             var kick = kickVod!;
@@ -106,7 +108,9 @@ public sealed class VodViewModel : ObservableObject, IHomeStreamOpenItemViewMode
                 kick.StartedAtUtc,
                 kick.ChannelId,
                 kick.CategoryName,
-                kick.ProfileImageUrl);
+                kick.ProfileImageUrl,
+                MediaThumbnailUrl: kick.ThumbnailUrl,
+                MediaPublishedAtUtc: kick.CreatedAtUtc ?? kick.StartedAtUtc);
         }
     }
 

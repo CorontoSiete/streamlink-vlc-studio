@@ -2,6 +2,9 @@ internal static partial class CodeCleanupTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
+        ("browser response cleanup: delayed content is released after timeout or cancellation", BrowserResponseLateContentAsync),
+        ("browser response cleanup: stalled bodies honor timeout and cancellation", BrowserResponseStalledBodyAsync),
+        ("browser response cleanup: bounded reads preserve bytes and release streams", BrowserResponseBoundsAsync),
         ("review persistence: overlay preparation keeps native chat when diagnostics fail", OverlayPreparationDiagnosticsAsync),
         ("review persistence: overlay sizing clamps large inputs before integer conversion", OverlaySizingOverflowAsync),
         ("review persistence: overlay state reads preserve formats and reject oversized files", OverlayStateBoundsAsync),

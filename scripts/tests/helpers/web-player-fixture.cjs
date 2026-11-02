@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.resolve(__dirname, '../../../src/StreamlinkVlcStudio.Infrastructure/LocalWeb/Assets/app.js'), 'utf8');
 
-function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map(), media = 'hls', userAgent = 'Desktop', code = source } = {}) {
+function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map(), media = 'hls', userAgent = 'Desktop', onRequest, code = source } = {}) {
   const pendingEvents = [];
   class Element extends EventTarget {
     constructor() {
@@ -33,7 +33,7 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
     scrollIntoView() {}
   }
   class Video extends Element {
-    constructor() { super(); this.level = 1; this.silent = false; this.paused = true; this.duration = 100; this.currentTime = 0; this.attachedVolumes = []; }
+    constructor() { super(); this.level = 1; this.silent = false; this.paused = true; this.ended = false; this.defaultPlaybackRate = this.playbackRate = 1; this.duration = 100; this.currentTime = 0; this.attachedVolumes = []; }
     get volume() { return this.level; }
     set volume(value) {
       assert.ok(Number.isFinite(value) && value >= 0 && value <= 1);
@@ -41,7 +41,7 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
     }
     get muted() { return this.silent; }
     set muted(value) { if (this.silent !== value) { this.silent = value; pendingEvents.push(() => this.dispatchEvent(new Event('volumechange'))); } }
-    set src(value) { this.url = value; this.attachedVolumes.push(this.volume); }
+    set src(value) { this.url = value; this.playbackRate = this.defaultPlaybackRate; this.attachedVolumes.push(this.volume); }
     canPlayType() { return media === 'native' || media === 'both' ? 'probably' : ''; }
     play() { this.firstPlayVolume ??= this.volume; this.paused = false; return Promise.resolve(); }
     pause() { this.paused = true; }
@@ -51,7 +51,7 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
     static isSupported() { return media === 'hls' || media === 'both'; }
     static Events = { ERROR: 'error' };
     loadSource() {}
-    attachMedia(video) { video.attachedVolumes.push(video.volume); }
+    attachMedia(video) { video.playbackRate = video.defaultPlaybackRate; video.attachedVolumes.push(video.volume); }
     on() {}
     destroy() {}
   }
@@ -59,7 +59,7 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
   document.createElement = document.createElementNS = document.createTextNode = () => new Element();
   document.querySelector('#player-template').content = { firstElementChild: new Element() };
   const localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
-  const players = new Map(), layoutWrites = [], volumeWrites = [], closeCalls = [];
+  const players = new Map(), layoutWrites = [], volumeWrites = [], closeCalls = [], requests = [], intervals = [];
   let failLayoutSave = false, failVolumeSave = false, failProgressSave = false;
   const layoutKey = p => p.platform.trim().toLowerCase() + ':' + p.channel.trim().toLowerCase();
   const volumeKey = p => p.platform.trim() + ':' + p.channel.trim().toLowerCase();
@@ -67,9 +67,12 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
   const context = vm.createContext({ document, localStorage, Event, URL, URLSearchParams, Option: Element, Hls, AbortController, DOMException, setTimeout, clearTimeout,
     navigator: { userAgent, platform: 'Win32', maxTouchPoints: 0 },
     ResizeObserver: class { observe() {} disconnect() {} },
-    window: Object.assign(new EventTarget(), { Hls }), location: { hash: '', pathname: '/', search: '' }, setInterval() {},
+    window: Object.assign(new EventTarget(), { Hls }), location: { hash: '', pathname: '/', search: '' },
+    setInterval(callback, delay) { intervals.push({ callback, delay }); },
     fetch: async (url, options) => {
       const input = JSON.parse(options.body || '{}');
+      requests.push({ url, input, keepalive: options.keepalive });
+      if (onRequest) await onRequest(url, input);
       let result = {};
       if (url === '/api/open') {
         result = { ...target, id: `player-${++opened}`, key: `key-${opened}`, title: 'Display title',
@@ -94,6 +97,7 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
       }
       if (url === '/api/progress' && failProgressSave)
         return { ok: false, status: 503, json: async () => ({ error: 'Progress save failed.' }) };
+      if (url === '/api/replay') result = { available: true, key: 'replay-key' };
       if (url === '/api/close') { closeCalls.push(input.player); players.delete(input.player); }
       return { ok: true, text: async () => JSON.stringify(result) };
     }
@@ -106,12 +110,13 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
   app.state.authenticated = true;
   app.state.settings = { defaultQuality: 'best', qualities: ['best', '720p'], lowLatency: true };
   app.seedVolumes(volumes);
-  return { ...app, storage, volumes, volumeWrites, layouts, layoutWrites, closeCalls, localStorage, document,
+  return { ...app, storage, volumes, volumeWrites, layouts, layoutWrites, closeCalls, requests, localStorage, document, window: context.window,
+    tick: async delay => { for (const interval of intervals) if (interval.delay === delay) await interval.callback(); },
     failSave: value => { failLayoutSave = value; },
     failVolumeSave: value => { failVolumeSave = value; },
     failProgressSave: value => { failProgressSave = value; },
     target: value => { target = { ...target, ...value }; },
-    open: (input = {}) => app.openPlayer({ input: 'pasted source', ...input }),
+    open: (input = {}) => app.openPlayer({ input: `${target.platform}:${target.channel}:${target.isVod ? 'vod' : 'live'}`, ...input }),
     events: async () => { while (pendingEvents.length) pendingEvents.shift()(); await app.flushVolumes(); }
   };
 }

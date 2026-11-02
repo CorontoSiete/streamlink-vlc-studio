@@ -171,6 +171,28 @@ test('failed saves still release the player and close its server session', async
   assert.deepEqual(progress.closeCalls, [vod.id]);
 });
 
+test('overlapping volume saves preserve a newer change back to the original level', { timeout: 5000 }, async () => {
+  const started = Promise.withResolvers(), response = Promise.withResolvers();
+  let saves = 0;
+  const f = fixture({ onRequest: async url => {
+    if (url === '/api/volume/save' && ++saves === 1) { started.resolve(); await response.promise; }
+  } });
+  try {
+    const p = await f.open();
+    const change = value => { p.video.volume = value; p.video.dispatchEvent(new Event('volumechange')); };
+    change(0.2);
+    const first = f.flushVolumes();
+    await started.promise;
+    change(0.4);
+    const second = f.flushVolumes();
+    change(0.2);
+    response.resolve();
+    await Promise.all([first, second]);
+    await f.closePlayer(p);
+    assert.equal(f.volumes.get(volumeKey()), 0.2);
+  } finally { response.resolve(); f.disconnect(); }
+});
+
 test('failed VOD progress save still stops playback and closes its server session', async () => {
   const f = fixture();
   f.target({ isVod: true });
@@ -180,6 +202,39 @@ test('failed VOD progress save still stops playback and closes its server sessio
   assert.equal(p.stopped, true);
   assert.equal(p.video.paused, true);
   assert.deepEqual(f.closeCalls, [p.id]);
+});
+
+test('stop saves the latest volume before releasing the server player', async () => {
+  const f = fixture(), p = await f.open();
+  try {
+    p.video.volume = 0.28;
+    await f.playerAction(p, 'stop');
+    assert.equal(f.volumes.get(volumeKey()), 0.28);
+    assert.ok(f.requests.findIndex(r => r.url === '/api/volume/save') <
+      f.requests.findIndex(r => r.url === '/api/close'));
+    p.video.volume = 0.91;
+    await f.events();
+    assert.equal(f.volumes.get(volumeKey()), 0.28, 'stopped controls cannot save through a released player');
+    await f.closePlayer(p);
+    await expectVolume(fixture({ volumes: f.volumes }), 0.28);
+  } finally { f.disconnect(); }
+});
+
+test('a failed volume save still saves progress and releases stopped playback', async () => {
+  const f = fixture();
+  f.target({ isVod: true });
+  const p = await f.open();
+  try {
+    p.video.volume = 0.28; p.video.currentTime = 42;
+    f.failVolumeSave(true);
+    await assert.rejects(f.playerAction(p, 'stop'), /Volume save failed/);
+    assert.equal(f.requests.find(r => r.url === '/api/progress').input.position, 42);
+    assert.equal(p.stopped, true);
+    assert.equal(p.video.paused, true);
+    assert.deepEqual(f.closeCalls, [p.id]);
+    await f.closePlayer(p);
+    assert.equal(f.volumeWrites.length, 1, 'closing the stopped tab cannot retry against its released server player');
+  } finally { f.disconnect(); }
 });
 
 test('volumes follow the web account across browsers without leaking to another account', async () => {

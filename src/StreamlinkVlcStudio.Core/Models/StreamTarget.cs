@@ -13,7 +13,9 @@ public sealed record StreamTarget(
     string ChatRoomId = "",
     string CategoryName = "",
     string ProfileImageUrl = "",
-    string LocalMediaPath = "")
+    string LocalMediaPath = "",
+    string MediaThumbnailUrl = "",
+    DateTimeOffset? MediaPublishedAtUtc = null)
 {
     public string DisplayName => IsExplicitVod && !string.IsNullOrWhiteSpace(DisplayTitle)
         ? $"{Platform}: {DisplayTitle.Trim()}"

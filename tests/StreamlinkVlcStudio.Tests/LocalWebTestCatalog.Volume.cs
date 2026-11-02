@@ -32,7 +32,7 @@ internal static partial class LocalWebTestCatalog
 
         // Separate channels and platforms have separate levels. Following switches the selected audio.
         workspace.PlayerChannel = "other";
-        await OpenVolumePlayer(core);
+        await OpenVolumePlayer(core, "other");
         await AssertPlayerVolume(core, 1, 1);
         await SetPlayerVolume(core, server, TestUsername, 0.64, "Twitch:other", 1);
         Assert.Equal("true", await core.ExecuteScriptAsync("document.querySelectorAll('video')[0].muted && document.querySelectorAll('video')[0].volume===0.37"));

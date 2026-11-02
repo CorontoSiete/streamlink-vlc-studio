@@ -4,6 +4,7 @@ using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Twitch;
 using static StreamlinkVlcStudio.Core.Json.JsonElementReader;
+using static StreamlinkVlcStudio.Infrastructure.LocalWeb.LocalWebProfileImages;
 
 namespace StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
@@ -64,7 +65,7 @@ public sealed class LocalWebChannelProfileClient
         var allPanels = Array(user, "panels").ToArray();
         var panels = allPanels.Where(p => GetOptionalString(p, "type") == "DEFAULT").Take(100)
             .Select(p => new LocalWebChannelPanel(GetOptionalString(p, "title"), GetOptionalString(p, "description"),
-                Image(GetOptionalString(p, "imageURL")), Link(GetOptionalString(p, "linkURL")))).ToArray();
+                PublicUrl(GetOptionalString(p, "imageURL")), Link(GetOptionalString(p, "linkURL")))).ToArray();
         var links = new List<LocalWebChannelLink>();
         // Twitch can independently refuse social links. Keep the bio and panels usable in that case.
         try
@@ -89,7 +90,7 @@ public sealed class LocalWebChannelProfileClient
                 if (Uri.TryCreate(panel.LinkUrl, UriKind.Absolute, out var uri) && SocialTitle(uri.Host) is { } title &&
                     !links.Any(link => link.Url == uri.AbsoluteUri)) links.Add(new(title, uri.AbsoluteUri));
         return new(GetOptionalString(user, "displayName"), GetOptionalString(user, "description"),
-            Image(GetOptionalString(user, "profileImageURL")), TryGetInt64(Child(user, "followers"), "totalCount"),
+            PublicUrl(GetOptionalString(user, "profileImageURL")), TryGetInt64(Child(user, "followers"), "totalCount"),
             Child(Child(user, "roles"), "isPartner").ValueKind == JsonValueKind.True,
             GetOptionalString(broadcast, "title"), GetOptionalString(Child(broadcast, "game"), "name"),
             TryGetInt64(stream, "viewersCount"), GetOptionalString(stream, "createdAt"),
@@ -117,7 +118,7 @@ public sealed class LocalWebChannelProfileClient
             if (url.Length > 0) links.Add(new(title, url));
         }
         return new(First(GetOptionalString(user, "username"), channel), GetOptionalString(user, "bio"),
-            Image(GetOptionalString(user, "profile_pic")), TryGetInt64(root, "followers_count"),
+            PublicUrl(GetOptionalString(user, "profile_pic")), TryGetInt64(root, "followers_count"),
             Child(root, "verified").ValueKind == JsonValueKind.True || Child(root, "verified").ValueKind == JsonValueKind.Object,
             GetOptionalString(stream, "session_title"), GetOptionalString(category, "name"), TryGetInt64(stream, "viewer_count"),
             GetOptionalString(stream, "created_at"), Array(stream, "tags").Select(tag => tag.ValueKind == JsonValueKind.String
@@ -129,8 +130,6 @@ public sealed class LocalWebChannelProfileClient
     private static IEnumerable<JsonElement> Array(JsonElement value, string name) => Child(value, name) is { ValueKind: JsonValueKind.Array } items
         ? items.EnumerateArray() : Enumerable.Empty<JsonElement>();
     private static string First(string value, string fallback) => value.Length > 0 ? value : fallback;
-    private static string Image(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https" &&
-        uri.UserInfo.Length == 0 ? uri.AbsoluteUri : "";
     private static string Link(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
         uri.Scheme is "https" or "http" && uri.UserInfo.Length == 0 ? uri.AbsoluteUri : "";
     private static string? SocialTitle(string host) => host.ToLowerInvariant() switch

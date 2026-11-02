@@ -241,14 +241,13 @@ internal sealed class TwitchBonusBrowser(
                 var token = responseLifetime.Token;
                 // Start capturing the response before yielding to read the request.
                 // WebView2 can discard the response body once this event returns.
-                using var content = await args.Response.GetContentAsync().WaitAsync(BrowserOperationTimeout, token);
-                if (content is null) return;
+                var bytes = await WebView2ResponseReader.ReadAsync(args.Response.GetContentAsync(),
+                    1024 * 1024, BrowserOperationTimeout, token);
                 using var requestContent = args.Request.Content;
                 if (requestContent is null) return;
                 var requestBytes = await BoundedByteReader.ReadOrThrowAsync(requestContent, 256 * 1024, token);
                 var requestJson = System.Text.Encoding.UTF8.GetString(requestBytes);
                 if (!requestJson.Contains("ClaimCommunityPoints", StringComparison.Ordinal)) return;
-                var bytes = await BoundedByteReader.ReadOrThrowAsync(content, 1024 * 1024, token);
                 if (disposed) return;
                 foreach (var id in TwitchBonusClaimResponse.ReadConfirmedClaims(requestJson, System.Text.Encoding.UTF8.GetString(bytes)))
                     ClaimConfirmed?.Invoke(this, id);

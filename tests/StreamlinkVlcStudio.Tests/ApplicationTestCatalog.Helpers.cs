@@ -92,16 +92,12 @@ internal static partial class ApplicationTestCatalog
                     BroadcasterId: "broadcaster-id"));
     }
 
-    static void MarkReplayClockSeekConfirmed(StreamTabViewModel tab, TimeSpan? elapsedSinceAnchor = null)
+    static void AgeReplayClockAnchor(StreamTabViewModel tab, TimeSpan elapsed)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(ReplayClockState).GetField("replayClockAnchorAwaitingSeekConfirmation", flags)!.SetValue(tab.ReplayClock, false);
-        if (elapsedSinceAnchor is { } elapsed)
-        {
-            typeof(ReplayClockState)
-                .GetField("replayClockAnchorObservedAtUtc", flags)!
-                .SetValue(tab.ReplayClock, DateTimeOffset.UtcNow - elapsed);
-        }
+        typeof(ReplayClockState)
+            .GetField("replayClockAnchorObservedAtUtc", flags)!
+            .SetValue(tab.ReplayClock, DateTimeOffset.UtcNow - elapsed);
     }
 
     static Task WaitForDockedChatMessageAsync(StreamTabViewModel tab, string message) =>

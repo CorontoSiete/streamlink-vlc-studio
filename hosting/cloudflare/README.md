@@ -27,7 +27,7 @@ The provisioning script deploys the Worker to your account, reads the Kick app s
 
 For a newly registered Workers subdomain, DNS and certificate activation may take time. If HTTPS verification fails after deployment, retain the printed real origin and resume later with `pwsh -NoProfile -File scripts/deploy-account-worker.ps1 -VerifyServiceUrl 'https://<worker>.<account-subdomain>.workers.dev'`. That verifies and configures the existing deployment without uploading code or secrets again. Certificate validation is always required.
 
-The public client ID in `shared/oauth-clients.json` must match your saved Kick registration. Its redirect URL must remain exactly `http://localhost:39177`; the desktop receives the code and holds the PKCE verifier. The hosted service never receives a platform password.
+The public client ID in `shared/oauth-clients.json` must match your saved Kick registration. Its redirect URL must remain exactly `http://localhost:39177`, with no trailing slash; both the desktop and this service pin that exact value. The desktop receives the code and holds the PKCE verifier. The hosted service never receives a platform password.
 
 If your Cloudflare login belongs to multiple accounts, set `CLOUDFLARE_ACCOUNT_ID` for the provisioning command to the intended account's ID shown by `wrangler whoami`. Do not choose an account by list position.
 

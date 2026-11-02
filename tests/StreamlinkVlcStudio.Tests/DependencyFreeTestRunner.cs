@@ -73,18 +73,13 @@ internal static class DependencyFreeTestRunner
                 testTimeout += IsolatedProcessTimeoutMargin;
             }
 
-            Task runTask;
-            try
-            {
-                runTask = isolated
-                    ? RunInFreshProcessAsync(test.Name, timeout)
-                    : test.Run() ?? Task.FromException(
-                        new InvalidOperationException($"Test '{test.Name}' returned a null task."));
-            }
-            catch (Exception ex)
-            {
-                runTask = Task.FromException(ex);
-            }
+            // Invocation itself can block before a test returns its task (for example,
+            // in Process.Start). Keep it inside the same deadline as asynchronous work.
+            // Task.Run also captures synchronous exceptions in the observed task.
+            var runTask = Task.Run(() => isolated
+                ? RunInFreshProcessAsync(test.Name, timeout)
+                : test.Run() ?? Task.FromException(
+                    new InvalidOperationException($"Test '{test.Name}' returned a null task.")));
 
             using var timeoutCancellation = new CancellationTokenSource();
             var timeoutTask = Task.Delay(testTimeout, timeoutCancellation.Token);

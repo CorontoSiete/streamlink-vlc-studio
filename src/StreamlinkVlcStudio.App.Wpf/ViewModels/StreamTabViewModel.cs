@@ -2769,7 +2769,7 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     private void CompleteReplaySeek(TimeSpan position, TimeSpan duration, long generation, bool paused)
     {
         ExpectVodResumeSeek(position);
-        SetReplayClockAnchor(position, duration, generation, awaitingSeekConfirmation: true);
+        replayClock.SetReplayClockAnchor(position, duration, generation);
         IsReplayMode = true;
         IsBehindLive = !Target.IsExplicitVod;
         replayClock.CommitSeek(position, duration, paused);
@@ -3586,8 +3586,8 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
         ReplaySeekToolTip = $"{replay.Platform} VOD replay available: {replay.ReplayId}";
         if (vodStartupPosition > TimeSpan.Zero)
         {
-            SetReplayClockAnchor(vodStartupPosition, replay.Duration,
-                Volatile.Read(ref replaySeekOperationVersion), awaitingSeekConfirmation: true);
+            replayClock.SetReplayClockAnchor(vodStartupPosition, replay.Duration,
+                Volatile.Read(ref replaySeekOperationVersion));
         }
         ApplyReplayClock(vodStartupPosition, replay.Duration, isSeekable: true);
         ClearChatForVodChatSeek();
@@ -4999,8 +4999,6 @@ public sealed partial class StreamTabViewModel : ObservableObject, IAsyncDisposa
     }
 
     private ReplayClockSnapshot ResolveReplayClock(ReplaySessionInfo replay, long sampledSeekOperationVersion, bool sampleBeganDuringSeek, long? sampledPlaybackStateVersion = null) => replayClock.ResolveReplayClock(replay, sampledSeekOperationVersion, sampleBeganDuringSeek, sampledPlaybackStateVersion);
-
-    private void SetReplayClockAnchor(TimeSpan offset, TimeSpan duration, long seekGeneration, bool awaitingSeekConfirmation, DateTimeOffset? observedAtUtc = null) => replayClock.SetReplayClockAnchor(offset, duration, seekGeneration, awaitingSeekConfirmation, observedAtUtc);
 
     private void ClearReplayClockAnchor() => replayClock.ClearReplayClockAnchor();
 

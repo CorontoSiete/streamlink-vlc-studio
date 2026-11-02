@@ -35,7 +35,17 @@ public static class KickCurlArguments
         bool expectsJson,
         int maxTimeSeconds = 15)
     {
+        // These requests must not inherit arbitrary curl configuration or follow
+        // provider redirects to plaintext/non-HTTP protocols.
+        yield return "--disable";
+        yield return "--proto";
+        yield return "=https";
+        yield return "--proto-redir";
+        yield return "=https";
+        yield return "--globoff";
         yield return "--location";
+        yield return "--max-redirs";
+        yield return "5";
         yield return "--silent";
         yield return "--show-error";
         yield return "--fail";
@@ -52,6 +62,7 @@ public static class KickCurlArguments
         yield return "Accept-Language: *";
         yield return "--referer";
         yield return referrer;
+        yield return "--url";
         yield return url;
     }
 

@@ -89,6 +89,8 @@ internal static partial class LocalWebTestCatalog
                 await VerifyProfileImagesAsync(dependencies, settings, directory);
                 return;
             }
+            await VerifyVodRefreshAsync(dependencies);
+            await VerifyVodLibraryAsync(dependencies);
             var users = await LocalWebUserStore.OpenAsync(Path.Combine(directory, "web-users.json"));
             var user = await users.AddAsync("watcher", "Watcher password 123!");
             await using var first = new LocalWebUserWorkspace(new LocalWebWorkspace(dependencies), users, user.Id);
@@ -133,6 +135,26 @@ internal static partial class LocalWebTestCatalog
             await Call(first, "close", new { player = id });
             var resumed = await Call(second, "open", new { input = "https://www.twitch.tv/videos/12345" });
             Assert.Equal(120d, resumed.GetProperty("resume").GetDouble());
+            var resumedId = resumed.GetProperty("id").GetString();
+            await Call(second, "progress", new { player = resumedId, position = 602, duration = 600, ended = true });
+            var completed = await history.GetAsync(StreamInputParser.Parse("https://www.twitch.tv/videos/12345", PlatformKind.Twitch));
+            Assert.True(completed is { Completed: true });
+            Assert.Equal(TimeSpan.FromSeconds(600), completed!.Position);
+            await Call(second, "close", new { player = resumedId });
+            resumed = await Call(second, "open", new { input = "https://www.twitch.tv/videos/12345" });
+            Assert.Equal(0d, resumed.GetProperty("resume").GetDouble());
+            foreach (var invalid in new object[] { new { }, new { position = "120", duration = 600 }, new { position = 120, duration = "600" } })
+            {
+                var request = JsonSerializer.SerializeToNode(invalid)!.AsObject();
+                request["player"] = resumed.GetProperty("id").GetString();
+                await Assert.ThrowsAsync<ArgumentException>(() => Call(second, "progress", request));
+            }
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(second, "progress", new { player = resumed.GetProperty("id").GetString(), position = 120, duration = 600, ended = "yes" }));
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(first, "downloads/remove", new { id = "invalid" }));
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(first, "open", new { downloadId = 1 }));
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(first, "open", new { input = 123 }));
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(first, "open", new { input = "https://twitch.tv/streamer", replacePlayer = 123 }));
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(second, "chat/presentation", new { player = resumed.GetProperty("id").GetString(), version = 1.5 }));
             await Assert.ThrowsAsync<ArgumentException>(() => Call(first, "progress", new { player = resumed.GetProperty("id").GetString(), position = 0, duration = 600 }));
             var context = new DefaultHttpContext();
             await first.ServeMediaAsync(context, resumed.GetProperty("id").GetString()!, "guess");
@@ -142,6 +164,7 @@ internal static partial class LocalWebTestCatalog
             Assert.Equal(31, dependencies.PlaybackSlots.CurrentCount); // one open player owns one of 32 slots
             var live = await Call(first, "open", new { input = "https://twitch.tv/streamer" });
             var liveId = live.GetProperty("id").GetString();
+            await Assert.ThrowsAsync<ArgumentException>(() => Call(first, "chat", new { player = liveId, after = "1" }));
             chats.Single().Client.Receive(new ChatMessage(PlatformKind.Twitch, "streamer", "live", "Wave", DateTimeOffset.UnixEpoch, MessageId: "live-message"));
             var liveChat = await Call(first, "chat", new { player = liveId, after = 0 });
             Assert.Equal("https://example.com/animated.gif", liveChat.GetProperty("messages")[0].GetProperty("message").GetProperty("emotes")[0].GetProperty("imageUrl").GetString());

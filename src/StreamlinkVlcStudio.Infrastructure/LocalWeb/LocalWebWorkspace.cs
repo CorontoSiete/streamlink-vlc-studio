@@ -9,6 +9,7 @@ using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Threading;
 using StreamlinkVlcStudio.Infrastructure.Vod;
+using static StreamlinkVlcStudio.Infrastructure.LocalWeb.LocalWebRequestValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
@@ -39,20 +40,20 @@ public sealed record LocalWebDependencies
 }
 
 /// <summary>A device owns its players/chat. Desktop account credentials never enter a response.</summary>
-public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWebWorkspace
+public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : ILocalWebWorkspace
 {
     private readonly ConcurrentDictionary<string, Player> players = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> categoryArtworkUrls = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StreamTarget> targets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> targetIds = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource lifetime = new();
-    private readonly SemaphoreSlim categoryViewerCountSlots = new(4, 4);
-    private readonly SemaphoreSlim followingHistorySlot = new(1, 1);
+    private readonly AsyncOperationGate categoryViewerCountSlots = new(4);
+    private readonly AsyncOperationGate followingHistorySlot = new();
     private FollowedChannel[] offlineFollowing = [];
     private readonly object playerGate = new();
     private bool disposed;
     private Task? disposalTask;
-    public static IReadOnlyList<string> Qualities { get; } = ["best", "source", "1080p60", "1080p", "720p60", "720p", "480p", "audio_only", "worst"];
+    public static IReadOnlyList<string> Qualities { get; } = Array.AsReadOnly(QualityOption.Defaults.Select(quality => quality.Id).ToArray());
 
     public async Task<object?> InvokeAsync(string action, JsonElement input, CancellationToken cancellationToken)
     {
@@ -83,8 +84,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
             case "following/history":
                 // Only enrich the server's status snapshot. This independent read never registers
                 // targets or accepts client-supplied channel names, and cannot block playback/chat.
-                await followingHistorySlot.WaitAsync(token).ConfigureAwait(false);
-                try
+                using (await followingHistorySlot.EnterAsync(token).ConfigureAwait(false))
                 {
                     var snapshot = Volatile.Read(ref offlineFollowing);
                     var enriched = await services.Following.EnrichOfflineChannelsAsync(snapshot, token).ConfigureAwait(false);
@@ -98,7 +98,6 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                         }).ToArray()
                     };
                 }
-                finally { followingHistorySlot.Release(); }
             case "recent":
                 return new { items = settings.RecentStreams.Select(s => Card(StreamInputParser.FromChannel(s.Platform, s.Channel) with { ProfileImageUrl = s.ProfileImageUrl }, s.DisplayName, s.CategoryName, s.ThumbnailUrl, "Recent")).ToArray() };
             case "recent/remove":
@@ -126,7 +125,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 }
                 return new { recorded = true };
             case "search":
-                var search = await services.Search.SearchAsync(new(Text(input, "query", 250), Quality(input, settings), 30,
+                var search = await services.Search.SearchAsync(new(RequiredText(input, "query", 250), Quality(input, settings), 30,
                     StreamSearchMode.ChannelDiscovery, Platform(input)), settings, token).ConfigureAwait(false);
                 return new { items = search.Channels.Select(s => Card(s.Target, s.DisplayName, s.Title, s.ThumbnailUrl, s.State.ToString(), s.ViewerCount)).ToArray(), search.Message };
             case "categories":
@@ -143,39 +142,18 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                         throw new ArgumentException("Invalid category ID.");
                     return value;
                 }).Distinct(StringComparer.Ordinal).ToArray();
-                await categoryViewerCountSlots.WaitAsync(token).ConfigureAwait(false);
-                try
+                using (await categoryViewerCountSlots.EnterAsync(token).ConfigureAwait(false))
                 {
                     var counts = await services.Browse.GetCategoryViewerCountsAsync(new(PlatformKind.Twitch, categoryIds), settings, token).ConfigureAwait(false);
                     return new { available = counts.IsAvailable, items = counts.IsAvailable ? counts.Items : [] };
                 }
-                finally { categoryViewerCountSlots.Release(); }
             case "streams":
                 var streams = await services.Browse.GetStreamsAsync(new(Platform(input), Optional(input, "categoryId", 128), Optional(input, "categoryName", 100), Optional(input, "cursor", 2048)), settings, token).ConfigureAwait(false);
                 return new { items = streams.Items.Select(s => Card(s.Target, s.DisplayName, s.Title, s.ThumbnailUrl, "Live", s.ViewerCount)).ToArray(), streams.NextCursor, streams.Message };
             case "vods":
                 return await VodsAsync(input, settings, token).ConfigureAwait(false);
             case "downloads":
-                var downloads = await services.Downloads.GetDownloadsAsync(token).ConfigureAwait(false);
-                return new
-                {
-                    items = downloads.Select(d => new
-                    {
-                        d.Id,
-                        key = Register(d.Target),
-                        title = d.Target.TabTitle,
-                        channel = d.Target.Channel,
-                        platform = d.Target.Platform.ToString(),
-                        state = d.State.ToString(),
-                        d.Quality,
-                        profileImageUrl = LocalWebProfileImages.PublicUrl(d.Target.ProfileImageUrl),
-                        d.CompletedSegments,
-                        d.TotalSegments,
-                        d.BytesDownloaded,
-                        format = d.Format.ToString(),
-                        error = d.State == VodDownloadState.Failed ? "Download failed. Check the desktop app for details." : ""
-                    }).ToArray()
-                };
+                return await DownloadsAsync(settings, token).ConfigureAwait(false);
             case "downloads/add":
                 var downloadTarget = TargetOrInput(input);
                 if (!downloadTarget.IsExplicitVod) throw new ArgumentException("Select a VOD to download.");
@@ -185,8 +163,8 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
             case "downloads/retry": await services.Downloads.RetryAsync(Id(input), DownloadOptions(settings), token).ConfigureAwait(false); return new { retried = true };
             case "downloads/remove": await services.Downloads.RemoveAsync(Id(input), token).ConfigureAwait(false); return new { removed = true };
             case "open":
-                if (input.TryGetProperty("replacePlayer", out var replacement) && replacement.ValueKind == JsonValueKind.String &&
-                    players.TryRemove(replacement.GetString()!, out var replaced)) await replaced.DisposeAsync().ConfigureAwait(false);
+                var replacement = Optional(input, "replacePlayer", 64);
+                if (replacement.Length > 0 && players.TryRemove(replacement, out var replaced)) await replaced.DisposeAsync().ConfigureAwait(false);
                 return await OpenAsync(input, settings, token).ConfigureAwait(false);
             case "channel/profile":
                 var profilePlayer = GetPlayer(input);
@@ -205,7 +183,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 }
                 return profile with { ProfileImageUrl = profilePlayer.ProfileImageUrl };
             case "close":
-                if (players.TryRemove(Text(input, "player", 64), out var closed)) await closed.DisposeAsync().ConfigureAwait(false);
+                if (players.TryRemove(RequiredText(input, "player", 64), out var closed)) await closed.DisposeAsync().ConfigureAwait(false);
                 return new { closed = true };
             case "chat":
                 return await ReadChatAsync(input, settings, token).ConfigureAwait(false);
@@ -216,7 +194,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 foreach (var message in chatPlayer.PresentationMessages.Values.DistinctBy(m => (m.Platform, m.Channel, m.RoomId)))
                     services.ChatPresentation?.EnsureLoaded(message, settings.Chat);
                 var version = services.ChatPresentation?.Version ?? 0;
-                var knownVersion = input.TryGetProperty("version", out var known) ? known.GetInt64() : -1;
+                var knownVersion = Integer(input, "version", -1);
                 return new
                 {
                     version,
@@ -228,7 +206,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 if (sender.Target.IsExplicitVod || sender.Chat is null) throw new ArgumentException("Chat sending is available for live streams.");
                 if (DateTimeOffset.UtcNow - sender.LastSent < TimeSpan.FromSeconds(1)) throw new ArgumentException("Wait before sending again.");
                 sender.LastSent = DateTimeOffset.UtcNow;
-                await sender.Chat.SendMessageAsync(Text(input, "message", 500), token).ConfigureAwait(false);
+                await sender.Chat.SendMessageAsync(RequiredText(input, "message", 500), token).ConfigureAwait(false);
                 return new { sent = true };
             case "progress":
                 var player = GetPlayer(input);
@@ -236,10 +214,10 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 {
                     var position = Seconds(input, "position");
                     var duration = Seconds(input, "duration");
-                    var ended = input.TryGetProperty("ended", out var end) && end.GetBoolean();
+                    var ended = Boolean(input, "ended", false);
                     if (duration > 0 && position <= duration + 5)
                     {
-                        services.History.Remember(player.Target, new(TimeSpan.FromSeconds(position), TimeSpan.FromSeconds(duration), DateTimeOffset.UtcNow, ended));
+                        services.History.Remember(player.Target, new(TimeSpan.FromSeconds(Math.Min(position, duration)), TimeSpan.FromSeconds(duration), DateTimeOffset.UtcNow, ended));
                         await services.History.SaveAsync(token).ConfigureAwait(false);
                     }
                 }
@@ -287,17 +265,20 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 return new { prediction = predictionPlayer.Prediction, access = predictions.PredictionAccess };
             case "prediction/create":
                 if (GetPlayer(input).Chat is not ITwitchPredictionClient creator) throw new ArgumentException();
-                var outcomes = input.GetProperty("outcomes").EnumerateArray().Select(o => o.GetString() ?? "").ToArray();
-                if (outcomes.Length != 2 || outcomes.Any(o => o.Length is < 1 or > 25)) throw new ArgumentException();
-                return await creator.CreatePredictionAsync(new(Text(input, "title", 45), outcomes, (int)Math.Clamp(Seconds(input, "window"), 30, 1800)), token).ConfigureAwait(false);
+                if (!input.TryGetProperty("outcomes", out var outcomeValues) || outcomeValues.ValueKind != JsonValueKind.Array ||
+                    outcomeValues.GetArrayLength() != 2 || outcomeValues.EnumerateArray().Any(o => o.ValueKind != JsonValueKind.String))
+                    throw new ArgumentException("Provide two prediction outcomes.");
+                var outcomes = outcomeValues.EnumerateArray().Select(o => o.GetString()!).ToArray();
+                if (outcomes.Any(o => o.Length is < 1 or > 25)) throw new ArgumentException("Provide two prediction outcomes.");
+                return await creator.CreatePredictionAsync(new(RequiredText(input, "title", 45), outcomes, (int)Math.Clamp(Seconds(input, "window"), 30, 1800)), token).ConfigureAwait(false);
             case "prediction/action":
                 if (GetPlayer(input).Chat is not ITwitchPredictionClient manager) throw new ArgumentException();
-                var predictionId = Text(input, "predictionId", 128);
-                return Text(input, "operation", 16) switch
+                var predictionId = RequiredText(input, "predictionId", 128);
+                return RequiredText(input, "operation", 16) switch
                 {
                     "lock" => await manager.LockPredictionAsync(predictionId, token).ConfigureAwait(false),
                     "cancel" => await manager.CancelPredictionAsync(predictionId, token).ConfigureAwait(false),
-                    "resolve" => await manager.ResolvePredictionAsync(predictionId, Text(input, "outcomeId", 128), token).ConfigureAwait(false),
+                    "resolve" => await manager.ResolvePredictionAsync(predictionId, RequiredText(input, "outcomeId", 128), token).ConfigureAwait(false),
                     _ => throw new ArgumentException()
                 };
             default: throw new ArgumentException("Unknown action.");
@@ -341,17 +322,17 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
 
     private async Task<object> VodsAsync(JsonElement input, AppSettings settings, CancellationToken token)
     {
-        var channel = StreamInputParser.FromChannel(Platform(input), Text(input, "channel", 100));
+        var channel = StreamInputParser.FromChannel(Platform(input), RequiredText(input, "channel", 100));
         var cursor = Optional(input, "cursor", 2048);
         if (channel.Platform == PlatformKind.Twitch)
         {
             var type = Optional(input, "type", 16) switch { "highlight" => TwitchVodTypeFilter.Highlight, "upload" => TwitchVodTypeFilter.Upload, "all" => TwitchVodTypeFilter.All, _ => TwitchVodTypeFilter.Archive };
             var result = await services.TwitchVods.SearchAsync(new(channel.Channel, type, cursor, 50), settings, token).ConfigureAwait(false);
             var cards = new List<object>();
-            foreach (var v in result.Videos)
+            foreach (var v in result.Videos.OrderByDescending(v => v.PublishedAtUtc ?? v.CreatedAtUtc))
             {
                 var target = new StreamTarget(PlatformKind.Twitch, v.ChannelLogin, v.Url, StreamTargetKind.TwitchVod, v.Id, v.Title, v.BroadcasterId, v.Duration, v.CreatedAtUtc, ProfileImageUrl: v.ProfileImageUrl);
-                cards.Add(await VodCardAsync(target, v.ThumbnailUrl, v.PublishedAtUtc, token).ConfigureAwait(false));
+                cards.Add(await VodCardAsync(target, v.ThumbnailUrl, v.PublishedAtUtc ?? v.CreatedAtUtc, token).ConfigureAwait(false));
             }
             return new { items = cards, result.NextCursor, result.Message };
         }
@@ -359,10 +340,10 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
         {
             var result = await services.KickVods.SearchAsync(new(channel.Channel, cursor), settings, token).ConfigureAwait(false);
             var cards = new List<object>();
-            foreach (var v in result.Videos)
+            foreach (var v in result.Videos.OrderByDescending(v => v.CreatedAtUtc ?? v.StartedAtUtc))
             {
                 var target = new StreamTarget(PlatformKind.Kick, v.ChannelSlug, v.Source, StreamTargetKind.KickVod, v.Id, v.Title, v.ChannelId, v.Duration, v.StartedAtUtc, v.ChannelId, ProfileImageUrl: v.ProfileImageUrl);
-                cards.Add(await VodCardAsync(target, v.ThumbnailUrl, v.CreatedAtUtc, token).ConfigureAwait(false));
+                cards.Add(await VodCardAsync(target, v.ThumbnailUrl, v.CreatedAtUtc ?? v.StartedAtUtc, token).ConfigureAwait(false));
             }
             return new { items = cards, result.NextCursor, result.Message };
         }
@@ -370,6 +351,9 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
 
     private async Task<object> VodCardAsync(StreamTarget target, string thumbnail, DateTimeOffset? published, CancellationToken token)
     {
+        thumbnail = LocalWebProfileImages.PublicUrl(thumbnail);
+        target = target with { MediaThumbnailUrl = thumbnail, MediaPublishedAtUtc = published };
+        RememberVodMetadata(target, new(thumbnail, published));
         var bookmark = await services.History.GetAsync(target, token).ConfigureAwait(false);
         return new
         {
@@ -397,9 +381,9 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
         try
         {
             StreamTarget target;
-            if (input.TryGetProperty("downloadId", out var downloadId))
+            if (input.TryGetProperty("downloadId", out _))
             {
-                offline = await services.Downloads.AcquireOfflinePlaybackAsync(downloadId.GetGuid(), token).ConfigureAwait(false);
+                offline = await services.Downloads.AcquireOfflinePlaybackAsync(Id(input, "downloadId"), token).ConfigureAwait(false);
                 target = offline.Target;
             }
             else target = TargetOrInput(input);
@@ -419,7 +403,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
             }
             else
             {
-                var lowLatency = input.TryGetProperty("lowLatency", out var preference) ? preference.GetBoolean() : settings.LowLatency;
+                var lowLatency = Boolean(input, "lowLatency", settings.LowLatency);
                 var resolved = await ResolveAsync(target, quality, lowLatency, settings, token).ConfigureAwait(false);
                 media = resolved.TrustedLocal
                     ? await LocalWebMedia.FromTrustedPlaylistAsync(id, resolved.Uri, token).ConfigureAwait(false)
@@ -532,7 +516,7 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
                 reason = result.Reason
             };
         }
-        var after = input.TryGetProperty("after", out var value) ? value.GetInt64() : 0;
+        var after = Integer(input, "after", 0);
         return new
         {
             messages = player.ReadChat(after).Select(m => new { sequence = m.Sequence, message = PresentChat(player, m.Message, settings) }).ToArray(),
@@ -611,8 +595,12 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
     {
         if (targetIds.TryGetValue(target.TabIdentityKey, out var key))
         {
-            // A refresh can supply an avatar that was missing from the earlier row.
-            if (target.ProfileImageUrl.Length > 0) targets[key] = target;
+            // Refresh playback URLs, duration and chat metadata even when the provider
+            // omits the avatar this time. Keep the last known picture in that case.
+            targets[key] = target.ProfileImageUrl.Length > 0 ? target : target with
+            {
+                ProfileImageUrl = targets[key].ProfileImageUrl
+            };
             return key;
         }
         if (targets.Count >= 5000) throw new InvalidDataException("Library limit reached. Sign in again to start a fresh session.");
@@ -622,16 +610,15 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
         return key;
     }
 
-    private StreamTarget Target(JsonElement input) => targets.TryGetValue(Text(input, "key", 64), out var target) ? target : throw new ArgumentException("Select a listed stream or video.");
+    private StreamTarget Target(JsonElement input) => targets.TryGetValue(RequiredText(input, "key", 64), out var target) ? target : throw new ArgumentException("Select a listed stream or video.");
     private StreamTarget TargetOrInput(JsonElement input)
     {
         if (input.TryGetProperty("key", out _)) return Target(input);
-        var value = Text(input, "input", 250);
+        var value = RequiredText(input, "input", 250);
         if (value.Contains("/videos/", StringComparison.Ordinal)) return VodDownloadUrlParser.Parse(value);
         return StreamInputParser.Parse(value, Platform(input));
     }
-    private Player GetPlayer(JsonElement input) => players.TryGetValue(Text(input, "player", 64), out var player) ? player : throw new ArgumentException("Player not found.");
-    private static Guid Id(JsonElement input) => Guid.Parse(Text(input, "id", 40));
+    private Player GetPlayer(JsonElement input) => players.TryGetValue(RequiredText(input, "player", 64), out var player) ? player : throw new ArgumentException("Player not found.");
     private static PlatformKind Platform(JsonElement input) => Optional(input, "platform", 10).ToLowerInvariant() switch { "kick" => PlatformKind.Kick, "twitch" or "" => PlatformKind.Twitch, _ => throw new ArgumentException() };
     private static string Quality(JsonElement input, AppSettings settings)
     {
@@ -640,21 +627,6 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
         return Qualities.Contains(quality, StringComparer.Ordinal) ? quality : throw new ArgumentException("Unsupported quality.");
     }
     private static VodDownloadOptions DownloadOptions(AppSettings settings) => new(settings.StreamlinkPath ?? "", CommandLineTokenizer.Tokenize(settings.CustomStreamlinkArguments));
-    private static double Seconds(JsonElement input, string name)
-    {
-        var number = input.GetProperty(name).GetDouble();
-        return double.IsFinite(number) && number is >= 0 and <= 31_536_000 ? number : throw new ArgumentException("Invalid playback time.");
-    }
-    private static string Text(JsonElement input, string name, int max)
-    {
-        var value = Optional(input, name, max);
-        return value.Length > 0 ? value : throw new ArgumentException("A required field is empty.");
-    }
-    private static string Optional(JsonElement input, string name, int max)
-    {
-        var value = input.TryGetProperty(name, out var property) ? property.GetString()?.Trim() ?? "" : "";
-        return value.Length <= max && !value.Any(c => char.IsControl(c)) ? value : throw new ArgumentException("Invalid field.");
-    }
 
     public ValueTask DisposeAsync() => new(AsyncDisposal.Begin(playerGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
@@ -663,6 +635,8 @@ public sealed class LocalWebWorkspace(LocalWebDependencies services) : ILocalWeb
         try { await lifetime.CancelAsync().ConfigureAwait(false); }
         finally
         {
+            categoryViewerCountSlots.Dispose();
+            followingHistorySlot.Dispose();
             var cleanup = new List<Task>();
             foreach (var (id, player) in players.ToArray())
                 if (players.TryRemove(id, out _)) cleanup.Add(player.DisposeAsync().AsTask());

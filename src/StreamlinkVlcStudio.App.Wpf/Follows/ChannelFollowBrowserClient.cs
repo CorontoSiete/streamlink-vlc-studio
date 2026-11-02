@@ -3,8 +3,10 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using StreamlinkVlcStudio.App.Wpf.Kick;
+using StreamlinkVlcStudio.App.Wpf.Services;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Viewers;
 
 namespace StreamlinkVlcStudio.App.Wpf.Follows;
@@ -328,29 +330,16 @@ internal sealed class ChannelFollowBrowserClient : IDisposable
 
     private static async Task<string> ReadResponseBodyAsync(CoreWebView2WebResourceResponseView response, CancellationToken token)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
-        var content = response.GetContentAsync();
-        Stream stream;
-        try { stream = await content.WaitAsync(timeout.Token); }
-        catch { _ = DisposeLateContentAsync(content); throw; }
-        using var responseStream = stream;
-        using var buffer = new MemoryStream();
-        var bytes = new byte[4096];
-        int read;
-        while ((read = await responseStream.ReadAsync(bytes, timeout.Token)) != 0)
+        try
         {
-            if (buffer.Length + read > ChannelFollowResponseTracker.MaximumResponseBytes)
-                throw new InvalidOperationException("Follow response exceeded the verification limit.");
-            buffer.Write(bytes, 0, read);
+            var bytes = await WebView2ResponseReader.ReadAsync(response.GetContentAsync(),
+                ChannelFollowResponseTracker.MaximumResponseBytes, TimeSpan.FromSeconds(15), token);
+            return Encoding.UTF8.GetString(bytes);
         }
-        return Encoding.UTF8.GetString(buffer.ToArray());
-    }
-
-    private static async Task DisposeLateContentAsync(Task<Stream> content)
-    {
-        try { (await content).Dispose(); }
-        catch (Exception) { }
+        catch (PayloadTooLargeException)
+        {
+            throw new InvalidOperationException("Follow response exceeded the verification limit.");
+        }
     }
 
     public void Dispose()

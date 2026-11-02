@@ -1,6 +1,7 @@
 <Window x:Class="StreamlinkVlcStudio.App.Wpf.SetupWizardWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:chat="clr-namespace:StreamlinkVlcStudio.Infrastructure.Chat;assembly=StreamlinkVlcStudio.Infrastructure"
         Title="Stream Studio setup"
         Width="980"
         Height="720"
@@ -210,11 +211,11 @@
                                         <DockPanel Margin="0,8,0,0">
                                             <Button DockPanel.Dock="Right"
                                                     Content="Copy"
-                                                    Tag="http://localhost:39178"
+                                                    Tag="{x:Static chat:TwitchOAuthService.LocalRedirectUri}"
                                                     Click="CopyRedirectButtonClick"
                                                     MinWidth="72"
                                                     Margin="8,0,0,0" />
-                                            <TextBox Text="http://localhost:39178"
+                                            <TextBox Text="{x:Static chat:TwitchOAuthService.LocalRedirectUri}"
                                                      IsReadOnly="True"
                                                      ToolTip="This value must match the Twitch developer app exactly." />
                                         </DockPanel>
@@ -268,11 +269,11 @@
                                         <DockPanel Margin="0,8,0,0">
                                             <Button DockPanel.Dock="Right"
                                                     Content="Copy"
-                                                    Tag="http://localhost:39177"
+                                                    Tag="{x:Static chat:KickOAuthService.LocalRedirectUri}"
                                                     Click="CopyRedirectButtonClick"
                                                     MinWidth="72"
                                                     Margin="8,0,0,0" />
-                                            <TextBox Text="http://localhost:39177"
+                                            <TextBox Text="{x:Static chat:KickOAuthService.LocalRedirectUri}"
                                                      IsReadOnly="True"
                                                      ToolTip="This value must match the Kick developer app exactly." />
                                         </DockPanel>

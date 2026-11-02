@@ -10,6 +10,8 @@ internal static partial class CredentialSecurityTestCatalog
         ("credential security: Kick app token errors never log provider text", AppTokenErrorsAsync),
         ("credential security: Kick app tokens preserve caching and cancellation", AppTokenSuccessAsync),
         ("credential security: logs redact complete quoted secrets and PKCE verifiers", QuotedSecretsAsync),
+        ("credential security: hardening redacts passwords and complete credential headers", CredentialHeadersAsync),
+        ("credential security: hardening keeps curl isolated and HTTPS only", CurlIsolationAsync),
         ("credential security: OAuth relay keeps tokens out of callback URLs", OAuthRelayAsync),
         ("credential security: OAuth POST rejects malformed and oversized callbacks", OAuthPostValidationAsync),
         ("credential security: stalled OAuth uploads do not block sign-in", OAuthPostTimeoutAsync),

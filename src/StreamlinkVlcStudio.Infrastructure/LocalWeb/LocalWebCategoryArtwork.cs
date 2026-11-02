@@ -78,7 +78,8 @@ public sealed class LocalWebCategoryArtwork
         {
             // Follow only artwork on Twitch's exact CDN; never forward browser cookies or credentials.
             if (!IsArtworkUrl(uri.AbsoluteUri)) return null;
-            using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var response = await BoundedHttpResponseSender.SendAsync(http, request, token).ConfigureAwait(false);
             if (response.RequestMessage?.RequestUri is { } final && IsMissingArtwork(final)) return null;
             if (response.StatusCode is System.Net.HttpStatusCode.MovedPermanently or System.Net.HttpStatusCode.Redirect or
                 System.Net.HttpStatusCode.SeeOther or System.Net.HttpStatusCode.TemporaryRedirect or System.Net.HttpStatusCode.PermanentRedirect)

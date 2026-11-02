@@ -754,7 +754,7 @@ public sealed partial class VodDownloadService : IVodDownloadService
         var page = VodDownloadUrlParser.Parse(target.Platform == PlatformKind.Twitch
             ? $"https://www.twitch.tv/videos/{target.MediaId}"
             : $"https://kick.com/{target.Channel}/videos/{target.MediaId}");
-        if (target.DisplayTitle.Length > 4096 || target.Channel.Length > 128 || target.ProfileImageUrl.Length > 4096)
+        if (target.DisplayTitle.Length > 4096 || target.Channel.Length > 128 || target.ProfileImageUrl.Length > 4096 || target.MediaThumbnailUrl.Length > 4096)
             throw new ArgumentException("The VOD metadata exceeds the supported limits.");
         return target with { Url = page.Url, LocalMediaPath = "" };
     }

@@ -1357,7 +1357,7 @@ internal static partial class ApplicationTestCatalog
             MessageId: "later-kick-timestamp-chat"));
         Assert.Equal(false, DockedChatMessagesContain(tab, "later kick timestamp chat"));
 
-        MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(50));
+        AgeReplayClockAnchor(tab, TimeSpan.FromSeconds(50));
         forcedClockPosition = TimeSpan.FromMinutes(10).Add(TimeSpan.FromSeconds(50));
         await TestWait.UntilAsync(
             () => DockedChatMessagesContain(tab, "later kick timestamp chat"),
@@ -1421,7 +1421,7 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(false, DockedChatMessagesContain(tab, "anchor progressed kick chat"));
 
         // The engine clock is stuck, so only the dead-reckoned anchor can move chat forward.
-        MarkReplayClockSeekConfirmed(tab, TimeSpan.FromSeconds(8));
+        AgeReplayClockAnchor(tab, TimeSpan.FromSeconds(8));
         InvokeReplayClockUpdate(tab);
 
         await TestWait.UntilAsync(

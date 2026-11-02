@@ -416,10 +416,9 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
 
     internal static string Sanitize(string? value, int maximumCharacters)
     {
-        var normalized = (value ?? "")
-            .Replace("\r\n", "\\n", StringComparison.Ordinal)
-            .Replace("\r", "\\n", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal);
+        // Redact whole credential headers before escaping line breaks so cookie
+        // attributes and non-Bearer authorization schemes cannot leave a secret behind.
+        var normalized = SensitiveHeaderPattern().Replace(value ?? "", "$1[REDACTED]");
         normalized = UrlUserInfoPattern().Replace(normalized, "$1[REDACTED]@");
         // Quoted values can contain spaces, commas, and escaped quotes. Redact them
         // before the unquoted patterns so no suffix of the credential survives.
@@ -429,6 +428,9 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
         normalized = OAuthPrefixPattern().Replace(normalized, "oauth:[REDACTED]");
         normalized = SensitiveAssignmentPattern().Replace(normalized, "$1[REDACTED]");
         normalized = JwtPattern().Replace(normalized, "[REDACTED-JWT]");
+        normalized = normalized.Replace("\r\n", "\\n", StringComparison.Ordinal)
+            .Replace("\r", "\\n", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
         return normalized.Length <= maximumCharacters
             ? normalized
             : string.Concat(normalized.AsSpan(0, maximumCharacters), "...[truncated]");
@@ -437,14 +439,19 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
     [GeneratedRegex(@"(?i)(https?://)[^/@\s]+@", RegexOptions.CultureInvariant)]
     private static partial Regex UrlUserInfoPattern();
 
-    [GeneratedRegex("""(?i)((?:"|')?(?:access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code)(?:"|')?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$))""", RegexOptions.CultureInvariant)]
+    private const string SensitiveFieldNames = "access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code|password|passwd|pwd|cookie|set-cookie|session|sessionid|session_id|id_token|csrf_token|xsrf_token|x-csrf-token|x-xsrf-token|api_key|apikey|x-api-key|TwitchOAuthToken|KickOAuthToken|KickRefreshToken|KickClientSecret";
+
+    [GeneratedRegex("""(?i)((?:"|')?(?:""" + SensitiveFieldNames + """)(?:"|')?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$))""", RegexOptions.CultureInvariant)]
     private static partial Regex QuotedSensitiveAssignmentPattern();
 
-    [GeneratedRegex(@"(?i)([?&](?:access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code)=)[^&#\s\""']+", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?i)([?&](?:" + SensitiveFieldNames + @")=)[^&#\s\""']+", RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveQueryPattern();
 
-    [GeneratedRegex(@"(?i)((?:\""|')?(?:access_token|refresh_token|client_secret|code_verifier|oauth_token|token|authorization|auth|code)(?:\""|')?\s*[:=]\s*(?:\""|')?)[^,\s&}\""']+", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?i)((?:\""|')?(?:" + SensitiveFieldNames + @")(?:\""|')?\s*[:=]\s*(?:\""|')?)[^,\s&}\""']+", RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveAssignmentPattern();
+
+    [GeneratedRegex("""(?i)(?<![A-Za-z0-9_-])((?:Cookie|Set-Cookie|Authorization|Proxy-Authorization|X-CSRF-Token|X-XSRF-Token|X-API-Key)[ \t]*:[ \t]*)(?![ \t]*["'])[^\r\n]*""", RegexOptions.CultureInvariant)]
+    private static partial Regex SensitiveHeaderPattern();
 
     [GeneratedRegex(@"(?i)\b(Bearer|OAuth)\s+[A-Za-z0-9._~+/=-]+", RegexOptions.CultureInvariant)]
     private static partial Regex BearerTokenPattern();

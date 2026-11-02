@@ -34,7 +34,7 @@ internal sealed record KickPusherConnection(string AppKey, string Cluster)
             client = new { id = clientId, type = "web" },
             capabilities = new { accepted_providers = new[] { new { provider = "pusher" } } }
         });
-        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+        using var response = await BoundedHttpResponseSender.SendAsync(http, request, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         var body = await BoundedHttpContentReader.ReadStringAsync(response.Content, 64 * 1024, cancellationToken)

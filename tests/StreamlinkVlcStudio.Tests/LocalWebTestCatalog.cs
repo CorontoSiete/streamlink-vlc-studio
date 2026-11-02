@@ -31,6 +31,7 @@ internal static partial class LocalWebTestCatalog
         ("local web: category artwork rejects Twitch missing covers and recovers after refresh", CategoryArtworkAsync),
         ("local web: category artwork validates bytes when Twitch mislabels content types", CategoryArtworkFormatsAsync),
         ("local web: category artwork bounds caching and cancels queued downloads", CategoryArtworkResourcesAsync),
+        ("local web: category artwork times out stalled bodies and releases download slots", CategoryArtworkBodyDeadlineAsync),
         ("local web: category artwork browser distinguishes pending missing valid and recovered covers", BrowserCategoryArtworkAsync),
         .. LiveCategoryArtworkTests,
         ("local web: follow status is verified, read-only, nonblocking and survives late responses", FollowStatusAsync),

@@ -16,7 +16,7 @@ internal static partial class ApplicationTestCatalog
         var clock = session.Tab.ReplayClock;
         var anchor = clock.GetReplayClockAnchor()!.Value;
         clock.SetReplayClockAnchor(TimeSpan.FromMinutes(10), TimeSpan.FromHours(1), anchor.SeekGeneration,
-            awaitingSeekConfirmation: false, DateTimeOffset.UtcNow - TimeSpan.FromSeconds(10));
+            DateTimeOffset.UtcNow - TimeSpan.FromSeconds(10));
         var expectedPosition = clock.EstimateReplayClockFromAnchor(TimeSpan.FromHours(1), DateTimeOffset.UtcNow);
         var engine = session.PlaybackFactory.Engine!;
         var failNextClock = 1;

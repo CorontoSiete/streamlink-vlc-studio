@@ -27,8 +27,16 @@ internal sealed class DoubleClickTracker
         var elapsed = now - lastDownAt;
         return elapsed >= 0 &&
             elapsed <= GetDoubleClickTime() &&
-            Math.Abs(x - lastDownX) <= GetSystemMetrics(SmCxDoubleClick) &&
-            Math.Abs(y - lastDownY) <= GetSystemMetrics(SmCyDoubleClick);
+            IsWithinClickBounds(x, lastDownX, GetSystemMetrics(SmCxDoubleClick)) &&
+            IsWithinClickBounds(y, lastDownY, GetSystemMetrics(SmCyDoubleClick));
+    }
+
+    private static bool IsWithinClickBounds(int position, int origin, int size)
+    {
+        // These metrics describe the full rectangle centered on the first click.
+        // Use Windows' inclusive left/top and exclusive right/bottom edges.
+        var start = (long)origin - size / 2;
+        return position >= start && position < start + size;
     }
 
     internal bool IsDoubleClick(int x, int y) => IsDoubleClick(Environment.TickCount64, x, y);

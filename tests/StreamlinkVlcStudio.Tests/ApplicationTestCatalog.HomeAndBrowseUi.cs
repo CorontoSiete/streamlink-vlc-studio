@@ -3201,6 +3201,8 @@ internal static partial class ApplicationTestCatalog
         Assert.Equal(sourceVodUri.ToString(), streamlink.ResolveStreamUrlRequests[0].Target.Url);
         Assert.Equal("best", streamlink.ResolveStreamUrlRequests[0].Quality);
         Assert.Equal(false, streamlink.ResolveStreamUrlRequests[0].LowLatency);
+        // Playback starts before the tab finishes initializing its replay controls.
+        await TestWait.UntilAsync(() => viewModel.Tabs[0].IsReplaySeekEnabled, TimeSpan.FromSeconds(2));
         Assert.True(viewModel.Tabs[0].IsReplaySeekEnabled);
         Assert.True(viewModel.Tabs[0].CanSeekReplay);
         Assert.Equal(TimeSpan.FromMinutes(30).TotalSeconds, viewModel.Tabs[0].ReplaySeekMaximum);

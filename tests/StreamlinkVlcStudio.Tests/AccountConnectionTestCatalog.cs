@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -12,6 +13,8 @@ internal static class AccountConnectionTestCatalog
         ("account connection: fresh setup needs no credential input", FreshWizardAsync),
         ("account connection: missing service is explained and can be skipped", MissingServiceAsync),
         ("account connection: defaults preserve personal registrations", DefaultsAsync),
+        ("account connection: Twitch browser launch preserves the registered callback and encoded parameters", TwitchBrowserRequestAsync),
+        ("account connection: Kick browser launch preserves the registered callback and encoded parameters", KickBrowserRequestAsync),
         ("account connection: token service requires a trusted HTTPS URL", UnsafeUrlsAsync),
         ("account connection: Kick code exchange and refresh send no client secret", TokenRequestsAsync),
         ("account connection: mismatched registrations cannot send tokens to the service", MismatchedClientAsync),
@@ -90,6 +93,61 @@ internal static class AccountConnectionTestCatalog
         settings.KickClientSecret = "personal-secret";
         Assert.True(Config.CanConnectKick(settings));
         return Task.CompletedTask;
+    }
+
+    private static Task TwitchBrowserRequestAsync()
+    {
+        var state = OAuthTokenHelpers.CreateBase64UrlSecret(32);
+        foreach (var clientId in new[] { AccountConnectionConfiguration.Current.TwitchClientId, "personal-twitch" })
+        {
+            AssertBrowserRequest(TwitchOAuthService.BuildAuthorizationStartInfo(clientId, state),
+                "https://id.twitch.tv/oauth2/authorize", new()
+                {
+                    ["response_type"] = "token",
+                    ["client_id"] = clientId,
+                    ["redirect_uri"] = "http://localhost:39178",
+                    ["scope"] = "chat:read chat:edit user:read:follows channel:manage:predictions clips:edit",
+                    ["state"] = state
+                });
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task KickBrowserRequestAsync()
+    {
+        var state = OAuthTokenHelpers.CreateBase64UrlSecret(32);
+        var verifier = OAuthTokenHelpers.CreateBase64UrlSecret(32);
+        var challenge = OAuthTokenHelpers.CreateCodeChallenge(verifier);
+        foreach (var clientId in new[] { AccountConnectionConfiguration.Current.KickClientId, "personal-kick" })
+        {
+            AssertBrowserRequest(KickOAuthService.BuildAuthorizationStartInfo(clientId, state, challenge),
+                "https://id.kick.com/oauth/authorize", new()
+                {
+                    ["response_type"] = "code",
+                    ["client_id"] = clientId,
+                    ["redirect_uri"] = "http://localhost:39177",
+                    ["scope"] = "user:read channel:read chat:write",
+                    ["state"] = state,
+                    ["code_challenge"] = challenge,
+                    ["code_challenge_method"] = "S256"
+                });
+        }
+        return Task.CompletedTask;
+    }
+
+    private static void AssertBrowserRequest(ProcessStartInfo start, string endpoint, Dictionary<string, string> expected)
+    {
+        Assert.True(start.UseShellExecute);
+        Assert.Equal("", start.Arguments);
+        Assert.Equal(0, start.ArgumentList.Count);
+        Assert.True(!start.FileName.Any(char.IsWhiteSpace), "The URL passed to Windows must retain encoded scope separators.");
+        var uri = new Uri(start.FileName);
+        Assert.Equal(start.FileName, uri.AbsoluteUri);
+        Assert.Equal(endpoint, uri.GetLeftPart(UriPartial.Path));
+        Assert.Equal("", uri.Fragment);
+        Assert.True(OAuthTokenHelpers.TryParseQueryString(uri.Query, out var parameters));
+        Assert.Equal(expected.Count, parameters.Count);
+        foreach (var (key, value) in expected) Assert.Equal(value, parameters[key]);
     }
 
     private static Task UnsafeUrlsAsync()
@@ -223,7 +281,9 @@ internal static class AccountConnectionTestCatalog
         {
             calls++;
             Assert.Equal("https://id.kick.com/oauth/token", request.RequestUri!.AbsoluteUri);
-            Assert.Equal("server-secret", (await ReadFormAsync(request))["client_secret"]);
+            var form = await ReadFormAsync(request);
+            Assert.Equal("server-secret", form["client_secret"]);
+            if (form["grant_type"] == "authorization_code") Assert.Equal("http://localhost:39177", form["redirect_uri"]);
             return ProviderToken();
         });
         using var code = await fixture.Client.PostAsync("/v1/kick/token", Form("authorization_code"));
@@ -245,7 +305,8 @@ internal static class AccountConnectionTestCatalog
             new() { ["client_id"] = "app-kick", ["grant_type"] = "client_credentials" },
             new() { ["client_id"] = "app-kick", ["grant_type"] = "refresh_token", ["refresh_token"] = "refresh", ["client_secret"] = "injected" },
             new() { ["client_id"] = "app-kick", ["grant_type"] = "authorization_code", ["code"] = "code", ["code_verifier"] = "short", ["redirect_uri"] = "http://localhost:39177" },
-            new() { ["client_id"] = "app-kick", ["grant_type"] = "authorization_code", ["code"] = "code", ["code_verifier"] = new string('x', 43), ["redirect_uri"] = "https://attacker.example" }
+            new() { ["client_id"] = "app-kick", ["grant_type"] = "authorization_code", ["code"] = "code", ["code_verifier"] = new string('x', 43), ["redirect_uri"] = "https://attacker.example" },
+            new() { ["client_id"] = "app-kick", ["grant_type"] = "authorization_code", ["code"] = "code", ["code_verifier"] = new string('x', 43), ["redirect_uri"] = "http://localhost:39177/" }
         };
         foreach (var form in forms)
         {

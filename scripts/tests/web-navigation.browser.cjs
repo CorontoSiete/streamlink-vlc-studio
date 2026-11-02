@@ -7,14 +7,17 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
+const loginMode = process.argv.includes('--login-only');
 const searchMode = process.argv.includes('--search-only');
 const deleteMode = process.argv.includes('--downloads-delete-only');
+const vodLibraryMode = process.argv.includes('--vod-library-only');
 const hotkeyMode = process.argv.includes('--hotkeys-only');
 const settingsMode = process.argv.includes('--settings-only');
 const multistreamMode = process.argv.includes('--multistream-only');
 const volumeWheelMode = process.argv.includes('--volume-wheel-only');
 const sidebarMode = process.argv.includes('--sidebar-only');
-const output = path.join(root, sidebarMode ? '.artifacts/web-sidebar' : multistreamMode ? '.artifacts/web-multistream' : hotkeyMode ? '.artifacts/web-hotkeys' : settingsMode ? '.artifacts/web-settings' : volumeWheelMode ? '.artifacts/web-volume-wheel' : deleteMode ? '.artifacts/web-download-delete' : searchMode ? '.artifacts/web-search' : '.artifacts/player-navigation');
+const mobileControlsMode = process.argv.includes('--mobile-controls-only');
+const output = path.join(root, vodLibraryMode ? '.artifacts/web-vod-library' : mobileControlsMode ? '.artifacts/web-mobile-controls' : loginMode ? '.artifacts/web-login' : sidebarMode ? '.artifacts/web-sidebar' : multistreamMode ? '.artifacts/web-multistream' : hotkeyMode ? '.artifacts/web-hotkeys' : settingsMode ? '.artifacts/web-settings' : volumeWheelMode ? '.artifacts/web-volume-wheel' : deleteMode ? '.artifacts/web-download-delete' : searchMode ? '.artifacts/web-search' : '.artifacts/player-navigation');
 const assets = path.join(root, 'src/StreamlinkVlcStudio.Infrastructure/LocalWeb/Assets');
 const mediaFixture = path.join(root, 'tests/StreamlinkVlcStudio.Tests/Fixtures', multistreamMode ? 'hover-preview-fmp4' : 'replay-position-event');
 const browserPath = [process.env.SVS_WEB_TEST_BROWSER, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe'].find(file => file && fs.existsSync(file));
@@ -55,6 +58,7 @@ function artwork(name) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540"><rect width="960" height="540" fill="${base}"/><circle cx="730" cy="150" r="90" fill="${light}"/><path d="M0 420 230 120 470 400 650 190 960 470V540H0Z" fill="${dark}"/><path d="m0 500 300-200 270 230 250-220 140 130v100H0Z" fill="#111d29" opacity=".8"/></svg>`;
 }
 let signedIn = false;
+const loginFixture = { requests: 0, holdNext: false, held: [] };
 const savedSettings = { quality: 'best', lowLatency: true, layout: 'docked', size: 16,
   opacity: 90, keepInactive: false, pauseInactiveVod: true, hotkeys: {}, volumes: {}, chatLayouts: {} };
 const settingsFixture = { failSave: false, saves: 0, holdNext: false, held: [] };
@@ -62,16 +66,29 @@ let lastOpen;
 let openCount = 0;
 let profileOverride = null;
 const closed = [];
+const progressWrites = [];
 const playerMetadata = new Map();
 const followStates = new Map(live.map(item => [item.platform + ':' + item.channel.toLowerCase(), true]));
 const followRequests = [], followWrites = [];
 const searchFixture = { requests: [], held: [], hold: new Set(), fail: false, canceled: 0 };
 let followPending = false, followUnknown = false, followFailure = false, followConfirmed = true;
 const deleteFixture = { requests: [], items: [{ id: 'ec263e99-7ad7-47f9-b2e6-50c2f3c744e1', title: 'Saved broadcast', channel: 'Northstar', platform: 'Twitch', state: 'Completed', format: 'HLS' }] };
+const vodLibraryItems = [
+  ['old', 'Older broadcast', '2026-10-30T15:00:00Z', 'music'],
+  ['unknown', 'Broadcast with no date', null, ''],
+  ['new', 'New broadcast', '2026-11-02T15:00:00Z', 'mountain'],
+  ['broken', 'Broadcast with unavailable artwork', '2026-11-01T15:00:00Z', 'broken'],
+  ['latest', 'Latest broadcast', '2026-11-03T15:00:00Z', 'game']
+].map(([key, title, published, art]) => ({ key, id: key, title, published, channel: 'Northstar', platform: 'Twitch',
+  thumbnailUrl: art ? 'https://artwork.fixture/' + art : '', profileImageUrl: live[0].profileImageUrl, duration: 7200 }));
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   if (url.pathname.startsWith('/artwork/')) { response.setHeader('Content-Type', 'image/svg+xml'); response.end(artwork(url.pathname.split('/').pop())); return; }
-  if (url.pathname === '/media/fixture/root') { response.setHeader('Content-Type', 'application/vnd.apple.mpegurl'); response.end(fs.readFileSync(path.join(mediaFixture, 'index.m3u8'), 'utf8').replace(/^(index\d+\.ts)\r?$/gm, '/media/fixture/$1')); return; }
+  if (url.pathname === '/media/fixture/root' || url.pathname === '/media/fixture/vod') {
+    response.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+    const playlist = fs.readFileSync(path.join(mediaFixture, 'index.m3u8'), 'utf8').replace(/^(index\d+\.ts)\r?$/gm, '/media/fixture/$1');
+    response.end(playlist + (url.pathname.endsWith('/vod') ? '\n#EXT-X-ENDLIST\n' : '')); return;
+  }
   if (/^\/media\/fixture\/index[0-5]\.ts$/.test(url.pathname)) { response.setHeader('Content-Type', 'video/mp2t'); response.end(fs.readFileSync(path.join(mediaFixture, url.pathname.split('/').pop()))); return; }
   if (multistreamMode && /^\/media\/fixture\/(init\.mp4|segment[0-5]\.m4s)$/.test(url.pathname)) { response.setHeader('Content-Type', 'video/mp4'); response.end(fs.readFileSync(path.join(mediaFixture, url.pathname.split('/').pop()))); return; }
   if (url.pathname.startsWith('/api/')) {
@@ -81,7 +98,16 @@ const server = http.createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json');
     let result = {};
     if (action === 'session') { response.statusCode = signedIn ? 200 : 401; result = { csrf: 'visual-fixture', username: 'webtester' }; }
-    else if (action === 'login') { signedIn = input.username === 'webtester' && input.password === 'Test web password 123!'; response.statusCode = signedIn ? 200 : 401; result = signedIn ? { csrf: 'visual-fixture', username: 'webtester' } : { error: 'Username or password did not match.' }; }
+    else if (action === 'login') {
+      loginFixture.requests++;
+      const send = () => {
+        signedIn = input.username === 'webtester' && input.password === 'Test web password 123!';
+        response.statusCode = signedIn ? 200 : 401;
+        response.end(JSON.stringify(signedIn ? { csrf: 'visual-fixture', username: 'webtester' } : { error: 'Username or password did not match.' }));
+      };
+      if (loginFixture.holdNext) { loginFixture.holdNext = false; loginFixture.held.push(send); } else send();
+      return;
+    }
     else if (action === 'logout') signedIn = false;
     else if (action === 'settings') result = { defaultQuality: savedSettings.quality, lowLatency: savedSettings.lowLatency,
       preferences: savedSettings, qualities: ['best', '720p'], accounts: { twitch: true, kick: true } };
@@ -101,7 +127,7 @@ const server = http.createServer(async (request, response) => {
       const item = live.find(item => item.key === input.key || item.channel.toLowerCase() === input.input?.toLowerCase()) ||
         (isVod ? live[0] : { key: 'guest', channel: input.input || 'Guest', platform: input.platform === 'kick' ? 'Kick' : 'Twitch', title: 'Guest stream' });
       result = { id: 'visual-player-' + ++openCount, key: isVod ? input.input : item.key, title: isVod ? 'Mountain adventure - full broadcast' : item.title,
-        channel: item.channel, platform: item.platform, profileImageUrl: item.profileImageUrl, url: '/media/fixture/root', isVod, isMp4: false, resume: 0, duration: 0,
+        channel: item.channel, platform: item.platform, profileImageUrl: item.profileImageUrl, url: '/media/fixture/' + (isVod ? 'vod' : 'root'), isVod, isMp4: false, resume: 0, duration: 0,
         quality: input.quality ?? savedSettings.quality, chatLayout: savedSettings.chatLayouts[item.platform + ':' + item.channel.toLowerCase()] ?? null };
       playerMetadata.set(result.id, result);
     }
@@ -111,6 +137,7 @@ const server = http.createServer(async (request, response) => {
       result = { saved: true };
     }
     else if (action === 'close') closed.push(input.player);
+    else if (action === 'progress') progressWrites.push(input);
     else if (action === 'follow/status') {
       followRequests.push(input.player);
       const p = playerMetadata.get(input.player);
@@ -172,6 +199,8 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     else if (action === 'search') result = { items: live.filter(item => item.channel.toLowerCase().includes(input.query.toLowerCase())) };
+    else if (action === 'vods' && vodLibraryMode) result = { items: (input.cursor ? [vodLibraryItems[4], vodLibraryItems[2]] : vodLibraryItems.slice(0, 4)).map(item => ({ ...item, state: 'VOD', platform: input.platform === 'kick' ? 'Kick' : 'Twitch' })), nextCursor: input.cursor ? '' : 'page2' };
+    else if (action === 'downloads' && vodLibraryMode) result = { items: vodLibraryItems.map(item => ({ ...item, state: 'Completed', format: 'MP4', totalSegments: 10, completedSegments: 10 })) };
     else if (action === 'vods') result = { items: [{ key: 'vod1', title: 'The long way home · a mountain adventure', channel: 'Northstar', platform: 'Twitch', state: 'VOD', duration: 7200, resume: 1820, thumbnailUrl: 'https://artwork.fixture/mountain', profileImageUrl: live[0].profileImageUrl }] };
     else if (action === 'downloads' && deleteMode) result = { items: deleteFixture.items };
     else if (action === 'downloads/remove' && deleteMode) {
@@ -225,6 +254,9 @@ async function main() {
           cdp('Fetch.fulfillRequest', { requestId: message.params.requestId, responseCode: 404, body: '' }).catch(console.error); return;
         }
       }
+      if (vodLibraryMode && !avatar && url.pathname === '/broken') {
+        cdp('Fetch.fulfillRequest', { requestId: message.params.requestId, responseCode: 404, body: '' }).catch(console.error); return;
+      }
       const kickAvatar = avatar && url.pathname === '/music.png';
       cdp('Fetch.fulfillRequest', { requestId: message.params.requestId, responseCode: 200,
         responseHeaders: [{ name: 'Content-Type', value: avatar ? kickAvatar ? 'image/webp' : 'image/png' : 'image/svg+xml' }],
@@ -241,9 +273,17 @@ async function main() {
     await cdp('Page.navigate', { url: address });
     await wait("document.readyState==='complete' && !!document.querySelector('#password')");
     await capture('login-desktop');
+    if (loginMode) {
+      await require('./helpers/web-login-browser.cjs')({ cdp, evaluate, wait, capture, viewport, address, fixture: loginFixture });
+      return;
+    }
     await evaluate("document.querySelector('#username').value='webtester';document.querySelector('#password').value='Test web password 123!';document.querySelector('#login-form').requestSubmit()");
     const settled = "document.querySelector('#cards').getAttribute('aria-busy')==='false'";
     await wait("!document.querySelector('#studio').hidden && document.querySelectorAll('.card').length===6");
+    if (mobileControlsMode) {
+      await require('./helpers/web-mobile-controls-browser.cjs')({ cdp, evaluate, wait, capture, output });
+      return;
+    }
     if (sidebarMode) {
       await require('./helpers/web-sidebar-browser.cjs')({ cdp, evaluate, wait, capture, viewport, address });
       return;
@@ -266,6 +306,10 @@ async function main() {
     }
     if (deleteMode) {
       await require('./helpers/web-download-delete-browser.cjs')({ cdp, ws, evaluate, wait, capture, viewport, fixture: deleteFixture });
+      return;
+    }
+    if (vodLibraryMode) {
+      await require('./helpers/web-vod-library-browser.cjs')({ evaluate, wait, capture, viewport });
       return;
     }
     if (searchMode) {
@@ -652,16 +696,28 @@ async function main() {
     await click('.player:not([hidden]) [data-action=theater]');
     await wait("!document.querySelector('#studio').classList.contains('theater')");
 
-    // Reload replaces the row and keeps its name instead of leaving stale navigation.
+    // Reload keeps the user's pause, speed and name while replacing its navigation row.
     await click(`.is-open[data-player-id="${vod}"] .followed-link`);
+    await evaluate("(()=>{const p=document.querySelector('.player:not([hidden])');p.querySelector('video').pause();const speed=p.querySelector('.speed');speed.value='1.5';speed.dispatchEvent(new Event('change'))})()");
     await evaluate("document.querySelector('.player:not([hidden]) [data-action=reload]').click()");
     await wait(`document.querySelectorAll('.is-open').length===3 && !document.querySelector('.is-open[data-player-id="${vod}"]')`);
+    await wait("document.querySelector('.player:not([hidden]) video').readyState>=1");
+    assert.ok(await evaluate("(()=>{const p=document.querySelector('.player:not([hidden])'),v=p.querySelector('video');return v.paused && v.playbackRate===1.5 && p.querySelector('.speed').value==='1.5'})()"), 'reload preserves pause and speed after real media initialization');
     assert.equal(await evaluate("document.querySelector('.player:not([hidden]) .rename').value"), 'Evening watch');
     assert.equal(await evaluate("document.querySelectorAll('.followed-exit').length"), 3);
+
+    // Let real decoded media reach its end, then verify that closing it keeps the
+    // completed bookmark instead of replacing it with an end-position resume.
+    const completedPlayer = await selected();
+    await evaluate("(()=>{const v=document.querySelector('.player:not([hidden]) video');v.currentTime=v.duration-.1;return v.play()})()");
+    await wait("document.querySelector('.player:not([hidden]) video').ended");
+    for (let n = 0; n < 100 && !progressWrites.some(p => p.player === completedPlayer && p.ended); n++) await sleep(50);
+    assert.ok(progressWrites.some(p => p.player === completedPlayer && p.ended), 'the actual ended event saves completion');
 
     // Exit current advances to a remaining player, and the final exit restores the library.
     await evaluate("document.querySelector('.player:not([hidden]) [data-action=close]').click()");
     await wait("document.querySelectorAll('.is-open').length===2");
+    assert.equal(progressWrites.findLast(p => p.player === completedPlayer).ended, true, 'close preserves actual media completion');
     await viewport(390);
     await click('#channels-toggle');
     await click(`.is-open[data-player-id="${first}"] .followed-exit`);

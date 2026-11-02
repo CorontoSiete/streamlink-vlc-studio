@@ -17,7 +17,7 @@ module.exports = async ({ cdp, evaluate, wait, capture, viewport, output }) => {
     await evaluate("document.querySelector('button[data-page=settings]').click()");
     await wait("document.querySelector('#studio').dataset.page==='settings' && !document.querySelector('#studio').classList.contains('watching')");
     await evaluate(`document.querySelector('#chat-layout').value=${JSON.stringify(name)};document.querySelector('#chat-layout').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#chat-opacity').value='0';document.querySelector('#chat-opacity').dispatchEvent(new Event('input',{bubbles:true}))`);
-    await wait("document.querySelector('#save-status').textContent==='All changes saved automatically.'");
+    await wait("document.querySelector('#save-status').textContent==='All changes saved to your account.'");
     await evaluate("(document.querySelector('.followed-link[aria-current=true]') || document.querySelector('[data-page=following]')).click()");
     await wait("!document.querySelector('#players video') || document.querySelector('#studio').classList.contains('watching')");
   };

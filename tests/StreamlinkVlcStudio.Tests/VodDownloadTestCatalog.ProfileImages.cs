@@ -38,7 +38,12 @@ internal static partial class VodDownloadTestCatalog
     private static async Task CachedProfileImageAsync(PlatformKind platform)
     {
         await using var fixture = new DownloadFixture(platform);
-        var target = fixture.Target with { ProfileImageUrl = ProfileImageUrl(platform) };
+        var target = fixture.Target with
+        {
+            ProfileImageUrl = ProfileImageUrl(platform),
+            MediaThumbnailUrl = "https://files.kick.com/saved-vod-thumbnail.jpg",
+            MediaPublishedAtUtc = new DateTimeOffset(2026, 11, 2, 12, 0, 0, TimeSpan.Zero)
+        };
         var bytes = CreateProfileImageBytes();
         fixture.Handler.Put(new Uri(target.ProfileImageUrl).AbsolutePath, bytes);
         var downloaded = await fixture.WaitAsync((await fixture.EnqueueAsync(target)).Id, VodDownloadState.Completed);
@@ -52,11 +57,15 @@ internal static partial class VodDownloadTestCatalog
         Assert.True(bytes.SequenceEqual(cachedBytes));
         var stored = JsonSerializer.Deserialize<VodDownloadItem>(await File.ReadAllTextAsync(fixture.Record(downloaded.Id)))!;
         Assert.Equal(target.ProfileImageUrl, stored.Target.ProfileImageUrl);
+        Assert.Equal(target.MediaThumbnailUrl, stored.Target.MediaThumbnailUrl);
+        Assert.Equal(target.MediaPublishedAtUtc, stored.Target.MediaPublishedAtUtc);
         fixture.Handler.NetworkAvailable = false;
         var requests = fixture.Handler.RequestCount;
         await fixture.RestartAsync();
         var restored = await fixture.Service.GetOfflineTargetAsync(downloaded.Id);
         Assert.Equal(offline.ProfileImageUrl, restored.ProfileImageUrl);
+        Assert.Equal(target.MediaThumbnailUrl, restored.MediaThumbnailUrl);
+        Assert.Equal(target.MediaPublishedAtUtc, restored.MediaPublishedAtUtc);
         Assert.Equal(requests, fixture.Handler.RequestCount);
         Assert.Equal(1, fixture.Resolver.ResolveStreamUrlCount);
     }
