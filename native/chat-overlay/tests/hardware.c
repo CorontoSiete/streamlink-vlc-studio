@@ -235,12 +235,19 @@ int main(void)
     assert(vlc);
     libvlc_media_player_t *player = libvlc_media_player_new(vlc);
     assert(player);
+    /* Direct3D drivers can retain process-wide GDI handles on first device
+     * creation, even when the device is released without any VLC operations.
+     * Warm up before measuring repeated creation, resizing and cleanup. */
+    exercise((vlc_object_t *)player, false, false);
     const DWORD gdi = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
-    for (int hd = 0; hd < 2; ++hd) for (int full = 0; full < 2; ++full)
-        exercise((vlc_object_t *)player, hd, full);
-    assert(GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS) == gdi);
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        for (int hd = 0; hd < 2; ++hd) for (int full = 0; full < 2; ++full) {
+            exercise((vlc_object_t *)player, hd, full);
+            assert(GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS) == gdi);
+        }
+    }
     libvlc_media_player_release(player);
     libvlc_release(vlc);
-    puts("All hardware GDI checks passed; no GDI handles retained.");
+    puts("All hardware GDI checks passed; no per-cycle GDI handles retained.");
     return 0;
 }

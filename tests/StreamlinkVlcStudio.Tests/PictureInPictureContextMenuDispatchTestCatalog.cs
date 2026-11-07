@@ -17,7 +17,7 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static async Task BusyDispatcherRetainsEveryClickAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync(blockInitially: true);
+        await using var ui = await TestDispatcherThread.StartAsync(blockInitially: true);
         var captured = new ConcurrentQueue<(LowLevelMouseHookEvent Event, int ThreadId)>();
         var delivered = new ConcurrentQueue<(LowLevelMouseHookEvent Event, bool OnUiThread)>();
         var genericRouteCount = 0;
@@ -67,7 +67,7 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static async Task CapturedOwnerSurvivesOwnershipChangesAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync(blockInitially: true);
+        await using var ui = await TestDispatcherThread.StartAsync(blockInitially: true);
         var delivered = new ConcurrentQueue<(string Owner, LowLevelMouseHookEvent Event)>();
         var currentOwner = "PiP at press";
         var genericRouteCount = 0;
@@ -103,7 +103,7 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static async Task ExecutingCallbackDoesNotPassThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync();
+        await using var ui = await TestDispatcherThread.StartAsync();
         using var releaseCallback = new ManualResetEventSlim();
         var callbackEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackCount = 0;
@@ -147,7 +147,7 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static async Task ForeignRightClickPassesThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync(blockInitially: true);
+        await using var ui = await TestDispatcherThread.StartAsync(blockInitially: true);
         var captured = new ConcurrentQueue<LowLevelMouseHookEvent>();
         var genericRouteCount = 0;
         var router = new LowLevelMouseHookDispatcher(
@@ -180,7 +180,7 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static async Task MatchingOwnedReleaseAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync(blockInitially: true);
+        await using var ui = await TestDispatcherThread.StartAsync(blockInitially: true);
         var captured = new ConcurrentQueue<LowLevelMouseHookEvent>();
         var callbackCount = 0;
         var genericRouteCount = 0;
@@ -226,7 +226,7 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static async Task ShutdownRightClickPassesThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync();
+        await using var ui = await TestDispatcherThread.StartAsync();
         var genericRouteCount = 0;
         var captureCount = 0;
         var callbackCount = 0;
@@ -273,116 +273,4 @@ internal static class PictureInPictureContextMenuDispatchTestCatalog
 
     private static LowLevelMouseHookEvent RightUp(int x, int y) =>
         new(LowLevelMouseHookEvent.WmRightButtonUp, x, y, 0);
-
-    private sealed class DispatcherThread : IAsyncDisposable
-    {
-        private readonly TaskCompletionSource<Dispatcher> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly ManualResetEventSlim release = new();
-        private readonly Thread thread;
-        private Exception? threadFailure;
-        private bool dispatcherGateReleased = true;
-
-        private DispatcherThread(bool blockInitially)
-        {
-            thread = new Thread(() =>
-            {
-                try
-                {
-                    var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
-                    if (blockInitially)
-                    {
-                        dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() =>
-                        {
-                            blocked.TrySetResult();
-                            dispatcherGateReleased = release.Wait(WaitTimeout);
-                        }));
-                    }
-
-                    ready.TrySetResult(dispatcher);
-                    System.Windows.Threading.Dispatcher.Run();
-                }
-                catch (Exception exception)
-                {
-                    threadFailure = exception;
-                    ready.TrySetException(exception);
-                    blocked.TrySetException(exception);
-                }
-                finally
-                {
-                    stopped.TrySetResult();
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "PiP context menu regression dispatcher"
-            };
-            thread.SetApartmentState(ApartmentState.STA);
-            thread.Start();
-        }
-
-        internal Dispatcher Dispatcher => ready.Task.GetAwaiter().GetResult();
-
-        internal static async Task<DispatcherThread> StartAsync(bool blockInitially = false)
-        {
-            var fixture = new DispatcherThread(blockInitially);
-            try
-            {
-                await fixture.ready.Task.WaitAsync(WaitTimeout);
-                if (blockInitially)
-                {
-                    await fixture.blocked.Task.WaitAsync(WaitTimeout);
-                }
-
-                return fixture;
-            }
-            catch
-            {
-                fixture.Release();
-                if (fixture.ready.Task.IsCompletedSuccessfully)
-                {
-                    fixture.Dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
-                }
-
-                _ = fixture.thread.Join(WaitTimeout);
-                fixture.release.Dispose();
-                throw;
-            }
-        }
-
-        internal void Release() => release.Set();
-
-        internal async Task FlushAsync()
-        {
-            // Input is higher priority, so this observes all previously queued menus.
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background).Task.WaitAsync(WaitTimeout);
-        }
-
-        internal async Task StopAsync()
-        {
-            Release();
-            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
-            {
-                Dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
-            }
-
-            await stopped.Task.WaitAsync(WaitTimeout);
-            Assert.True(thread.Join(WaitTimeout), "The regression dispatcher did not stop.");
-            Assert.True(threadFailure is null, threadFailure?.ToString() ?? "The dispatcher thread failed.");
-            Assert.True(dispatcherGateReleased, "The busy dispatcher gate timed out before the test released it.");
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            try
-            {
-                await StopAsync();
-            }
-            finally
-            {
-                release.Dispose();
-            }
-        }
-    }
 }

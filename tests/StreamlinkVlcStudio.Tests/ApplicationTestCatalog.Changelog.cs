@@ -29,7 +29,7 @@ internal static partial class ApplicationTestCatalog
         var catalog = ReleaseNotesCatalog.LoadEmbedded();
         Assert.Equal(ReleaseNotesCatalog.Normalize(typeof(MainWindow).Assembly.GetName().Version!), catalog.InstalledVersion);
         Assert.NotNull(catalog.InstalledRelease);
-        var notesDirectory = Path.Combine(FindRepoRoot(), "docs", "releases");
+        var notesDirectory = Path.Combine(TestRepository.FindRoot(), "docs", "releases");
         var sources = Directory.EnumerateFiles(notesDirectory, "v*.md")
             .Select(path => (Path: path, Version: Version.Parse(Path.GetFileNameWithoutExtension(path)[1..])))
             .Where(source => source.Version <= catalog.InstalledVersion)
@@ -66,7 +66,7 @@ internal static partial class ApplicationTestCatalog
 
     private static async Task ChangelogBuildGuardAsync()
     {
-        var source = XDocument.Load(Path.Combine(FindRepoRoot(), "src", "StreamlinkVlcStudio.App.Wpf", "StreamlinkVlcStudio.App.Wpf.csproj"));
+        var source = XDocument.Load(Path.Combine(TestRepository.FindRoot(), "src", "StreamlinkVlcStudio.App.Wpf", "StreamlinkVlcStudio.App.Wpf.csproj"));
         var target = source.Root!.Elements("Target").Single(element => (string?)element.Attribute("Name") == "ValidateBundledReleaseNotes");
         Assert.Equal("PrepareForBuild", (string?)target.Attribute("BeforeTargets"));
         var root = CreateTempTestDirectory();
@@ -91,7 +91,7 @@ internal static partial class ApplicationTestCatalog
                 if (contents is not null) await File.WriteAllTextAsync(notesPath, contents);
                 var info = BoundedProcessRunner.CreateRedirectedStartInfo(dotnet,
                     ["msbuild", projectPath, "-target:ValidateBundledReleaseNotes", "-verbosity:minimal", "-nologo"]);
-                info.WorkingDirectory = FindRepoRoot();
+                info.WorkingDirectory = TestRepository.FindRoot();
                 var result = await new BoundedProcessRunner().RunAsync(info, TimeSpan.FromSeconds(10));
                 Assert.Equal(false, result.TimedOut);
                 if (error is null) Assert.Equal(0, result.ExitCode);

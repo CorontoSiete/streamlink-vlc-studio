@@ -452,6 +452,19 @@ internal static class NativeOverlayControllerTest
 
 internal static class NativeWindowTest
 {
+    public static Window CreateInputWindow(UIElement content, double horizontalOffset) => new()
+    {
+        Width = 280,
+        Height = 180,
+        Left = SystemParameters.WorkArea.Left + horizontalOffset,
+        Top = SystemParameters.WorkArea.Top + 40,
+        WindowStyle = WindowStyle.None,
+        ResizeMode = ResizeMode.NoResize,
+        Topmost = true,
+        ShowInTaskbar = false,
+        Content = content
+    };
+
     public static IntPtr CreateHiddenParentWindow()
     {
         var handle = CreateWindowEx(

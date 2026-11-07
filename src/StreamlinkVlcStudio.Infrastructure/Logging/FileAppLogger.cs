@@ -386,26 +386,31 @@ public sealed partial class FileAppLogger : IAppLogger, IDisposable, IAsyncDispo
 
     private void PruneLegacyLogs()
     {
+        PruneLogs("studio-*.log");
+        PruneLogs("studio.*.log", path =>
+        {
+            var stem = Path.GetFileNameWithoutExtension(path);
+            return int.TryParse(stem.AsSpan("studio.".Length), out var index) && index >= maximumFileCount;
+        });
+    }
+
+    private void PruneLogs(string pattern, Func<string, bool>? shouldDelete = null)
+    {
         try
         {
             foreach (var path in Directory.EnumerateFiles(
                          logDirectory,
-                         "studio-*.log",
+                         pattern,
                          SearchOption.TopDirectoryOnly))
             {
-                File.Delete(path);
-            }
-
-            foreach (var path in Directory.EnumerateFiles(
-                         logDirectory,
-                         "studio.*.log",
-                         SearchOption.TopDirectoryOnly))
-            {
-                var stem = Path.GetFileNameWithoutExtension(path);
-                var suffix = stem.AsSpan("studio.".Length);
-                if (int.TryParse(suffix, out var index) && index >= maximumFileCount)
+                if (shouldDelete is not null && !shouldDelete(path)) continue;
+                try
                 {
                     File.Delete(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // A locked log must not prevent pruning the other obsolete files.
                 }
             }
         }

@@ -15,8 +15,8 @@ internal static class NativePictureInPictureContextMenuTargetTestCatalog
     private static Task NativeDescendantRetainsOwnerAsync() => TestSta.RunAsync(async () =>
     {
         using var surface = new VideoSurface();
-        var owner = CreateWindow(surface, 20);
-        var other = CreateWindow(new Border { Background = Brushes.White }, 340);
+        var owner = NativeWindowTest.CreateInputWindow(surface, 20);
+        var other = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 340);
         var previousForeground = NativeWindowTest.GetForegroundWindow();
         if (!NativeWindowTest.TryGetCursorPosition(out var originalCursor))
             throw new InteractiveDesktopTestSkippedException("Cannot preserve the cursor for PiP context-menu ownership tests.");
@@ -77,7 +77,7 @@ internal static class NativePictureInPictureContextMenuTargetTestCatalog
 
     private static Task OwnedPopupRegistrationAsync() => TestSta.RunAsync(async () =>
     {
-        var owner = CreateWindow(new Border { Background = Brushes.White }, 20);
+        var owner = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 20);
         var popupContent = new Border { Width = 140, Height = 80, Background = Brushes.Gold };
         var popup = new Popup
         {
@@ -163,7 +163,7 @@ internal static class NativePictureInPictureContextMenuTargetTestCatalog
 
     private static Task StaleRegistrationAsync() => TestSta.RunAsync(async () =>
     {
-        var window = CreateWindow(new Border { Background = Brushes.White }, 20);
+        var window = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 20);
         var previousForeground = NativeWindowTest.GetForegroundWindow();
         var handle = IntPtr.Zero;
         var received = new List<string>();
@@ -208,8 +208,8 @@ internal static class NativePictureInPictureContextMenuTargetTestCatalog
 
     private static Task UnregisteredAndDisabledRootsAsync() => TestSta.RunAsync(async () =>
     {
-        var registered = CreateWindow(new Border { Background = Brushes.White }, 20);
-        var ordinary = CreateWindow(new Border { Background = Brushes.White }, 340);
+        var registered = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 20);
+        var ordinary = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 340);
         var previousForeground = NativeWindowTest.GetForegroundWindow();
         var handle = IntPtr.Zero;
         try
@@ -275,19 +275,6 @@ internal static class NativePictureInPictureContextMenuTargetTestCatalog
         }
         throw new InteractiveDesktopTestSkippedException("No foreign desktop HWND is exposed for PiP context-menu ownership checks.");
     });
-
-    private static Window CreateWindow(UIElement content, double horizontalOffset) => new()
-    {
-        Width = 280,
-        Height = 180,
-        Left = SystemParameters.WorkArea.Left + horizontalOffset,
-        Top = SystemParameters.WorkArea.Top + 40,
-        WindowStyle = WindowStyle.None,
-        ResizeMode = ResizeMode.NoResize,
-        Topmost = true,
-        ShowInTaskbar = false,
-        Content = content
-    };
 
     private static LowLevelMouseHookEvent RightDownAt(Point point) => new(
         LowLevelMouseHookEvent.WmRightButtonDown, (int)Math.Round(point.X), (int)Math.Round(point.Y), 0);

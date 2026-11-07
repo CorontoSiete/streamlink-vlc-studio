@@ -172,7 +172,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(false, window.IsStreamFullscreen);
                 using var resizedVideo = CaptureReplayVlcSurface(surface);
                 AssertReplayVlcVideoPixels(resizedVideo);
-                using var resizedWindow = CapturePictureInPictureWindow(handle);
+                using var resizedWindow = WindowFrameTest.Capture(handle);
                 Assert.True(!HasUnexpectedWhitePictureInPictureEdge(resizedWindow),
                     $"Real {rendererMode} hit {direction} left a white frame at the PiP edge.");
                 SaveReplayVlcArtifact(resizedVideo, rendererMode, $"pip-resize-{direction}");

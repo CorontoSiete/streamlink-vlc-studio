@@ -51,7 +51,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
 
     private static async Task SelectedQualityAsync(PlatformKind platform)
     {
-        using var fixture = new Fixture(platform);
+        using var fixture = new Fixture();
         await using var source = await fixture.Resolver.OpenAsync(Request(platform), CancellationToken.None);
         Assert.NotNull(source);
         Assert.Equal(3, fixture.Requests.Count);
@@ -85,7 +85,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
             await using var source = await fixture.Resolver.OpenAsync(Request(), CancellationToken.None);
             Assert.True(fixture.Requests[2].AbsolutePath.EndsWith($"/{quality}/index.m3u8"));
         }
-        using var legacy = new Fixture(PlatformKind.Kick)
+        using var legacy = new Fixture()
         {
             MasterText = "#EXTM3U\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"360p30\",NAME=\"360p\"\n" +
                 "#EXT-X-STREAM-INF:BANDWIDTH=600000,VIDEO=\"360p30\"\n360p/index.m3u8"
@@ -140,7 +140,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
     {
         foreach (var platform in new[] { PlatformKind.Twitch, PlatformKind.Kick })
         {
-            using var redirect = new Fixture(platform)
+            using var redirect = new Fixture()
             {
                 Override = (request, _) => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.EndsWith("master.m3u8") ||
                     request.RequestUri.Host == "usher.ttvnw.net"
@@ -382,7 +382,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
         internal string? TokenPayload;
         internal Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage?>>? Override;
 
-        internal Fixture(PlatformKind platform = PlatformKind.Twitch, bool privateDns = false,
+        internal Fixture(bool privateDns = false,
             Func<StreamTransportRequest, bool>? canResolve = null)
         {
             client = new HttpClient(new AsyncHttpMessageHandler(async (request, token) =>

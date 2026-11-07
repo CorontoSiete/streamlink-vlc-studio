@@ -7,10 +7,14 @@ internal static partial class LocalWebTestCatalog
 {
     internal static IReadOnlyList<(string Name, Func<Task> Run)> All { get; } =
     [
+        ("discovery language: web settings share choices and stream requests validate language", DiscoveryLanguagesAsync),
+        ("discovery language: web categories persist by platform and account across server restarts", DiscoveryLanguagePersistenceAsync),
+        ("discovery language: overlapping saves preserve the latest choice and skip unchanged writes", DiscoveryLanguageConcurrentSavesAsync),
         ("local web: LAN policy rejects public, other-subnet, mapped and special addresses", NetworkAsync),
         ("local web: password attempts have per-device and global budgets", LoginBudgetAsync),
         ("local web: device sessions expire and cannot move to another IP", SessionsAsync),
         ("local web: account storage persists hashes and isolates preferences", UserAccountsAsync),
+        ("local web: Unicode shortcuts persist and malformed shortcut keys are rejected", UnicodeShortcutsAsync),
         ("local web: login pipeline enforces origin, host, peer, cookies and CSRF", LoginPipelineAsync),
         ("local web: desktop browser launch opens the sign-in page without credentials", DesktopLaunchAsync),
         ("local web: server window follows every app theme while open", ServerWindowThemeAsync),
@@ -18,8 +22,13 @@ internal static partial class LocalWebTestCatalog
         ("local web: real HTTPS rejects unauthenticated media and hostile origins", HttpsAsync),
         ("local web: disconnect all revokes media and commands", DisconnectAsync),
         ("local web: concurrent disposal waits for the same session and server cleanup", SharedDisposalAsync),
+        ("local web: failed cancellation drains chat and releases browser playback slots", PlayerCleanupAsync),
         ("local web: network changes fail closed and stop releases the listener", NetworkChangeAsync),
         ("local web: HLS rewrites variants, segments, keys and initialization URLs", PlaylistAsync),
+        ("local web: HLS distinguishes URI attributes from quoted metadata", PlaylistAttributesAsync),
+        ("local web: Kick prefetch segments stay proxied across live playlist refreshes", KickPrefetchAsync),
+        ("local web: prefetch references reject unsafe endpoints and malformed values", PrefetchSecurityAsync),
+        ("local web: Kick prefetch playlist plays decoded video in the browser", BrowserKickPrefetchAsync),
         ("local web: media refuses private destinations and unsafe redirects", MediaSecurityAsync),
         ("local web: media proxy rewrites remote manifests and preserves byte ranges without upstream cookies", MediaProxyAsync),
         ("local web: native HLS range probe never turns an extensionless playlist into a partial manifest", MediaPartialPlaylistAsync),
@@ -270,6 +279,36 @@ internal static partial class LocalWebTestCatalog
         }
         catch (InvalidDataException) { rejected = true; }
         Assert.True(rejected);
+        return Task.CompletedTask;
+    }
+
+    private static Task PlaylistAttributesAsync()
+    {
+        var origin = new Uri("https://cdn.example/master.m3u8");
+        using var media = new LocalWebMedia("playback", origin);
+        const string metadata = "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio,URI=metadata\",URI=\"audio.m3u8\"";
+        var rewritten = media.RewritePlaylist("#EXTM3U\n" + metadata + "\n", origin);
+        Assert.Contains("GROUP-ID=\"audio,URI=metadata\"", rewritten);
+        Assert.Contains("URI=\"/media/playback/", rewritten);
+        Assert.Equal(1, rewritten.Split("/media/playback/").Length - 1);
+
+        rewritten = media.RewritePlaylist("#EXTM3U\n#EXT-X-DATERANGE:X-TV-TWITCH-TRIGGER-URL=\"https://cdn.example/trigger\",ID=\"marker,URI=metadata\"\n", origin);
+        Assert.Contains("#EXT-X-DATERANGE:ID=\"marker,URI=metadata\"", rewritten);
+        Assert.Equal(false, rewritten.Contains("TRIGGER-URL", StringComparison.Ordinal));
+
+        foreach (var attributes in new[]
+        {
+            "METHOD=AES-128,URI=key.bin",
+            "METHOD=AES-128,URI=\"first.key\",URI=\"second.key\"",
+            "METHOD=AES-128,URI=\"unterminated",
+            "METHOD=AES-128,URI=\"\""
+        })
+        {
+            var rejected = false;
+            try { media.RewritePlaylist("#EXTM3U\n#EXT-X-KEY:" + attributes + "\n", origin); }
+            catch (InvalidDataException) { rejected = true; }
+            Assert.True(rejected);
+        }
         return Task.CompletedTask;
     }
 

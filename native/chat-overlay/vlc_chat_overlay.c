@@ -240,7 +240,8 @@ static size_t         g_text_selection_hit_capacity = 0;
 static text_selection_state_t g_text_selection = {0};
 static volatile LONG64 g_next_chat_message_id = 0;
 
-static char          g_channel[64]              = {0};
+/* StreamInputParser accepts Kick slugs up to 80 ASCII characters. */
+static char          g_channel[81]              = {0};
 static char          g_channel_display_name[MAX_CHANNEL_DISPLAY] = {0};
 static bool          g_channel_display_name_explicit = false;
 static int           g_chat_provider            = CHAT_PROVIDER_TWITCH;
@@ -5830,9 +5831,14 @@ static int twitch_collect_emotes_from_tag(const char *message,
     return count;
 }
 
+static void report_joined_channel(void) {
+    char joined[sizeof(g_channel) + sizeof("joined #") - 1];
+    snprintf(joined, sizeof(joined), "joined #%s", g_channel);
+    queue_push(&g_queue, "chat", joined, true);
+}
+
 /* Parse one complete IRC line (without trailing \r\n). On PRIVMSG, pushes
- * to the queue. On PING, writes a PONG reply through `tls`. Returns false
- * only on fatal protocol error (caller can ignore — never happens today). */
+ * to the queue. On PING, writes a PONG reply through `tls`. */
 static void handle_irc_line(tls_conn_t *tls, char *line) {
     /* PING :tmi.twitch.tv  -> reply PONG :tmi.twitch.tv */
     if (strncmp(line, "PING", 4) == 0) {
@@ -5884,9 +5890,7 @@ static void handle_irc_line(tls_conn_t *tls, char *line) {
         return;
     }
     if (strncmp(cursor, "366 ", 4) == 0) {
-        char joined[80];
-        snprintf(joined, sizeof(joined), "joined #%s", g_channel);
-        queue_push(&g_queue, "chat", joined, true);
+        report_joined_channel();
         return;
     }
     if (strncmp(cursor, "NOTICE", 6) == 0) {
@@ -7341,9 +7345,7 @@ static bool kick_handle_pusher_text(tls_conn_t *tls, const char *text) {
         return true;
     }
     if (strcmp(event, "pusher_internal:subscription_succeeded") == 0) {
-        char joined[96];
-        snprintf(joined, sizeof(joined), "joined #%s", g_channel);
-        queue_push(&g_queue, "chat", joined, true);
+        report_joined_channel();
         return true;
     }
     if (strcmp(event, "App\\Events\\ChatMessageEvent") != 0) {
@@ -10824,8 +10826,8 @@ static bool parse_args(int argc, char **argv) {
         const char *a = argv[i];
         const char *next = (i + 1 < argc) ? argv[i + 1] : NULL;
         if (arg_matches(a, "--channel", "-Channel")) {
-            if (!next) return false;
-            strncpy(g_channel, next, sizeof(g_channel) - 1);
+            if (!next || strlen(next) >= sizeof(g_channel)) return false;
+            strcpy(g_channel, next);
             i++;
         } else if (arg_matches(a, "--channel-display-name", "-ChannelDisplayName")) {
             if (!next) return false;
@@ -10941,12 +10943,14 @@ static bool parse_args(int argc, char **argv) {
     /* Sanitize. */
     for (char *p = g_channel; *p; p++) {
         if ((*p >= 'A' && *p <= 'Z')) *p = (char)(*p - 'A' + 'a');
-        else if ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-') {
+        else if ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-'
+                 || (g_chat_provider == CHAT_PROVIDER_KICK && *p == '.')) {
             /* keep */
         } else {
             *p = '_';
         }
     }
+    if (strcmp(g_channel, ".") == 0 || strcmp(g_channel, "..") == 0) return false;
     if (!g_channel_display_name[0]) {
         set_channel_display_name(g_channel);
     }

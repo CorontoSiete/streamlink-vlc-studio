@@ -266,10 +266,7 @@ internal static partial class UpdateModernizationTestCatalog
         Assert.Equal("StreamlinkVlcStudio-release.zip", StagedAppUpdateService.ZipAssetName);
         Assert.Equal("StreamlinkVlcStudio.exe", StreamlinkVlcStudio.Core.AppIdentity.ManagedExecutableName);
         Assert.Equal("StreamlinkVlcStudio", StreamlinkVlcStudio.Core.AppIdentity.UpdateDirectoryName);
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "StreamlinkVlcStudio.sln")))
-            directory = directory.Parent;
-        var root = directory?.FullName ?? throw new InvalidOperationException("Could not locate repository root.");
+        var root = TestRepository.FindRoot();
         var wix = (System.Xml.Linq.XNamespace)"http://wixtoolset.org/schemas/v4/wxs";
         var package = System.Xml.Linq.XDocument.Load(Path.Combine(root, "scripts", "installer", "StreamlinkVlcStudio.wxs"));
         var installedDirectory = package.Descendants(wix + "Directory").Single(node => (string?)node.Attribute("Id") == "INSTALLFOLDER");
@@ -288,17 +285,7 @@ internal static partial class UpdateModernizationTestCatalog
 
     private static Task UpdateTrustRoots()
     {
-        string? root = null;
-        foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
-        {
-            var directory = new DirectoryInfo(start);
-            while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "StreamlinkVlcStudio.sln")))
-                directory = directory.Parent;
-            if (directory is null) continue;
-            root = directory.FullName;
-            break;
-        }
-        if (root is null) throw new InvalidOperationException("Could not locate repository root.");
+        var root = TestRepository.FindRoot();
         using var signingKey = RSA.Create();
         signingKey.ImportFromPem(File.ReadAllText(Path.Combine(root, "shared", "update-signing-public-key.pem")));
         var publicKey = signingKey.ExportSubjectPublicKeyInfo();

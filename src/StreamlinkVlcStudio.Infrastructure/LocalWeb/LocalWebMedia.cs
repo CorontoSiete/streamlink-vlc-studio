@@ -3,9 +3,9 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.WebUtilities;
+using StreamlinkVlcStudio.Infrastructure.Hls;
 using StreamlinkVlcStudio.Infrastructure.Http;
 using StreamlinkVlcStudio.Infrastructure.Replay;
 using StreamlinkVlcStudio.Infrastructure.Vod;
@@ -13,7 +13,7 @@ using StreamlinkVlcStudio.Infrastructure.Vod;
 namespace StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
 /// <summary>Only server-resolved resources receive opaque IDs. There is no URL/path proxy endpoint.</summary>
-internal sealed partial class LocalWebMedia : IDisposable
+internal sealed class LocalWebMedia : IDisposable
 {
     private static readonly Uri TrustedPlaylistUri = new("https://trusted-playlist.invalid/index.m3u8");
     private readonly ConcurrentDictionary<string, Uri> resources = new(StringComparer.Ordinal);
@@ -116,11 +116,24 @@ internal sealed partial class LocalWebMedia : IDisposable
                     throw new InvalidDataException("This HLS extension is not supported.");
                 if (line.StartsWith("#EXT-X-TWITCH-PREFETCH:", StringComparison.Ordinal))
                     line = "#EXT-X-TWITCH-PREFETCH:" + Map(line[23..]);
-                if (line.StartsWith("#EXT-X-DATERANGE:", StringComparison.Ordinal))
-                    line = TwitchTriggerUrl().Replace(line, "");
-                if (UriField().Matches(line).Count != UriAttribute().Matches(line).Count)
-                    throw new InvalidDataException("HLS URI attributes must be quoted.");
-                line = UriAttribute().Replace(line, match => match.Groups[1].Value + "URI=\"" + Map(match.Groups[2].Value) + "\"");
+                if (line.StartsWith("#EXT-X-PREFETCH:", StringComparison.Ordinal))
+                    line = "#EXT-X-PREFETCH:" + Map(line[16..]);
+                if (line.StartsWith("#EXT-X-", StringComparison.Ordinal) &&
+                    (line.Contains("URI=", StringComparison.Ordinal) || line.StartsWith("#EXT-X-DATERANGE:", StringComparison.Ordinal)))
+                {
+                    var colon = line.IndexOf(':');
+                    if (colon < 0 || !HlsAttributeList.TryParse(line.AsSpan(colon + 1), out var attributes))
+                        throw new InvalidDataException("Invalid HLS attributes.");
+                    if (attributes.TryGetValue("URI", out var uri))
+                    {
+                        if (!uri.IsQuoted) throw new InvalidDataException("HLS URI attributes must be quoted.");
+                        attributes["URI"] = new(Map(uri.Value), true);
+                    }
+                    if (line.StartsWith("#EXT-X-DATERANGE:", StringComparison.Ordinal))
+                        attributes.Remove("X-TV-TWITCH-TRIGGER-URL");
+                    line = line[..(colon + 1)] + string.Join(',', attributes.Select(attribute =>
+                        attribute.Key + "=" + (attribute.Value.IsQuoted ? "\"" + attribute.Value.Value + "\"" : attribute.Value.Value)));
+                }
                 if (line.Contains("://", StringComparison.Ordinal))
                     throw new InvalidDataException("Unsupported absolute URL in HLS metadata.");
             }
@@ -295,11 +308,4 @@ internal sealed partial class LocalWebMedia : IDisposable
     };
 
     public void Dispose() => http.Dispose();
-
-    [GeneratedRegex("(^|[,:])URI=\"([^\"]*)\"", RegexOptions.CultureInvariant)]
-    private static partial Regex UriAttribute();
-    [GeneratedRegex("(^|[,:])URI=", RegexOptions.CultureInvariant)]
-    private static partial Regex UriField();
-    [GeneratedRegex(",X-TV-TWITCH-TRIGGER-URL=\"[^\"]*\"", RegexOptions.CultureInvariant)]
-    private static partial Regex TwitchTriggerUrl();
 }

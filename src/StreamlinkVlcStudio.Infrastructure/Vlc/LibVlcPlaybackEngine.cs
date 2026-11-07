@@ -2050,14 +2050,8 @@ public sealed partial class LibVlcPlaybackEngine : IPlaybackEngine
         }
     }
 
-    private static Task RunBlockingNativeAsync(Action action, CancellationToken cancellationToken = default)
-    {
-        return Task.Factory.StartNew(
-            action,
-            cancellationToken,
-            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
-    }
+    private static Task RunBlockingNativeAsync(Action action, CancellationToken cancellationToken = default) =>
+        RunBlockingNativeAsync(() => { action(); return true; }, cancellationToken);
 
     private static Task<T> RunBlockingNativeAsync<T>(Func<T> action, CancellationToken cancellationToken = default)
     {

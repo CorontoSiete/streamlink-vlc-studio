@@ -39,7 +39,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
                 .Replace("IVS-NAME=\"480p\"", "IVS-NAME=\"480p60\""), "480p")
         })
             {
-                using var fixture = new Fixture(platform) { MasterText = master };
+                using var fixture = new Fixture() { MasterText = master };
                 await using var source = await fixture.Resolver.OpenAsync(Request(platform), CancellationToken.None);
                 Assert.NotNull(source);
                 Assert.Equal(3, fixture.Requests.Count);
@@ -51,7 +51,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
     {
         foreach (var platform in new[] { PlatformKind.Twitch, PlatformKind.Kick })
         {
-            using var fixture = new Fixture(platform) { MediaText = FragmentedMedia };
+            using var fixture = new Fixture() { MediaText = FragmentedMedia };
             await using var source = (await fixture.Resolver.OpenAsync(Request(platform), CancellationToken.None))!;
             var origin = fixture.Requests[2];
             using var client = new HttpClient();
@@ -88,7 +88,7 @@ internal static partial class StreamHoverPreviewSourceTestCatalog
             FragmentedMedia + "\n#EXT-X-KEY:METHOD=AES-128,URI=\"secret.key\""
         })
             {
-                using var fixture = new Fixture(platform) { MediaText = content };
+                using var fixture = new Fixture() { MediaText = content };
                 await Assert.ThrowsAsync<InvalidDataException>(async () =>
                     await fixture.Resolver.OpenAsync(Request(platform), CancellationToken.None));
             }

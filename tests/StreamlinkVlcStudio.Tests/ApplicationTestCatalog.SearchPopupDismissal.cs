@@ -11,7 +11,10 @@ internal static partial class ApplicationTestCatalog
         ("search popup dismissal: an automatic search queued before switching windows stays canceled", SearchPopupQueuedSearchAfterWindowSwitchAsync),
         ("search popup dismissal: minimizing the owner closes the native popup", SearchPopupOwnerMinimizedAsync),
         ("search popup dismissal: hiding the owner closes the native popup", SearchPopupOwnerHiddenAsync),
-        ("search popup dismissal: right clicking a result keeps its menu and search results open", SearchPopupResultRightClickAsync)
+        ("search popup dismissal: right and left clicking result text keeps menus and playback usable", SearchPopupResultRightClickAsync),
+        ("search popup input: plain and nested result text remains inside the popup", SearchPopupTextInputAsync),
+        ("search popup input: emoji content and visual children remain inside the popup", SearchPopupEmojiInputAsync),
+        ("search popup input: outside text dismisses results without clearing the query", SearchPopupOutsideTextInputAsync)
     ];
 
     private static Task SearchPopupResultRightClickAsync() =>
@@ -38,7 +41,12 @@ internal static partial class ApplicationTestCatalog
                 button.ContextMenuOpening += (_, _) => events.Add("context menu opening");
                 menu.Opened += (_, _) => events.Add("context menu opened");
                 menu.Closed += (_, _) => events.Add("context menu closed");
-                var screenPoint = button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight / 2));
+                var title = FindVisualDescendants<EmojiTextBlock>(button).Single();
+                var run = title.Inlines.OfType<Run>().First();
+                var character = run.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+                var next = run.ContentStart.GetPositionAtOffset(1)!.GetCharacterRect(LogicalDirection.Forward);
+                var screenPoint = title.PointToScreen(new Point((character.Left + next.Left) / 2,
+                    character.Top + character.Height / 2));
                 var x = (int)Math.Round(screenPoint.X);
                 var y = (int)Math.Round(screenPoint.Y);
                 var popupHandle = ((HwndSource)PresentationSource.FromVisual(popupRoot)!).Handle;
@@ -52,6 +60,11 @@ internal static partial class ApplicationTestCatalog
                     $"popup topmost={NativeWindowTest.IsTopmost(popupHandle)}, owner handle={new WindowInteropHelper(window).Handle}, " +
                     $"button size={button.ActualWidth:0.##}x{button.ActualHeight:0.##}");
 
+                Assert.True(ReferenceEquals(run, popupRoot.InputHitTest(popupRoot.PointFromScreen(screenPoint))),
+                    "The physical search click must hit the streamer's actual text Run.");
+                object? originalSource = null;
+                window.AddHandler(Mouse.PreviewMouseDownEvent,
+                    new MouseButtonEventHandler((_, args) => originalSource = args.OriginalSource), true);
                 NativeWindowTest.SendRightClick(x, y);
                 await TestWait.UntilAsync(() => menu.IsOpen || !popup.IsOpen, TimeSpan.FromSeconds(2),
                     "A physical right click must either open the result menu or expose the premature popup dismissal");
@@ -63,6 +76,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.True(popup.IsOpen && main.IsStreamSearchPanelVisible,
                     $"Search results disappeared on right click: {observed}");
                 Assert.Equal(0, main.Tabs.Count);
+                Assert.True(ReferenceEquals(run, originalSource));
                 menu.IsOpen = false;
 
                 var content = (FrameworkElement)window.FindName("HomeContentScrollViewer");
@@ -75,6 +89,20 @@ internal static partial class ApplicationTestCatalog
                 await TestWait.UntilAsync(() => !popup.IsOpen, TimeSpan.FromSeconds(2),
                     "A click outside the search popup must still dismiss it");
                 Assert.True(main.HasStreamSearchResults);
+
+                main.ShowStreamSearchDropdown();
+                PumpResponsiveLayout(window);
+                await TestWait.UntilAsync(() => NativeWindowTest.IsRootWindowAtPoint(popupHandle, x, y),
+                    TimeSpan.FromSeconds(2), "The reopened result must accept the physical left click");
+                originalSource = null;
+                NativeWindowTest.SendLeftClick(x, y);
+                await TestWait.UntilAsync(() => main.Tabs.Count == 1, TimeSpan.FromSeconds(2),
+                    "Clicking the streamer's text must open playback");
+                Assert.True(ReferenceEquals(run, originalSource));
+                Assert.Equal("searchfixture", main.SelectedTab!.Target.Channel);
+                Assert.Equal(false, main.IsHomeSelected);
+                Assert.Equal(false, main.IsStreamSearchPanelVisible);
+                Assert.Equal(false, popup.IsOpen);
             }
             finally
             {

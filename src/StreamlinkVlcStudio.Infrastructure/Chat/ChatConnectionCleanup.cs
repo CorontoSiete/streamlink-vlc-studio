@@ -5,6 +5,39 @@ namespace StreamlinkVlcStudio.Infrastructure.Chat;
 
 internal static class ChatConnectionCleanup
 {
+    internal static async Task ConnectAsync(
+        SemaphoreSlim lifecycleGate,
+        Action throwIfDisposed,
+        Func<Task> disconnectAsync,
+        Func<Task> connectAsync,
+        IAppLogger logger,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        throwIfDisposed();
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throwIfDisposed();
+            await disconnectAsync().ConfigureAwait(false);
+            try
+            {
+                await connectAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                try { await disconnectAsync().ConfigureAwait(false); }
+                catch (Exception exception)
+                {
+                    logger.WriteSafely(AppLogLevel.Warning, source, "Chat cleanup failed after a connection error.", exception);
+                }
+                throw;
+            }
+        }
+        finally { lifecycleGate.Release(); }
+    }
+
     internal static async Task DisconnectAsync(
         SemaphoreSlim lifecycleGate,
         Action throwIfDisposed,

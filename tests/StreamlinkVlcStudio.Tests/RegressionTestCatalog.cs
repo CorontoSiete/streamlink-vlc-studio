@@ -29,7 +29,7 @@ internal static class RegressionTestCatalog
 
     private static Task InstallerOsGatesAllow64BitWindows10And11()
     {
-        var repoRoot = FindRepoRoot();
+        var repoRoot = TestRepository.FindRoot();
         var installerDirectory = Path.Combine(repoRoot, "scripts", "installer");
         var wixNamespace = System.Xml.Linq.XNamespace.Get("http://wixtoolset.org/schemas/v4/wxs");
 
@@ -1075,25 +1075,6 @@ internal static class RegressionTestCatalog
         Assert.True(settings.TryGetKickBroadcasterUserId("channel-15", out _));
     }
 
-    private static string FindRepoRoot()
-    {
-        foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
-        {
-            var directory = new DirectoryInfo(start);
-            while (directory is not null)
-            {
-                if (File.Exists(Path.Combine(directory.FullName, "scripts", "package-release.ps1")) &&
-                    File.Exists(Path.Combine(directory.FullName, "StreamlinkVlcStudio.sln")))
-                {
-                    return directory.FullName;
-                }
-
-                directory = directory.Parent;
-            }
-        }
-
-        throw new InvalidOperationException("Could not locate repository root.");
-    }
 
     private sealed class FakeAppUpdateService(string message, bool updateReady) : IAppUpdateService
     {

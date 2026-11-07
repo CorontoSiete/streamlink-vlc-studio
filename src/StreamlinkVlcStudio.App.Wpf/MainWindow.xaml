@@ -3089,6 +3089,13 @@
                                                         Command="{Binding RefreshBrowseCommand}"
                                                         MinWidth="104"
                                                         Margin="12,0,0,0" />
+                                                <ComboBox DockPanel.Dock="Right"
+                                                          ItemsSource="{Binding BrowseLanguageOptions}"
+                                                          DisplayMemberPath="Name" SelectedValuePath="Code"
+                                                          SelectedValue="{Binding SelectedBrowseLanguage, Mode=TwoWay}"
+                                                          Width="184" Cursor="Hand" Margin="12,0,0,0"
+                                                          AutomationProperties.Name="Discovery stream language"
+                                                          ToolTip="Filter live streams inside categories by language. Category viewer counts include all languages." />
                                                 <Grid>
                                                     <TextBox Text="{Binding BrowseCategorySearchText, UpdateSourceTrigger=PropertyChanged}"
                                                              Style="{StaticResource HomeSearchTextBoxStyle}"
@@ -3111,6 +3118,10 @@
                                                                Visibility="{Binding IsBrowseCategorySearchPlaceholderVisible, Converter={StaticResource BoolToVisibility}}" />
                                                 </Grid>
                                             </controls:ResponsiveDockPanel>
+
+                                            <TextBlock Text="Language filters live streams inside categories."
+                                                       Foreground="{DynamicResource StudioTextMutedBrush}"
+                                                       FontSize="12" Margin="0,0,0,12" />
 
                                             <ProgressBar Height="4"
                                                          IsIndeterminate="True"
@@ -3329,6 +3340,13 @@
                                                         MinWidth="104"
                                                         Margin="12,0,0,0" />
                                             </controls:ResponsiveDockPanel>
+
+                                            <ComboBox ItemsSource="{Binding BrowseLanguageOptions}"
+                                                      DisplayMemberPath="Name" SelectedValuePath="Code"
+                                                      SelectedValue="{Binding SelectedBrowseLanguage, Mode=TwoWay}"
+                                                      Width="184" Cursor="Hand" HorizontalAlignment="Left" Margin="0,0,0,12"
+                                                      AutomationProperties.Name="Category stream language"
+                                                      ToolTip="Filter live streams by language" />
 
                                             <Border Background="{DynamicResource StudioSurface1Brush}"
                                                     BorderBrush="{DynamicResource StudioBorderBrush}"

@@ -6,6 +6,9 @@
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const state = { csrf: '', sessionVersion: 0, page: 'following', players: [], selected: null, grid: false, settings: null, cursor: '', category: null, generation: 0, polling: false, authenticated: false, items: [], followed: [], cardType: 'following', filter: 'all', busy: false };
   const navigationHistory = [];
+  const completedCursors = new Set();
+  const categoryLanguages = new Map();
+  let browseDirectoryLanguage = '';
   const search = { timer: null, abort: null, version: 0, items: [], active: -1, signature: '', status: '', message: '', mode: '', composing: false };
   const pages = {
     following: ['Following', 'YOUR DAILY LINEUP', 'Your favorite channels, together in one place.', 'Your channels'],
@@ -104,8 +107,12 @@
   ];
   function normalizeHotkey(value) {
     if (!value || typeof value !== 'object' || typeof value.key !== 'string') return null;
-    const key = Array.from(value.key).length === 1 ? value.key.toLowerCase() : value.key;
-    if (!/^[^\s\p{C}]$/u.test(key) && !/^(Escape|Backspace|Delete|Insert|Home|End|PageUp|PageDown|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Mouse[45]|F(?:[1-9]|1[0-2]))$/.test(key)) return null;
+    const character = /^[^\s\p{C}]$/u;
+    const lower = value.key.toLowerCase();
+    // Some letters (such as İ) lowercase to several code points. Keep those keys
+    // intact so recording, saved bindings and keyboard events use the same character.
+    const key = character.test(lower) ? lower : value.key;
+    if (!character.test(key) && !/^(Escape|Backspace|Delete|Insert|Home|End|PageUp|PageDown|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Mouse[45]|F(?:[1-9]|1[0-2]))$/.test(key)) return null;
     if (['ctrl', 'alt', 'shift', 'meta'].some(name => value[name] !== undefined && typeof value[name] !== 'boolean')) return null;
     return { key, ctrl: !!value.ctrl, alt: !!value.alt, shift: !!value.shift, meta: !!value.meta };
   }
@@ -258,6 +265,20 @@
   async function run(action) {
     try { return await action(); } catch (error) { if (error.name !== 'AbortError') notice(error.message, true); }
   }
+  function bindAsyncSubmit(form, action) {
+    let pending = false;
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (pending) return;
+      pending = true;
+      const submit = $('button[type=submit]', form);
+      submit.disabled = true; form.setAttribute('aria-busy', 'true');
+      run(async () => {
+        try { await action(); }
+        finally { pending = false; submit.disabled = false; form.removeAttribute('aria-busy'); }
+      });
+    });
+  }
   function ensureSession(version) {
     if (version !== state.sessionVersion) throw new DOMException('Session changed.', 'AbortError');
   }
@@ -292,7 +313,11 @@
   }
   function api(action, input = {}, signal) {
     const version = state.sessionVersion;
-    const result = queue.then(() => { ensureSession(version); return request(action, input, 'POST', signal); });
+    const result = queue.then(async () => {
+      ensureSession(version);
+      try { return await request(action, input, 'POST', signal); }
+      catch (error) { ensureSession(version); throw error; }
+    });
     queue = result.catch(() => {});
     return result;
   }
@@ -328,12 +353,15 @@
     const value = Math.floor(seconds);
     return [Math.floor(value / 3600), Math.floor(value / 60) % 60, value % 60].map((n, i) => i ? String(n).padStart(2, '0') : String(n)).join(':');
   }
-  function disconnect() {
+  function resetSessionWork() {
     ++state.sessionVersion; queue = Promise.resolve();
-    pendingPlayers.clear();
+    state.polling = false; pendingPlayers.clear(); completedCursors.clear(); navigationHistory.length = 0;
+    return state.sessionVersion;
+  }
+  function disconnect() {
+    resetSessionWork();
     clearTimeout(profileSaveTimer); profileSaveTimer = null; profileSaveTask = null; ++profileSaveEpoch;
     cancelVolumeSaves();
-    navigationHistory.length = 0;
     closeSearch(); $('#query').value = '';
     ++state.generation;
     cancelCategoryViewerCounts();
@@ -348,16 +376,16 @@
     $('#password').value = ''; setLoginPasswordVisible(false); $('#username').focus();
   }
   async function connected(session) {
-    const version = ++state.sessionVersion;
-    queue = Promise.resolve();
-    pendingPlayers.clear();
-    navigationHistory.length = 0;
+    const version = resetSessionWork();
     state.csrf = session.csrf;
     state.authenticated = true;
     $('#password').value = ''; setLoginPasswordVisible(false);
     try { state.settings = await api('settings'); }
     catch (error) { if (version === state.sessionVersion) disconnect(); throw error; }
     preferences = { ...preferences, ...state.settings.preferences };
+    categoryLanguages.clear();
+    for (const [key, language] of Object.entries(state.settings.preferences?.categoryLanguages || {})) categoryLanguages.set(key, language);
+    browseDirectoryLanguage = '';
     hotkeys = loadHotkeys(preferences.hotkeys);
     renderHotkeyPreferences();
     cancelVolumeSaves();
@@ -366,6 +394,7 @@
     $('#login').hidden = true; $('#studio').hidden = false;
     $('#signed-in-user').textContent = session.username;
     $('#default-quality').replaceChildren(...state.settings.qualities.map(q => new Option(q, q)));
+    $('#discover-language').replaceChildren(...(state.settings.browseLanguages || [{ code: '', name: 'All languages' }]).map(language => new Option(language.name, language.code)));
     $('#default-quality').value = state.settings.defaultQuality;
     $('#low-latency').checked = state.settings.lowLatency;
     $('#chat-layout').value = ['docked', 'overlay', 'hidden'].includes(preferences.layout) ? preferences.layout : 'docked';
@@ -402,8 +431,14 @@
     finally { submit.disabled = false; form.removeAttribute('aria-busy'); $('.login-submit-label', submit).textContent = 'Sign in to studio'; }
   });
   const logout = () => run(async () => {
+    const version = state.sessionVersion;
     try { await flushSessionState(); }
-    finally { await api('logout'); disconnect(); }
+    finally {
+      if (version === state.sessionVersion) {
+        try { await api('logout'); }
+        finally { if (version === state.sessionVersion) disconnect(); }
+      }
+    }
   });
   $('#logout').addEventListener('click', logout);
   $('#mobile-logout').addEventListener('click', logout);
@@ -413,13 +448,14 @@
 
   function navigationSnapshot() {
     return { page: state.page, category: state.category, query: $('#query').value, platform: platform(),
+      language: $('#discover-language').value,
       vodType: $('#vod-type').value, filter: state.filter, liveOnly: $('#live-filter').checked, sort: $('#channel-sort').value,
       watching: $('#studio').classList.contains('watching'), selected: state.selected,
       scrollX: window.scrollX, scrollY: window.scrollY };
   }
   function sameNavigation(a, b) {
     return a.page === b.page && a.category?.id === b.category?.id && a.query === b.query && a.platform === b.platform &&
-      a.vodType === b.vodType && a.watching === b.watching;
+      a.vodType === b.vodType && a.language === b.language && a.watching === b.watching;
   }
   function rememberNavigation() {
     if (!state.authenticated || !$('#studio').dataset.page) return;
@@ -445,9 +481,15 @@
     $('#breadcrumbs').replaceChildren();
     if (state.category) $('#breadcrumbs').append(button('All categories', () => browseCategory(null, '')), node('span', '/ ' + state.category.name));
   }
+  function categoryLanguageKey() {
+    return (platform() === 'kick' ? 'Kick' : 'Twitch') + ':' + state.category.id;
+  }
+  function restoreDiscoveryLanguage() {
+    $('#discover-language').value = state.category ? categoryLanguages.get(categoryLanguageKey()) ?? browseDirectoryLanguage : browseDirectoryLanguage;
+  }
   async function browseCategory(category, query = $('#query').value) {
     if (state.category?.id !== category?.id) rememberNavigation();
-    state.category = category; state.items = []; $('#query').value = query; renderBreadcrumbs(); await load();
+    state.category = category; state.items = []; $('#query').value = query; restoreDiscoveryLanguage(); renderBreadcrumbs(); await load();
   }
   async function showPage(page, view = null, record = true) {
     if (!pages[page]) return;
@@ -458,6 +500,7 @@
     renderFollowedChannels();
     state.page = page; state.category = view?.category || null; state.cursor = ''; state.items = []; state.filter = view?.filter || 'all';
     if (view?.platform) $('#platform').value = view.platform;
+    restoreDiscoveryLanguage();
     if (view?.vodType) $('#vod-type').value = view.vodType;
     if (view?.sort) $('#channel-sort').value = view.sort;
     $('#live-filter').checked = !!view?.liveOnly; $('#query').value = view?.query ?? (page === 'vods' ? $('#query').value : '');
@@ -477,6 +520,8 @@
     $('#download-input').hidden = page !== 'downloads';
     $('#platform-filters').hidden = page !== 'following';
     $('#sort-label').hidden = page !== 'following';
+    $('#discover-language-label').hidden = page !== 'discover';
+    $('#discover-language-help').hidden = page !== 'discover';
     $('#live-filter-label').hidden = page !== 'following';
     $('#empty-state').hidden = true;
     $('#query').placeholder = page === 'discover' ? 'Search categories…' : page === 'vods' ? 'Enter a channel name…' : page === 'downloads' ? 'Paste a video URL to download…' : 'Search channels or paste a URL…';
@@ -512,6 +557,7 @@
     cancelFollowingHistory();
     const page = state.page;
     if (!append) state.cursor = '';
+    const cursor = state.cursor;
     $('#more').hidden = true; $('#empty-state').hidden = true; notice('');
     if (page === 'settings') { setBusy(false); $('#cards').replaceChildren(); return; }
     if (page === 'vods' && !$('#query').value.trim()) {
@@ -527,21 +573,29 @@
       else if (page === 'recent') result = await api('recent');
       else if (page === 'downloads') result = await api('downloads');
       else if (page === 'discover') {
+        if (state.category) categoryLanguages.set(categoryLanguageKey(), $('#discover-language').value);
         result = state.category
-          ? await api('streams', { platform: platform(), categoryId: state.category.id, categoryName: state.category.name, cursor: state.cursor })
-          : await api('categories', { platform: platform(), query: $('#query').value.trim(), cursor: state.cursor });
+          ? await api('streams', { platform: platform(), categoryId: state.category.id, categoryName: state.category.name, cursor, language: $('#discover-language').value })
+          : await api('categories', { platform: platform(), query: $('#query').value.trim(), cursor });
       } else if (page === 'vods') {
-        result = await api('vods', { platform: platform(), channel: $('#query').value.trim(), type: $('#vod-type').value, cursor: state.cursor });
+        result = await api('vods', { platform: platform(), channel: $('#query').value.trim(), type: $('#vod-type').value, cursor });
       }
       if (generation !== state.generation || !state.authenticated) return;
-      const items = [...(result.items || []), ...(result.offline || [])];
+      const seen = new Set(append ? state.items.map(item => item.id || item.key) : []);
+      const items = [...(result.items || []), ...(result.offline || [])].filter(item => {
+        const key = item.id || item.key;
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      });
       if (page === 'following') { state.followed = items; renderFollowedChannels(); }
       const type = page === 'discover' && !state.category ? 'categories' : page;
-      state.items = append ? [...state.items, ...items.filter(item => !state.items.some(old => (old.key || old.id) === (item.key || item.id)))] : items;
+      state.items = append ? [...state.items, ...items] : items;
       state.cardType = type;
-      state.cursor = result.nextCursor || '';
+      if (!append) completedCursors.clear();
+      completedCursors.add(cursor);
+      const nextCursor = (result.nextCursor || '').trim();
+      state.cursor = completedCursors.has(nextCursor) ? '' : nextCursor;
       renderResults();
-      $('#more').hidden = !state.cursor;
       if (result.message) notice(result.message);
       if (type === 'categories' && platform() === 'twitch') loadCategoryViewerCounts(generation);
       if (page === 'following' && result.offline?.length) loadFollowingHistory(generation);
@@ -552,7 +606,9 @@
         empty('Couldn’t load this page.', error.message, 'refresh', 'Try again', () => load());
       }
       notice(error.message, true);
-    } finally { if (generation === state.generation) setBusy(false); }
+    } finally {
+      if (generation === state.generation) { setBusy(false); $('#more').hidden = !state.cursor; }
+    }
   }
   let followingHistoryAbort = null;
   function cancelFollowingHistory() {
@@ -746,6 +802,7 @@
     else if (state.page === 'recent') empty('Start your watch history.', 'The live channels you watch will appear here, ready for your next visit.', 'history', 'Find something to watch', () => showPage('discover'));
     else if (state.page === 'downloads') empty('A little space for your favorites.', 'Browse a channel’s videos and choose Download, or paste a video URL above. Your desktop stores the files.', 'download', 'Browse videos', () => showPage('vods'));
     else if (state.page === 'vods') empty('No videos found for this channel.', 'Check the channel name, try another video type, or come back after the next broadcast.', 'video', 'Try another channel', () => $('#query').focus());
+    else if (state.page === 'discover' && state.category && $('#discover-language').value) empty('No streams in this language.', 'Try another language or browse all languages in this category.', 'compass', 'Show all languages', () => { $('#discover-language').value = ''; return load(); });
     else empty('Nothing here just yet.', 'Try another category or a different search.', 'compass', 'Browse all categories', () => browseCategory(null, ''));
   }
   function renderCards(items, type) {
@@ -966,7 +1023,7 @@
       if (state.page !== 'discover' && state.page !== 'vods') { updateSearch(true); return; }
       closeSearch();
       if (state.category) rememberNavigation();
-      state.category = null; $('#breadcrumbs').replaceChildren();
+      state.category = null; restoreDiscoveryLanguage(); $('#breadcrumbs').replaceChildren();
       state.items = []; await load();
     });
   });
@@ -977,10 +1034,16 @@
   }));
   $('#refresh').addEventListener('click', () => run(() => load()));
   $('#more').addEventListener('click', () => run(() => load(true)));
+  $('#discover-language').addEventListener('change', () => run(() => {
+    closeSearch();
+    if (state.page !== 'discover') return;
+    if (!state.category) { browseDirectoryLanguage = $('#discover-language').value; return; }
+    state.items = []; return load();
+  }));
   $('#platform').addEventListener('change', () => run(() => {
     const hasQuery = !!$('#query').value.trim(); closeSearch();
     if (hasQuery && state.page !== 'discover' && state.page !== 'vods') { updateSearch(true); return; }
-    state.category = null; state.items = []; $('#breadcrumbs').replaceChildren();
+    state.category = null; state.items = []; restoreDiscoveryLanguage(); $('#breadcrumbs').replaceChildren();
     $('#vod-type').hidden = state.page !== 'vods' || platform() === 'kick'; return load();
   }));
   $('#query').addEventListener('search', () => {
@@ -1003,8 +1066,7 @@
   }
   $('#close-open').addEventListener('click', () => $('#open-dialog').close());
   closeOnBackdrop($('#open-dialog'), () => $('#open-dialog').close());
-  $('#open-form').addEventListener('submit', async event => {
-    event.preventDefault(); const submit = $('button[type=submit]', event.currentTarget); submit.disabled = true;
+  bindAsyncSubmit($('#open-form'), async () => {
     $('#open-error').textContent = '';
     try {
       const p = await openPlayer({ input: $('#open-query').value.trim(), platform: $('#open-platform').value });
@@ -1013,7 +1075,6 @@
       selectPlayer(p.id); p.video.focus();
     }
     catch (error) { $('#open-error').textContent = error.message; notice(''); }
-    finally { submit.disabled = false; }
   });
   function safeChannelUrl(value, image = false) {
     try {
@@ -1199,6 +1260,18 @@
     return source.input ? JSON.stringify([source.platform || '', source.input.trim()]) : '';
   }
   function replacementCanceled(p) { return p && (p.closed || p.closing || p.reloadCanceled); }
+  function setupChatForm(p) {
+    const form = $('.chat-form', p.element), input = $('input', form);
+    form.hidden = p.isVod;
+    let revision = 0;
+    input.addEventListener('input', () => { ++revision; });
+    bindAsyncSubmit(form, async () => {
+      if (p.closed || p.closing || p.stopped || p.isVod) return;
+      const sentRevision = revision;
+      await api('chat/send', { player: p.id, message: input.value });
+      if (revision === sentRevision) input.value = '';
+    });
+  }
   async function openPlayer(source, replace = null) {
     closeSearch();
     const sourceKey = playerSourceKey(source);
@@ -1284,10 +1357,7 @@
     element.addEventListener('pointerdown', () => { if (state.selected !== p.id) selectPlayer(p.id); });
     element.addEventListener('focusin', () => { if (state.selected !== p.id) selectPlayer(p.id); });
     $$('button[data-action]', element).forEach(b => b.addEventListener('click', () => run(async () => { b.disabled = true; try { await playerAction(p, b.dataset.action); } finally { if (['follow', 'unfollow'].includes(b.dataset.action)) renderFollowState(p); else b.disabled = false; } })));
-    $('.chat-form', element).hidden = p.isVod;
-    $('.chat-form', element).addEventListener('submit', event => {
-      event.preventDefault(); run(async () => { const input = $('input', event.currentTarget); await api('chat/send', { player: p.id, message: input.value }); input.value = ''; });
-    });
+    setupChatForm(p);
     $('[data-action=clip]', element).hidden = p.isVod;
     $('[data-action=follow]', element).hidden = p.isVod;
     $('[data-action=unfollow]', element).hidden = p.isVod;
@@ -1605,7 +1675,7 @@
       }
       const windowInput = node('input'); windowInput.name = 'window'; windowInput.type = 'number'; windowInput.min = '30'; windowInput.max = '1800'; windowInput.value = '120'; windowInput.setAttribute('aria-label', 'Prediction window in seconds'); form.append(windowInput);
       const submit = node('button', 'Create prediction'); submit.type = 'submit'; form.append(submit);
-      form.addEventListener('submit', event => { event.preventDefault(); run(async () => { const data = new FormData(form); await api('prediction/create', { player: p.id, title: data.get('title'), outcomes: [data.get('first'), data.get('second')], window: Number(data.get('window')) }); await showPredictions(p); }); }); panel.append(form);
+      bindAsyncSubmit(form, async () => { const data = new FormData(form); await api('prediction/create', { player: p.id, title: data.get('title'), outcomes: [data.get('first'), data.get('second')], window: Number(data.get('window')) }); await showPredictions(p); }); panel.append(form);
     } else panel.append(node('p', result.access.message));
     panel.append(button('Hide predictions', () => { panel.hidden = true; }));
   }
@@ -1972,6 +2042,7 @@
   }, 250);
   setInterval(async () => {
     if (!state.authenticated || state.polling) return;
+    const version = state.sessionVersion;
     state.polling = true;
     try {
       for (const p of [...state.players]) {
@@ -1986,8 +2057,8 @@
           state.items = result.items || []; renderResults();
         }
       }
-    } catch (error) { if (state.authenticated) notice(error.message, true); }
-    finally { state.polling = false; }
+    } catch (error) { if (version === state.sessionVersion && state.authenticated && error.name !== 'AbortError') notice(error.message, true); }
+    finally { if (version === state.sessionVersion) state.polling = false; }
   }, 2000);
   // Save before normal tab backgrounding. Session expiry handles abrupt disconnect cleanup.
   setInterval(refreshLastLiveLabels, 60000);

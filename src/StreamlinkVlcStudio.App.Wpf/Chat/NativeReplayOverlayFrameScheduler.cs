@@ -5,6 +5,7 @@ using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
 using StreamlinkVlcStudio.Core.Settings;
+using StreamlinkVlcStudio.Infrastructure.Threading;
 
 namespace StreamlinkVlcStudio.App.Wpf.Chat;
 
@@ -134,24 +135,12 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
             context => context.GetSelectedMessageBodyText(),
             fallback: null);
 
-    public ValueTask DisposeAsync()
-    {
-        lock (gate)
-        {
-            if (disposalTask is not null)
-            {
-                return new ValueTask(disposalTask);
-            }
-
-            disposed = true;
-            pendingRequest = null;
-            disposalTask = DisposeCoreAsync();
-            return new ValueTask(disposalTask);
-        }
-    }
+    public ValueTask DisposeAsync() =>
+        new(AsyncDisposal.Begin(gate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
     private async Task DisposeCoreAsync()
     {
+        lock (gate) pendingRequest = null;
         try
         {
             if (!dispatcher.HasShutdownStarted)
@@ -173,57 +162,42 @@ internal sealed class NativeReplayOverlayFrameScheduler : IAsyncDisposable
         }
     }
 
-    private Task<TResult> InvokeOnRendererAsync<TResult>(
+    private async Task<TResult> InvokeOnRendererAsync<TResult>(
         Func<NativeReplayOverlayFrameRenderContext, TResult> action,
         TResult fallback)
     {
-        if (dispatcher.CheckAccess())
-        {
-            if (renderContext is null)
-            {
-                return Task.FromResult(fallback);
-            }
-
-            return Task.FromResult(action(renderContext));
-        }
-
-        var completion = new TaskCompletionSource<TResult>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         lock (gate)
         {
-            if (disposed)
-            {
-                completion.TrySetResult(fallback);
-                return completion.Task;
-            }
+            if (disposed) return fallback;
         }
+        if (dispatcher.CheckAccess()) return Invoke();
 
+        DispatcherOperation<TResult> operation;
         try
         {
-            dispatcher.BeginInvoke(new Action(() =>
-            {
-                if (renderContext is null)
-                {
-                    completion.TrySetResult(fallback);
-                    return;
-                }
-
-                try
-                {
-                    completion.TrySetResult(action(renderContext));
-                }
-                catch (Exception ex)
-                {
-                    completion.TrySetException(ex);
-                }
-            }), DispatcherPriority.Input);
+            operation = dispatcher.InvokeAsync(Invoke, DispatcherPriority.Input);
         }
         catch (InvalidOperationException)
         {
-            completion.TrySetResult(fallback);
+            return fallback;
         }
 
-        return completion.Task;
+        try { return await operation.Task.ConfigureAwait(false); }
+        catch (TaskCanceledException) when (operation.Status == DispatcherOperationStatus.Aborted)
+        {
+            // Shutdown can abort a queued operation without running its delegate.
+            // Await the dispatcher task so selection callers still finish in that race.
+            return fallback;
+        }
+
+        TResult Invoke()
+        {
+            lock (gate)
+            {
+                if (disposed || renderContext is null) return fallback;
+            }
+            return action(renderContext);
+        }
     }
 
     private static void RunDispatcher(

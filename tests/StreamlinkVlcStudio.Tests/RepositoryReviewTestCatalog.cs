@@ -1,4 +1,5 @@
 using StreamlinkVlcStudio.Infrastructure.Http;
+using StreamlinkVlcStudio.Infrastructure.Logging;
 using StreamlinkVlcStudio.Infrastructure.Threading;
 
 internal static class RepositoryReviewTestCatalog
@@ -20,8 +21,36 @@ internal static class RepositoryReviewTestCatalog
         ("repository review: timed-out Kick UI callbacks do not mutate credentials", () => KickUiCallbackAsync(cancel: false, timeout: true)),
         ("repository review: direct Kick refresh reads a snapshot and preserves account edits", DirectKickRefreshIsolationAsync),
         ("repository review: background credential changes dispatch UI notifications", ChatSettingsDispatchAsync),
-        ("repository review: repeated overlay frame acknowledgments retain a pending resize", RepeatedOverlayAcknowledgmentAsync)
+        ("repository review: repeated overlay frame acknowledgments retain a pending resize", RepeatedOverlayAcknowledgmentAsync),
+        ("repository review: locked legacy logs do not prevent independent cleanup", LockedLegacyLogsAsync)
     ];
+
+    private static async Task LockedLegacyLogsAsync()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"logger-cleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var lockedPath = Path.Combine(directory, "studio-2000-01-01.log");
+            var legacyPath = Path.Combine(directory, "studio-2000-01-02.log");
+            var excessPath = Path.Combine(directory, "studio.9.log");
+            var retainedPath = Path.Combine(directory, "studio.1.log");
+            foreach (var path in new[] { lockedPath, legacyPath, excessPath, retainedPath })
+                File.WriteAllText(path, "previous log");
+            using var locked = new FileStream(lockedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using (var logger = new FileAppLogger(directory))
+            {
+                logger.Write(AppLogLevel.Info, "Cleanup", "Current logging still works.");
+                await logger.FlushAsync();
+            }
+            Assert.True(File.Exists(lockedPath));
+            Assert.Equal(false, File.Exists(legacyPath));
+            Assert.Equal(false, File.Exists(excessPath));
+            Assert.True(File.Exists(retainedPath));
+            Assert.Contains("Current logging still works.", File.ReadAllText(Path.Combine(directory, "studio.log")));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
 
     private static async Task RepeatedOverlayAcknowledgmentAsync()
     {

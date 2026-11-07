@@ -72,7 +72,8 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
     fetch: async (url, options) => {
       const input = JSON.parse(options.body || '{}');
       requests.push({ url, input, keepalive: options.keepalive });
-      if (onRequest) await onRequest(url, input);
+      const response = onRequest && await onRequest(url, input);
+      if (response) return response;
       let result = {};
       if (url === '/api/open') {
         result = { ...target, id: `player-${++opened}`, key: `key-${opened}`, title: 'Display title',
@@ -105,7 +106,7 @@ function fixture({ storage = new Map(), volumes = new Map(), layouts = new Map()
   // Only replace startup authentication. All opening, replacement, closing, audio
   // selection, event handlers and persistence run from the actual application.
   assert.ok(code.includes('  restoreSession();'));
-  vm.runInContext(code.replace('  restoreSession();', '  globalThis.playerTest = { state, openPlayer, closePlayer, playerAction, selectPlayer, disconnect, flushVolumes, storeChatGeometry, resizeChat, positionChat, chatGeometry, setPreferences: value => Object.assign(preferences, value), seedVolumes: values => { for (const [key, volume] of values) streamVolumes.set(key, volume); }, flush: () => queue };'), context);
+  vm.runInContext(code.replace('  restoreSession();', '  globalThis.playerTest = { state, load, openPlayer, closePlayer, playerAction, selectPlayer, disconnect, flushVolumes, storeChatGeometry, resizeChat, positionChat, chatGeometry, normalizeHotkey, hotkeyFromEvent, loadHotkeys, setPreferences: value => Object.assign(preferences, value), seedVolumes: values => { for (const [key, volume] of values) streamVolumes.set(key, volume); }, flush: () => queue };'), context);
   const app = context.playerTest;
   app.state.authenticated = true;
   app.state.settings = { defaultQuality: 'best', qualities: ['best', '720p'], lowLatency: true };

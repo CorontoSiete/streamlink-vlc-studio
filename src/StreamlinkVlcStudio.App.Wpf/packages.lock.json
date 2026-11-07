@@ -4,9 +4,9 @@
     "net10.0-windows10.0.19041": {
       "Microsoft.NET.ILLink.Tasks": {
         "type": "Direct",
-        "requested": "[10.0.10, )",
-        "resolved": "10.0.10",
-        "contentHash": "f5VCIE7AJpd5YvzNTeMGVzQIgyE9tX+AreTYwQF+REbu+DZo/2Ae+jNSwhPEYrVz6RRkd7y8ubXjk6Nn6Ka+Cg=="
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "YlTamXppEQls6DYWt7RdUuwWDb0lyw/vXCaGeQpLCpsLmfwGuCkOz/vIGgMTV7ECsJcavkCOkxZXv9s8rdAHkQ=="
       },
       "Microsoft.Toolkit.Uwp.Notifications": {
         "type": "Direct",
@@ -64,7 +64,7 @@
       "streamlinkvlcstudio.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "StreamlinkVlcStudio.Core": "[1.8.7, )"
+          "StreamlinkVlcStudio.Core": "[1.8.11, )"
         }
       }
     },

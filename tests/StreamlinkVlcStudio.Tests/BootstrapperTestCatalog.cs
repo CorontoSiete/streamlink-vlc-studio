@@ -38,7 +38,7 @@ internal static class BootstrapperTestCatalog
 
     private static Task RuntimeRepairCommands()
     {
-        var bundle = System.Xml.Linq.XDocument.Load(Path.Combine(FindRepoRoot(), "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs"));
+        var bundle = System.Xml.Linq.XDocument.Load(Path.Combine(TestRepository.FindRoot(), "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs"));
         var variables = new Dictionary<string, string>
         {
             ["Streamlink"] = "StreamlinkMachineVersion",
@@ -233,7 +233,7 @@ internal static class BootstrapperTestCatalog
 
     private static Task WebView2DependencyUsesOfflinePackage()
     {
-        var bundle = System.Xml.Linq.XDocument.Load(Path.Combine(FindRepoRoot(), "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs"));
+        var bundle = System.Xml.Linq.XDocument.Load(Path.Combine(TestRepository.FindRoot(), "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs"));
         var package = bundle.Descendants().Single(element => element.Name.LocalName == "ExePackage" && (string?)element.Attribute("Id") == "WebView2");
         Assert.Equal("yes", (string?)package.Attribute("Permanent"));
         Assert.Equal("yes", (string?)package.Attribute("PerMachine"));
@@ -246,7 +246,7 @@ internal static class BootstrapperTestCatalog
 
     private static Task SearchIconDecodes()
     {
-        var iconPath = Path.Combine(FindRepoRoot(), "src", "StreamlinkVlcStudio.App.Wpf", "Assets", "Studio.ico");
+        var iconPath = Path.Combine(TestRepository.FindRoot(), "src", "StreamlinkVlcStudio.App.Wpf", "Assets", "Studio.ico");
         foreach (var size in new[] { 64, 96, 128 })
         {
             using var icon = new System.Drawing.Icon(iconPath, size, size);
@@ -610,7 +610,7 @@ internal static class BootstrapperTestCatalog
     private static Task EntryPointLeavesComApartmentSelectionToWix()
     {
         var programPath = Path.Combine(
-            FindRepoRoot(),
+            TestRepository.FindRoot(),
             "src",
             "StreamlinkVlcStudio.Bootstrapper",
             "Program.cs");
@@ -625,7 +625,7 @@ internal static class BootstrapperTestCatalog
     private static Task ReadOnlyVersionRunBindingsAreOneWay()
     {
         var xamlPath = Path.Combine(
-            FindRepoRoot(),
+            TestRepository.FindRoot(),
             "src",
             "StreamlinkVlcStudio.Bootstrapper",
             "MainWindow.xaml");
@@ -640,7 +640,7 @@ internal static class BootstrapperTestCatalog
 
     private static Task BundleDefaultsPurgeUserData()
     {
-        var root = FindRepoRoot();
+        var root = TestRepository.FindRoot();
         var bundlePath = Path.Combine(root, "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs");
         var bundle = File.ReadAllText(bundlePath);
         var xaml = File.ReadAllText(Path.Combine(root, "src", "StreamlinkVlcStudio.Bootstrapper", "MainWindow.xaml"));
@@ -654,7 +654,7 @@ internal static class BootstrapperTestCatalog
 
     private static Task VlcDependencyUsesExePackage()
     {
-        var root = FindRepoRoot();
+        var root = TestRepository.FindRoot();
         var bundlePath = Path.Combine(root, "scripts", "installer", "StreamlinkVlcStudio.Bundle.wxs");
         var bundle = File.ReadAllText(bundlePath);
 
@@ -682,7 +682,7 @@ internal static class BootstrapperTestCatalog
 
     private static Task ScriptedInstallerUsesVlcExe()
     {
-        var root = FindRepoRoot();
+        var root = TestRepository.FindRoot();
         var installScript = File.ReadAllText(Path.Combine(root, "scripts", "install.ps1"));
         var buildScript = File.ReadAllText(Path.Combine(root, "scripts", "build-installer.ps1"));
 
@@ -695,24 +695,6 @@ internal static class BootstrapperTestCatalog
         return Task.CompletedTask;
     }
 
-    private static string FindRepoRoot()
-    {
-        foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
-        {
-            var directory = new DirectoryInfo(start);
-            while (directory is not null)
-            {
-                if (File.Exists(Path.Combine(directory.FullName, "StreamlinkVlcStudio.sln")))
-                {
-                    return directory.FullName;
-                }
-
-                directory = directory.Parent;
-            }
-        }
-
-        throw new InvalidOperationException("Could not locate repository root.");
-    }
 }
 
 public class BootstrapperEngineProbe : DispatchProxy

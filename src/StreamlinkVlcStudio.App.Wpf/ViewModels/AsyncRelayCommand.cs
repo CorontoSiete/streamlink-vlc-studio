@@ -35,7 +35,7 @@ public sealed class AsyncRelayCommand : ICommand
     {
         try
         {
-            await ExecuteAsync(parameter);
+            await ExecuteAsync();
         }
         catch (Exception exception)
         {
@@ -50,7 +50,7 @@ public sealed class AsyncRelayCommand : ICommand
         }
     }
 
-    public async Task ExecuteAsync(object? parameter = null)
+    public async Task ExecuteAsync()
     {
         if ((!allowConcurrentExecution && Volatile.Read(ref isRunning) != 0) ||
             (canExecute is not null && !canExecute()))

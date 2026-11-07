@@ -563,6 +563,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     public string BrowseCategorySearchText { get => browse.BrowseCategorySearchText; set => browse.BrowseCategorySearchText = value; }
 
+    public IReadOnlyList<BrowseLanguageOption> BrowseLanguageOptions => browse.BrowseLanguageOptions;
+
+    public string SelectedBrowseLanguage { get => browse.SelectedBrowseLanguage; set => browse.SelectedBrowseLanguage = value; }
+
     public bool IsBrowseCategorySearchPlaceholderVisible { get => browse.IsBrowseCategorySearchPlaceholderVisible; }
 
     public PlatformKind SelectedBrowsePlatform { get => browse.SelectedBrowsePlatform; private set => browse.SelectedBrowsePlatform = value; }

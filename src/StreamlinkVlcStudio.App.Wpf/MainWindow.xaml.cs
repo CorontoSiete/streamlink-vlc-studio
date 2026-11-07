@@ -588,8 +588,8 @@ public partial class MainWindow : Window
         // WPF routes mouse input from the search Popup through this window too.
         // Treat its content as inside the search UI so context menus can open.
         if (e.OriginalSource is DependencyObject source &&
-            HomeStreamSearchPopup.Child is Visual popupChild &&
-            (ReferenceEquals(source, popupChild) || popupChild.IsAncestorOf(source)))
+            HomeStreamSearchPopup.Child is { } popupChild &&
+            IsInputWithinElement(source, popupChild))
         {
             return;
         }
@@ -2891,16 +2891,7 @@ public partial class MainWindow : Window
         DependencyObject? parent = child;
         while (parent is not null)
         {
-            // Routed input can originate in a Run, Span or InlineUIContainer.
-            // Cross its content/logical parents before resuming the visual tree.
-            parent = parent switch
-            {
-                ContentElement content => ContentOperations.GetParent(content) ??
-                    (content as FrameworkContentElement)?.Parent,
-                Visual or System.Windows.Media.Media3D.Visual3D =>
-                    VisualTreeHelper.GetParent(parent) ?? LogicalTreeHelper.GetParent(parent),
-                _ => LogicalTreeHelper.GetParent(parent)
-            };
+            parent = GetInputParent(parent);
             if (parent is T match)
             {
                 return match;
@@ -2909,6 +2900,30 @@ public partial class MainWindow : Window
 
         return null;
     }
+
+    private static bool IsInputWithinElement(DependencyObject source, DependencyObject element)
+    {
+        for (DependencyObject? current = source; current is not null; current = GetInputParent(current))
+        {
+            if (ReferenceEquals(current, element))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static DependencyObject? GetInputParent(DependencyObject child) => child switch
+    {
+        // Routed input can originate in a Run, Span or InlineUIContainer.
+        // Cross its content/logical parents before resuming the visual tree.
+        ContentElement content => ContentOperations.GetParent(content) ??
+            (content as FrameworkContentElement)?.Parent,
+        Visual or System.Windows.Media.Media3D.Visual3D =>
+            VisualTreeHelper.GetParent(child) ?? LogicalTreeHelper.GetParent(child),
+        _ => LogicalTreeHelper.GetParent(child)
+    };
 
     private void FullscreenButton_Click(object sender, RoutedEventArgs e) => windowMode.FullscreenButton_Click(sender, e);
 

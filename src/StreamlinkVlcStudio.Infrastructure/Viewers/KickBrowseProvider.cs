@@ -292,6 +292,7 @@ internal sealed partial class KickBrowseProvider : BrowseProviderRequests
             "https://api.kick.com/public/v1/livestreams",
             [
                 new("category_id", categoryId),
+                new("language", BrowseLanguages.Normalize(request.Language)),
                 new("limit", pageSize.ToString(CultureInfo.InvariantCulture)),
                 new("sort", "viewer_count"),
                 new("cursor", request.Cursor.Trim())

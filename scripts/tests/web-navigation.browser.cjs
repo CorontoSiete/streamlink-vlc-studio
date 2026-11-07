@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
 const loginMode = process.argv.includes('--login-only');
 const searchMode = process.argv.includes('--search-only');
+const discoveryLanguageMode = process.argv.includes('--discovery-language-only');
 const deleteMode = process.argv.includes('--downloads-delete-only');
 const vodLibraryMode = process.argv.includes('--vod-library-only');
 const hotkeyMode = process.argv.includes('--hotkeys-only');
@@ -17,7 +18,7 @@ const multistreamMode = process.argv.includes('--multistream-only');
 const volumeWheelMode = process.argv.includes('--volume-wheel-only');
 const sidebarMode = process.argv.includes('--sidebar-only');
 const mobileControlsMode = process.argv.includes('--mobile-controls-only');
-const output = path.join(root, vodLibraryMode ? '.artifacts/web-vod-library' : mobileControlsMode ? '.artifacts/web-mobile-controls' : loginMode ? '.artifacts/web-login' : sidebarMode ? '.artifacts/web-sidebar' : multistreamMode ? '.artifacts/web-multistream' : hotkeyMode ? '.artifacts/web-hotkeys' : settingsMode ? '.artifacts/web-settings' : volumeWheelMode ? '.artifacts/web-volume-wheel' : deleteMode ? '.artifacts/web-download-delete' : searchMode ? '.artifacts/web-search' : '.artifacts/player-navigation');
+const output = path.join(root, discoveryLanguageMode ? '.artifacts/web-discovery-language' : vodLibraryMode ? '.artifacts/web-vod-library' : mobileControlsMode ? '.artifacts/web-mobile-controls' : loginMode ? '.artifacts/web-login' : sidebarMode ? '.artifacts/web-sidebar' : multistreamMode ? '.artifacts/web-multistream' : hotkeyMode ? '.artifacts/web-hotkeys' : settingsMode ? '.artifacts/web-settings' : volumeWheelMode ? '.artifacts/web-volume-wheel' : deleteMode ? '.artifacts/web-download-delete' : searchMode ? '.artifacts/web-search' : '.artifacts/player-navigation');
 const assets = path.join(root, 'src/StreamlinkVlcStudio.Infrastructure/LocalWeb/Assets');
 const mediaFixture = path.join(root, 'tests/StreamlinkVlcStudio.Tests/Fixtures', multistreamMode ? 'hover-preview-fmp4' : 'replay-position-event');
 const browserPath = [process.env.SVS_WEB_TEST_BROWSER, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe'].find(file => file && fs.existsSync(file));
@@ -60,7 +61,7 @@ function artwork(name) {
 let signedIn = false;
 const loginFixture = { requests: 0, holdNext: false, held: [] };
 const savedSettings = { quality: 'best', lowLatency: true, layout: 'docked', size: 16,
-  opacity: 90, keepInactive: false, pauseInactiveVod: true, hotkeys: {}, volumes: {}, chatLayouts: {} };
+  opacity: 90, keepInactive: false, pauseInactiveVod: true, hotkeys: {}, volumes: {}, chatLayouts: {}, categoryLanguages: {} };
 const settingsFixture = { failSave: false, saves: 0, holdNext: false, held: [] };
 let lastOpen;
 let openCount = 0;
@@ -71,6 +72,7 @@ const playerMetadata = new Map();
 const followStates = new Map(live.map(item => [item.platform + ':' + item.channel.toLowerCase(), true]));
 const followRequests = [], followWrites = [];
 const searchFixture = { requests: [], held: [], hold: new Set(), fail: false, canceled: 0 };
+const discoveryRequests = [];
 let followPending = false, followUnknown = false, followFailure = false, followConfirmed = true;
 const deleteFixture = { requests: [], items: [{ id: 'ec263e99-7ad7-47f9-b2e6-50c2f3c744e1', title: 'Saved broadcast', channel: 'Northstar', platform: 'Twitch', state: 'Completed', format: 'HLS' }] };
 const vodLibraryItems = [
@@ -110,7 +112,7 @@ const server = http.createServer(async (request, response) => {
     }
     else if (action === 'logout') signedIn = false;
     else if (action === 'settings') result = { defaultQuality: savedSettings.quality, lowLatency: savedSettings.lowLatency,
-      preferences: savedSettings, qualities: ['best', '720p'], accounts: { twitch: true, kick: true } };
+      preferences: savedSettings, qualities: ['best', '720p'], browseLanguages: [{ code: '', name: 'All languages' }, { code: 'en', name: 'English' }, { code: 'fr', name: 'French' }], accounts: { twitch: true, kick: true } };
     else if (action === 'settings/save') {
       settingsFixture.saves++;
       if (settingsFixture.holdNext) {
@@ -180,6 +182,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     else if (action === 'categories') result = { items: categories };
+    else if (action === 'streams' && discoveryLanguageMode) {
+      discoveryRequests.push(input);
+      savedSettings.categoryLanguages[(input.platform === 'kick' ? 'Kick' : 'Twitch') + ':' + input.categoryId] = input.language;
+      result = { items: input.language === 'fr' ? [] : [{ ...live[0], key: input.cursor ? 'second-page' : 'first-page', platform: input.platform === 'kick' ? 'Kick' : 'Twitch' }], nextCursor: input.cursor || input.language === 'fr' ? '' : 'page-two' };
+    }
     else if (action === 'streams') result = { items: live };
     else if (action === 'recent') result = { items: live.slice(0, 2) };
     else if (action === 'search' && searchMode) {
@@ -280,6 +287,10 @@ async function main() {
     await evaluate("document.querySelector('#username').value='webtester';document.querySelector('#password').value='Test web password 123!';document.querySelector('#login-form').requestSubmit()");
     const settled = "document.querySelector('#cards').getAttribute('aria-busy')==='false'";
     await wait("!document.querySelector('#studio').hidden && document.querySelectorAll('.card').length===6");
+    if (discoveryLanguageMode) {
+      await require('./helpers/web-discovery-language-browser.cjs')({ cdp, evaluate, wait, capture, viewport, requests: discoveryRequests });
+      return;
+    }
     if (mobileControlsMode) {
       await require('./helpers/web-mobile-controls-browser.cjs')({ cdp, evaluate, wait, capture, output });
       return;

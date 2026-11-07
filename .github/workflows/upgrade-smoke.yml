@@ -6,11 +6,11 @@ on:
       source_tag:
         description: Published version to upgrade from
         required: true
-        default: v1.8.9
+        default: v1.8.10
       target_tag:
         description: Published version to install
         required: true
-        default: v1.8.10
+        default: v1.8.11
       helper_source:
         description: Use target for clients predating the packaged-updater fix
         required: true

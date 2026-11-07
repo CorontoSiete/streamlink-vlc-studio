@@ -70,6 +70,7 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
                     settings.LowLatency,
                     theme = settings.Theme.ToString(),
                     qualities = Qualities,
+                    browseLanguages = BrowseLanguages.Options,
                     accounts = new { twitch = !string.IsNullOrEmpty(settings.Chat.TwitchOAuthToken), kick = !string.IsNullOrEmpty(settings.Chat.KickOAuthToken) }
                 };
             case "following":
@@ -148,7 +149,8 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
                     return new { available = counts.IsAvailable, items = counts.IsAvailable ? counts.Items : [] };
                 }
             case "streams":
-                var streams = await services.Browse.GetStreamsAsync(new(Platform(input), Optional(input, "categoryId", 128), Optional(input, "categoryName", 100), Optional(input, "cursor", 2048)), settings, token).ConfigureAwait(false);
+                var language = BrowseLanguages.Normalize(Optional(input, "language", 16));
+                var streams = await services.Browse.GetStreamsAsync(new(Platform(input), Optional(input, "categoryId", 128), Optional(input, "categoryName", 100), Optional(input, "cursor", 2048), Language: language), settings, token).ConfigureAwait(false);
                 return new { items = streams.Items.Select(s => Card(s.Target, s.DisplayName, s.Title, s.ThumbnailUrl, "Live", s.ViewerCount)).ToArray(), streams.NextCursor, streams.Message };
             case "vods":
                 return await VodsAsync(input, settings, token).ConfigureAwait(false);
@@ -409,7 +411,7 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
                     ? await LocalWebMedia.FromTrustedPlaylistAsync(id, resolved.Uri, token).ConfigureAwait(false)
                     : new LocalWebMedia(id, resolved.Uri);
             }
-            player = new(id, target, quality, media, offline, services.PlaybackSlots, lifetime.Token);
+            player = new(target, quality, media, offline, services.PlaybackSlots, lifetime.Token);
             player.ProfileImageUrl = target.IsOfflineVod && LocalWebProfileImages.HasCachedImage(target)
                 ? $"/media/{id}/profile" : LocalWebProfileImages.PublicUrl(target.ProfileImageUrl);
             offline = null;
@@ -456,7 +458,11 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
             if (!transferred)
             {
                 if (player is not null) await player.DisposeAsync().ConfigureAwait(false);
-                else { if (offline is not null) await offline.DisposeAsync().ConfigureAwait(false); services.PlaybackSlots.Release(); }
+                else
+                {
+                    try { if (offline is not null) await offline.DisposeAsync().ConfigureAwait(false); }
+                    finally { services.PlaybackSlots.Release(); }
+                }
             }
         }
     }
@@ -644,7 +650,7 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
         }
     }
 
-    private sealed class Player(string id, StreamTarget target, string quality, LocalWebMedia media,
+    private sealed class Player(StreamTarget target, string quality, LocalWebMedia media,
         IVodDownloadPlayback? offline, SemaphoreSlim slots, CancellationToken token) : IAsyncDisposable
     {
         private readonly object chatGate = new();
@@ -653,7 +659,6 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
         private long sequence;
         private bool disposed;
         private Task? disposalTask;
-        internal string Id { get; } = id;
         internal StreamTarget Target { get; } = target;
         internal string Quality { get; } = quality;
         internal string ProfileImageUrl { get; set; } = "";
@@ -682,20 +687,13 @@ public sealed partial class LocalWebWorkspace(LocalWebDependencies services) : I
         }
         public ValueTask DisposeAsync() => new(AsyncDisposal.Begin(disposalGate, ref disposed, ref disposalTask, DisposeCoreAsync));
 
-        private async Task DisposeCoreAsync()
-        {
-            try
-            {
-                await Lifetime.CancelAsync().ConfigureAwait(false);
-                if (ChatConnection is not null) await ChatConnection.ConfigureAwait(false);
-                if (Chat is not null) await Chat.DisposeAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                Media.Dispose();
-                try { if (offline is not null) await offline.DisposeAsync().ConfigureAwait(false); }
-                finally { slots.Release(); }
-            }
-        }
+        private Task DisposeCoreAsync() => AsyncDisposal.RunAllAsync(
+            () => new ValueTask(Lifetime.CancelAsync()),
+            () => new ValueTask(ChatConnection ?? Task.CompletedTask),
+            () => Chat?.DisposeAsync() ?? ValueTask.CompletedTask,
+            () => { Media.Dispose(); return ValueTask.CompletedTask; },
+            () => offline?.DisposeAsync() ?? ValueTask.CompletedTask,
+            () => { Lifetime.Dispose(); return ValueTask.CompletedTask; },
+            () => { slots.Release(); return ValueTask.CompletedTask; });
     }
 }

@@ -4,6 +4,28 @@ using StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
 internal static partial class LocalWebTestCatalog
 {
+    private static async Task UnicodeShortcutsAsync()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", "web-shortcuts-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "web-users.json");
+        try
+        {
+            var users = await LocalWebUserStore.OpenAsync(path);
+            var user = await users.AddAsync("shortcuts", "Shortcut password 123!");
+            await using var workspace = new LocalWebUserWorkspace(new ProfileFixture(), users, user.Id);
+            foreach (var key in new[] { "é", "𐐨", "🎮", "F1", "F12" })
+            {
+                await Call(workspace, "settings/save", new { hotkeys = new { mute = new { key, ctrl = false, alt = false, shift = false, meta = false } } });
+                var reopened = await LocalWebUserStore.OpenAsync(path);
+                Assert.Equal(key, reopened.PreferencesFor(user.Id).Hotkeys["mute"]!.Key);
+            }
+            foreach (var key in new[] { "", "\u200d", "\ue000", "ab", "F01", "F+1", "F13", " " })
+                await Assert.ThrowsAsync<ArgumentException>(() => Call(workspace, "settings/save",
+                    new { hotkeys = new { mute = new { key, ctrl = false, alt = false, shift = false, meta = false } } }));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
     private static async Task UserAccountsAsync()
     {
         var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", "web-accounts-" + Guid.NewGuid().ToString("N"));

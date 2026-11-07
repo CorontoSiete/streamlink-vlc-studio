@@ -393,6 +393,9 @@ body:has(#studio[hidden]) .skip-link { display: none; }
 .live-filter { font-size: 11px; color: var(--muted); gap: 7px; white-space: nowrap; }
 .sort-control select { font-size: 11px; min-height: 28px; padding: 4px 20px 4px 8px; background: transparent; border-color: transparent; color: var(--muted); max-width: 148px; }
 .sort-control select:hover { border-color: var(--line); }
+.discover-language { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.discover-language select { max-width: 170px; min-height: 36px; }
+#discover-language-help { color: var(--muted); font-size: 12px; margin: -4px 0 16px; }
 #breadcrumbs:empty { display: none; }
 #breadcrumbs { display: flex; align-items: center; gap: 12px; color: var(--muted); padding-bottom: 18px; font-size: 12px; flex-wrap: wrap; }
 #breadcrumbs button { min-height: 30px; font-size: 11px; }

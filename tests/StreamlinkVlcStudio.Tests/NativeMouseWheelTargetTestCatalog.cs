@@ -13,8 +13,8 @@ internal static class NativeMouseWheelTargetTestCatalog
     private static Task VideoSurfaceOwnershipAsync() => TestSta.RunAsync(async () =>
     {
         using var surface = new VideoSurface();
-        var video = CreateWindow(surface, 20);
-        var ordinary = CreateWindow(new Border { Background = Brushes.White }, 340);
+        var video = NativeWindowTest.CreateInputWindow(surface, 20);
+        var ordinary = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 340);
         var previousForeground = NativeWindowTest.GetForegroundWindow();
         var child = IntPtr.Zero;
         try
@@ -59,7 +59,7 @@ internal static class NativeMouseWheelTargetTestCatalog
 
     private static Task NativeFallbackPacketAsync() => TestSta.RunAsync(async () =>
     {
-        var window = CreateWindow(new Border { Background = Brushes.White }, 20);
+        var window = NativeWindowTest.CreateInputWindow(new Border { Background = Brushes.White }, 20);
         var previousForeground = NativeWindowTest.GetForegroundWindow();
         var received = new List<(IntPtr WParam, IntPtr LParam)>();
         HwndSource? source = null;
@@ -143,19 +143,6 @@ internal static class NativeMouseWheelTargetTestCatalog
 
         throw new InteractiveDesktopTestSkippedException("No foreign desktop HWND is exposed for the wheel ownership check.");
     });
-
-    private static Window CreateWindow(UIElement content, double horizontalOffset) => new()
-    {
-        Width = 280,
-        Height = 180,
-        Left = SystemParameters.WorkArea.Left + horizontalOffset,
-        Top = SystemParameters.WorkArea.Top + 40,
-        WindowStyle = WindowStyle.None,
-        ResizeMode = ResizeMode.NoResize,
-        Topmost = true,
-        ShowInTaskbar = false,
-        Content = content
-    };
 
     private static LowLevelMouseHookEvent WheelAt(Point point, int delta) => new(
         LowLevelMouseHookEvent.WmMouseWheel, (int)Math.Round(point.X), (int)Math.Round(point.Y), delta << 16);

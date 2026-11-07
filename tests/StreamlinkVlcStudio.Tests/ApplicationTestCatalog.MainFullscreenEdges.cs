@@ -1,10 +1,6 @@
 using System.Windows.Interop;
 using System.Windows.Shell;
-using DrawingBitmap = System.Drawing.Bitmap;
 using DrawingColor = System.Drawing.Color;
-using DrawingGraphics = System.Drawing.Graphics;
-using DrawingPixelFormat = System.Drawing.Imaging.PixelFormat;
-using DrawingRectangle = System.Drawing.Rectangle;
 
 internal static partial class ApplicationTestCatalog
 {
@@ -92,14 +88,14 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(bounds.Right, videoBounds.Right);
                 Assert.Equal(bounds.Bottom, videoBounds.Bottom);
 
-                using var frame = CaptureMainFullscreenWindow(bounds);
-                var exposedLayers = MainFullscreenEdgePixels(frame)
+                using var frame = WindowFrameTest.Capture(bounds);
+                var exposedLayers = WindowFrameTest.EdgePixels(frame)
                     .Where(sample => IsExposedWindowOrDesktop(sample.Color))
                     .ToArray();
                 Console.WriteLine($"Main fullscreen active={window.IsActive}, foreground={NativeWindowTest.GetForegroundWindow()}, " +
                     $"center hit={NativeWindowTest.DescribeWindowAtPoint(monitor.Left + monitor.Width / 2, monitor.Top + monitor.Height / 2)}, " +
                     $"center pixel={frame.GetPixel(frame.Width / 2, frame.Height / 2)}.");
-                Console.WriteLine($"Main fullscreen edge pixels: {string.Join(", ", MainFullscreenEdgePixels(frame))}.");
+                Console.WriteLine($"Main fullscreen edge pixels: {string.Join(", ", WindowFrameTest.EdgePixels(frame))}.");
                 Assert.True(
                     exposedLayers.Length == 0,
                     $"Fullscreen exposed the WPF background or the window underneath at {string.Join(", ", exposedLayers)}.");
@@ -116,35 +112,6 @@ internal static partial class ApplicationTestCatalog
             Assert.Equal(originalResizeBorderThickness, windowChrome.ResizeBorderThickness);
             Assert.Equal(originalGlassFrameThickness, windowChrome.GlassFrameThickness);
         });
-
-    private static DrawingBitmap CaptureMainFullscreenWindow(DrawingRectangle bounds)
-    {
-        var frame = new DrawingBitmap(bounds.Width, bounds.Height, DrawingPixelFormat.Format32bppArgb);
-        try
-        {
-            using var graphics = DrawingGraphics.FromImage(frame);
-            graphics.CopyFromScreen(bounds.Location, System.Drawing.Point.Empty, bounds.Size);
-            return frame;
-        }
-        catch
-        {
-            frame.Dispose();
-            throw;
-        }
-    }
-
-    private static IEnumerable<(int X, int Y, DrawingColor Color)> MainFullscreenEdgePixels(DrawingBitmap frame)
-    {
-        foreach (var fraction in new[] { 0.25, 0.5, 0.75 })
-        {
-            var x = (int)(frame.Width * fraction);
-            var y = (int)(frame.Height * fraction);
-            yield return (0, y, frame.GetPixel(0, y));
-            yield return (frame.Width - 1, y, frame.GetPixel(frame.Width - 1, y));
-            yield return (x, 0, frame.GetPixel(x, 0));
-            yield return (x, frame.Height - 1, frame.GetPixel(x, frame.Height - 1));
-        }
-    }
 
     private static bool IsExposedWindowOrDesktop(DrawingColor edge) =>
         (edge.R >= 220 && edge.G >= 220 && edge.B >= 220) ||

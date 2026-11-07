@@ -73,7 +73,7 @@ internal static partial class LocalWebTestCatalog
         public Task<TwitchVodSearchResult> SearchAsync(TwitchVodSearchRequest request, AppSettings settings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
-    private sealed class VodLibraryDownloads(IReadOnlyList<VodDownloadItem> items) : IVodDownloadService
+    private sealed class VodLibraryDownloads(IReadOnlyList<VodDownloadItem> items, IVodDownloadPlayback? playback = null) : IVodDownloadService
     {
         public VodDownloadRequest? Enqueued { get; private set; }
         public string DownloadDirectory => "";
@@ -90,7 +90,8 @@ internal static partial class LocalWebTestCatalog
         public Task CancelAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task RetryAsync(Guid id, VodDownloadOptions options, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<StreamTarget> GetOfflineTargetAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<IVodDownloadPlayback> AcquireOfflinePlaybackAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<IVodDownloadPlayback> AcquireOfflinePlaybackAsync(Guid id, CancellationToken cancellationToken = default) =>
+            playback is not null ? Task.FromResult(playback) : throw new NotSupportedException();
         public Task RemoveAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

@@ -3,6 +3,71 @@ using StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
 internal static partial class LocalWebTestCatalog
 {
+    private static Task PlayerCleanupAsync() => WithWorkspaceAsync(f => VerifyPlayerCleanupAsync(f.Dependencies));
+
+    private static async Task VerifyPlayerCleanupAsync(LocalWebDependencies dependencies)
+    {
+        foreach (var closePlayer in new[] { true, false })
+        {
+            var factory = new FakeChatClientFactory();
+            var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            factory.Client.ConnectHandler = async (_, _, token) =>
+            {
+                using var registration = token.Register(() =>
+                {
+                    canceled.TrySetResult();
+                    throw new IOException("Chat cancellation failed.");
+                });
+                connected.TrySetResult();
+                await release.Task;
+            };
+            var workspace = new LocalWebWorkspace(dependencies with { ChatFactory = _ => factory });
+            try
+            {
+                var opened = await Call(workspace, "open", new { input = "https://twitch.tv/streamer" });
+                await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var closing = closePlayer
+                    ? Call(workspace, "close", new { player = opened.GetProperty("id").GetString()! })
+                    : workspace.DisposeAsync().AsTask();
+                await canceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(false, closing.IsCompleted);
+                release.TrySetResult();
+                await Assert.ThrowsAsync<AggregateException>(() => closing.WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.Equal(1, factory.Client.DisposeCount);
+                Assert.Equal(32, dependencies.PlaybackSlots.CurrentCount);
+                if (closePlayer) await workspace.DisposeAsync();
+                else await Assert.ThrowsAsync<AggregateException>(() => workspace.DisposeAsync().AsTask());
+            }
+            finally
+            {
+                release.TrySetResult();
+                try { await workspace.DisposeAsync(); }
+                catch (AggregateException) { }
+            }
+        }
+
+        var offline = new FailingOfflinePlayback();
+        var offlineDependencies = dependencies with { Downloads = new VodLibraryDownloads([], offline) };
+        await using var offlineWorkspace = new LocalWebWorkspace(offlineDependencies);
+        await Assert.ThrowsAsync<IOException>(() => Call(offlineWorkspace, "open", new { downloadId = Guid.NewGuid() }));
+        Assert.Equal(1, offline.DisposeCount);
+        Assert.Equal(32, offlineDependencies.PlaybackSlots.CurrentCount);
+    }
+
+    private sealed class FailingOfflinePlayback : IVodDownloadPlayback
+    {
+        public StreamTarget Target { get; } = new(PlatformKind.Twitch, "streamer", "https://twitch.tv/videos/123",
+            StreamTargetKind.TwitchVod, "123", LocalMediaPath: Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "video.mp4"));
+        internal int DisposeCount { get; private set; }
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            throw new IOException("Offline playback cleanup failed.");
+        }
+    }
+
     private static async Task SharedDisposalAsync()
     {
         var sessionWorkspace = new BlockingDisposalWorkspace();

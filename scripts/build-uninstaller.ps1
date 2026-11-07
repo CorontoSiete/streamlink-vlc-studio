@@ -59,7 +59,11 @@ if (Test-PathIsSameOrUnderDirectory -ChildPath $outputPathFull -ParentPath $buil
 }
 New-Item -ItemType Directory -Path $buildRoot | Out-Null
 
+$previousSearchPath = $env:PATH
 try {
+    # NativeAOT discovers MSVC through a batch file. Stale PATH entries can
+    # exceed cmd.exe's line limit once vcvarsall adds its own tool directories.
+    $env:PATH = Get-ExistingSearchPath $previousSearchPath
     Write-Info "Publishing x64 NativeAOT maintenance executable..."
     & $dotnet publish $project `
         -c $Configuration `
@@ -113,6 +117,7 @@ try {
         [pscustomobject]@{ Source = $publishedExecutable; Destination = $outputPathFull }
     )
 } finally {
+    $env:PATH = $previousSearchPath
     Remove-DirectoryIfExists $buildRoot $outputDirectory
 }
 

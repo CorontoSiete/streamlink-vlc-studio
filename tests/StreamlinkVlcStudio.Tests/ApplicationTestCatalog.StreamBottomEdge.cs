@@ -89,7 +89,7 @@ internal static partial class ApplicationTestCatalog
                 Assert.Equal(windowBounds.Right, videoBounds.Right);
             }
 
-            using var frame = CaptureMainFullscreenWindow(windowBounds);
+            using var frame = WindowFrameTest.Capture(windowBounds);
             var left = videoBounds.Left - windowBounds.Left;
             var right = videoBounds.Right - windowBounds.Left - 1;
             var top = videoBounds.Top - windowBounds.Top;

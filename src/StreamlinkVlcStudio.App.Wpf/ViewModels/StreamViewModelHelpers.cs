@@ -32,6 +32,9 @@ internal static class StreamViewModelHelpers
         return value.ToString();
     }
 
+    public static string FormatViewerCountLabel(int value) =>
+        $"{FormatViewerCount(value)} viewer{(value == 1 ? "" : "s")}";
+
     /// <summary>Formats an elapsed live duration (e.g. <c>2h 3m</c> or <c>5m</c>).</summary>
     public static string FormatElapsed(TimeSpan elapsed)
     {

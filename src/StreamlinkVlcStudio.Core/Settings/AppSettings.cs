@@ -29,6 +29,7 @@ public sealed class AppSettings : NotifyPropertyChangedObject
     private List<RecentStreamSettings> recentStreams = [];
     private Dictionary<string, TwitchBonusClaimHistory> twitchBonusClaims = new(StringComparer.Ordinal);
     private Dictionary<string, int> streamVolumes = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> browseCategoryLanguages = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, WebChatOverlayLayout> webChatOverlayLayouts = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, double> streamVlcOverlayFontSizes = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, bool> streamPictureInPictureTopBarVisibility = new(StringComparer.OrdinalIgnoreCase);
@@ -179,6 +180,12 @@ public sealed class AppSettings : NotifyPropertyChangedObject
             }
             SetProperty(ref twitchBonusClaims, normalized);
         }
+    }
+
+    public Dictionary<string, string> BrowseCategoryLanguages
+    {
+        get => browseCategoryLanguages;
+        set => SetProperty(ref browseCategoryLanguages, CategoryLanguagePreferences.Normalize(value));
     }
 
     public Dictionary<string, int> StreamVolumes

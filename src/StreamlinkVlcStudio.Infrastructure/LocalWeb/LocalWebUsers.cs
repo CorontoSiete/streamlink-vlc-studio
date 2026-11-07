@@ -1,6 +1,9 @@
+using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using StreamlinkVlcStudio.Core;
+using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Settings;
 using StreamlinkVlcStudio.Infrastructure.Io;
 using static StreamlinkVlcStudio.Infrastructure.LocalWeb.LocalWebRequestValues;
@@ -23,12 +26,14 @@ internal sealed record LocalWebPreferences
     public Dictionary<string, LocalWebHotkey?> Hotkeys { get; init; } = new(StringComparer.Ordinal);
     public Dictionary<string, double> Volumes { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, WebChatOverlayLayout> ChatLayouts { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> CategoryLanguages { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
     internal LocalWebPreferences Copy() => this with
     {
         Hotkeys = new(Hotkeys, StringComparer.Ordinal),
         Volumes = new(Volumes, StringComparer.OrdinalIgnoreCase),
-        ChatLayouts = new(ChatLayouts, StringComparer.OrdinalIgnoreCase)
+        ChatLayouts = new(ChatLayouts, StringComparer.OrdinalIgnoreCase),
+        CategoryLanguages = new(CategoryLanguages, StringComparer.OrdinalIgnoreCase)
     };
 
     internal static LocalWebPreferences Apply(LocalWebPreferences current, JsonElement patch)
@@ -109,18 +114,23 @@ internal sealed record LocalWebPreferences
         return result;
     }
 
-    private static bool ValidHotkeyKey(string key) =>
-        key.Length == 1 && !char.IsControl(key[0]) && !char.IsWhiteSpace(key[0]) ||
-        key is "Escape" or "Backspace" or "Delete" or "Insert" or "Home" or "End" or "PageUp" or "PageDown" or
-            "ArrowLeft" or "ArrowRight" or "ArrowUp" or "ArrowDown" or "Mouse4" or "Mouse5" ||
-        key.Length is 2 or 3 && key[0] == 'F' && int.TryParse(key[1..], out var number) && number is >= 1 and <= 12;
+    private static bool ValidHotkeyKey(string key)
+    {
+        // Match the browser's single Unicode character and named-key rules.
+        if (key.Length > 0 && Rune.TryGetRuneAt(key, 0, out var rune) && rune.Utf16SequenceLength == key.Length)
+            return !Rune.IsWhiteSpace(rune) && Rune.GetUnicodeCategory(rune) is not
+                (UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.PrivateUse or UnicodeCategory.OtherNotAssigned);
+        return key is "Escape" or "Backspace" or "Delete" or "Insert" or "Home" or "End" or "PageUp" or "PageDown" or
+            "ArrowLeft" or "ArrowRight" or "ArrowUp" or "ArrowDown" or "Mouse4" or "Mouse5" or
+            ['F', >= '1' and <= '9'] or ['F', '1', >= '0' and <= '2'];
+    }
 
     internal static void Validate(LocalWebPreferences preferences)
     {
         if (!LocalWebWorkspace.Qualities.Contains(preferences.Quality, StringComparer.Ordinal) ||
             preferences.Layout is not ("docked" or "overlay" or "hidden") ||
             preferences.Size is < 12 or > 32 || preferences.Opacity is < 0 or > 100 ||
-            preferences.Hotkeys is null || preferences.Volumes is null || preferences.ChatLayouts is null ||
+            preferences.Hotkeys is null || preferences.Volumes is null || preferences.ChatLayouts is null || preferences.CategoryLanguages is null ||
             preferences.Volumes.Count > 512 || preferences.ChatLayouts.Count > 512)
             throw new InvalidDataException("Saved web preferences are invalid.");
         foreach (var (key, volume) in preferences.Volumes)
@@ -129,6 +139,10 @@ internal sealed record LocalWebPreferences
         foreach (var (key, layout) in preferences.ChatLayouts)
             if (!ValidStreamKey(key) || !WebChatOverlayLayout.IsValid(layout))
                 throw new InvalidDataException("Saved web preferences are invalid.");
+        var categoryLanguages = CategoryLanguagePreferences.Normalize(preferences.CategoryLanguages);
+        if (categoryLanguages.Count != preferences.CategoryLanguages.Count ||
+            preferences.CategoryLanguages.Any(entry => !categoryLanguages.TryGetValue(entry.Key, out var language) || language != entry.Value))
+            throw new InvalidDataException("Saved category languages are invalid.");
         try { ReadHotkeys(JsonSerializer.SerializeToElement(preferences.Hotkeys, LocalWebUserStore.JsonOptions)); }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException)
         { throw new InvalidDataException("Saved web preferences are invalid.", error); }
@@ -292,6 +306,20 @@ public sealed class LocalWebUserStore
         }, token);
     }
 
+    internal Task SaveCategoryLanguageAsync(string id, string key, string language, CancellationToken token)
+    {
+        return UpdatePreferencesAsync(id, current =>
+        {
+            // Compare after earlier writes finish. A choice that matches the last
+            // committed value can still supersede a different queued choice.
+            var normalized = BrowseLanguages.Normalize(language);
+            if (current.CategoryLanguages.TryGetValue(key, out var saved) && saved == normalized) return current;
+            var preferences = current.Copy();
+            preferences.CategoryLanguages[key] = normalized;
+            return preferences;
+        }, token);
+    }
+
     private Task UpdatePreferencesAsync(string id, Func<LocalWebPreferences, LocalWebPreferences> update,
         CancellationToken token) => ChangeAsync(list =>
     {
@@ -307,9 +335,11 @@ public sealed class LocalWebUserStore
         await writes.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            List<LocalWebUserRecord> next;
-            lock (stateGate) next = [.. users];
+            List<LocalWebUserRecord> current;
+            lock (stateGate) current = users;
+            List<LocalWebUserRecord> next = [.. current];
             change(next);
+            if (next.SequenceEqual(current)) return;
             var bytes = JsonSerializer.SerializeToUtf8Bytes(new LocalWebUsersFile(1, next), JsonOptions);
             if (bytes.Length > MaximumBytes) throw new InvalidOperationException("Saved web accounts exceed the size limit.");
             await AtomicFile.WriteAsync(path, (stream, cancellation) => stream.WriteAsync(bytes, cancellation).AsTask(),

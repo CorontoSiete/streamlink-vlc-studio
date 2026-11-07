@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.8.9',
-    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.8.10',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$SourceTag = 'v1.8.10',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$TargetTag = 'v1.8.11',
     [ValidateSet('source', 'target')][string]$HelperSource = 'source',
     [string]$TargetReleaseDirectory
 )

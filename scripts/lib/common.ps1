@@ -11,6 +11,20 @@ separators so `-LiteralPath` comparisons behave the same on any drive layout.
 
 $script:PathSeparators = [char[]]@('\', '/')
 
+function Get-ExistingSearchPath {
+    param([AllowNull()][AllowEmptyString()][string]$SearchPath)
+
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $entries = foreach ($entry in ($SearchPath -split [regex]::Escape([string][IO.Path]::PathSeparator))) {
+        $candidate = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim('"'))
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        try { $exists = Test-Path -LiteralPath $candidate -PathType Container -ErrorAction Stop }
+        catch [UnauthorizedAccessException] { $exists = $true }
+        if ($exists -and $seen.Add($candidate)) { $candidate }
+    }
+    $entries -join [IO.Path]::PathSeparator
+}
+
 function Resolve-PackageVersion {
     param(
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,

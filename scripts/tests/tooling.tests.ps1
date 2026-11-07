@@ -46,6 +46,19 @@ function Assert-Throws([scriptblock]$Action, [string]$Pattern) {
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('StreamStudio-tooling-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
+    $firstSearchDirectory = Join-Path $testRoot 'first search directory'
+    $secondSearchDirectory = Join-Path $testRoot 'second'
+    New-Item -ItemType Directory -Path $firstSearchDirectory, $secondSearchDirectory | Out-Null
+    $searchPath = @(
+        $firstSearchDirectory, (Join-Path $testRoot 'missing'), '',
+        $firstSearchDirectory.ToUpperInvariant(), ('"' + $secondSearchDirectory + '"')
+    ) -join [IO.Path]::PathSeparator
+    Assert-True ((Get-ExistingSearchPath $searchPath) -ceq
+        (@($firstSearchDirectory, $secondSearchDirectory) -join [IO.Path]::PathSeparator)) `
+        'Native build search paths must retain directory precedence while removing missing and duplicate entries.'
+    Assert-True ((Get-ExistingSearchPath '') -ceq '') 'An empty search path must remain empty.'
+    Write-Host 'PASS tooling: native build search paths omit stale entries and preserve precedence'
+
     $manifest = Read-WindowsDependencyManifest (Join-Path $repoRoot 'dependencies\windows-installers.json')
     Assert-True ([int64]$manifest.dependencies.streamlink.length -gt 0) 'Canonical dependency length was not read.'
     $obsoleteManifestPath = Join-Path $testRoot 'obsolete-manifest.json'

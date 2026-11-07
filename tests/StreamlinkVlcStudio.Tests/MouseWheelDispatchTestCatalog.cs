@@ -17,7 +17,7 @@ internal static class MouseWheelDispatchTestCatalog
 
     private static async Task BusyDispatcherRetainsWheelBurstAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync(blockInitially: true);
+        await using var ui = await TestDispatcherThread.StartAsync(blockInitially: true);
         var captured = new ConcurrentQueue<LowLevelMouseHookEvent>();
         var routed = new ConcurrentQueue<LowLevelMouseHookEvent>();
         var fallback = new ConcurrentQueue<LowLevelMouseHookEvent>();
@@ -57,7 +57,7 @@ internal static class MouseWheelDispatchTestCatalog
 
     private static async Task UnhandledWheelFallsBackOnceAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync(blockInitially: true);
+        await using var ui = await TestDispatcherThread.StartAsync(blockInitially: true);
         var delivered = new ConcurrentQueue<(string Phase, LowLevelMouseHookEvent Event)>();
         var router = new LowLevelMouseHookDispatcher(
             ui.Dispatcher,
@@ -85,7 +85,7 @@ internal static class MouseWheelDispatchTestCatalog
 
     private static async Task ForeignWindowWheelPassesThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync();
+        await using var ui = await TestDispatcherThread.StartAsync();
         var routeCount = 0;
         var captured = new ConcurrentQueue<LowLevelMouseHookEvent>();
         var router = new LowLevelMouseHookDispatcher(
@@ -111,7 +111,7 @@ internal static class MouseWheelDispatchTestCatalog
 
     private static async Task ZeroDeltaWheelPassesThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync();
+        await using var ui = await TestDispatcherThread.StartAsync();
         var routeCount = 0;
         var captureCount = 0;
         var fallbackCount = 0;
@@ -138,7 +138,7 @@ internal static class MouseWheelDispatchTestCatalog
 
     private static async Task ShutdownWheelPassesThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync();
+        await using var ui = await TestDispatcherThread.StartAsync();
         var routeCount = 0;
         var fallbackCount = 0;
         var suppressedAtShutdownStart = true;
@@ -172,7 +172,7 @@ internal static class MouseWheelDispatchTestCatalog
 
     private static async Task ExecutingWheelRouteDoesNotPassThroughAsync()
     {
-        await using var ui = await DispatcherThread.StartAsync();
+        await using var ui = await TestDispatcherThread.StartAsync();
         using var releaseRoute = new ManualResetEventSlim();
         var routeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var routeCount = 0;
@@ -213,117 +213,5 @@ internal static class MouseWheelDispatchTestCatalog
     private static LowLevelMouseHookEvent WheelEvent(int delta)
     {
         return new LowLevelMouseHookEvent(LowLevelMouseHookEvent.WmMouseWheel, 100, 200, delta << 16);
-    }
-
-    private sealed class DispatcherThread : IAsyncDisposable
-    {
-        private readonly TaskCompletionSource<Dispatcher> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly ManualResetEventSlim release = new();
-        private readonly Thread thread;
-        private Exception? threadFailure;
-        private bool dispatcherGateReleased = true;
-
-        private DispatcherThread(bool blockInitially)
-        {
-            thread = new Thread(() =>
-            {
-                try
-                {
-                    var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
-                    if (blockInitially)
-                    {
-                        dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() =>
-                        {
-                            blocked.TrySetResult();
-                            dispatcherGateReleased = release.Wait(WaitTimeout);
-                        }));
-                    }
-
-                    ready.TrySetResult(dispatcher);
-                    System.Windows.Threading.Dispatcher.Run();
-                }
-                catch (Exception exception)
-                {
-                    threadFailure = exception;
-                    ready.TrySetException(exception);
-                    blocked.TrySetException(exception);
-                }
-                finally
-                {
-                    stopped.TrySetResult();
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "Mouse wheel regression dispatcher"
-            };
-            thread.SetApartmentState(ApartmentState.STA);
-            thread.Start();
-        }
-
-        internal Dispatcher Dispatcher => ready.Task.GetAwaiter().GetResult();
-
-        internal static async Task<DispatcherThread> StartAsync(bool blockInitially = false)
-        {
-            var fixture = new DispatcherThread(blockInitially);
-            try
-            {
-                await fixture.ready.Task.WaitAsync(WaitTimeout);
-                if (blockInitially)
-                {
-                    await fixture.blocked.Task.WaitAsync(WaitTimeout);
-                }
-
-                return fixture;
-            }
-            catch
-            {
-                fixture.Release();
-                if (fixture.ready.Task.IsCompletedSuccessfully)
-                {
-                    fixture.Dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
-                }
-
-                _ = fixture.thread.Join(WaitTimeout);
-                fixture.release.Dispose();
-                throw;
-            }
-        }
-
-        internal void Release() => release.Set();
-
-        internal async Task FlushAsync()
-        {
-            // Input is higher priority, so completion observes every previously queued wheel route.
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background).Task.WaitAsync(WaitTimeout);
-        }
-
-        internal async Task StopAsync()
-        {
-            Release();
-            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
-            {
-                Dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
-            }
-
-            await stopped.Task.WaitAsync(WaitTimeout);
-            Assert.True(thread.Join(WaitTimeout), "The regression dispatcher did not stop.");
-            Assert.True(threadFailure is null, threadFailure?.ToString() ?? "The dispatcher thread failed.");
-            Assert.True(dispatcherGateReleased, "The busy dispatcher gate timed out before the test released it.");
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            try
-            {
-                await StopAsync();
-            }
-            finally
-            {
-                release.Dispose();
-            }
-        }
     }
 }

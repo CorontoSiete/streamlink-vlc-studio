@@ -25,6 +25,76 @@ test('sign-out releases the session and its players even when saving state fails
   }
 });
 
+test('sign-out stops local playback when the desktop cannot process logout', async () => {
+  const f = fixture({ onRequest: url => {
+    if (url === '/api/logout') throw new TypeError('Desktop disconnected.');
+  } });
+  try {
+    const p = await f.open();
+    f.document.querySelector('#logout').dispatchEvent(new Event('click'));
+    await new Promise(resolve => setImmediate(resolve));
+    await f.flush();
+    assert.equal(f.state.authenticated, false);
+    assert.equal(f.state.csrf, '');
+    assert.equal(p.closed, true);
+    assert.equal(p.video.paused, true);
+    assert.equal(f.state.players.length, 0);
+  } finally { f.disconnect(); }
+});
+
+test('a delayed sign-out cannot log out a newly connected account', { timeout: 5000 }, async () => {
+  for (const phase of ['progress', 'logout']) {
+    const started = Promise.withResolvers(), pending = Promise.withResolvers();
+    let first = true;
+    const f = fixture({ onRequest: async url => {
+      if (url === '/api/' + phase && first) { first = false; started.resolve(); await pending.promise; }
+    } });
+    try {
+      f.target({ isVod: true });
+      await f.open();
+      f.document.querySelector('#logout').dispatchEvent(new Event('click'));
+      await started.promise;
+      f.disconnect();
+      f.state.authenticated = true;
+      f.state.csrf = 'new-session';
+      const current = await f.open();
+      pending.resolve();
+      await new Promise(resolve => setImmediate(resolve));
+      await f.flush();
+      assert.equal(f.state.authenticated, true, phase);
+      assert.equal(f.state.csrf, 'new-session', phase);
+      assert.equal(current.closed, false, phase);
+      assert.equal(f.requests.filter(r => r.url === '/api/logout').length, phase === 'logout' ? 1 : 0,
+        'the old sign-out must not send a logout request with the new account');
+    } finally { pending.resolve(); f.disconnect(); }
+  }
+});
+
+test('a pending bookmark from a disconnected session does not block a new session', { timeout: 5000 }, async () => {
+  const started = Promise.withResolvers(), pending = Promise.withResolvers();
+  let first = true;
+  const f = fixture({ onRequest: async url => {
+    if (url === '/api/progress' && first) { first = false; started.resolve(); await pending.promise; }
+  } });
+  let oldTick;
+  try {
+    f.target({ isVod: true });
+    await f.open();
+    oldTick = f.tick(2000);
+    await started.promise;
+    f.disconnect();
+    f.state.authenticated = true;
+    f.state.csrf = 'new-session';
+    const current = await f.open();
+    current.video.currentTime = 47;
+    await f.tick(2000);
+    assert.equal(f.requests.findLast(r => r.url === '/api/progress')?.input.player, current.id);
+    pending.resolve();
+    await oldTick;
+    assert.equal(f.document.querySelector('#notice').hidden, true, 'old cancellation must not notify the new account');
+  } finally { pending.resolve(); if (oldTick) await oldTick; f.disconnect(); }
+});
+
 test('periodic progress saving attempts every due VOD after one save fails', async () => {
   const f = fixture();
   try {
@@ -267,6 +337,31 @@ test('an open response arriving after disconnect cannot recreate a player', { ti
   await opening.catch(error => { assert.equal(error.name, 'AbortError'); });
   assert.equal(f.state.players.length, 0);
   assert.equal(f.state.selected, null);
+});
+
+test('a late network failure belongs to the disconnected session', { timeout: 5000 }, async () => {
+  const started = Promise.withResolvers(), response = Promise.withResolvers();
+  let opens = 0;
+  const f = fixture({ onRequest: async url => {
+    if (url === '/api/open' && ++opens === 1) {
+      started.resolve(); await response.promise;
+      throw new TypeError('Old connection failed.');
+    }
+  } });
+  const opening = f.open();
+  // Attach the rejection handler before deliberately failing the old request.
+  const canceled = assert.rejects(opening, { name: 'AbortError' });
+  try {
+    await started.promise;
+    f.disconnect();
+    f.state.authenticated = true;
+    f.state.csrf = 'new-session';
+    const current = await f.open();
+    response.resolve();
+    await canceled;
+    assert.equal(f.state.players[0], current);
+    assert.equal(current.closed, false);
+  } finally { response.resolve(); await canceled.catch(() => {}); f.disconnect(); }
 });
 
 test('queued work from a disconnected account cannot run under a new session', { timeout: 5000 }, async () => {

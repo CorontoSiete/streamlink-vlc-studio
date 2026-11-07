@@ -87,6 +87,7 @@ internal sealed class TwitchBrowseProvider : BrowseProviderRequests
             "https://api.twitch.tv/helix/streams",
             [
                 new("game_id", categoryId),
+                new("language", BrowseLanguages.Normalize(request.Language)),
                 new("first", pageSize.ToString(CultureInfo.InvariantCulture)),
                 new("after", request.Cursor.Trim())
             ]);

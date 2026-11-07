@@ -50,4 +50,5 @@ public sealed record BrowseStreamRequest(
     string CategoryId,
     string CategoryName = "",
     string Cursor = "",
-    int PageSize = 50);
+    int PageSize = 50,
+    string Language = "");

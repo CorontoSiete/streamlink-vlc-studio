@@ -16,10 +16,10 @@ internal static partial class LocalWebTestCatalog
     private static Task BrowserCategoryArtworkAsync() => BrowserAsync(false, categoryArtwork: true);
     private static Task BrowserFollowingLastLiveAsync() => BrowserAsync(false, lastLive: true);
     private static Task BrowserAsync(bool experience, bool overlay = false, bool desktopSignIn = false, bool volume = false, bool vodChat = false, bool publicVodChat = false,
-        bool categoryArtwork = false, bool lastLive = false) => TestSta.RunOffscreenAsync(async () =>
+        bool categoryArtwork = false, bool lastLive = false, bool prefetch = false) => TestSta.RunOffscreenAsync(async () =>
     {
         using var certificate = Certificate();
-        var workspace = new BrowserWorkspace { Experience = experience, Overlay = overlay, CategoryArtwork = categoryArtwork, LastLive = lastLive };
+        var workspace = new BrowserWorkspace { Experience = experience, Overlay = overlay, CategoryArtwork = categoryArtwork, LastLive = lastLive, Prefetch = prefetch, PlayerPlatform = prefetch ? "Kick" : "Twitch" };
         await using var server = await Server(certificate, () => workspace);
         if (volume) await server.Users.AddAsync("otherviewer", "Other viewer password 123!");
         workspace.Address = server.Address;
@@ -262,6 +262,11 @@ internal static partial class LocalWebTestCatalog
             }
             var isVod = input.TryGetProperty("input", out var source) && source.GetString()!.Contains("/videos/", StringComparison.Ordinal);
             if (isVod) vodPlayers.Add(id);
+            if (Prefetch)
+            {
+                publicVodMedia?.Dispose();
+                publicVodMedia = CreatePrefetchMedia(id);
+            }
             return new
             {
                 id,
@@ -270,7 +275,7 @@ internal static partial class LocalWebTestCatalog
                 channel = PlayerChannel,
                 platform = PlayerPlatform,
                 chatLayout = (WebChatOverlayLayout?)null,
-                url = $"/media/{id}/root",
+                url = publicVodMedia?.PathFor(publicVodMedia.Root) ?? $"/media/{id}/root",
                 isVod,
                 isMp4 = false,
                 resume = 0,

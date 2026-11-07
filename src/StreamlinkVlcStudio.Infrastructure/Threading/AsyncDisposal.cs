@@ -1,8 +1,24 @@
+using System.Runtime.ExceptionServices;
+
 namespace StreamlinkVlcStudio.Infrastructure.Threading;
 
 /// <summary>Publishes one disposal task before cleanup can invoke callbacks or acquire other locks.</summary>
 internal static class AsyncDisposal
 {
+    /// <summary>Finishes independent cleanup steps before reporting any failures.</summary>
+    internal static async Task RunAllAsync(params Func<ValueTask>[] cleanup)
+    {
+        List<Exception>? failures = null;
+        foreach (var action in cleanup)
+        {
+            try { await action().ConfigureAwait(false); }
+            catch (Exception exception) { (failures ??= []).Add(exception); }
+        }
+
+        if (failures is { Count: 1 }) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        if (failures is { Count: > 1 }) throw new AggregateException(failures);
+    }
+
     internal static Task Begin(
         object gate,
         ref bool disposed,

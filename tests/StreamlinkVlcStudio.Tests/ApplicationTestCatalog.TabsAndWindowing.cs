@@ -1136,7 +1136,7 @@ internal static partial class ApplicationTestCatalog
         var root = CreateTempTestDirectory();
         try
         {
-            var repoRoot = FindRepoRoot();
+            var repoRoot = TestRepository.FindRoot();
             var scriptPath = Path.Combine(repoRoot, "scripts", "package-release.ps1");
             var overlaySource = CreateValidOverlayDirectory(Path.Combine(root, "overlay-source"));
             var publishDir = Path.Combine(root, "publish");
@@ -1202,7 +1202,7 @@ internal static partial class ApplicationTestCatalog
         var root = CreateTempTestDirectory();
         try
         {
-            var repoRoot = FindRepoRoot();
+            var repoRoot = TestRepository.FindRoot();
             var scriptPath = Path.Combine(repoRoot, "scripts", "package-release.ps1");
             var overlaySource = CreateValidOverlayDirectory(Path.Combine(root, "overlay-source"));
             var publishDir = Path.Combine(root, "publish");
@@ -1237,7 +1237,7 @@ internal static partial class ApplicationTestCatalog
         var root = CreateTempTestDirectory();
         try
         {
-            var repoRoot = FindRepoRoot();
+            var repoRoot = TestRepository.FindRoot();
             var installScriptPath = Path.Combine(repoRoot, "scripts", "install.ps1");
             var commonScriptPath = Path.Combine(repoRoot, "scripts", "lib", "common.ps1");
             var releasePayload = Path.Combine(root, "release-payload");
@@ -1292,7 +1292,7 @@ internal static partial class ApplicationTestCatalog
     }),
     ("installer selects one exact HTTPS app asset and confines temporary download paths", async () =>
     {
-        var repoRoot = FindRepoRoot();
+        var repoRoot = TestRepository.FindRoot();
         var installScriptPath = Path.Combine(repoRoot, "scripts", "install.ps1");
         var commonScriptPath = Path.Combine(repoRoot, "scripts", "lib", "common.ps1");
         var command = string.Join(
@@ -1331,7 +1331,7 @@ internal static partial class ApplicationTestCatalog
         var root = CreateTempTestDirectory();
         try
         {
-            var repoRoot = FindRepoRoot();
+            var repoRoot = TestRepository.FindRoot();
             var scriptPath = Path.Combine(repoRoot, "scripts", "build-installer.ps1");
             var payloadDir = Path.Combine(root, "payload");
             Directory.CreateDirectory(payloadDir);
@@ -1376,7 +1376,7 @@ internal static partial class ApplicationTestCatalog
         var root = CreateTempTestDirectory();
         try
         {
-            var repoRoot = FindRepoRoot();
+            var repoRoot = TestRepository.FindRoot();
             var scriptPath = Path.Combine(repoRoot, "scripts", "build-uninstaller.ps1");
             var outputPath = Path.Combine(root, "output with spaces", "Uninstall.exe");
 
@@ -1417,7 +1417,7 @@ internal static partial class ApplicationTestCatalog
         var root = CreateTempTestDirectory();
         try
         {
-            var repoRoot = FindRepoRoot();
+            var repoRoot = TestRepository.FindRoot();
             var scriptPath = Path.Combine(repoRoot, "scripts", "build-installer.ps1");
             var payloadDir = Path.Combine(root, "payload with spaces");
             Directory.CreateDirectory(payloadDir);

@@ -49,8 +49,8 @@ internal static partial class ApplicationTestCatalog
                     var videoBounds = NativeWindowTest.GetWindowBounds(surface.Handle);
                     Assert.Equal(bounds.Left, videoBounds.Left);
                     Assert.Equal(bounds.Right, videoBounds.Right);
-                    using var frame = CapturePictureInPictureWindow(handle);
-                    var brightEdges = PictureInPictureEdgePixels(frame)
+                    using var frame = WindowFrameTest.Capture(handle);
+                    var brightEdges = WindowFrameTest.EdgePixels(frame)
                         .Where(sample => sample.Color.R > 60 || sample.Color.G > 60 || sample.Color.B > 60)
                         .ToArray();
                     if (brightEdges.Length > 0)
@@ -72,38 +72,8 @@ internal static partial class ApplicationTestCatalog
         Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
     });
 
-    private static System.Drawing.Bitmap CapturePictureInPictureWindow(IntPtr handle)
-    {
-        var bounds = NativeWindowTest.GetWindowBounds(handle);
-        var frame = new System.Drawing.Bitmap(bounds.Width, bounds.Height);
-        try
-        {
-            using var graphics = System.Drawing.Graphics.FromImage(frame);
-            graphics.CopyFromScreen(bounds.Location, System.Drawing.Point.Empty, bounds.Size);
-            return frame;
-        }
-        catch
-        {
-            frame.Dispose();
-            throw;
-        }
-    }
-
-    private static IEnumerable<(int X, int Y, System.Drawing.Color Color)> PictureInPictureEdgePixels(System.Drawing.Bitmap frame)
-    {
-        foreach (var fraction in new[] { 0.25, 0.5, 0.75 })
-        {
-            var x = (int)(frame.Width * fraction);
-            var y = (int)(frame.Height * fraction);
-            yield return (0, y, frame.GetPixel(0, y));
-            yield return (frame.Width - 1, y, frame.GetPixel(frame.Width - 1, y));
-            yield return (x, 0, frame.GetPixel(x, 0));
-            yield return (x, frame.Height - 1, frame.GetPixel(x, frame.Height - 1));
-        }
-    }
-
     private static bool HasUnexpectedWhitePictureInPictureEdge(System.Drawing.Bitmap frame) =>
-        PictureInPictureEdgePixels(frame).Any(sample =>
+        WindowFrameTest.EdgePixels(frame).Any(sample =>
         {
             var adjacent = frame.GetPixel(Math.Clamp(sample.X, 4, frame.Width - 5),
                 Math.Clamp(sample.Y, 4, frame.Height - 5));
@@ -182,7 +152,7 @@ internal static partial class ApplicationTestCatalog
                         await Task.Delay(16);
                     }
                     await Task.Delay(100);
-                    using var final = CapturePictureInPictureWindow(handle);
+                    using var final = WindowFrameTest.Capture(handle);
                     Assert.True(!HasUnexpectedWhitePictureInPictureEdge(final), "Settled PiP retained a white edge.");
                     SaveReplayVlcArtifact(final, mode, $"pip-resized-{showTopBar}");
                 }

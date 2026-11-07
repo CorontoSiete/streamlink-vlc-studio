@@ -13,6 +13,7 @@ internal static class BrowseStreamResourceTestCatalog
         ("browse stream resources: refresh resets completed cursor history", ResetCursorsAsync),
         ("browse stream resources: changing categories rejects late results and loading flags", ChangeCategoryAsync),
         ("browse stream resources: changing platforms cancels the old stream load", ChangePlatformAsync),
+        ("discovery language: desktop changes cancel old results and restart pagination", ChangeLanguageAsync),
         ("browse stream resources: shutdown cancels loading and retained commands start no work", ShutdownAsync)
     ];
 
@@ -183,6 +184,44 @@ internal static class BrowseStreamResourceTestCatalog
         service.Requests[0].Complete([Stream("stale")]);
         await first;
         Assert.Equal(PlatformKind.Kick, viewModel.BrowseStreams.Single().Platform);
+    }, ignoreCancellation: true);
+
+    private static Task ChangeLanguageAsync() => RunAsync(async (viewModel, service) =>
+    {
+        Assert.Equal("", viewModel.SelectedBrowseLanguage);
+        viewModel.SelectedBrowseLanguage = "en";
+        await LoadInitialAsync(viewModel, service, [Stream("english")], "english-next");
+        Assert.Equal("en", service.Requests[0].Request.Language);
+        var more = viewModel.LoadMoreBrowseStreamsCommand.ExecuteAsync();
+        Assert.Equal("english-next", service.Requests[1].Request.Cursor);
+        Assert.Equal("en", service.Requests[1].Request.Language);
+        viewModel.SelectedBrowseLanguage = "fr";
+        Assert.True(service.Requests[1].Token.IsCancellationRequested);
+        Assert.Equal(0, viewModel.BrowseStreams.Count);
+        Assert.Equal("", service.Requests[2].Request.Cursor);
+        Assert.Equal("fr", service.Requests[2].Request.Language);
+        service.Requests[1].Complete([Stream("stale")], "stale-cursor");
+        await more;
+        Assert.Equal(0, viewModel.BrowseStreams.Count);
+        Assert.True(viewModel.IsBrowseStreamsLoading);
+        service.Requests[2].Complete([Stream("french")]);
+        await viewModel.RefreshBrowseCommand.ExecuteAsync();
+        Assert.Equal("french", viewModel.BrowseStreams.Single().Channel);
+        Assert.Equal(false, viewModel.CanLoadMoreBrowseStreams);
+        viewModel.SelectedBrowseLanguage = "";
+        Assert.Equal("", service.Requests[3].Request.Language);
+        service.Requests[3].Complete([]);
+        await viewModel.RefreshBrowseCommand.ExecuteAsync();
+        viewModel.SelectedBrowseLanguage = "en";
+        service.Requests[4].Complete([]);
+        await viewModel.RefreshBrowseCommand.ExecuteAsync();
+        viewModel.ReturnToBrowseCategoriesCommand.Execute(null);
+        viewModel.SelectKickBrowsePlatformCommand.Execute(null);
+        var kick = viewModel.BrowseCategories[0].SelectCommand.ExecuteAsync();
+        Assert.Equal(PlatformKind.Kick, service.Requests[^1].Request.Platform);
+        Assert.Equal("en", service.Requests[^1].Request.Language);
+        service.Requests[^1].Complete([]);
+        await kick;
     }, ignoreCancellation: true);
 
     private static Task ShutdownAsync() => RunAsync(async (viewModel, service) =>

@@ -125,7 +125,7 @@ public sealed class StreamSearchResultViewModel : ObservableObject, IHomeStreamO
     public bool HasViewerCount => IsLive && ViewerCount is not null;
 
     public string ViewerCountText => ViewerCount is { } value
-        ? $"{FormatViewerCount(value)} viewer{(value == 1 ? "" : "s")}"
+        ? FormatViewerCountLabel(value)
         : "";
 
     public string StatusText => string.IsNullOrWhiteSpace(probeResult.Message)

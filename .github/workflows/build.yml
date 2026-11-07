@@ -219,9 +219,11 @@ jobs:
         shell: pwsh
         run: |
           $assets = Get-Content src\StreamlinkVlcStudio.App.Wpf\obj\project.assets.json -Raw
-          foreach ($pack in @('Microsoft.NETCore.App.Runtime.win-x64', 'Microsoft.WindowsDesktop.App.Runtime.win-x64')) {
-            $pattern = '"name":\s*"' + [regex]::Escape($pack) + '"[\s\S]{0,160}"version":\s*"\[10\.0\.10, 10\.0\.10\]"'
-            if ($assets -notmatch $pattern) { throw "Publish assets do not contain pinned $pack 10.0.10." }
+          $runtimeVersion = [string](Get-Content shared\release-contract.json -Raw | ConvertFrom-Json).release.dotnetRuntimeVersion
+          $escapedRuntimeVersion = [regex]::Escape($runtimeVersion)
+          foreach ($pack in @('Microsoft.NETCore.App.Runtime.win-x64', 'Microsoft.WindowsDesktop.App.Runtime.win-x64', 'Microsoft.AspNetCore.App.Runtime.win-x64')) {
+            $pattern = '"name":\s*"' + [regex]::Escape($pack) + '"[\s\S]{0,160}"version":\s*"\[' + $escapedRuntimeVersion + ', ' + $escapedRuntimeVersion + '\]"'
+            if ($assets -notmatch $pattern) { throw "Publish assets do not contain pinned $pack $runtimeVersion." }
           }
           $exe = 'artifacts\publish\StreamStudio\StreamStudio.exe'
           if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or (Get-Item $exe).Length -lt 1MB) {

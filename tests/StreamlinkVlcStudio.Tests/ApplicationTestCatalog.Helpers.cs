@@ -21,50 +21,16 @@ internal static partial class ApplicationTestCatalog
         IReadOnlyList<string> arguments,
         TimeSpan timeout)
     {
-        var startInfo = new ProcessStartInfo
+        var startInfo = BoundedProcessRunner.CreateRedirectedStartInfo(
+            "powershell", new[] { "-NoProfile", "-ExecutionPolicy", "Bypass" }.Concat(arguments));
+        var result = await new BoundedProcessRunner().RunAsync(startInfo, timeout);
+        if (result.TimedOut)
         {
-            FileName = "powershell",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        startInfo.ArgumentList.Add("-NoProfile");
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = Process.Start(startInfo) ??
-            throw new InvalidOperationException("Could not start Windows PowerShell.");
-        var outputTask = process.StandardOutput.ReadToEndAsync();
-        var errorTask = process.StandardError.ReadToEndAsync();
-        try
-        {
-            await process.WaitForExitAsync().WaitAsync(timeout);
-        }
-        catch (TimeoutException)
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // The process exited between HasExited and Kill.
-            }
-
-            await process.WaitForExitAsync();
-            var timedOutOutput = await outputTask;
-            var timedOutError = await errorTask;
             throw new TimeoutException(
-                $"PowerShell did not exit within {timeout}. Output: {timedOutOutput} Error: {timedOutError}".Trim());
+                $"PowerShell did not exit within {timeout}. Output: {result.StandardOutput} Error: {result.StandardError}".Trim());
         }
 
-        return (process.ExitCode, await outputTask, await errorTask);
+        return (result.ExitCode, result.StandardOutput, result.StandardError);
     }
 
     static void AssertOptionValue(IReadOnlyList<string> arguments, string option, string expectedValue)
@@ -237,7 +203,7 @@ internal static partial class ApplicationTestCatalog
         var buildDirectory = Path.Combine(overlayDirectory, "build");
         Directory.CreateDirectory(buildDirectory);
         var sourceBuildDirectory = Path.Combine(
-            FindRepoRoot(),
+            TestRepository.FindRoot(),
             "src",
             "StreamlinkVlcStudio.Infrastructure",
             "Vlc",
@@ -254,25 +220,6 @@ internal static partial class ApplicationTestCatalog
         return overlayDirectory;
     }
 
-    static string FindRepoRoot()
-    {
-        foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
-        {
-            var directory = new DirectoryInfo(start);
-            while (directory is not null)
-            {
-                if (File.Exists(Path.Combine(directory.FullName, "scripts", "package-release.ps1")) &&
-                    File.Exists(Path.Combine(directory.FullName, "StreamlinkVlcStudio.sln")))
-                {
-                    return directory.FullName;
-                }
-
-                directory = directory.Parent;
-            }
-        }
-
-        throw new InvalidOperationException("Could not locate repository root.");
-    }
 
     static void AssertBundledBadgeImageUrl(string? imageUrl, string badgeDirectory, string relativePath)
     {

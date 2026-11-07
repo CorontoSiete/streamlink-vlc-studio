@@ -4,6 +4,7 @@ using StreamlinkVlcStudio.Core.Commands;
 using StreamlinkVlcStudio.Core.Logging;
 using StreamlinkVlcStudio.Core.Models;
 using StreamlinkVlcStudio.Core.Services;
+using StreamlinkVlcStudio.Core.Settings;
 
 namespace StreamlinkVlcStudio.App.Wpf.ViewModels;
 
@@ -62,6 +63,8 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
     private readonly PagedResultTracker browseCategoryPages = new();
     private readonly PagedResultTracker browseStreamPages = new();
     private string browseCategorySearchText = "";
+    private string selectedBrowseLanguage = "";
+    private string browseDirectoryLanguage = "";
     private string browseStatus = "Browse Twitch or Kick categories.";
     private string browseCategoryStatus = "Browse Twitch or Kick categories.";
     private string browseCategoryNextCursor = "";
@@ -76,7 +79,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
     private bool isBrowseStreamsLoading;
     private Task? activeBrowseStreamTask;
     private int activeBrowseStreamGeneration;
-    private (PlatformKind Platform, string CategoryId) activeBrowseStreamSearch;
+    private (PlatformKind Platform, string CategoryId, string Language) activeBrowseStreamSearch;
     private bool hasBrowseStreamSearchCompleted;
     private CancellationTokenSource? browseCategoryViewerCountCancellation;
     private bool browseCategoryViewerCountLoadPending;
@@ -90,6 +93,36 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
     public AsyncRelayCommand RefreshBrowseCommand { get; }
     public AsyncRelayCommand LoadMoreBrowseCategoriesCommand { get; }
     public AsyncRelayCommand LoadMoreBrowseStreamsCommand { get; }
+
+    public IReadOnlyList<BrowseLanguageOption> BrowseLanguageOptions => BrowseLanguages.Options;
+
+    public string SelectedBrowseLanguage
+    {
+        get => selectedBrowseLanguage;
+        set
+        {
+            if (disposed || !SetProperty(ref selectedBrowseLanguage, BrowseLanguages.Normalize(value))) return;
+            if (SelectedBrowseCategory is { } category) RememberCategoryLanguage(category, selectedBrowseLanguage);
+            else browseDirectoryLanguage = selectedBrowseLanguage;
+            vodBrowseController.AdvanceBrowseStreamGeneration();
+            CancelActiveBrowseStreamSearch();
+            IsBrowseStreamsLoading = false;
+            ClearBrowseStreams(clearSelectedCategory: false);
+            HasBrowseStreamSearchCompleted = false;
+            if (IsBrowseStreamsPageVisible && SelectedBrowseCategory is not null)
+                _ = LoadBrowseStreamsAsync(reset: true);
+        }
+    }
+
+    private void RememberCategoryLanguage(BrowseCategoryViewModel category, string language)
+    {
+        var key = CategoryLanguagePreferences.Key(category.Platform, category.Id);
+        if (Settings.BrowseCategoryLanguages.TryGetValue(key, out var saved) && saved == language) return;
+        Settings.BrowseCategoryLanguages = new(Settings.BrowseCategoryLanguages, StringComparer.OrdinalIgnoreCase)
+        {
+            [key] = language
+        };
+    }
 
     public string BrowseCategorySearchText
     {
@@ -166,6 +199,10 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
             }
 
             selectedBrowseCategory = value;
+            var language = value is null ? browseDirectoryLanguage :
+                Settings.BrowseCategoryLanguages.GetValueOrDefault(CategoryLanguagePreferences.Key(value.Platform, value.Id), browseDirectoryLanguage);
+            SetProperty(ref selectedBrowseLanguage, language, nameof(SelectedBrowseLanguage));
+            if (value is not null) RememberCategoryLanguage(value, language);
             OnPropertyChanged();
             OnPropertyChanged(nameof(HasSelectedBrowseCategory));
             OnPropertyChanged(nameof(SelectedBrowseCategoryName));
@@ -925,7 +962,7 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
 
         if (reset && activeBrowseStreamTask is { IsCompleted: false } &&
             activeBrowseStreamGeneration == vodBrowseController.CurrentBrowseStreamGeneration &&
-            activeBrowseStreamSearch == (platform, categoryId))
+            activeBrowseStreamSearch == (platform, categoryId, SelectedBrowseLanguage))
         {
             return activeBrowseStreamTask;
         }
@@ -934,9 +971,9 @@ internal sealed class BrowseViewModel : HomeFeatureViewModel
             ? vodBrowseController.AdvanceBrowseStreamGeneration()
             : vodBrowseController.CurrentBrowseStreamGeneration;
         activeBrowseStreamGeneration = searchGeneration;
-        activeBrowseStreamSearch = (platform, categoryId);
+        activeBrowseStreamSearch = (platform, categoryId, SelectedBrowseLanguage);
         var task = RunBrowseStreamsAsync(reset,
-            new BrowseStreamRequest(platform, categoryId, categoryName, cursor, BrowseStreamPageSize), searchGeneration);
+            new BrowseStreamRequest(platform, categoryId, categoryName, cursor, BrowseStreamPageSize, SelectedBrowseLanguage), searchGeneration);
         // A refresh during Load More must restart the first page, not share pagination.
         activeBrowseStreamTask = reset ? task : null;
         return task;

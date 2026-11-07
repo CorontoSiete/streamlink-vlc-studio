@@ -398,7 +398,46 @@ static void test_kick_rejection_diagnostics(void) {
     puts("PASS Kick rejection reason reaches chat instead of a blind reconnect loop");
 }
 
-int main(void) {
+static void test_channel_arguments(const char *directory) {
+    char state_path[MAX_PATH];
+    snprintf(state_path, sizeof(state_path), "%s/channel-arguments", directory);
+    char *arguments[] = {"overlay", "--channel", "MiXed.Name-123", "--provider", "kick",
+        "--kick-chatroom-id", "9001", "--position-state-path", state_path};
+    int count = (int)(sizeof(arguments) / sizeof(arguments[0]));
+    assert(parse_args(count, arguments));
+    assert(strcmp(g_channel, "mixed.name-123") == 0);
+
+    char longest[81];
+    memset(longest, 'a', sizeof(longest) - 1);
+    longest[sizeof(longest) - 1] = '\0';
+    arguments[2] = longest;
+    assert(parse_args(count, arguments));
+    assert(strcmp(g_channel, longest) == 0);
+    queue_init(&g_queue);
+    report_joined_channel();
+    assert(g_queue.count == 1);
+    assert(strlen(g_queue.buf[0].text) == strlen(longest) + strlen("joined #"));
+    assert(strcmp(g_queue.buf[0].text + strlen("joined #"), longest) == 0);
+    DeleteCriticalSection(&g_queue.cs);
+
+    char oversized[82];
+    memset(oversized, 'b', sizeof(oversized) - 1);
+    oversized[sizeof(oversized) - 1] = '\0';
+    arguments[2] = oversized;
+    assert(!parse_args(count, arguments));
+    arguments[2] = ".";
+    assert(!parse_args(count, arguments));
+    arguments[2] = "..";
+    assert(!parse_args(count, arguments));
+
+    arguments[2] = "MiXed.Name";
+    arguments[4] = "twitch";
+    assert(parse_args(count, arguments));
+    assert(strcmp(g_channel, "mixed_name") == 0);
+    puts("PASS channel arguments preserve valid Kick names and reject truncation");
+}
+
+int main(int argc, char **argv) {
     /* Windows PowerShell 5 treats redirected native stderr as a terminating error.
      * Keep both application diagnostics and assertion failures in the test log. */
     assert(_dup2(_fileno(stdout), _fileno(stderr)) == 0);
@@ -409,5 +448,6 @@ int main(void) {
     test_text_messages();
     test_invalid_frames();
     test_irc_overflow();
+    test_channel_arguments(argc > 1 ? argv[1] : ".");
     return 0;
 }

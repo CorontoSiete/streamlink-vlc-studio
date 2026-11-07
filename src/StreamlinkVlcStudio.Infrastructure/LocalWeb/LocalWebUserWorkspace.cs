@@ -2,6 +2,9 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
+using StreamlinkVlcStudio.Core.Models;
+using StreamlinkVlcStudio.Core.Settings;
+using static StreamlinkVlcStudio.Infrastructure.LocalWeb.LocalWebRequestValues;
 
 namespace StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
@@ -27,6 +30,22 @@ internal sealed class LocalWebUserWorkspace(ILocalWebWorkspace inner, LocalWebUs
             case "settings/save":
                 await users.SavePreferencesAsync(userId, input, token).ConfigureAwait(false);
                 return new { saved = true };
+            case "streams":
+                {
+                    var platform = Optional(input, "platform", 10).ToLowerInvariant() switch
+                    {
+                        "kick" => PlatformKind.Kick,
+                        "twitch" or "" => PlatformKind.Twitch,
+                        _ => throw new ArgumentException("Invalid platform.")
+                    };
+                    var key = CategoryLanguagePreferences.Key(platform, RequiredText(input, "categoryId", 128));
+                    var language = input.TryGetProperty("language", out _) ? BrowseLanguages.Normalize(Optional(input, "language", 16)) :
+                        users.PreferencesFor(userId).CategoryLanguages.GetValueOrDefault(key, "");
+                    await users.SaveCategoryLanguageAsync(userId, key, language, token).ConfigureAwait(false);
+                    var request = JsonNode.Parse(input.GetRawText())!.AsObject();
+                    request["language"] = language;
+                    return await inner.InvokeAsync(action, JsonSerializer.SerializeToElement(request, LocalWebUserStore.JsonOptions), token).ConfigureAwait(false);
+                }
             case "chat/layout":
                 {
                     var key = PlayerKey(input);

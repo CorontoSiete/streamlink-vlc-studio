@@ -3,17 +3,20 @@ using StreamlinkVlcStudio.Infrastructure.LocalWeb;
 
 internal static partial class LocalWebTestCatalog
 {
-    private static Task WorkspaceAsync() => WorkspaceAsync(false);
-    private static Task ProfileImagesAsync() => WorkspaceAsync(true);
-    private static Task FollowStatusAsync() => WorkspaceAsync(false, true);
-    private static Task OverlayLayoutAsync() => WorkspaceAsync(false, overlayLayout: true);
-    private static Task CategoryViewersAsync() => WorkspaceAsync(false, categoryViewers: true);
-    private static Task CategoryArtworkAsync() => WorkspaceAsync(false, categoryArtwork: true);
-    private static Task CategoryArtworkLiveAsync() => WorkspaceAsync(false, categoryArtwork: true, liveArtwork: true);
-    private static Task TwitchBadgeRecoveryAsync() => WorkspaceAsync(false, twitchBadgeRecovery: true);
-    private static Task FollowingLastLiveAsync() => WorkspaceAsync(false, lastLive: true);
-    private static async Task WorkspaceAsync(bool profileImages, bool followStatus = false, bool overlayLayout = false, bool categoryViewers = false,
-        bool categoryArtwork = false, bool liveArtwork = false, bool twitchBadgeRecovery = false, bool lastLive = false)
+    private sealed record WorkspaceFixture(LocalWebDependencies Dependencies, AppSettings Settings,
+        string Directory, List<FakeChatClientFactory> Chats);
+
+    private static Task WorkspaceAsync() => WithWorkspaceAsync();
+    private static Task ProfileImagesAsync() => WithWorkspaceAsync(f => VerifyProfileImagesAsync(f.Dependencies, f.Settings, f.Directory));
+    private static Task FollowStatusAsync() => WithWorkspaceAsync(f => VerifyFollowStatusAsync(f.Dependencies));
+    private static Task OverlayLayoutAsync() => WithWorkspaceAsync(f => VerifyOverlayLayoutAsync(f.Dependencies, f.Directory));
+    private static Task CategoryViewersAsync() => WithWorkspaceAsync(f => VerifyCategoryViewersAsync(f.Dependencies));
+    private static Task CategoryArtworkAsync() => WithWorkspaceAsync(f => VerifyCategoryArtworkAsync(f.Dependencies));
+    private static Task CategoryArtworkLiveAsync() => WithWorkspaceAsync(f => VerifyCategoryArtworkLiveAsync(f.Dependencies));
+    private static Task TwitchBadgeRecoveryAsync() => WithWorkspaceAsync(f => VerifyTwitchBadgeRecoveryAsync(f.Dependencies, f.Chats));
+    private static Task FollowingLastLiveAsync() => WithWorkspaceAsync(f => VerifyFollowingLastLiveAsync(f.Dependencies));
+
+    private static async Task WithWorkspaceAsync(Func<WorkspaceFixture, Task>? verification = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), "StreamStudioTests", "localweb-workspace-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -53,40 +56,9 @@ internal static partial class LocalWebTestCatalog
         };
         try
         {
-            if (lastLive)
+            if (verification is not null)
             {
-                await VerifyFollowingLastLiveAsync(dependencies);
-                return;
-            }
-            if (twitchBadgeRecovery)
-            {
-                await VerifyTwitchBadgeRecoveryAsync(dependencies, chats);
-                return;
-            }
-            if (categoryArtwork)
-            {
-                if (liveArtwork) await VerifyCategoryArtworkLiveAsync(dependencies);
-                else await VerifyCategoryArtworkAsync(dependencies);
-                return;
-            }
-            if (categoryViewers)
-            {
-                await VerifyCategoryViewersAsync(dependencies);
-                return;
-            }
-            if (overlayLayout)
-            {
-                await VerifyOverlayLayoutAsync(dependencies, directory);
-                return;
-            }
-            if (followStatus)
-            {
-                await VerifyFollowStatusAsync(dependencies);
-                return;
-            }
-            if (profileImages)
-            {
-                await VerifyProfileImagesAsync(dependencies, settings, directory);
+                await verification(new WorkspaceFixture(dependencies, settings, directory, chats));
                 return;
             }
             await VerifyVodRefreshAsync(dependencies);

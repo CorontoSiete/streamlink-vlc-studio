@@ -7,7 +7,7 @@ and required bundled VLC overlay binaries.
 
 ## Build and run
 
-Use 64-bit Windows 10 or Windows 11. Install **.NET SDK 10.0.302 (x64)**,
+Use 64-bit Windows 10 or Windows 11. Install the **x64 .NET SDK version pinned in global.json**,
 the exact version selected by `global.json`. A .NET runtime alone is not
 enough. Internet access is needed for the first NuGet restore.
 

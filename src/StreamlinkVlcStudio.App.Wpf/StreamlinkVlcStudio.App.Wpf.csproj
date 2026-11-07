@@ -8,7 +8,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
-    <!-- global.json pins the servicing SDK whose latest runtime pack is verified as 10.0.10 in CI. -->
+    <!-- CI verifies the pinned SDK's runtime pack against shared/release-contract.json. -->
     <TargetLatestRuntimePatch Condition="'$(SelfContained)' == 'true'">true</TargetLatestRuntimePatch>
     <SupportedOSPlatformVersion>10.0.10240.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>

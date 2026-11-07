@@ -88,10 +88,4 @@ public sealed class BrowseCategoryViewModel : ObservableObject
         if (previous.ViewerCount != updated.ViewerCount || previous.Platform != updated.Platform || tagsChanged)
             OnPropertyChanged(nameof(MetadataText));
     }
-
-    private static string FormatViewerCountLabel(int value)
-    {
-        var suffix = value == 1 ? "viewer" : "viewers";
-        return $"{FormatViewerCount(value)} {suffix}";
-    }
 }

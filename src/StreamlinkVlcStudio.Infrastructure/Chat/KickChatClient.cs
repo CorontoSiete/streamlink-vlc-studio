@@ -56,54 +56,16 @@ public sealed class KickChatClient : IChatClient
     public event EventHandler<string>? StatusChanged;
     public string? CurrentUsername { get; private set; }
 
-    public async Task ConnectAsync(StreamTarget target, CancellationToken cancellationToken = default)
-    {
-        lock (lifecycleStateGate)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-        }
-
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            lock (lifecycleStateGate)
+    public Task ConnectAsync(StreamTarget target, CancellationToken cancellationToken = default) =>
+        ChatConnectionCleanup.ConnectAsync(lifecycleGate, ThrowIfDisposed,
+            () => ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync),
+            async () =>
             {
-                ObjectDisposedException.ThrowIf(disposed, this);
-            }
-
-            await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
-            var supervisor = new LiveChatConnectionSupervisor(
-                logger,
-                "KickChat",
-                RaiseStatusChanged);
-            connectionSupervisor = supervisor;
-            supervisor.Start(token => ReconnectCoreAsync(supervisor, target, token));
-            try
-            {
+                var supervisor = new LiveChatConnectionSupervisor(logger, "KickChat", RaiseStatusChanged);
+                connectionSupervisor = supervisor;
+                supervisor.Start(token => ReconnectCoreAsync(supervisor, target, token));
                 await ConnectCoreAsync(target, cancellationToken, supervisor).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Resolve/handshake failures can occur after the websocket and
-                // cancellation sources have been created. Clean them up before
-                // returning the failure to the tab.
-                try
-                {
-                    await ChatConnectionCleanup.StopAndDisconnectAsync(ref connectionSupervisor, DisconnectCoreAsync).ConfigureAwait(false);
-                }
-                catch (Exception cleanupException)
-                {
-                    logger.WriteSafely(AppLogLevel.Warning, "KickChat", "Kick chat cleanup failed after a connection error.", cleanupException);
-                }
-
-                throw;
-            }
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
-    }
+            }, logger, "KickChat", cancellationToken);
 
     private async Task ConnectCoreAsync(
         StreamTarget target,
